@@ -18,10 +18,10 @@ public final class Config {
     public static boolean commandRequireCreative = true;
 
     public static boolean enableCommandBlock = false;
-    public static int modemRange = 64;
-    public static int modemHighAltitudeRange = 384;
-    public static int modemRangeDuringStorm = 64;
-    public static int modemHighAltitudeRangeDuringStorm = 384;
+    public static int modemRange = 1024;
+    public static int modemHighAltitudeRange = 1024;
+    public static int modemRangeDuringStorm = 1024;
+    public static int modemHighAltitudeRangeDuringStorm = 1024;
     public static int maxNotesPerTick = 8;
     public static MonitorRenderer monitorRenderer = MonitorRenderer.BEST;
     public static int monitorDistance = 65;

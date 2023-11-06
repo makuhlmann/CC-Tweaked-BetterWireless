@@ -7,6 +7,10 @@ package dan200.computercraft.shared.peripheral.modem.wireless;
 import dan200.computercraft.api.network.Packet;
 import dan200.computercraft.api.network.PacketNetwork;
 import dan200.computercraft.api.network.PacketReceiver;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Vec3i;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.Collections;
 import java.util.Objects;
@@ -40,13 +44,55 @@ public class WirelessNetwork implements PacketNetwork {
         for (var device : receivers) tryTransmit(device, packet, 0, true);
     }
 
+    private static Vec3 floorVec3(Vec3 vector) {
+        return new Vec3(Math.floor(vector.x), Math.floor(vector.y), Math.floor(vector.z));
+    }
+
+    private static Vec3 roundVec3(Vec3 vector) {
+        return new Vec3(Math.round(vector.x), Math.round(vector.y), Math.round(vector.z));
+    }
+
+    private static Vec3i roundToVec3i(Vec3 vector) {
+        return new Vec3i((int)Math.round(vector.x), (int)Math.round(vector.y), (int)Math.round(vector.z));
+    }
+
     private static void tryTransmit(PacketReceiver receiver, Packet packet, double range, boolean interdimensional) {
         var sender = packet.sender();
         if (receiver.getLevel() == sender.getLevel()) {
             var receiveRange = Math.max(range, receiver.getRange()); // Ensure range is symmetrical
             var distanceSq = receiver.getPosition().distanceToSqr(sender.getPosition());
             if (interdimensional || receiver.isInterdimensional() || distanceSq <= receiveRange * receiveRange) {
-                receiver.receiveSameDimension(packet, Math.sqrt(distanceSq));
+                // Get current level
+                var level = receiver.getLevel();
+
+                // Convert pos to int
+                Vec3 senderPos = floorVec3(sender.getPosition());
+                Vec3 receiverPos = floorVec3(receiver.getPosition());
+
+                // Get normalized direction
+                Vec3 direction = receiverPos.subtract(senderPos);
+                direction = direction.normalize();
+
+                var signalStrength = 0.0;
+                var blocksTraversed = 0;
+
+                //System.out.println("START From " + senderPos.toString() + " to " + receiverPos.toString() + ": Dir " + direction.toString());
+
+                for (var current = senderPos; !roundVec3(current).equals(receiverPos) && signalStrength <= receiveRange; current = current.add(direction)) {
+                    var expResist = level.getBlockState(new BlockPos(roundToVec3i(current))).getBlock().getExplosionResistance();
+                    signalStrength += signalStrength / 100.0 * expResist + 1.0;
+                    blocksTraversed++;
+                    //System.out.println("SigDegr " + current.toString() + " of " + expResist + " for " + level.getBlockState(new BlockPos(roundToVec3i(current))).getBlock().getName().getString());
+                }
+
+                //System.out.println("From " + senderPos.toString() + " to " + receiverPos.toString() + ": Dist " + loss);
+                if (signalStrength <= receiveRange) {
+                    var distance = Math.sqrt(distanceSq);
+                    signalStrength *= (distance / blocksTraversed);
+                    var signalQuality = signalStrength / distance;
+                    //System.out.println("Dist: " + Math.sqrt(distanceSq) + ", Loss: " + loss);
+                    receiver.receiveSameDimension(packet, signalStrength, signalQuality);
+                }
             }
         } else {
             if (interdimensional || receiver.isInterdimensional()) {

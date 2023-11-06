@@ -57,13 +57,14 @@ public interface PacketReceiver {
      *
      * @param packet   The packet to receive. Generally you should check that you are listening on the given channel and,
      *                 if so, queue the appropriate modem event.
-     * @param distance The distance this packet has travelled from the source.
+     * @param signalStrength The strength of the signal once it arrives at the recipient
+     * @param signalQuality The quality of the signal after degradation
      * @see Packet
      * @see #getRange()
      * @see PacketNetwork#transmitSameDimension(Packet, double)
      * @see PacketNetwork#transmitInterdimensional(Packet)
      */
-    void receiveSameDimension(Packet packet, double distance);
+    void receiveSameDimension(Packet packet, double signalStrength, double signalQuality);
 
     /**
      * Receive a network packet from a different dimension.

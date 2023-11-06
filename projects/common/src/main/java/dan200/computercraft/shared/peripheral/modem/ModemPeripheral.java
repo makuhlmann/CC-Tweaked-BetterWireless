@@ -114,13 +114,13 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
     }
 
     @Override
-    public void receiveSameDimension(Packet packet, double distance) {
+    public void receiveSameDimension(Packet packet, double signalStrength, double signalQuality) {
         if (packet.sender() == this || !state.isOpen(packet.channel())) return;
 
         synchronized (computers) {
             for (var computer : computers) {
                 computer.queueEvent("modem_message",
-                    computer.getAttachmentName(), packet.channel(), packet.replyChannel(), packet.payload(), distance);
+                    computer.getAttachmentName(), packet.channel(), packet.replyChannel(), packet.payload(), signalStrength, signalQuality);
             }
         }
     }

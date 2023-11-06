@@ -50,7 +50,7 @@ public final class WiredNodeImpl implements WiredNode {
             if (!packetInterdimensional) {
                 var receiveRange = Math.max(range, receiver.getRange()); // Ensure range is symmetrical
                 if (interdimensional || receiver.isInterdimensional() || packetDistance < receiveRange) {
-                    receiver.receiveSameDimension(packet, packetDistance + element.getPosition().distanceTo(receiver.getPosition()));
+                    receiver.receiveSameDimension(packet, packetDistance + element.getPosition().distanceTo(receiver.getPosition()), 0.0);
                 }
             } else {
                 if (interdimensional || receiver.isInterdimensional()) {

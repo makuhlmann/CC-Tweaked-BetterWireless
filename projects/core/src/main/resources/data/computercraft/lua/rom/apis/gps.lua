@@ -142,10 +142,11 @@ function locate(_nTimeout, _bDebug)
     local pos1, pos2 = nil, nil
     local timeout = os.startTimer(_nTimeout or 2)
     while true do
-        local e, p1, p2, p3, p4, p5 = os.pullEvent()
+        local e, p1, p2, p3, p4, p5, p6 = os.pullEvent()
         if e == "modem_message" then
             -- We received a reply from a modem
-            local sSide, sChannel, sReplyChannel, tMessage, nDistance = p1, p2, p3, p4, p5
+            local sSide, sChannel, sReplyChannel, tMessage, nStrength, nQuality = p1, p2, p3, p4, p5, p6
+            nDistance = nStrength / nQuality
             if sSide == sModemSide and sChannel == CHANNEL_GPS and sReplyChannel == CHANNEL_GPS and nDistance then
                 -- Received the correct message from the correct modem: use it to determine position
                 if type(tMessage) == "table" and #tMessage == 3 and tonumber(tMessage[1]) and tonumber(tMessage[2]) and tonumber(tMessage[3]) then
