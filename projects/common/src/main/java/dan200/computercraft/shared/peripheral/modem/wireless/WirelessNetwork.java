@@ -76,23 +76,20 @@ public class WirelessNetwork implements PacketNetwork {
                 var signalStrength = 0.0;
                 var blocksTraversed = 0;
 
-                //System.out.println("START From " + senderPos.toString() + " to " + receiverPos.toString() + ": Dir " + direction.toString());
-
-                for (var current = senderPos; !roundVec3(current).equals(receiverPos) && signalStrength <= receiveRange; current = current.add(direction)) {
+                for (var current = senderPos; !roundVec3(current).equals(receiverPos); current = current.add(direction)) {
                     var expResist = level.getBlockState(new BlockPos(roundToVec3i(current))).getBlock().getExplosionResistance();
                     signalStrength += signalStrength / 100.0 * expResist + 1.0;
+
+                    if (signalStrength > receiveRange) {
+                        return; // Too far away already
+                    }
+
                     blocksTraversed++;
-                    //System.out.println("SigDegr " + current.toString() + " of " + expResist + " for " + level.getBlockState(new BlockPos(roundToVec3i(current))).getBlock().getName().getString());
                 }
 
-                //System.out.println("From " + senderPos.toString() + " to " + receiverPos.toString() + ": Dist " + loss);
-                if (signalStrength <= receiveRange) {
-                    var distance = Math.sqrt(distanceSq);
-                    signalStrength *= (distance / blocksTraversed);
-                    var signalQuality = signalStrength / distance;
-                    //System.out.println("Dist: " + Math.sqrt(distanceSq) + ", Loss: " + loss);
-                    receiver.receiveSameDimension(packet, signalStrength, signalQuality);
-                }
+                var distance = Math.sqrt(distanceSq);
+                signalStrength *= (distance / blocksTraversed);
+                receiver.receiveSameDimension(packet, signalStrength, signalStrength / distance);
             }
         } else {
             if (interdimensional || receiver.isInterdimensional()) {
