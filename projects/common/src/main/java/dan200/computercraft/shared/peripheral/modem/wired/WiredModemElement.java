@@ -5,6 +5,7 @@
 package dan200.computercraft.shared.peripheral.modem.wired;
 
 import dan200.computercraft.api.ComputerCraftAPI;
+import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.api.network.wired.WiredElement;
 import dan200.computercraft.api.network.wired.WiredNetworkChange;
 import dan200.computercraft.api.network.wired.WiredNode;
@@ -49,4 +50,11 @@ public abstract class WiredModemElement implements WiredElement {
     protected abstract void attachPeripheral(String name, IPeripheral peripheral);
 
     protected abstract void detachPeripheral(String name);
+
+    @Override
+    public double getCachedSignalStrength(PacketReceiver recipient) { return 0.0; }
+    @Override
+    public double getCachedSignalQuality(PacketReceiver recipient) { return 0.0; }
+    @Override
+    public void addToCache(PacketReceiver recipient, double signalStrength, double signalQuality) {}
 }

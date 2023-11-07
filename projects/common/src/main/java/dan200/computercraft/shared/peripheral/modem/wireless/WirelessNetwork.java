@@ -8,14 +8,14 @@ import dan200.computercraft.api.network.Packet;
 import dan200.computercraft.api.network.PacketNetwork;
 import dan200.computercraft.api.network.PacketReceiver;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Vec3i;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static dan200.computercraft.shared.util.VectorHelpers.*;
 
 public class WirelessNetwork implements PacketNetwork {
     private final Set<PacketReceiver> receivers = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -44,24 +44,18 @@ public class WirelessNetwork implements PacketNetwork {
         for (var device : receivers) tryTransmit(device, packet, 0, true);
     }
 
-    private static Vec3 floorVec3(Vec3 vector) {
-        return new Vec3(Math.floor(vector.x), Math.floor(vector.y), Math.floor(vector.z));
-    }
-
-    private static Vec3 roundVec3(Vec3 vector) {
-        return new Vec3(Math.round(vector.x), Math.round(vector.y), Math.round(vector.z));
-    }
-
-    private static Vec3i roundToVec3i(Vec3 vector) {
-        return new Vec3i((int)Math.round(vector.x), (int)Math.round(vector.y), (int)Math.round(vector.z));
-    }
-
     private static void tryTransmit(PacketReceiver receiver, Packet packet, double range, boolean interdimensional) {
         var sender = packet.sender();
         if (receiver.getLevel() == sender.getLevel()) {
             var receiveRange = Math.max(range, receiver.getRange()); // Ensure range is symmetrical
             var distanceSq = receiver.getPosition().distanceToSqr(sender.getPosition());
             if (interdimensional || receiver.isInterdimensional() || distanceSq <= receiveRange * receiveRange) {
+                var cachedSignalStrength = sender.getCachedSignalStrength(receiver);
+                if (cachedSignalStrength != 0.0) {
+                    receiver.receiveSameDimension(packet, cachedSignalStrength, sender.getCachedSignalQuality(receiver));
+                    return;
+                }
+
                 // Get current level
                 var level = receiver.getLevel();
 
@@ -78,6 +72,9 @@ public class WirelessNetwork implements PacketNetwork {
 
                 for (var current = senderPos; !roundVec3(current).equals(receiverPos); current = current.add(direction)) {
                     var expResist = level.getBlockState(new BlockPos(roundToVec3i(current))).getBlock().getExplosionResistance();
+                    if (expResist >= 100) {
+                        expResist /= 4;
+                    }
                     signalStrength += signalStrength / 100.0 * expResist + 1.0;
 
                     if (signalStrength > receiveRange) {
@@ -89,6 +86,7 @@ public class WirelessNetwork implements PacketNetwork {
 
                 var distance = Math.sqrt(distanceSq);
                 signalStrength *= (distance / blocksTraversed);
+                sender.addToCache(receiver, signalStrength, signalStrength / distance);
                 receiver.receiveSameDimension(packet, signalStrength, signalStrength / distance);
             }
         } else {

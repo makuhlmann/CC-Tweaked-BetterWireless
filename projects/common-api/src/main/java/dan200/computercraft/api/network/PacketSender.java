@@ -33,4 +33,21 @@ public interface PacketSender {
      * @return This device's id.
      */
     String getSenderID();
+
+    /**
+     * Returns previously cached signal strength calculations
+     * @return Returns cached signal strength to recipient
+     */
+    double getCachedSignalStrength(PacketReceiver recipient);
+
+    /**
+     * Returns previously cached signal quality calculations
+     * @return Returns cached signal quality to recipient
+     */
+    double getCachedSignalQuality(PacketReceiver recipient);
+
+    /**
+     * Adds new distance calculation to cache
+     */
+    void addToCache(PacketReceiver recipient, double signalStrength, double signalQuality);
 }

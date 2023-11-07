@@ -6,16 +6,21 @@ package dan200.computercraft.shared.peripheral.modem.wireless;
 
 import dan200.computercraft.api.ComputerCraftAPI;
 import dan200.computercraft.api.network.PacketNetwork;
+import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
+import dan200.computercraft.shared.util.CachedConnection;
+
+import java.util.HashMap;
 
 public abstract class WirelessModemPeripheral extends ModemPeripheral {
     public static final String NORMAL_ADJECTIVE = "upgrade.computercraft.wireless_modem_normal.adjective";
     public static final String ADVANCED_ADJECTIVE = "upgrade.computercraft.wireless_modem_advanced.adjective";
 
     private final boolean advanced;
+    private final HashMap<PacketReceiver, CachedConnection> cachedRecipients = new HashMap<>();
 
     public WirelessModemPeripheral(ModemState state, boolean advanced) {
         super(state);
@@ -53,5 +58,28 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral {
     @Override
     protected PacketNetwork getNetwork() {
         return ComputerCraftAPI.getWirelessNetwork(Nullability.assertNonNull(getLevel().getServer()));
+    }
+    @Override
+    public double getCachedSignalStrength(PacketReceiver recipient) {
+        if (cachedRecipients.containsKey(recipient)) {
+            return cachedRecipients.get(recipient).getSignalStrength();
+        }
+        return 0.0;
+    }
+    @Override
+    public double getCachedSignalQuality(PacketReceiver recipient) {
+        if (cachedRecipients.containsKey(recipient)) {
+            return cachedRecipients.get(recipient).getSignalQuality();
+        }
+        return 0.0;
+    }
+
+    @Override
+    public void addToCache(PacketReceiver recipient, double signalStrength, double signalQuality) {
+        if (cachedRecipients.containsKey(recipient)) {
+            cachedRecipients.get(recipient).updateCache(signalStrength, signalQuality);
+            return;
+        }
+        cachedRecipients.put(recipient, new CachedConnection(recipient, signalStrength, signalQuality));
     }
 }

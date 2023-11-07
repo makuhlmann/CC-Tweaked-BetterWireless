@@ -278,4 +278,11 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
             }
         }
     }
+
+    @Override
+    public double getCachedSignalStrength(PacketReceiver recipient) { return 0.0; }
+    @Override
+    public double getCachedSignalQuality(PacketReceiver recipient) { return 0.0; }
+    @Override
+    public void addToCache(PacketReceiver recipient, double signalStrength, double signalQuality) {}
 }
