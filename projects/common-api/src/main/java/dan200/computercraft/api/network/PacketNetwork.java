@@ -40,7 +40,7 @@ public interface PacketNetwork {
      * @param packet The packet to send.
      * @param range  The maximum distance this packet will be sent.
      * @see #transmitInterdimensional(Packet)
-     * @see PacketReceiver#receiveSameDimension(Packet, double)
+     * @see PacketReceiver#receiveSameDimension(Packet, double, double)
      */
     void transmitSameDimension(Packet packet, double range);
 

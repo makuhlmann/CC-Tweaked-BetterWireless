@@ -4,6 +4,7 @@
 
 package dan200.computercraft.impl.network.wired;
 
+import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.api.network.wired.WiredElement;
 import dan200.computercraft.api.network.wired.WiredNetwork;
 import dan200.computercraft.api.network.wired.WiredNetworkChange;
@@ -350,6 +351,12 @@ public class NetworkTest {
         public Map<String, IPeripheral> allPeripherals() {
             return remotePeripherals;
         }
+        @Override
+        public double getCachedSignalStrength(PacketReceiver recipient) { return 0.0; }
+        @Override
+        public double getCachedSignalQuality(PacketReceiver recipient) { return 0.0; }
+        @Override
+        public void addToCache(PacketReceiver recipient, double signalStrength, double signalQuality) {}
     }
 
     private static final class NetworkPeripheral implements IPeripheral {

@@ -35,7 +35,7 @@ public interface PacketReceiver {
      *
      * @return The maximum distance this device can send and receive messages.
      * @see #isInterdimensional()
-     * @see #receiveSameDimension(Packet packet, double)
+     * @see #receiveSameDimension(Packet packet, double, double)
      * @see PacketNetwork#transmitInterdimensional(Packet)
      */
     double getRange();

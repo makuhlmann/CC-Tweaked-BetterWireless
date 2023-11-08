@@ -119,8 +119,8 @@ local function add_modem(owner, side)
 
             for _, adjacent in pairs(adjacent) do
                 if adjacent.open[channel] then
-                    local distance = (adjacent.owner.position - owner.position):length()
-                    adjacent.owner.queue_event("modem_message", adjacent.side, channel, reply_channel, payload, distance)
+                    local signalStrength = (adjacent.owner.position - owner.position):length()
+                    adjacent.owner.queue_event("modem_message", adjacent.side, channel, reply_channel, payload, signalStrength, 1.0)
                 end
             end
         end,
