@@ -1,14 +1,14 @@
 {
     "schemaVersion": 1,
     "id": "computercraft",
-    "name": "CC: Tweaked",
+    "name": "CC: Tweaked - BetterWireless",
     "version": "${version}",
-    "description": "CC: Tweaked is a fork of ComputerCraft, adding programmable computers, turtles and more to Minecraft.",
+    "description": "CC: Tweaked - BetterWireless is a fork of ComputerCraft, adding programmable computers, turtles and more to Minecraft.",
     "license": "ComputerCraft Public License (https://raw.githubusercontent.com/dan200/ComputerCraft/master/LICENSE)",
     "icon": "pack.png",
     "contact": {
         "homepage": "https://tweaked.cc/",
-        "issues": "https://github.com/cc-tweaked/cc-tweaked/issues"
+        "issues": "https://github.com/makuhlmann/CC-Tweaked-BetterWireless/issues"
     },
     "authors": [
         "Daniel Ratcliffe",

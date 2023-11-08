@@ -5,7 +5,7 @@
 modLoader="javafml"
 loaderVersion="[47,48)"
 
-issueTrackerURL="https://github.com/cc-tweaked/CC-Tweaked/issues"
+issueTrackerURL="https://github.com/makuhlmann/CC-Tweaked-BetterWireless/issues"
 logoFile="pack.png"
 
 license="ComputerCraft Public License (https://raw.githubusercontent.com/dan200/ComputerCraft/master/LICENSE)"
@@ -13,14 +13,14 @@ license="ComputerCraft Public License (https://raw.githubusercontent.com/dan200/
 [[mods]]
 modId="computercraft"
 version="${file.jarVersion}"
-displayName="CC: Tweaked"
+displayName="CC: Tweaked - BetterWireless"
 displayURL="https://tweaked.cc"
-updateJSONURL = "https://api.modrinth.com/updates/cc-tweaked/forge_updates.json"
+#updateJSONURL = "https://api.modrinth.com/updates/cc-tweaked/forge_updates.json"
 
 credits="Created by Daniel Ratcliffe (@DanTwoHundred)"
 authors="Daniel Ratcliffe, Aaron Mills, SquidDev"
 description='''
-CC: Tweaked is a fork of ComputerCraft, adding programmable computers, turtles and more to Minecraft.
+CC: Tweaked - BetterWireless is a fork of ComputerCraft, adding programmable computers, turtles and more to Minecraft.
 '''
 
 [[dependencies.computercraft]]

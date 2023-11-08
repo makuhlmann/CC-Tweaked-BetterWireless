@@ -23,8 +23,8 @@ val mcVersion: String by extra
 
 githubRelease {
     token(findProperty("githubApiKey") as String? ?: "")
-    owner.set("cc-tweaked")
-    repo.set("CC-Tweaked")
+    owner.set("makuhlmann")
+    repo.set("CC-Tweaked-BetterWireless ")
     targetCommitish.set(cct.gitBranch)
 
     tagName.set("v$mcVersion-$modVersion")
