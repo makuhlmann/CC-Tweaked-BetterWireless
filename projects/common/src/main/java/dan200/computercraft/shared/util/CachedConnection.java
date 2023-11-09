@@ -39,6 +39,6 @@ public class CachedConnection {
         return 0.0;
     }
     private boolean isStillValid() {
-        return receiver.getLevel().getDayTime() > expiration && receiver.getPosition().equals(lastReceiverPos);
+        return receiver.getLevel().getDayTime() < expiration && receiver.getPosition().equals(lastReceiverPos);
     }
 }
