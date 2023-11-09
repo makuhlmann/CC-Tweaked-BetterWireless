@@ -6,14 +6,14 @@ import net.minecraft.world.phys.Vec3;
 public class CachedConnection {
     private final PacketReceiver receiver;
     private Vec3 lastReceiverPos;
-    private long lastUpdate;
+    private long expiration;
     private double signalStrength;
     private double signalQuality;
 
     public CachedConnection(PacketReceiver receiver, double signalStrength, double signalQuality) {
         this.receiver = receiver;
         this.lastReceiverPos = receiver.getPosition();
-        this.lastUpdate = receiver.getLevel().getDayTime();
+        this.expiration = receiver.getLevel().getDayTime() + 1200 + (long)(Math.random() * 1200);
         this.signalStrength = signalStrength;
         this.signalQuality = signalQuality;
     }
@@ -22,7 +22,7 @@ public class CachedConnection {
         this.signalStrength = signalStrength;
         this.signalQuality = signalQuality;
         this.lastReceiverPos = receiver.getPosition();
-        this.lastUpdate = receiver.getLevel().getDayTime();
+        this.expiration = receiver.getLevel().getDayTime() + 1200 + (long)(Math.random() * 1200);
     }
 
     public double getSignalQuality() {
@@ -39,6 +39,6 @@ public class CachedConnection {
         return 0.0;
     }
     private boolean isStillValid() {
-        return lastUpdate > receiver.getLevel().getDayTime() - 2400 && receiver.getPosition().equals(lastReceiverPos);
+        return receiver.getLevel().getDayTime() > expiration && receiver.getPosition().equals(lastReceiverPos);
     }
 }
