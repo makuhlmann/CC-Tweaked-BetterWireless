@@ -56,9 +56,7 @@ public final class ConfigSpec {
 
     public static final ConfigFile.Value<Boolean> commandBlockEnabled;
     public static final ConfigFile.Value<Integer> modemRange;
-    public static final ConfigFile.Value<Integer> modemHighAltitudeRange;
     public static final ConfigFile.Value<Integer> modemRangeDuringStorm;
-    public static final ConfigFile.Value<Integer> modemHighAltitudeRangeDuringStorm;
     public static final ConfigFile.Value<Integer> maxNotesPerTick;
     public static final ConfigFile.Value<Integer> monitorBandwidth;
 
@@ -277,20 +275,12 @@ public final class ConfigSpec {
                 .define("command_block_enabled", Config.enableCommandBlock);
 
             modemRange = builder
-                .comment("The range of Wireless Modems at low altitude in clear weather, in meters.")
+                .comment("The maximum range of Wireless Modems in clear weather, in meters.")
                 .defineInRange("modem_range", Config.modemRange, 0, MODEM_MAX_RANGE);
 
-            modemHighAltitudeRange = builder
-                .comment("The range of Wireless Modems at maximum altitude in clear weather, in meters.")
-                .defineInRange("modem_high_altitude_range", Config.modemHighAltitudeRange, 0, MODEM_MAX_RANGE);
-
             modemRangeDuringStorm = builder
-                .comment("The range of Wireless Modems at low altitude in stormy weather, in meters.")
+                .comment("The maximum range of Wireless Modems in stormy weather, in meters.")
                 .defineInRange("modem_range_during_storm", Config.modemRangeDuringStorm, 0, MODEM_MAX_RANGE);
-
-            modemHighAltitudeRangeDuringStorm = builder
-                .comment("The range of Wireless Modems at maximum altitude in stormy weather, in meters.")
-                .defineInRange("modem_high_altitude_range_during_storm", Config.modemHighAltitudeRangeDuringStorm, 0, MODEM_MAX_RANGE);
 
             maxNotesPerTick = builder
                 .comment("Maximum amount of notes a speaker can play at once.")
@@ -423,9 +413,7 @@ public final class ConfigSpec {
         Config.enableCommandBlock = commandBlockEnabled.get();
         Config.maxNotesPerTick = maxNotesPerTick.get();
         Config.modemRange = modemRange.get();
-        Config.modemHighAltitudeRange = modemHighAltitudeRange.get();
         Config.modemRangeDuringStorm = modemRangeDuringStorm.get();
-        Config.modemHighAltitudeRangeDuringStorm = modemHighAltitudeRangeDuringStorm.get();
         Config.monitorBandwidth = monitorBandwidth.get();
 
         // Turtles

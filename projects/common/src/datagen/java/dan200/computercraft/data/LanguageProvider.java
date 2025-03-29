@@ -255,9 +255,7 @@ public final class LanguageProvider implements DataProvider {
         addConfigGroup(ConfigSpec.serverSpec, "peripheral", "Peripherals");
         addConfigEntry(ConfigSpec.commandBlockEnabled, "Enable command block peripheral");
         addConfigEntry(ConfigSpec.modemRange, "Modem range (default)");
-        addConfigEntry(ConfigSpec.modemHighAltitudeRange, "Modem range (high-altitude)");
         addConfigEntry(ConfigSpec.modemRangeDuringStorm, "Modem range (bad weather)");
-        addConfigEntry(ConfigSpec.modemHighAltitudeRangeDuringStorm, "Modem range (high-altitude, bad weather)");
         addConfigEntry(ConfigSpec.maxNotesPerTick, "Maximum notes that a computer can play at once");
         addConfigEntry(ConfigSpec.monitorBandwidth, "Monitor bandwidth");
 

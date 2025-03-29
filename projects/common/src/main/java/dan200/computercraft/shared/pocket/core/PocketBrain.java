@@ -12,8 +12,10 @@ import dan200.computercraft.shared.computer.core.ServerComputer;
 import dan200.computercraft.shared.network.client.PocketComputerDataMessage;
 import dan200.computercraft.shared.network.server.ServerNetworking;
 import dan200.computercraft.shared.pocket.items.PocketComputerItem;
+import dan200.computercraft.shared.pocket.peripherals.PocketModem;
 import net.minecraft.core.component.DataComponentPatch;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
@@ -154,6 +156,8 @@ public final class PocketBrain implements IPocketAccess {
     public void invalidatePeripheral() {
         var peripheral = upgrade == null ? null : upgrade.upgrade().createPeripheral(this);
         computer.setPeripheral(ComputerSide.BACK, peripheral);
+        // Attach a modem to the top of the pocket. This is a massive hack, but the easiest way to do it without duplicating code.
+        computer.setPeripheral(ComputerSide.TOP, new PocketModem(ItemStack.EMPTY, false).createPeripheral(this));
     }
 
     @Override
