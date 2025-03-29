@@ -18,7 +18,7 @@ package dan200.computercraft.api.network;
  * @see PacketNetwork#transmitSameDimension(Packet, double)
  * @see PacketNetwork#transmitInterdimensional(Packet)
  * @see PacketReceiver#receiveDifferentDimension(Packet)
- * @see PacketReceiver#receiveSameDimension(Packet, double)
+ * @see PacketReceiver#receiveSameDimension(Packet, double, double)
  */
 public record Packet(
     int channel,
