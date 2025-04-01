@@ -12,13 +12,14 @@ import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.util.WirelessHelpers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
-import net.minecraft.util.Tuple;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class WirelessNetwork implements PacketNetwork {
     private final Set<PacketReceiver> receivers = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    private final static List<Vec3i> obstructionBlocks = new ArrayList<Vec3i>(2048);
 
     @Override
     public void addReceiver(PacketReceiver receiver) {
@@ -64,13 +65,13 @@ public class WirelessNetwork implements PacketNetwork {
                 }
             } catch (LuaException ignored) {}
 
-            boolean noCache = false;
+            boolean useCache = true;
 
             // 65534 -> Default GPS, exclude from low range for now
             if (packet.channel() > 1024 && packet.channel() != 65534) {
                 // High frequency local wireless
                 receiveRange /= 8;
-                noCache = true;
+                useCache = false;
             }
 
             if (distanceSq <= receiveRange * receiveRange) {
@@ -85,7 +86,7 @@ public class WirelessNetwork implements PacketNetwork {
                 }
 
                 //TODO: Signal range & Different degradation based on channel - 3 groups? (low, mid, high)
-                if (!noCache) {
+                if (useCache) {
                     var cachedSignalDegradation = ((WirelessModemPeripheral)sender).getCachedSignalDegradation(receiverBlockPosition);
                     if (cachedSignalDegradation != Integer.MAX_VALUE) {
                         //System.out.println("Cache hit for " + sender.getSenderID() + " -> " + receiverBlockPosition.toString() + "!");
@@ -98,7 +99,7 @@ public class WirelessNetwork implements PacketNetwork {
                 }
 
 
-                List<Vec3i> obstructionBlocks = WirelessHelpers.Bresenham3D(senderBlockPosition, receiverBlockPosition);
+                WirelessHelpers.Bresenham3D(obstructionBlocks, senderBlockPosition, receiverBlockPosition);
                 var signalDegradation = 0.0;
                 var diagonalCompensation = WirelessHelpers.getDiagonalCompensation(senderBlockPosition, receiverBlockPosition);
 
