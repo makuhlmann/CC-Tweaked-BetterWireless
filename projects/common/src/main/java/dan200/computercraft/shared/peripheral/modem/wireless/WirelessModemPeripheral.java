@@ -82,7 +82,7 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral {
     public void addCachedSignalDegradation(Vec3i receiverPos, double signalDegradation) {
         // Prevent overflow the lazy way
         if (cachedSignalStrengths.size() > 2000) {
-            cachedSignalStrengths = new HashMap<>();
+            cachedSignalStrengths.clear();
         }
 
         var senderPos = WirelessHelpers.floorToVec3i(getPosition());

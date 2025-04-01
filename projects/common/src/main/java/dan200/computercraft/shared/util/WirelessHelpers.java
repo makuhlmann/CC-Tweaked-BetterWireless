@@ -39,7 +39,8 @@ public final class WirelessHelpers {
         return yawDiagonal * pitchDiagonal;
     }
 
-    public static List<Vec3i> Bresenham3D(Vec3i source, Vec3i target) {
+    public static void Bresenham3D(List<Vec3i> ListOfPoints, Vec3i source, Vec3i target) {
+        ListOfPoints.clear();
         int x1 = source.getX();
         int y1 = source.getY();
         int z1 = source.getZ();
@@ -48,7 +49,6 @@ public final class WirelessHelpers {
         int y2 = target.getY();
         int z2 = target.getZ();
 
-        List<Vec3i> ListOfPoints = new ArrayList<>();
         ListOfPoints.add(new Vec3i(x1, y1, z1));
         int dx = Math.abs(x2 - x1);
         int dy = Math.abs(y2 - y1);
@@ -129,6 +129,5 @@ public final class WirelessHelpers {
                 ListOfPoints.add(new Vec3i(x1, y1, z1));
             }
         }
-        return ListOfPoints;
     }
 }
