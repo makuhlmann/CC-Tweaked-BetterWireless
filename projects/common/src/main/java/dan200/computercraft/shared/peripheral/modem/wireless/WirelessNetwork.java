@@ -12,14 +12,20 @@ import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.util.WirelessHelpers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.chunk.LevelChunk;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class WirelessNetwork implements PacketNetwork {
+    private static final Logger log = LoggerFactory.getLogger(WirelessNetwork.class);
     private final Set<PacketReceiver> receivers = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
-    private final static List<Vec3i> obstructionBlocks = new ArrayList<Vec3i>(2048);
+    private final static ArrayList<Vec3i> obstructionBlocks = new ArrayList<Vec3i>(2048);
+    private final static ArrayList<BlockPos> unloadedBlocks = new ArrayList<BlockPos>(2048);
 
     @Override
     public void addReceiver(PacketReceiver receiver) {
@@ -50,11 +56,11 @@ public class WirelessNetwork implements PacketNetwork {
         if (receiver.getLevel() == sender.getLevel()) {
             var level = receiver.getLevel();
             var receiveRange = Math.max(range, receiver.getRange()); // Ensure range is symmetrical
-            var distanceSq = receiver.getPosition().distanceToSqr(sender.getPosition());
+            var distance = receiver.getPosition().distanceTo(sender.getPosition());
 
             // Interdimensional - just send it
             if (interdimensional && receiver.isInterdimensional()) {
-                receiver.receiveSameDimension(packet, Math.sqrt(distanceSq), 0.0);
+                receiver.receiveSameDimension(packet, distance, 0.0);
                 return;
             }
 
@@ -74,7 +80,7 @@ public class WirelessNetwork implements PacketNetwork {
                 useCache = false;
             }
 
-            if (distanceSq <= receiveRange * receiveRange) {
+            if (distance <= receiveRange) {
                 Vec3i senderBlockPosition = WirelessHelpers.floorToVec3i(sender.getPosition());
                 Vec3i receiverBlockPosition = WirelessHelpers.floorToVec3i(receiver.getPosition());
 
@@ -93,32 +99,89 @@ public class WirelessNetwork implements PacketNetwork {
                         if (cachedSignalDegradation > receiveRange) {
                             return;
                         }
-                        receiver.receiveSameDimension(packet, Math.sqrt(distanceSq), receiveRange - cachedSignalDegradation);
+                        receiver.receiveSameDimension(packet, distance, receiveRange - cachedSignalDegradation);
                         return;
                     }
                 }
 
 
                 WirelessHelpers.Bresenham3D(obstructionBlocks, senderBlockPosition, receiverBlockPosition);
-                var signalDegradation = 0.0;
+                var signalDegradation = distance;
                 var diagonalCompensation = WirelessHelpers.getDiagonalCompensation(senderBlockPosition, receiverBlockPosition);
 
+                var enumerationCounter = 0;
+                var cancelled = false;
+
+                unloadedBlocks.clear();
+
+                var timer = System.currentTimeMillis(); // yes this is vulnerable to leap seconds, fight me
+
                 for (Vec3i blockVector : obstructionBlocks) {
-                    var explosionResistance = level.getBlockState(new BlockPos(blockVector))
-                        .getBlock()
-                        .getExplosionResistance();
-                    if (explosionResistance >= 100)
-                        explosionResistance /= 4;
-                    signalDegradation += (signalDegradation / 100.0 * explosionResistance + 1.0) * diagonalCompensation;
+                    var currentBlockPos = new BlockPos(blockVector);
+                    if (level.isLoaded(currentBlockPos) && !level.isEmptyBlock(currentBlockPos)) {
+                        var currentBlockState = level.getBlockState(currentBlockPos);
+                        if (!currentBlockState.isAir()) {
+                            var explosionResistance = currentBlockState.getBlock().getExplosionResistance();
+                            if (explosionResistance >= 100)
+                                explosionResistance /= 4;
+                            signalDegradation += Math.sqrt(explosionResistance) * 10.0 * diagonalCompensation;
+                        }
+                    } else {
+                        unloadedBlocks.add(currentBlockPos);
+                    }
 
                     if (signalDegradation > receiveRange) {
                         break;
                     }
+                    enumerationCounter++;
+                    if (timer + 500 <= System.currentTimeMillis()) {
+                        log.warn("Distance measure timeout in loaded blocks between [" + senderBlockPosition.getX() + ","
+                                                                                    + senderBlockPosition.getY() + ","
+                                                                                    + senderBlockPosition.getZ() + "] and ["
+                                                                                    + receiverBlockPosition.getX() + ","
+                                                                                    + receiverBlockPosition.getY() + ","
+                                                                                    + receiverBlockPosition.getZ() + "]"
+                                                                                    + " - blocks tested: " + enumerationCounter + "/" + obstructionBlocks.size());
+                        cancelled = true;
+                        break;
+                    }
                 }
 
-                ((WirelessModemPeripheral)sender).addCachedSignalDegradation(receiverBlockPosition, signalDegradation);
+                for (BlockPos currentBlockPos : unloadedBlocks) {
+                    var currentBlockState = level.getBlockState(currentBlockPos);
+                    if (!currentBlockState.isAir()) {
+                        var explosionResistance = currentBlockState.getBlock().getExplosionResistance();
+                        if (explosionResistance >= 100)
+                            explosionResistance /= 4;
+                        signalDegradation += Math.sqrt(explosionResistance) * 10.0 * diagonalCompensation;
+                    }
+
+                    if (signalDegradation > receiveRange) {
+                        break;
+                    }
+                    enumerationCounter++;
+                    if (timer + 500 <= System.currentTimeMillis()) {
+                        log.warn("Distance measure timeout in unloaded blocks between [" + senderBlockPosition.getX() + ","
+                            + senderBlockPosition.getY() + ","
+                            + senderBlockPosition.getZ() + "] and ["
+                            + receiverBlockPosition.getX() + ","
+                            + receiverBlockPosition.getY() + ","
+                            + receiverBlockPosition.getZ() + "]"
+                            + " - blocks tested: " + enumerationCounter + "/" + unloadedBlocks.size());
+                        cancelled = true;
+                        break;
+                    }
+                }
+
+                if (cancelled) {
+                    // Extrapolating the signal degradation for the rest of the path
+                    signalDegradation = ((signalDegradation - distance) / (double) enumerationCounter / obstructionBlocks.size()) + distance;
+                } else {
+                    ((WirelessModemPeripheral)sender).addCachedSignalDegradation(receiverBlockPosition, signalDegradation);
+                }
+
                 if (signalDegradation <= receiveRange) {
-                    receiver.receiveSameDimension(packet, Math.sqrt(distanceSq), receiveRange - signalDegradation);
+                    receiver.receiveSameDimension(packet, distance, receiveRange - signalDegradation);
                 }
             }
         } else {
