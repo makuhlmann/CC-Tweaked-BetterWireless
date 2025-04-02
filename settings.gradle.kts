@@ -51,7 +51,7 @@ include(":forge")
 
 include(":lints")
 include(":standalone")
-//include(":web")
+include(":web")
 
 for (project in rootProject.children) {
     project.projectDir = file("projects/${project.name}")

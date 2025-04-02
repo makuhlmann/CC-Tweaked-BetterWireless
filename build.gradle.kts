@@ -39,6 +39,8 @@ githubRelease {
     prerelease = isUnstable
 }
 
+tasks.publish { dependsOn(tasks.githubRelease) }
+
 idea.project.settings.runConfigurations {
     register<JUnitExt>("Core Tests") {
         vmParameters = "-ea"
