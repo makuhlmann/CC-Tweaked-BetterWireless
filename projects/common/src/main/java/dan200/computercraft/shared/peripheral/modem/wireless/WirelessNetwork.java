@@ -104,78 +104,60 @@ public class WirelessNetwork implements PacketNetwork {
                     }
                 }
 
+                var timer = System.currentTimeMillis(); // yes this is vulnerable to leap seconds, fight me
 
                 WirelessHelpers.Bresenham3D(obstructionBlocks, senderBlockPosition, receiverBlockPosition);
+
+                if (timer + 500 <= System.currentTimeMillis()) {
+                    log.warn("Bresenham3D took longer than 1 tick - " + obstructionBlocks.size() + " in " + (System.currentTimeMillis() - timer) + "ms");
+                }
+
                 var signalDegradation = distance;
                 var diagonalCompensation = WirelessHelpers.getDiagonalCompensation(senderBlockPosition, receiverBlockPosition);
 
-                var enumerationCounter = 0;
                 var cancelled = false;
 
                 unloadedBlocks.clear();
 
-                var timer = System.currentTimeMillis(); // yes this is vulnerable to leap seconds, fight me
 
-                for (Vec3i blockVector : obstructionBlocks) {
+
+                Map<Vec3i, Double> signalDegradationCumulative = new ConcurrentHashMap<>();
+                timer = System.currentTimeMillis();
+                long finalTimer = timer;
+                obstructionBlocks.parallelStream().forEach((blockVector) -> {
+                    if (finalTimer + 500 <= System.currentTimeMillis()) {
+                        return;
+                    }
                     var currentBlockPos = new BlockPos(blockVector);
-                    if (level.isLoaded(currentBlockPos) && !level.isEmptyBlock(currentBlockPos)) {
+                    if (!level.isEmptyBlock(currentBlockPos)) {
                         var currentBlockState = level.getBlockState(currentBlockPos);
                         if (!currentBlockState.isAir()) {
                             var explosionResistance = currentBlockState.getBlock().getExplosionResistance();
                             if (explosionResistance >= 100)
                                 explosionResistance /= 4;
-                            signalDegradation += Math.sqrt(explosionResistance) * 10.0 * diagonalCompensation;
+                            signalDegradationCumulative.put(blockVector, Math.sqrt(explosionResistance) * 10.0 * diagonalCompensation);
                         }
-                    } else {
-                        unloadedBlocks.add(currentBlockPos);
                     }
+                });
 
-                    if (signalDegradation > receiveRange) {
-                        break;
-                    }
-                    enumerationCounter++;
-                    if (timer + 500 <= System.currentTimeMillis()) {
-                        log.warn("Distance measure timeout in loaded blocks between [" + senderBlockPosition.getX() + ","
-                                                                                    + senderBlockPosition.getY() + ","
-                                                                                    + senderBlockPosition.getZ() + "] and ["
-                                                                                    + receiverBlockPosition.getX() + ","
-                                                                                    + receiverBlockPosition.getY() + ","
-                                                                                    + receiverBlockPosition.getZ() + "]"
-                                                                                    + " - blocks tested: " + enumerationCounter + "/" + obstructionBlocks.size());
-                        cancelled = true;
-                        break;
-                    }
+                if (timer + 500 <= System.currentTimeMillis()) {
+                    log.warn("Dist measure timeout - " + (System.currentTimeMillis() - timer) + "ms [" + senderBlockPosition.getX() + ","
+                        + senderBlockPosition.getY() + ","
+                        + senderBlockPosition.getZ() + "] and ["
+                        + receiverBlockPosition.getX() + ","
+                        + receiverBlockPosition.getY() + ","
+                        + receiverBlockPosition.getZ() + "]"
+                        + " - blocks tested: " + signalDegradationCumulative.size() + "/" + obstructionBlocks.size());
+                    cancelled = true;
                 }
 
-                for (BlockPos currentBlockPos : unloadedBlocks) {
-                    var currentBlockState = level.getBlockState(currentBlockPos);
-                    if (!currentBlockState.isAir()) {
-                        var explosionResistance = currentBlockState.getBlock().getExplosionResistance();
-                        if (explosionResistance >= 100)
-                            explosionResistance /= 4;
-                        signalDegradation += Math.sqrt(explosionResistance) * 10.0 * diagonalCompensation;
-                    }
-
-                    if (signalDegradation > receiveRange) {
-                        break;
-                    }
-                    enumerationCounter++;
-                    if (timer + 500 <= System.currentTimeMillis()) {
-                        log.warn("Distance measure timeout in unloaded blocks between [" + senderBlockPosition.getX() + ","
-                            + senderBlockPosition.getY() + ","
-                            + senderBlockPosition.getZ() + "] and ["
-                            + receiverBlockPosition.getX() + ","
-                            + receiverBlockPosition.getY() + ","
-                            + receiverBlockPosition.getZ() + "]"
-                            + " - blocks tested: " + enumerationCounter + "/" + unloadedBlocks.size());
-                        cancelled = true;
-                        break;
-                    }
+                for (var key : signalDegradationCumulative.keySet()) {
+                    signalDegradation += signalDegradationCumulative.get(key);
                 }
 
                 if (cancelled) {
                     // Extrapolating the signal degradation for the rest of the path
-                    signalDegradation = ((signalDegradation - distance) / (double) enumerationCounter / obstructionBlocks.size()) + distance;
+                    signalDegradation = ((signalDegradation - distance) / (double) signalDegradationCumulative.size() / obstructionBlocks.size()) + distance;
                 } else {
                     ((WirelessModemPeripheral)sender).addCachedSignalDegradation(receiverBlockPosition, signalDegradation);
                 }
