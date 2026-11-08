@@ -128,7 +128,7 @@ public class WirelessNetwork implements PacketNetwork {
                     if (finalTimer + 500 <= System.currentTimeMillis()) {
                         return;
                     }
-                    var currentBlockPos = new BlockPos(blockVector);
+                    var currentBlockPos = new BlockPos(blockVector.getX(), blockVector.getY(), blockVector.getZ());
                     if (!level.isEmptyBlock(currentBlockPos)) {
                         var currentBlockState = level.getBlockState(currentBlockPos);
                         if (!currentBlockState.isAir()) {

@@ -12,7 +12,6 @@ import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.util.WirelessHelpers;
 import net.minecraft.core.Vec3i;
-import net.minecraft.util.Tuple;
 
 import java.util.HashMap;
 
@@ -21,10 +20,13 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral {
     public static final String ADVANCED_ADJECTIVE = "upgrade.computercraft.wireless_modem_advanced.adjective";
 
     private final boolean advanced;
-    private HashMap<Vec3i, HashMap<Vec3i, Tuple<Double, Long>>> cachedSignalStrengths = new HashMap<>();
+    private HashMap<Vec3i, HashMap<Vec3i, CachedSignal>> cachedSignalStrengths = new HashMap<>();
 
     public Long lastLFTransmit = 0L;
     public Long lastMFTransmit = 0L;
+
+    private record CachedSignal(double degradation, long expiration) {
+    }
 
     public WirelessModemPeripheral(ModemState state, boolean advanced) {
         super(state);
@@ -64,9 +66,9 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral {
         if (senderCachedSignals != null) {
             var receiverCachedSignal = senderCachedSignals.get(receiverPos);
             if (receiverCachedSignal != null) {
-                double signalDegradation = receiverCachedSignal.getA();
-                Long expiration = receiverCachedSignal.getB();
-                if (getLevel().getDayTime() < expiration) {
+                double signalDegradation = receiverCachedSignal.degradation();
+                long expiration = receiverCachedSignal.expiration();
+                if (getLevel().getGameTime() < expiration) {
                     return signalDegradation;
                 }
                 // Remove invalidated caches
@@ -86,13 +88,13 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral {
         }
 
         var senderPos = WirelessHelpers.floorToVec3i(getPosition());
-        var expiration = getLevel().getDayTime() + 2400;
+        var expiration = getLevel().getGameTime() + 2400;
         if (cachedSignalStrengths.containsKey(senderPos)) {
-            cachedSignalStrengths.get(senderPos).put(receiverPos, new Tuple<>(signalDegradation, expiration));
+            cachedSignalStrengths.get(senderPos).put(receiverPos, new CachedSignal(signalDegradation, expiration));
             return;
         }
-        var senderCachedSignals = new HashMap<Vec3i, Tuple<Double, Long>>();
-        senderCachedSignals.put(receiverPos, new Tuple<>(signalDegradation, expiration));
+        var senderCachedSignals = new HashMap<Vec3i, CachedSignal>();
+        senderCachedSignals.put(receiverPos, new CachedSignal(signalDegradation, expiration));
         cachedSignalStrengths.put(senderPos, senderCachedSignals);
     }
 }
