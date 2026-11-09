@@ -2,7 +2,7 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
---[[- A network stack: network addresses, names, datagrams and ping, over any modem.
+--[[- A network stack: network addresses, names, datagrams, connections and ping, over any modem.
 
 Every modem becomes a network *interface*. Each interface gets an address, such as `10.0.0.17/24`, and computers on
 the same network can then reach each other by address or by name. The stack runs in the background on every computer,
@@ -29,6 +29,10 @@ Wired and ender modems are one interface each. A wireless modem is one interface
 An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
 `net.<name>:high.address`).
 
+Programs talk with datagrams ([`net.udp`]), single messages which may be lost, or connections ([`net.tcp`]), which
+deliver messages in order and exactly once, resending any which are lost. [`net.stream`] reads and writes bytes over a
+connection, like a file.
+
 > [!WARNING]
 > The network stack doesn't encrypt or authenticate anything yet. Anyone can listen to, or pretend to be, any computer.
 
@@ -49,8 +53,9 @@ local DEFAULT_PREFIX = 24
 local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
+local CONNECT_TIMEOUT = 5
 
-local stack, address, dhcp, dns, rip, running
+local stack, address, dhcp, dns, rip, connections, streams, running
 local rip_instance, rip_config
 local add_modem, apply_routing
 local errors = {}
@@ -79,6 +84,8 @@ local function load()
     dhcp = env.require("cc.internal.net.dhcp")
     dns = env.require("cc.internal.net.dns")
     rip = env.require("cc.internal.net.rip")
+    connections = env.require("cc.internal.net.tcp")
+    streams = env.require("cc.internal.net.stream")
 
     settings.define("net.enabled", {
         description = "Run the network stack.",
@@ -145,6 +152,7 @@ local function load()
         log = log_error,
     }
     dns.respond(stack, { hostname = hostname, services = services })
+    connections.attach(stack)
     apply_routing()
 
     for _, name in ipairs(peripheral.getNames()) do add_modem(name) end
@@ -752,6 +760,240 @@ udp = {
         return setmetatable({ socket = socket }, Socket)
     end,
 }
+
+local Connection = {}
+Connection.__index = Connection
+
+--[[- Send a message. Waits while the other side is behind, so a fast sender can't swamp a slow receiver.
+
+Any value a modem can send works, up to about 60 KiB. Unlike datagrams and modems, which quietly drop functions,
+connections refuse messages containing them. Use [`net.stream`] to send more data than fits in one message.
+
+@param value The message.
+@treturn[1] true If it was queued. It's delivered unless the connection fails.
+@treturn[2] nil If it couldn't be sent.
+@treturn[2] string Why not, such as `"Connection closed"`, `"Connection reset"` or `"Message too large"`.
+]]
+function Connection:send(value)
+    while true do
+        local ok, err = self.connection:send(value)
+        if ok then return true end
+        if err ~= "Full" then return nil, err end
+        os.pullEvent()
+    end
+end
+
+--[[- Wait for the next message.
+
+@tparam[opt] number timeout How long to wait, in seconds. Waits until something arrives if not given.
+@return[1] The message.
+@treturn[2] nil If the other side has closed, and every message has been received.
+@treturn[3] nil If nothing arrived in time, or the connection failed.
+@treturn[3] string Why: `"Timed out"`, or what went wrong with the connection, such as `"Connection reset"`.
+]]
+function Connection:receive(timeout)
+    expect(1, timeout, "number", "nil")
+    local timer = timeout and os.startTimer(timeout)
+    while true do
+        local ok, value = self.connection:take()
+        if ok or value then
+            if timer then os.cancelTimer(timer) end
+            if ok then return value end
+            if value == "closed" then return nil end
+            return nil, value
+        end
+
+        local event, arg = os.pullEvent()
+        if event == "timer" and arg == timer then return nil, "Timed out" end
+    end
+end
+
+--- Close our side of the connection. Messages already sent are still delivered, and messages from the other side can
+-- still be received until it closes too.
+function Connection:close()
+    self.connection:close()
+end
+
+--- Drop the connection at once, without delivering anything still waiting to be sent.
+function Connection:abort()
+    self.connection:abort()
+end
+
+--- Get the address and port of the other side.
+--
+-- @treturn string The address.
+-- @treturn number The port.
+function Connection:getPeer()
+    return address.format(self.connection.remote_addr), self.connection.remote_port
+end
+
+--- Get the port of our side.
+--
+-- @treturn number The port.
+function Connection:getPort()
+    return self.connection.local_port
+end
+
+--- Get the connection's ID, which the `net_data`, `net_sent` and `net_closed` events carry.
+--
+-- @treturn number The ID.
+function Connection:getId()
+    return self.connection.id
+end
+
+--- Check whether the connection is open: messages can be sent, and the other side is there.
+--
+-- @treturn boolean Whether it's open.
+function Connection:isOpen()
+    local connection = self.connection
+    return connection.state == "established" and not connection.closing
+end
+
+local Listener = {}
+Listener.__index = Listener
+
+--[[- Wait for a connection.
+
+@tparam[opt] number timeout How long to wait, in seconds. Waits until one comes if not given.
+@treturn[1] table The connection, with the same methods as one from `net.tcp.connect`.
+@treturn[2] nil If none came in time, or the listener is closed.
+@treturn[2] string Why not.
+]]
+function Listener:accept(timeout)
+    expect(1, timeout, "number", "nil")
+    local timer = timeout and os.startTimer(timeout)
+    while true do
+        local connection = self.listener:accept()
+        if connection then
+            if timer then os.cancelTimer(timer) end
+            return setmetatable({ connection = connection }, Connection)
+        end
+        if self.listener.closed then return nil, "Listener is closed" end
+
+        local event, arg = os.pullEvent()
+        if event == "timer" and arg == timer then return nil, "Timed out" end
+    end
+end
+
+--- Stop listening, freeing the port. Connections already accepted carry on.
+function Listener:close()
+    self.listener:close()
+end
+
+--- Get the port this listener is on.
+--
+-- @treturn number The port.
+function Listener:getPort()
+    return self.listener.port
+end
+
+--[[- Connections, which deliver messages in order and exactly once, much like TCP.
+
+Messages lost on the way are sent again, and a sender waits when the receiver is behind. Connections stay open until
+either side closes them, or until the other side stops answering, which is noticed within about two minutes (or two
+more if the connection was idle).
+
+The stack queues events for programs which wait for several things at once: `net_connection` (with the port) when a
+listener has a connection to accept; `net_data` (with the connection's ID) when there's something new to receive;
+`net_sent` (with the ID) when a connection can take more messages; and `net_closed` (with the ID and, if it failed,
+why) when the connection has ended and everything has been received.
+
+@usage A server which sends back whatever it's sent, and a client for it.
+
+```lua
+local listener = assert(net.tcp.listen(7))
+while true do
+    local connection = listener:accept()
+    for message in connection.receive, connection do connection:send(message) end
+    connection:close()
+end
+```
+
+```lua
+local connection = assert(net.tcp.connect("server.local", 7))
+connection:send("Hello!")
+print(connection:receive(5))
+connection:close()
+```
+]]
+tcp = {
+    --[[- Connect to another computer.
+
+    @tparam string target The name or address to connect to.
+    @tparam number port The port to connect to.
+    @tparam[opt=5] number timeout How long to wait for the other side to answer, in seconds.
+    @treturn[1] table The connection, with `send`, `receive`, `close`, `abort`, `getPeer`, `getPort`, `getId` and
+    `isOpen` methods.
+    @treturn[2] nil If it couldn't connect.
+    @treturn[2] string Why not, such as `"Connection refused"` (nothing is listening on that port) or `"Timed out"`.
+    ]]
+    connect = function(target, port, timeout)
+        expect(1, target, "string")
+        expect(2, port, "number")
+        expect(3, timeout, "number", "nil")
+        local s = load()
+
+        local dst, err = resolve_number(target)
+        if not dst then return nil, err end
+        local connection
+        connection, err = connections.connect(s, dst, port)
+        if not connection then return nil, err end
+
+        local timer = os.startTimer(timeout or CONNECT_TIMEOUT)
+        local ok, result = pcall(function()
+            while connection.state == "syn_sent" do
+                local event, arg = os.pullEvent()
+                if event == "timer" and arg == timer then return "Timed out" end
+            end
+        end)
+        os.cancelTimer(timer)
+        -- Give up on the connection if we stopped waiting (or were terminated).
+        if not ok or result then connection:abort() end
+        if not ok then error(result, 0) end
+        if result then return nil, result end
+        if connection.state ~= "established" then return nil, connection.error or "Connection failed" end
+        return setmetatable({ connection = connection }, Connection)
+    end,
+
+    --[[- Listen for connections on a port. Close the listener once you're done, so the port is freed.
+
+    @tparam number port The port.
+    @treturn[1] table The listener, with `accept`, `close` and `getPort` methods.
+    @treturn[2] nil If the port is in use.
+    @treturn[2] string An error message.
+    ]]
+    listen = function(port)
+        expect(1, port, "number")
+        local listener, err = connections.listen(load(), port)
+        if not listener then return nil, err end
+        return setmetatable({ listener = listener }, Listener)
+    end,
+}
+
+--[[- Read and write bytes over a connection, like a file. Writes are collected and sent in chunks of 16 KiB, so call
+`flush` (or `close`) to send the last of them.
+
+Both sides must use streams: a stream only carries text, and is confused by other messages.
+
+@tparam table connection A connection from `net.tcp.connect`, or a listener's `accept`.
+@treturn table The stream, with `read`, `readLine`, `readAll`, `write`, `writeLine`, `flush` and `close` methods. Reading
+returns `nil` once the other side has closed, and errors if the connection fails.
+@usage Send a file.
+
+```lua
+local connection = assert(net.tcp.connect("server.local", 115))
+local stream = net.stream(connection)
+local file = fs.open("data.txt", "rb")
+stream.write(file.readAll())
+file.close()
+stream.close()
+```
+]]
+function stream(connection)
+    expect(1, connection, "table")
+    if getmetatable(connection) ~= Connection then error("bad argument #1 (expected a connection)", 2) end
+    return streams.wrap(connection)
+end
 
 --[[- Get the most recent errors in the network stack, for debugging. Errors are kept here rather than printed, so they
 don't interrupt other programs.

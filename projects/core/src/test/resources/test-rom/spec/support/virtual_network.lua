@@ -8,11 +8,13 @@ to.
 Each link is a modem shared by every computer on it, and the interface on it is named after the link. Most tests only
 need one link, "top", which [`add`] puts computers on.
 
-Links can be slow (`latency[link]`, in seconds) and lose frames (`loss[link]`, from 0 to 1). The network counts frames
-sent on each link (`frames[link]`) and events each computer queues (`wakes[stack][event]`), to measure floods.
+Links can be slow (`latency[link]`, in seconds), vary in speed so frames arrive out of order (`jitter[link]`, up to
+that many seconds more), and lose frames (`loss[link]`, from 0 to 1). The network counts frames sent on each link
+(`frames[link]`) and events each computer queues (`wakes[stack][event]`), to measure floods.
 ]]
 
 local Stack = require "cc.internal.net.stack"
+local tcp = require "cc.internal.net.tcp"
 local address = require "cc.net.address"
 
 -- Modems hand each receiver its own copy of a message, as tables (even ones which contain themselves), strings, numbers
@@ -37,7 +39,7 @@ end
 return function()
     local self = {
         time = 0, queue = {}, stacks = {}, errors = {}, signals = {},
-        latency = {}, loss = {}, frames = {}, wakes = {},
+        latency = {}, jitter = {}, loss = {}, frames = {}, wakes = {},
         -- How many frames run() delivers, and how many steps advance() takes, before deciding something is looping.
         frame_limit = 1000, step_limit = 20000,
     }
@@ -45,7 +47,8 @@ return function()
     -- The queue is kept in order of arrival time.
     local function send(sender, link, channel, frame)
         self.frames[link] = (self.frames[link] or 0) + 1
-        local item = { sender = sender, link = link, channel = channel, frame = copy(frame), at = self.time + (self.latency[link] or 0) }
+        local delay = (self.latency[link] or 0) + (self.jitter[link] and math.random() * self.jitter[link] or 0)
+        local item = { sender = sender, link = link, channel = channel, frame = copy(frame), at = self.time + delay }
         local queue, position = self.queue, #self.queue + 1
         while position > 1 and queue[position - 1].at > item.at do position = position - 1 end
         table.insert(queue, position, item)
@@ -69,6 +72,8 @@ return function()
             wake = function(event) wakes[event] = (wakes[event] or 0) + 1 end,
             log = function(err) table.insert(self.errors, err) end,
         }
+        -- Every computer takes connections, as with the net API.
+        tcp.attach(stack)
         self.wakes[stack] = wakes
         table.insert(self.stacks, stack)
         return stack

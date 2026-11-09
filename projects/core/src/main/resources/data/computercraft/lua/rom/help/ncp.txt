@@ -1,0 +1,7 @@
+ncp copies a file to another computer, which must be running "ncp receive". Files are sent over a connection on port 115, so they arrive intact even over a poor radio link. The receiver never overwrites a file, and only saves into the directory it was given.
+
+ex:
+"ncp receive" saves files sent to this computer in the current directory, until Ctrl+T is pressed.
+"ncp receive downloads" saves them in the downloads directory.
+"ncp notes.txt laptop.local" sends notes.txt to laptop.local.
+"ncp notes.txt laptop.local old-notes.txt" sends it as old-notes.txt.

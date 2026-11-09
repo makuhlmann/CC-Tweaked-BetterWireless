@@ -47,4 +47,10 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 2)
     fun Net_route(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * A megabyte crosses a connection through a router, from a cable to a wireless modem, and a file is copied with ncp.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 4)
+    fun Net_connection(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

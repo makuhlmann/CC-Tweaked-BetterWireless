@@ -1,0 +1,7 @@
+nc sends and receives messages from the shell, over a connection or as datagrams. Each line typed is sent, and whatever arrives is printed. Press Ctrl+T to stop.
+
+ex:
+"nc bank.home 80" connects to port 80 on bank.home.
+"nc -l 80" waits for a connection on port 80.
+"nc -u 10.0.0.5 7" sends datagrams to port 7 on 10.0.0.5, and prints any replies.
+"nc -u -l 7" prints datagrams sent to port 7, and sends lines typed back to whoever sent the last one.

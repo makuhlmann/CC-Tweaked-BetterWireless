@@ -130,6 +130,7 @@ local function new(options)
         by_modem = {},
         protocols = {},
         error_handlers = {},
+        address_lost = {},
 
         next_packet = 0,
         next_echo = 0,
@@ -188,6 +189,7 @@ function Stack:remove_modem(modem)
     for _, interface in pairs(self.by_modem[modem] or {}) do
         self.interfaces[interface.name] = nil
         removed[#removed + 1] = interface.name
+        if interface.address then self:lose_address(interface.address) end
     end
     self.by_modem[modem] = nil
     table.sort(removed)
@@ -205,6 +207,7 @@ function Stack:set_address(name, addr, prefix)
     if addr ~= nil and (not address.is_valid(addr) or type(prefix) ~= "number" or prefix % 1 ~= 0 or prefix < 1 or prefix > 32) then
         error(("Invalid address %s/%s"):format(tostring(addr), tostring(prefix)), 2)
     end
+    if interface.address and interface.address ~= addr then self:lose_address(interface.address) end
 
     interface.address, interface.prefix, interface.duplicate = addr, addr and prefix, false
     interface.neighbours, interface.waiting, interface.neighbour_count, interface.waiting_count = {}, {}, 0, 0
@@ -217,6 +220,13 @@ function Stack:set_address(name, addr, prefix)
     else
         interface.network, interface.broadcast_address = nil, nil
     end
+end
+
+--- An address is no longer ours: tell anything using it, such as connections.
+--
+-- @tparam number addr The address.
+function Stack:lose_address(addr)
+    for _, handler in pairs(self.address_lost) do handler(addr) end
 end
 
 --- Send a frame on an interface.
@@ -767,22 +777,32 @@ function Stack:send_error(packet, kind, code, interface)
     local body = packet.body
     if packet.proto == "icmp" and (type(body) ~= "table" or (body.type ~= "echo" and body.type ~= "echo_reply")) then return end
     if packet.dst == address.BROADCAST or packet.src == address.ANY or packet.src == address.BROADCAST then return end
-
-    if not self:is_local(packet.src) then
-        local now, last = self.clock(), self.last_error[packet.src]
-        if last and now - last < ERROR_INTERVAL then return end
-        if not last then
-            if self.last_error_count >= MAX_ERROR_TARGETS then self:forget_errors(now) end
-            -- Still too many: errors are being sent to many computers at once, probably because of a flood.
-            if self.last_error_count >= MAX_ERROR_TARGETS then return end
-            self.last_error_count = self.last_error_count + 1
-        end
-        self.last_error[packet.src] = now
-    end
+    if not self:may_report(packet.src) then return end
 
     self:send(packet.src, "icmp", { type = kind, code = code, orig = summarise(packet) }, {
         src = interface and interface.address,
     })
+end
+
+--- Check whether we may tell a computer that something it sent went wrong (with an ICMP error, or a connection
+-- reset), and note that we're doing so. Each computer gets at most one report each half second, and at most 256
+-- computers in that time, so a flood of bad packets can't make us send a flood of reports.
+--
+-- @tparam number addr The computer's address.
+-- @treturn boolean Whether to send the report.
+function Stack:may_report(addr)
+    if self:is_local(addr) then return true end
+
+    local now, last = self.clock(), self.last_error[addr]
+    if last and now - last < ERROR_INTERVAL then return false end
+    if not last then
+        if self.last_error_count >= MAX_ERROR_TARGETS then self:forget_errors(now) end
+        -- Still too many: errors are being sent to many computers at once, probably because of a flood.
+        if self.last_error_count >= MAX_ERROR_TARGETS then return false end
+        self.last_error_count = self.last_error_count + 1
+    end
+    self.last_error[addr] = now
+    return true
 end
 
 --- Forget which computers we sent errors to, except in the last half second.
@@ -1044,6 +1064,7 @@ end
 return {
     new = new,
     channels = channels,
+    describe_error = describe_error,
     INFINITY = INFINITY,
     VERSION = VERSION,
     BROADCAST_ID = BROADCAST_ID,

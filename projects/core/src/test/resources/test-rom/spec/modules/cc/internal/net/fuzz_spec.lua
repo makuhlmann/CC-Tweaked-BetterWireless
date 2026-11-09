@@ -8,6 +8,7 @@ expect. Nothing may escape as an error, leave the stack in a state which breaks 
 describe("The network stack, given bad messages,", function()
     local Stack = require "cc.internal.net.stack"
     local rip = require "cc.internal.net.rip"
+    local tcp = require "cc.internal.net.tcp"
     local dhcp = require "cc.internal.net.dhcp"
     local dns = require "cc.internal.net.dns"
     local address = require "cc.net.address"
@@ -98,6 +99,7 @@ describe("The network stack, given bad messages,", function()
         target.forwarding = true
         rip.start(target)
         dns.respond(target, { hostname = function() return "target" end, services = { chat = 1234 } })
+        tcp.listen(target, 22)
 
         local peer = net.stack(2)
         net.connect(peer, "top", "10.0.0.2/24")
@@ -109,6 +111,19 @@ describe("The network stack, given bad messages,", function()
         return net, target, peer
     end
 
+    -- Open a connection from the peer to the target, and check a message gets across.
+    local function check_connection(net, target, peer)
+        local client = tcp.connect(peer, ip("10.0.0.1"), 22)
+        net.advance(1)
+        local server = target.tcp.listeners[22]:accept()
+        if not server then error("Couldn't connect: " .. tostring(client.error or client.state), 0) end
+        client:send("hello")
+        net.advance(1)
+        local ok, value = server:take()
+        if not ok or value ~= "hello" then error("Message didn't arrive: " .. tostring(value), 0) end
+        return client, server
+    end
+
     local function check_healthy(net, target, peer)
         check_sane(target)
         net.advance(2)
@@ -116,6 +131,7 @@ describe("The network stack, given bad messages,", function()
             local result = net.ping(peer, ip(dst))
             if not result or result.error then error("Ping to " .. dst .. " failed: " .. tostring(result and result.error), 0) end
         end
+        check_connection(net, target, peer)
         check_sane(target)
     end
 
@@ -215,6 +231,66 @@ describe("The network stack, given bad messages,", function()
             if bad[2] ~= NIL then cases[#cases + 1] = { name = "route = " .. bad[1], value = update { version = 1, routes = { bad[2] } } } end
         end
         attack(cases)
+    end)
+
+    it("connection segments to a listening port", function()
+        local cases = {}
+        for _, flags in ipairs { "S", "A", "SA", "FA", "R" } do
+            local segment = { sp = 1234, dp = 22, flags = flags, seq = 1000, ack = 5, win = 16, sack = { 7 }, data = "x" }
+            for _, case in ipairs(variants("segment " .. flags, segment, { "sp", "dp", "flags", "seq", "ack", "win", "sack", "data" }, function(x)
+                return frame(packet(x, "tcp"))
+            end)) do
+                cases[#cases + 1] = case
+            end
+        end
+        attack(cases)
+    end)
+
+    it("connection segments in an open connection", function()
+        local failures = {}
+        for _, flags in ipairs { "A", "FA", "KA", "R", "SA" } do
+            for _, field in ipairs { "seq", "ack", "win", "sack", "data", "flags" } do
+                for _, bad in ipairs(BAD) do
+                    local name = ("segment %s with %s = %s"):format(flags, field, bad[1])
+                    local net, target, peer = target_network()
+                    local ok, err = pcall(function()
+                        local client, server = check_connection(net, target, peer)
+                        -- A segment from the client's own computer, with one field made bad. Resets and opens use the
+                        -- right sequence number. Others don't: a forged message or close with exactly the next sequence
+                        -- number is accepted, as with TCP, and only encryption can stop that.
+                        local exact = flags == "R" or flags == "SA"
+                        local segment = {
+                            sp = client.local_port, dp = 22, flags = flags, seq = client.snd_nxt + (exact and 0 or 100),
+                            ack = client.rcv_nxt, win = 16, sack = { client.rcv_nxt + 1 }, data = flags == "A" and "forged" or nil,
+                        }
+                        segment = with(segment, field, bad[2])
+                        net.inject("top", target.interfaces.top.unicast, {
+                            net = 1, src = 2, dst = 1, type = "ip",
+                            body = { v = 1, src = ip("10.0.0.2"), dst = ip("10.0.0.1"), ttl = 32, proto = "tcp", id = 1, body = segment },
+                        })
+                        net.advance(2)
+                        check_sane(target)
+
+                        -- The connection either still works, or has failed cleanly.
+                        if server.state ~= "closed" then
+                            while server:take() do end
+                            client:send("still there?")
+                            net.advance(2)
+                            local got_one, value = server:take()
+                            if server.state ~= "closed" and not (got_one and value == "still there?") then
+                                error("Connection stopped working: " .. tostring(value), 0)
+                            end
+                        elseif not server.error then
+                            error("Connection closed without a reason", 0)
+                        end
+                        check_healthy(net, target, peer)
+                    end)
+                    if not ok then failures[#failures + 1] = name .. ": " .. tostring(err) end
+                    yield()
+                end
+            end
+        end
+        expect(failures):same {}
     end)
 
     it("mDNS questions", function()

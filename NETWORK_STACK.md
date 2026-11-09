@@ -350,6 +350,7 @@ Both protocols use 16-bit ports. Programs bind to a port, or get a random epheme
 | 22 | remote shell (§10) |
 | 53 | DNS |
 | 67, 68 | DHCP server, client |
+| 115 | file copies (`ncp`) |
 | 520 | routing |
 | 2152 | cellular tunnels (§11) |
 
@@ -370,31 +371,51 @@ needs no framing; a stream helper adds byte-stream reads on top for files and te
 ```lua
 body = {
     sp = 49211, dp = 22,
-    flags = "A",      -- any of S (open), A (ack valid), F (close), R (reset)
-    seq = 1042,       -- sequence number of this message
+    flags = "A",      -- any of S (open), A (ack valid), F (close), R (reset), K (please acknowledge)
+    seq = 1042,       -- sequence number of this segment
     ack = 977,        -- next sequence number expected from the peer
-    win = 12,         -- how many more messages the receiver will buffer
+    win = 12,         -- how many more messages, from ack on, the receiver will take
+    sack = { 979 },   -- messages after ack which have already arrived, if any
     data = <any Lua value>,
 }
 ```
 
-Sequence numbers count messages, starting from a random number, and opening and closing each take one.
+Sequence numbers count messages, starting from a random number. A segment uses one up if it opens (S) or closes (F)
+the connection, or carries a message. Plain acknowledgements don't. Lua's numbers are exact far beyond what any
+connection could send, so sequence numbers never wrap.
 
-- **Opening:** a three-way handshake: S, then S+A, then A. A listening socket queues up to eight connections waiting to
-  be accepted.
-- **Acknowledgements:** every received message is acknowledged immediately, or piggybacked on data going the other way.
-  Out-of-order messages within the window are held until the gap fills. Duplicates are dropped and acknowledged again.
+- **Opening:** a three-way handshake: S, then S+A, then A. A listening port queues up to eight connections waiting to
+  be accepted, counting ones still opening, and ignores more. Their senders try again. A computer has at most 128
+  connections. A segment for a connection which doesn't exist gets an R, rate-limited like ICMP errors.
+- **Acknowledgements:** every message is acknowledged as it arrives. Messages which arrive early, within the window,
+  are held until the gap before them fills, and listed in `sack`, so the sender doesn't resend them. Duplicates are
+  dropped and acknowledged again.
 - **Retransmission:** the timeout comes from measured round trips (RFC 6298: smoothed round trip plus four times its
   mean deviation). It starts at 1 second, is at least 0.25 seconds (five ticks) and at most 30, and doubles on each retry.
-  Retransmitted messages don't count as round-trip samples. After eight retries the connection resets and the program
-  gets a "timed out" error.
-- **Flow and congestion control:** at most `min(peer window, congestion window)` messages are in flight. The congestion
-  window starts at 2, grows by one each round trip, and halves on a timeout. This stops one connection from flooding a
-  radio link or the receiver's event queue.
-- **Closing:** `close` sends F once everything sent has been acknowledged. The other side's `receive` then returns `nil`.
-  The connection ends when both sides have closed, after a short five-second wait for stray messages. R aborts at once.
-- **Keepalive:** after 60 seconds with no traffic, an empty acknowledgement probes the peer. Five unanswered probes reset
+  Only messages sent once, and acknowledged as they arrive, count as round-trip samples. Messages held for a gap have
+  been waiting, and would make the timeout far too long. After eight retries (about two minutes) the connection resets
+  and the program gets "Timed out". Opening gives up after five.
+- **Faster recovery:** a lost message is found before its timeout by duplicate acknowledgements: three of them, or fewer
+  when only a few messages are in flight and nothing new can be sent (RFC 5827). It's then resent at once. Until
+  everything sent before the loss is acknowledged, each partial acknowledgement resends the next gap (NewReno). Radio
+  links lose messages often enough that waiting for timeouts alone would be far too slow.
+- **Flow and congestion control:** at most `min(peer window, congestion window)` messages are in flight. A receiver
+  takes 16 messages, counting ones waiting to be received. A program may queue 32 before `send` waits. The congestion
+  window starts at 2 and doubles each round trip up to 16, then grows by one each round trip. After a fast resend it
+  halves, and after a timeout it drops to 1 and starts again. This stops one connection from flooding a radio link or the
+  receiver's event queue. When the receiver's window is closed, the sender asks with K now and then, in case the
+  message reopening it was lost.
+- **Closing:** `close` queues F after everything already queued. The other side's `receive` then returns `nil`, but a
+  connection closed on one side can still carry messages the other way. The connection ends when both sides have
+  closed, after a short five-second wait for stray segments. `net_closed` is only queued once every message that
+  arrived has been received. R aborts at once, and is only believed if its sequence number is within the window (or,
+  while opening, if it acknowledges the open exactly).
+- **Keepalive:** after 60 seconds with no traffic, a K probes the peer every 10 seconds. Five unanswered probes reset
   the connection.
+- **Messages:** any value a modem can send, up to 60 KiB as modems estimate sizes. Unlike datagrams, which modems send
+  with functions quietly dropped, connections refuse messages containing anything they can't send. `net.stream` sends
+  bytes in 16 KiB messages.
+- **Interfaces:** a connection fails with "Address lost" if its computer loses the address it uses.
 
 A connection is identified by local address and port plus remote address and port, so it survives as long as both
 addresses do. That is why a phone's address must not change during handover (§11).
@@ -612,11 +633,11 @@ sock:close()
 -- Connections
 local conn = assert(net.tcp.connect("bank.spawn", 80, 5))
 conn:send({ op = "balance" })         -- waits while the window is full
-local reply = conn:receive(5)         -- nil, "timed out"; or nil once the peer has closed
-conn:close()
+local reply = conn:receive(5)         -- nil, "Timed out"; or nil once the peer has closed
+conn:close()                          -- also abort, getPeer, getPort, getId and isOpen
 
 local server = net.tcp.listen(80)
-local client = server:accept()
+local client = server:accept()        -- with an optional timeout
 
 -- Secure connections, with the same methods
 local conn = net.secure.connect("bank.spawn", 443, { trust = "tofu" })
@@ -630,10 +651,11 @@ handle the events themselves:
 
 | Event | Arguments |
 |---|---|
-| `net_datagram` | socket |
-| `net_connection` | listening socket |
-| `net_data` | connection |
-| `net_closed` | connection, reason |
+| `net_datagram` | port |
+| `net_connection` | listening port |
+| `net_data` | connection ID: there's a message, or the end, to receive |
+| `net_sent` | connection ID: it can take more messages (it just opened, or messages were acknowledged) |
+| `net_closed` | connection ID, and why if it failed: sent once everything has been received |
 | `net_interface` | interface name, `"up"`, `"down"`, `"address"`, `"duplicate"` (we gave our address up) or `"conflict"` (we defended it) |
 | `net_frame` | `"in"` or `"out"`, interface name, the frame, and for incoming radio frames the signal strength. Only while `net.capture` is on. |
 
@@ -1085,6 +1107,11 @@ Each phase is usable on its own.
   `net.host` and `net.lookup`, the `dnsd` server) and `nslookup`. The logic is in `cc.internal.net.dhcp` and
   `cc.internal.net.dns`, tested on virtual networks, and two game tests show computers finding each other with no setup,
   and through DHCP and DNS servers.
+- **Phase 4 is done:** connections (`net.tcp`, in `cc.internal.net.tcp`), byte streams (`net.stream`, in
+  `cc.internal.net.stream`), and the `nc` and `ncp` programs. A spec carries a megabyte across three radio hops which
+  lose a tenth of their frames and reorder them, in about 15 seconds. Others cover ordering, flow control with a lost
+  window update, half-closed connections, timeouts, keepalive and resets, and fuzzing covers every field of a segment.
+  A game test sends a megabyte through a router, from a cable to a wireless modem, and copies a file with `ncp`.
 - **Phase 3 is done:** forwarding (`net.forwarding`), static and default routes (`net.routes`, `net.gateway`, and
   gateways from DHCP), the routing protocol (`net.rip`, in `cc.internal.net.rip`), firewall rules (`net.firewall`), and
   the `route`, `traceroute` and `firewall` programs. The virtual networks in the tests have several links, so routers
