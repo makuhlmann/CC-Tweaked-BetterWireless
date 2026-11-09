@@ -647,8 +647,9 @@ handle the events themselves:
 | `rsh` | Remote shell over a secure connection, with the remote terminal redirected |
 | `chat` | A replacement for `rednet/chat` |
 
-The API lives in `rom/apis/net.lua`, its internals in `rom/modules/main/cc/net/`, and programs in `rom/programs/net/`,
-with help pages. During development all of it can ship as a datapack (§1).
+The API lives in `rom/apis/net.lua`, its internals in `rom/modules/main/cc/internal/net/`, address helpers in the
+public module `cc.net.address`, and programs in `rom/programs/net/`, with help pages. The same files can be dropped into
+a world as a datapack (§1) to try a newer version without replacing the jar.
 
 ### Rednet, and what replaces it
 
@@ -994,8 +995,15 @@ The default fill fraction needs tuning in play.
 
 ## 14. Implementation plan
 
-Each phase is usable on its own. **Phase 0 is done:** `crypto` lives in `core` (`CryptoAPI`, built on `Crypto`), the
-enclave in `common` (`EnclaveAPI`, `Enclave`, `EnclaveStore`), and `enable_crypto` in the server config turns both off.
+Each phase is usable on its own.
+
+- **Phase 0 is done:** `crypto` lives in `core` (`CryptoAPI`, built on `Crypto`), the enclave in `common`
+  (`EnclaveAPI`, `Enclave`, `EnclaveStore`), and `enable_crypto` in the server config turns both off.
+- **Phase 1 is done:** the `net` API and its background process (started from `bios.lua` next to rednet), the link
+  layer, neighbour discovery, static addresses, ICMP echo and errors, and `ifconfig`, `ping` and `netdump`. The protocol
+  logic is `cc.internal.net.stack`, which takes its clock, modems and events as functions, so the tests in
+  `test-rom/spec/modules/cc/internal/net/` run whole virtual networks. In the mod, `modem.isInterdimensional()` and the
+  `max_message_size` limit for radio messages (64 KiB by default).
 
 | Phase | Delivers | Done when |
 |---|---|---|
@@ -1017,7 +1025,7 @@ enclave in `common` (`EnclaveAPI`, `Enclave`, `EnclaveStore`), and `enable_crypt
 | 1 | Rednet | Keep it, unchanged, running alongside. It may later become a thin layer over datagrams. |
 | 2 | Addresses | IPv4-style, assigned by DHCP. Prefix plus computer ID only for link-local fallback addresses. |
 | 3 | Connections | Deliver Lua values, with a byte-stream helper for files and terminals |
-| 4 | Distribution | A datapack while developing (it can also replace `bios.lua`), then the ROM |
+| 4 | Distribution | In the ROM from the start, so CC's own test suite runs the stack. The same files work as a datapack, to try a newer version without replacing the jar. (Changed from "a datapack first" when phase 1 was built.) |
 | 5 | Multiplayer | Players agree among themselves on prefixes and top-level names; nothing enforces it |
 | 6 | Crypto | On every computer, kept cheap on CPU, with a server switch. Plus a key enclave (§9). |
 | 7 | Radio realism | Transmit and receive power by device and a wireless size limit now; airtime and interference later |

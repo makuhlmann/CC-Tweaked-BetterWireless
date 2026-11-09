@@ -1,0 +1,610 @@
+-- SPDX-FileCopyrightText: 2026 The CC: Tweaked Developers
+--
+-- SPDX-License-Identifier: MPL-2.0
+
+--[[- The core of the network stack: interfaces, neighbour discovery, packets and ICMP.
+
+> [!DANGER]
+> This is an internal module and SHOULD NOT be used in your own code. Use the [`net`] API instead.
+
+A stack has no side effects of its own. It sends frames, reads the time and wakes programs up through functions passed
+to [`new`], so tests can connect several stacks together without any modems.
+
+@local
+]]
+
+local expect = require "cc.expect".expect
+local address = require "cc.net.address"
+
+--- The version of the frame and packet formats. Frames from other versions are ignored.
+local VERSION = 1
+
+--- The ID frames are sent to when they're for every computer on a link.
+local BROADCAST_ID = -1
+
+local DEFAULT_TTL = 32
+
+-- Neighbour discovery.
+local NEIGHBOUR_LIFETIME = 300
+local RESOLVE_INTERVAL = 1
+local RESOLVE_ATTEMPTS = 3
+local MAX_WAITING = 4
+
+-- How often we may send an error to the same computer, in seconds.
+local ERROR_INTERVAL = 0.5
+
+-- How long an echo request is remembered, in seconds.
+local ECHO_LIFETIME = 60
+
+-- How long frame capture lasts unless renewed, in seconds.
+local CAPTURE_LIFETIME = 30
+
+-- Channels: low band channels are 0-1023, high band channels are above that. Wired and ender modems use the high band
+-- plan, though bands mean nothing to them.
+local LOW_UNICAST, LOW_BROADCAST = 1000, 1000
+local HIGH_BASE, HIGH_UNICAST, HIGH_BROADCAST = 1024, 60000, 61024
+
+--- Get the channels used by a computer on a band.
+--
+-- @tparam number id The computer's ID.
+-- @tparam string band `"low"` or `"high"`.
+-- @treturn number The computer's unicast channel.
+-- @treturn number The broadcast channel.
+local function channels(id, band)
+    if band == "low" then return id % LOW_UNICAST, LOW_BROADCAST end
+    return HIGH_BASE + id % HIGH_UNICAST, HIGH_BROADCAST
+end
+
+local function band_of(channel)
+    return channel < HIGH_BASE and "low" or "high"
+end
+
+local ERRORS = {
+    unreachable = {
+        net = "Network unreachable",
+        host = "Host unreachable",
+        port = "Port unreachable",
+        proto = "Protocol unreachable",
+        admin = "Prohibited",
+    },
+    time_exceeded = "TTL expired",
+}
+
+--- Describe an ICMP error message.
+--
+-- @tparam table message The ICMP message.
+-- @treturn string A description of the error.
+local function describe_error(message)
+    local kind = ERRORS[message.type]
+    if type(kind) == "table" then return kind[message.code] or "Unreachable" end
+    return kind or "Unknown error"
+end
+
+local Stack = {}
+Stack.__index = Stack
+
+--[[- Create a new stack.
+
+@tparam {
+    id = number,
+    clock = function():number,
+    transmit = function(modem:string, channel:number, reply:number, frame:table),
+    wake = function(event:string, ...:any),
+} options The computer's ID, a clock in seconds, how to send a frame, and how to queue an event.
+@treturn table The new stack.
+]]
+local function new(options)
+    expect(1, options, "table")
+    return setmetatable({
+        id = options.id,
+        clock = options.clock,
+        _transmit = options.transmit,
+        wake = options.wake,
+
+        interfaces = {},
+        by_modem = {},
+        protocols = {},
+        error_handlers = {},
+
+        next_packet = 0,
+        next_echo = 0,
+        echoes = {},
+        last_error = {},
+        capture_until = nil,
+
+        inbox = {},
+        delivering = false,
+    }, Stack)
+end
+
+--- Add an interface.
+--
+-- @tparam string name The interface's name.
+-- @tparam string modem The modem's peripheral name.
+-- @tparam string kind `"wired"`, `"wireless"` or `"ender"`.
+-- @tparam string band `"low"` or `"high"`.
+-- @treturn table The interface. Its `unicast` and `broadcast` channels must be opened on the modem.
+function Stack:add_interface(name, modem, kind, band)
+    if kind ~= "wireless" then band = "high" end
+    local unicast, broadcast = channels(self.id, band)
+    local interface = {
+        name = name, modem = modem, kind = kind, band = band,
+        unicast = unicast, broadcast = broadcast,
+        neighbours = {}, waiting = {},
+        stats = { frames_in = 0, frames_out = 0, dropped = 0 },
+    }
+    self.interfaces[name] = interface
+    self.by_modem[modem] = self.by_modem[modem] or {}
+    self.by_modem[modem][band] = interface
+    return interface
+end
+
+--- Remove every interface using a modem.
+--
+-- @tparam string modem The modem's peripheral name.
+-- @treturn { string... } The names of the interfaces removed.
+function Stack:remove_modem(modem)
+    local removed = {}
+    for _, interface in pairs(self.by_modem[modem] or {}) do
+        self.interfaces[interface.name] = nil
+        removed[#removed + 1] = interface.name
+    end
+    self.by_modem[modem] = nil
+    table.sort(removed)
+    return removed
+end
+
+--- Set or clear an interface's address.
+--
+-- @tparam string name The interface's name.
+-- @tparam number|nil addr The address, or `nil` to remove it.
+-- @tparam[opt] number prefix The prefix length.
+function Stack:set_address(name, addr, prefix)
+    local interface = self.interfaces[name]
+    if not interface then error("No interface named '" .. name .. "'", 2) end
+
+    interface.address, interface.prefix, interface.duplicate = addr, addr and prefix, false
+    interface.neighbours, interface.waiting = {}, {}
+    if addr then
+        interface.network = address.network(addr, prefix)
+        interface.broadcast_address = prefix < 31 and address.broadcast(addr, prefix) or nil
+        -- Tell everyone, which also finds out whether anyone else already uses this address.
+        self:transmit(interface, BROADCAST_ID, "nd", { op = "is", addr = addr })
+    else
+        interface.network, interface.broadcast_address = nil, nil
+    end
+end
+
+--- Send a frame on an interface.
+--
+-- @tparam table interface The interface.
+-- @tparam number id The receiving computer's ID, or `-1` for everyone.
+-- @tparam string kind The frame's type.
+-- @param body The frame's body.
+function Stack:transmit(interface, id, kind, body)
+    local channel = interface.broadcast
+    if id ~= BROADCAST_ID then channel = channels(id, interface.band) end
+    local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body }
+    interface.stats.frames_out = interface.stats.frames_out + 1
+    if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
+    self._transmit(interface.modem, channel, interface.unicast, frame)
+end
+
+--- Whether frames are being captured, for `netdump`.
+--
+-- @treturn boolean Whether frames are being captured.
+function Stack:capturing()
+    return self.capture_until ~= nil and self.clock() < self.capture_until
+end
+
+--- Start or stop capturing frames. Capture stops by itself after a while unless renewed.
+--
+-- @tparam boolean enabled Whether to capture frames.
+function Stack:set_capture(enabled)
+    self.capture_until = enabled and self.clock() + CAPTURE_LIFETIME or nil
+end
+
+--- Handle a frame received by a modem.
+--
+-- @tparam string modem The modem's peripheral name.
+-- @tparam number channel The channel the frame arrived on.
+-- @param frame The frame.
+-- @tparam[opt] number signal The signal strength, for radio messages.
+function Stack:receive(modem, channel, frame, signal)
+    if type(frame) ~= "table" or frame.net ~= VERSION then return end
+
+    local bands = self.by_modem[modem]
+    local interface = bands and bands[band_of(channel)]
+    if not interface or (channel ~= interface.unicast and channel ~= interface.broadcast) then return end
+
+    local src, dst = frame.src, frame.dst
+    if type(src) ~= "number" or src == self.id or (dst ~= self.id and dst ~= BROADCAST_ID) then return end
+
+    interface.stats.frames_in = interface.stats.frames_in + 1
+    if self:capturing() then self.wake("net_frame", "in", interface.name, frame, signal) end
+
+    if frame.type == "nd" then
+        self:receive_nd(interface, src, frame.body, signal)
+    elseif frame.type == "ip" then
+        self:receive_packet(interface, src, frame.body, signal)
+    end
+end
+
+--- Remember which computer has an address, and send anything that was waiting for it.
+--
+-- @tparam table interface The interface the computer is on.
+-- @tparam number addr The computer's address.
+-- @tparam number id The computer's ID.
+-- @tparam[opt] number signal The signal strength of its last frame.
+function Stack:learn(interface, addr, id, signal)
+    if not interface.address or addr == interface.address or addr == interface.broadcast_address
+        or not address.contains(interface.network, interface.prefix, addr) then
+        return
+    end
+
+    local neighbour = interface.neighbours[addr]
+    if not neighbour then
+        neighbour = {}
+        interface.neighbours[addr] = neighbour
+    end
+    neighbour.id, neighbour.expires = id, self.clock() + NEIGHBOUR_LIFETIME
+    if signal then neighbour.signal = signal end
+
+    local waiting = interface.waiting[addr]
+    if waiting then
+        interface.waiting[addr] = nil
+        for _, packet in ipairs(waiting.packets) do self:transmit(interface, id, "ip", packet) end
+    end
+end
+
+function Stack:receive_nd(interface, src, body, signal)
+    if type(body) ~= "table" or type(body.addr) ~= "number" then return end
+    if type(body.from) == "number" then self:learn(interface, body.from, src, signal) end
+
+    if body.op == "who" then
+        if interface.address and body.addr == interface.address and not interface.duplicate then
+            self:transmit(interface, src, "nd", { op = "is", addr = interface.address })
+        end
+    elseif body.op == "is" then
+        if interface.address and body.addr == interface.address then
+            -- Someone else is using our address. Tell them too, so both sides know.
+            if not interface.duplicate then
+                interface.duplicate = true
+                self:transmit(interface, BROADCAST_ID, "nd", { op = "is", addr = interface.address })
+                self.wake("net_interface", interface.name, "duplicate")
+            end
+        else
+            self:learn(interface, body.addr, src, signal)
+        end
+    end
+end
+
+--- Whether an address belongs to this computer.
+--
+-- @tparam number addr The address.
+-- @treturn boolean Whether this computer has this address.
+function Stack:is_local(addr)
+    if address.is_loopback(addr) then return true end
+    for _, interface in pairs(self.interfaces) do
+        if interface.address == addr then return true end
+    end
+    return false
+end
+
+local function is_broadcast(interface, addr)
+    return addr == address.BROADCAST or (interface ~= nil and addr == interface.broadcast_address)
+end
+
+--- Find the interface to reach an address on.
+--
+-- @tparam number addr The address.
+-- @treturn table|nil The interface, or `nil` if no interface is on that address's network.
+function Stack:route(addr)
+    local best
+    for _, interface in pairs(self.interfaces) do
+        if interface.address and not interface.duplicate and address.contains(interface.network, interface.prefix, addr)
+            and (not best or interface.prefix > best.prefix or (interface.prefix == best.prefix and interface.name < best.name)) then
+            best = interface
+        end
+    end
+    return best
+end
+
+function Stack:receive_packet(interface, src, packet, signal)
+    if type(packet) ~= "table" or packet.v ~= VERSION or type(packet.src) ~= "number" or type(packet.dst) ~= "number"
+        or type(packet.ttl) ~= "number" or type(packet.proto) ~= "string" then
+        return
+    end
+
+    -- Every packet tells us where its sender is, which saves asking later.
+    self:learn(interface, packet.src, src, signal)
+
+    if self:is_local(packet.dst) or is_broadcast(interface, packet.dst) then
+        self:deliver(packet, interface)
+    else
+        -- Hosts don't forward packets.
+        interface.stats.dropped = interface.stats.dropped + 1
+    end
+end
+
+--- Deliver a packet to this computer. Packets are queued, so a packet sent to ourselves while handling another doesn't
+-- recurse.
+--
+-- @tparam table packet The packet.
+-- @tparam[opt] table interface The interface it arrived on, or `nil` for packets from this computer.
+function Stack:deliver(packet, interface)
+    local inbox = self.inbox
+    inbox[#inbox + 1] = { packet, interface }
+    if self.delivering then return end
+
+    self.delivering = true
+    while #inbox > 0 do
+        local item = table.remove(inbox, 1)
+        local ok, err = pcall(self.dispatch, self, item[1], item[2])
+        if not ok then
+            self.delivering = false
+            error(err, 0)
+        end
+    end
+    self.delivering = false
+end
+
+function Stack:dispatch(packet, interface)
+    if packet.proto == "icmp" then return self:receive_icmp(packet) end
+
+    local handler = self.protocols[packet.proto]
+    if handler then return handler(packet, interface) end
+
+    if not is_broadcast(interface, packet.dst) then self:send_error(packet, "unreachable", "proto") end
+end
+
+--[[- Send a packet from this computer.
+
+@tparam number dst Where to send it.
+@tparam string proto The protocol, such as `"icmp"`.
+@param body The packet's body.
+@tparam[opt] { ttl? = number } options Options.
+@treturn[1] table The packet.
+@treturn[2] nil If it couldn't be sent.
+@treturn[2] string Why not.
+]]
+function Stack:send(dst, proto, body, options)
+    local ttl = options and options.ttl or DEFAULT_TTL
+    self.next_packet = self.next_packet + 1
+    local packet = { v = VERSION, dst = dst, ttl = ttl, proto = proto, id = self.next_packet, body = body }
+
+    if self:is_local(dst) then
+        packet.src = dst
+        self:deliver(packet, nil)
+        return packet
+    end
+
+    if dst == address.BROADCAST then
+        local sent = false
+        for _, interface in pairs(self.interfaces) do
+            if interface.address and not interface.duplicate then
+                local copy = { v = VERSION, src = interface.address, dst = dst, ttl = ttl, proto = proto, id = packet.id, body = body }
+                self:transmit(interface, BROADCAST_ID, "ip", copy)
+                sent = true
+            end
+        end
+        if not sent then return nil, "No interface has an address" end
+        return packet
+    end
+
+    local interface = self:route(dst)
+    if not interface then return nil, "Network unreachable" end
+
+    packet.src = interface.address
+    self:send_on(interface, dst, packet)
+    return packet
+end
+
+--- Send a packet to a computer on an interface's network, finding its ID first if need be.
+--
+-- @tparam table interface The interface.
+-- @tparam number next_hop The address of the computer to hand the packet to.
+-- @tparam table packet The packet.
+function Stack:send_on(interface, next_hop, packet)
+    if is_broadcast(interface, next_hop) then
+        return self:transmit(interface, BROADCAST_ID, "ip", packet)
+    end
+
+    local neighbour = interface.neighbours[next_hop]
+    if neighbour and neighbour.expires > self.clock() then
+        return self:transmit(interface, neighbour.id, "ip", packet)
+    end
+
+    local waiting = interface.waiting[next_hop]
+    if not waiting then
+        waiting = { packets = {}, attempts = 0 }
+        interface.waiting[next_hop] = waiting
+        self:resolve(interface, next_hop, waiting)
+    end
+    if #waiting.packets < MAX_WAITING then waiting.packets[#waiting.packets + 1] = packet end
+end
+
+function Stack:resolve(interface, addr, waiting)
+    waiting.attempts = waiting.attempts + 1
+    waiting.deadline = self.clock() + RESOLVE_INTERVAL
+    self:transmit(interface, BROADCAST_ID, "nd", { op = "who", addr = addr, from = interface.address })
+    -- The background process may be waiting for something else, so make sure it notices our deadline.
+    self.wake("net_wakeup")
+end
+
+--- Get the time at which [`Stack:tick`] next needs calling.
+--
+-- @treturn number|nil The time, or `nil` if nothing is waiting.
+function Stack:next_deadline()
+    local deadline
+    for _, interface in pairs(self.interfaces) do
+        for _, waiting in pairs(interface.waiting) do
+            if not deadline or waiting.deadline < deadline then deadline = waiting.deadline end
+        end
+    end
+    return deadline
+end
+
+--- Do anything which is due: retry neighbour discovery, and give up on neighbours which don't answer.
+function Stack:tick()
+    local now = self.clock()
+    for _, interface in pairs(self.interfaces) do
+        for addr, waiting in pairs(interface.waiting) do
+            if waiting.deadline <= now then
+                if waiting.attempts >= RESOLVE_ATTEMPTS then
+                    interface.waiting[addr] = nil
+                    for _, packet in ipairs(waiting.packets) do self:send_error(packet, "unreachable", "host") end
+                else
+                    self:resolve(interface, addr, waiting)
+                end
+            end
+        end
+    end
+end
+
+local function summarise(packet)
+    local summary = { src = packet.src, dst = packet.dst, proto = packet.proto, id = packet.id }
+    local body = packet.body
+    if packet.proto == "icmp" and type(body) == "table" and body.type == "echo" then summary.echo = body.id end
+    if type(body) == "table" and type(body.sp) == "number" then summary.sp, summary.dp = body.sp, body.dp end
+    return summary
+end
+
+--- Report that a packet couldn't be delivered, with an ICMP error to its sender.
+--
+-- @tparam table packet The packet.
+-- @tparam string kind `"unreachable"` or `"time_exceeded"`.
+-- @tparam[opt] string code The kind of unreachable.
+function Stack:send_error(packet, kind, code)
+    -- Never report errors about errors, about broadcasts, or to nobody.
+    local body = packet.body
+    if packet.proto == "icmp" and (type(body) ~= "table" or (body.type ~= "echo" and body.type ~= "echo_reply")) then return end
+    if packet.dst == address.BROADCAST or packet.src == address.ANY or packet.src == address.BROADCAST then return end
+
+    if not self:is_local(packet.src) then
+        local now, last = self.clock(), self.last_error[packet.src]
+        if last and now - last < ERROR_INTERVAL then return end
+        self.last_error[packet.src] = now
+    end
+
+    self:send(packet.src, "icmp", { type = kind, code = code, orig = summarise(packet) })
+end
+
+function Stack:receive_icmp(packet)
+    local message = packet.body
+    if type(message) ~= "table" then return end
+
+    if message.type == "echo" then
+        if packet.src ~= address.ANY then
+            self:send(packet.src, "icmp", { type = "echo_reply", id = message.id, seq = message.seq, data = message.data })
+        end
+    elseif message.type == "echo_reply" then
+        local echo = self.echoes[message.id]
+        if echo and not echo.done then
+            echo.done, echo.rtt, echo.ttl, echo.from = true, self.clock() - echo.sent, packet.ttl, packet.src
+            self.wake("net_echo", message.id)
+        end
+    elseif message.type == "unreachable" or message.type == "time_exceeded" then
+        local orig = message.orig
+        if type(orig) ~= "table" then return end
+
+        local echo = orig.echo and self.echoes[orig.echo]
+        if echo and not echo.done then
+            echo.done, echo.error, echo.from = true, describe_error(message), packet.src
+            self.wake("net_echo", orig.echo)
+        end
+
+        local handler = self.error_handlers[orig.proto]
+        if handler then handler(orig, message, packet.src) end
+    end
+end
+
+--[[- Send an echo request (a ping).
+
+When the reply (or an error) arrives, a `net_echo` event is queued with the request's ID. Then use [`Stack:echo_result`]
+to see what happened, and [`Stack:forget_echo`] once done.
+
+@tparam number dst Where to send it.
+@param[opt] data Data to send, which comes back in the reply.
+@treturn[1] number The request's ID.
+@treturn[2] nil If it couldn't be sent.
+@treturn[2] string Why not.
+]]
+function Stack:echo(dst, data)
+    local now = self.clock()
+    for id, echo in pairs(self.echoes) do
+        if now - echo.sent > ECHO_LIFETIME then self.echoes[id] = nil end
+    end
+
+    self.next_echo = self.next_echo + 1
+    local id = self.next_echo
+    self.echoes[id] = { sent = now, done = false }
+
+    local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = 1, data = data })
+    if not ok then
+        self.echoes[id] = nil
+        return nil, err
+    end
+    return id
+end
+
+--- Get the state of an echo request.
+--
+-- @tparam number id The request's ID.
+-- @treturn table|nil `done`, and then either `rtt`, `ttl` and `from`, or `error`.
+function Stack:echo_result(id)
+    return self.echoes[id]
+end
+
+--- Forget an echo request.
+--
+-- @tparam number id The request's ID.
+function Stack:forget_echo(id)
+    self.echoes[id] = nil
+end
+
+--- Describe the interfaces.
+--
+-- @treturn { table... } A description of each interface, sorted by name.
+function Stack:interface_info()
+    local result = {}
+    for _, interface in pairs(self.interfaces) do
+        local neighbours = 0
+        for _ in pairs(interface.neighbours) do neighbours = neighbours + 1 end
+        result[#result + 1] = {
+            name = interface.name, modem = interface.modem, kind = interface.kind, band = interface.band,
+            id = self.id, unicast = interface.unicast, broadcast = interface.broadcast,
+            address = interface.address and address.format(interface.address),
+            prefix = interface.prefix, duplicate = interface.duplicate, neighbours = neighbours,
+            frames_in = interface.stats.frames_in, frames_out = interface.stats.frames_out, dropped = interface.stats.dropped,
+        }
+    end
+    table.sort(result, function(a, b) return a.name < b.name end)
+    return result
+end
+
+--- Describe the neighbours: the computers this one has talked to directly.
+--
+-- @treturn { table... } Each neighbour's interface, address, ID, how long until it's forgotten, and signal strength.
+function Stack:neighbour_info()
+    local result, now = {}, self.clock()
+    for _, interface in pairs(self.interfaces) do
+        for addr, neighbour in pairs(interface.neighbours) do
+            if neighbour.expires > now then
+                result[#result + 1] = {
+                    interface = interface.name, address = address.format(addr), id = neighbour.id,
+                    expires = neighbour.expires - now, signal = neighbour.signal,
+                }
+            end
+        end
+    end
+    table.sort(result, function(a, b) return a.interface < b.interface or (a.interface == b.interface and a.address < b.address) end)
+    return result
+end
+
+return {
+    new = new,
+    channels = channels,
+    VERSION = VERSION,
+    BROADCAST_ID = BROADCAST_ID,
+}

@@ -1,0 +1,10 @@
+Functions in the net (network stack) API:
+net.interfaces()
+net.setAddress( interface, address )
+net.getAddress( interface )
+net.neighbours()
+net.ping( address, [timeout] )
+net.capture( enabled )
+net.getErrors()
+
+The network stack runs in the background on every computer. Every modem is a network interface, and interfaces with addresses on the same network can reach each other. See also the programs "ifconfig", "ping" and "netdump".

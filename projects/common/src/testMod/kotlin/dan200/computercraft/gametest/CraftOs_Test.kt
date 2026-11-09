@@ -16,4 +16,16 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT)
     fun Sends_basic_rednet_messages(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * Two computers with wireless modems ping each other with the network stack.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT)
+    fun Net_ping_wireless(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * Two computers on a cable ping each other with the network stack.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT)
+    fun Net_ping_wired(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

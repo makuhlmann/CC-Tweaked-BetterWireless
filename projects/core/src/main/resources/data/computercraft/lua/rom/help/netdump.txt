@@ -1,0 +1,5 @@
+netdump shows the network frames this computer sends and receives, until you press Ctrl+T. It is mostly useful for learning how the network works, and for finding problems.
+
+ex:
+"netdump" shows frames on every interface.
+"netdump top" shows frames on the interface "top" only.

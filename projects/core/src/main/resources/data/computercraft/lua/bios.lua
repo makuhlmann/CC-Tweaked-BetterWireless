@@ -739,7 +739,8 @@ local ok, err = pcall(parallel.waitForAny,
         os.run({}, sShell)
         os.run({}, "rom/programs/shutdown.lua")
     end,
-    rednet.run
+    rednet.run,
+    net.run
 )
 
 -- If the shell errored, let the user read it.

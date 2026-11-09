@@ -5,7 +5,7 @@
 local completion = require "cc.shell.completion"
 
 -- Setup paths
-local sPath = ".:/rom/programs:/rom/programs/http"
+local sPath = ".:/rom/programs:/rom/programs/http:/rom/programs/net"
 if term.isColor() then
     sPath = sPath .. ":/rom/programs/advanced"
 end
