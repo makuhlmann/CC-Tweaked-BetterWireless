@@ -128,9 +128,15 @@ public final class BlockRadioProperties {
         if (state.is(BlockTags.LEAVES)) return BlockRadioInfo.full(RadioMaterial.VEGETATION);
         if (state.is(BlockTags.ICE)) return BlockRadioInfo.full(RadioMaterial.ICE);
 
-        var shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-        var fill = 0.0;
-        for (var box : shape.toAabbs()) fill += box.getXsize() * box.getYsize() * box.getZsize();
+        double fill;
+        try {
+            var shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+            fill = 0;
+            for (var box : shape.toAabbs()) fill += box.getXsize() * box.getYsize() * box.getZsize();
+        } catch (RuntimeException e) {
+            // Some modded blocks expect a real level here. Assume they're solid.
+            fill = 1;
+        }
         var solid = fill > 0;
         fill = solid ? Math.min(1, fill) : NON_SOLID_FILL;
 

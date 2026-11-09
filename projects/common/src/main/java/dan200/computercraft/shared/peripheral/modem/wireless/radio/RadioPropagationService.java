@@ -55,6 +55,9 @@ public final class RadioPropagationService {
     /** The maximum number of deliveries waiting to be processed. Anything beyond this is dropped. */
     private static final int MAX_QUEUED = 1 << 16;
 
+    /** The maximum number of links waiting to be evaluated. Packets needing any more are dropped. */
+    private static final int MAX_EVALUATIONS = 1 << 13;
+
     /** The maximum number of links to remember. */
     private static final int MAX_CACHED_LINKS = 1 << 14;
 
@@ -186,6 +189,9 @@ public final class RadioPropagationService {
 
                 var evaluation = evaluating.get(key);
                 if (evaluation == null) {
+                    // The server can't keep up with the number of distinct links, so drop the packet.
+                    if (pending.size() >= MAX_EVALUATIONS) continue;
+
                     evaluation = new Evaluation(key, level, from, to, band, tick);
                     evaluating.put(key, evaluation);
                     pending.add(evaluation);

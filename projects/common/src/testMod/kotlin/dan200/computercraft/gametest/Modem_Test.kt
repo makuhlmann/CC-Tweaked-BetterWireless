@@ -78,6 +78,31 @@ class Modem_Test {
     }
 
     /**
+     * Sends a message between two wireless modems, and checks the receiver is told how strong the signal was.
+     */
+    @GameTest
+    fun Wireless_reports_signal_strength(context: GameTestHelper) = context.sequence {
+        thenStartComputer("send") {
+            val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
+            while (true) {
+                callPeripheral(modem, "transmit", 12, 34, "Hello")
+                sleep(50.milliseconds)
+            }
+        }
+        thenOnComputer("receive") {
+            val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
+            callPeripheral(modem, "open", 12)
+
+            val event = pullEvent("modem_message")
+            assertEquals(7, event.size, "modem_message should include the signal strength")
+            assertEquals("Hello", event[4])
+
+            val signal = (event[6] as Number).toDouble()
+            if (signal <= -100 || signal >= 0) throw AssertionError("Unexpected signal strength $signal")
+        }
+    }
+
+    /**
      * Assert that full block modems act like cables.
      *
      * @see [#1278](https://github.com/cc-tweaked/CC-Tweaked/issues/1278)
