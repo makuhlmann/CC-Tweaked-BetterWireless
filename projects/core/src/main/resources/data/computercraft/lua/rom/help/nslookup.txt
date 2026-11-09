@@ -1,0 +1,6 @@
+nslookup finds the address for a name, or the computers offering a service on the local network.
+
+ex:
+"nslookup bank.home" asks DNS servers for the address of bank.home.
+"nslookup turtle-7.local" asks the local network which computer is called turtle-7.
+"nslookup service chat" lists every computer offering the chat service.

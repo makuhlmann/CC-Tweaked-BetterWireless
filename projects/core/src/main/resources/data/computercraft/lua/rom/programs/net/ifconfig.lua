@@ -11,6 +11,7 @@ local function usage()
     print("Usages:")
     print(name)
     print(name .. " <interface> <address>/<prefix>")
+    print(name .. " <interface> dhcp")
     print(name .. " <interface> none")
     print(name .. " <interface> band <low|high>")
 end
@@ -32,6 +33,25 @@ local function save(key, value)
     settings.save()
 end
 
+local function describe(interface)
+    if not interface.address then
+        if interface.config == "dhcp" then return "No address yet (DHCP: " .. tostring(interface.dhcp) .. ")" end
+        return "No address"
+    end
+
+    local text = interface.address .. "/" .. interface.prefix
+    if interface.duplicate then
+        text = text .. " (in use by another computer!)"
+    elseif interface.link_local then
+        text = text .. " (link-local: no DHCP server)"
+    elseif interface.config == "dhcp" and interface.lease then
+        text = text .. (" (DHCP, %d s left)"):format(math.floor(interface.lease))
+    elseif interface.config == "static" then
+        text = text .. " (fixed)"
+    end
+    return text
+end
+
 if #args == 0 then
     local interfaces = net.interfaces()
     if #interfaces == 0 then
@@ -39,16 +59,11 @@ if #args == 0 then
         return
     end
 
+    print("Hostname: " .. net.getHostname())
     for _, interface in ipairs(interfaces) do
         local kind = interface.kind == "wireless" and ("wireless, " .. interface.band .. " band") or interface.kind
         heading(("%s (%s)"):format(interface.name, kind))
-        if interface.address then
-            local addr = interface.address .. "/" .. interface.prefix
-            if interface.duplicate then addr = addr .. " (in use by another computer!)" end
-            print("  " .. addr)
-        else
-            print("  No address")
-        end
+        print("  " .. describe(interface))
         print(("  ID %d, channels %d and %d"):format(interface.id, interface.unicast, interface.broadcast))
         print(("  %d neighbours, %d frames in, %d out"):format(interface.neighbours, interface.frames_in, interface.frames_out))
     end
@@ -85,25 +100,30 @@ if value == "band" then
     return
 end
 
-if value == "none" then
-    save("net." .. name .. ".address", nil)
-    if find(name) then net.setAddress(name, nil) end
-    print(name .. ": no address")
-    return
+local setting, text
+if value == "dhcp" then
+    setting, text = nil, "dhcp"
+elseif value == "none" then
+    setting, text = "none", nil
+else
+    local addr, prefix = address.parse(value)
+    if not addr then
+        printError(prefix)
+        return
+    end
+    text = address.format(addr, prefix or 24)
+    setting = text
 end
 
-local addr, prefix = address.parse(value)
-if not addr then
-    printError(prefix)
-    return
-end
-
-local text = address.format(addr, prefix or 24)
-save("net." .. name .. ".address", text)
+save("net." .. name .. ".address", setting)
 
 if find(name) then
     net.setAddress(name, text)
-    print(name .. ": " .. text)
+    if value == "dhcp" then
+        print(name .. ": asking for an address")
+    else
+        print(name .. ": " .. (text or "no address"))
+    end
 else
-    print(("No interface named %s yet. It will have address %s once it's added."):format(name, text))
+    print(("No interface named %s yet. The setting will be used once it's added."):format(name))
 end

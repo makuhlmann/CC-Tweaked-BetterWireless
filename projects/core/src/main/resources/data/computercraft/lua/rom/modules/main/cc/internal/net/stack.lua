@@ -39,6 +39,10 @@ local ECHO_LIFETIME = 60
 -- How long frame capture lasts unless renewed, in seconds.
 local CAPTURE_LIFETIME = 30
 
+-- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
+local EPHEMERAL_FIRST, EPHEMERAL_LAST = 49152, 65535
+local MAX_QUEUED_DATAGRAMS = 32
+
 -- Channels: low band channels are 0-1023, high band channels are above that. Wired and ender modems use the high band
 -- plan, though bands mean nothing to them.
 local LOW_UNICAST, LOW_BROADCAST = 1000, 1000
@@ -90,16 +94,19 @@ Stack.__index = Stack
     clock = function():number,
     transmit = function(modem:string, channel:number, reply:number, frame:table),
     wake = function(event:string, ...:any),
-} options The computer's ID, a clock in seconds, how to send a frame, and how to queue an event.
+    log? = function(message:string),
+} options The computer's ID, a clock in seconds, how to send a frame, how to queue an event, and where to report
+errors in timers and handlers.
 @treturn table The new stack.
 ]]
 local function new(options)
     expect(1, options, "table")
-    return setmetatable({
+    local self = setmetatable({
         id = options.id,
         clock = options.clock,
         _transmit = options.transmit,
         wake = options.wake,
+        log = options.log or function() end,
 
         interfaces = {},
         by_modem = {},
@@ -114,7 +121,15 @@ local function new(options)
 
         inbox = {},
         delivering = false,
+
+        timers = {},
+        udp = {},
+        next_port = EPHEMERAL_FIRST,
     }, Stack)
+
+    self.protocols.udp = function(packet, interface) return self:receive_udp(packet, interface) end
+    self.error_handlers.udp = function(orig, message, from) return self:udp_error(orig, message, from) end
+    return self
 end
 
 --- Add an interface.
@@ -439,6 +454,9 @@ end
 -- @treturn number|nil The time, or `nil` if nothing is waiting.
 function Stack:next_deadline()
     local deadline
+    for timer in pairs(self.timers) do
+        if not deadline or timer.time < deadline then deadline = timer.time end
+    end
     for _, interface in pairs(self.interfaces) do
         for _, waiting in pairs(interface.waiting) do
             if not deadline or waiting.deadline < deadline then deadline = waiting.deadline end
@@ -447,9 +465,23 @@ function Stack:next_deadline()
     return deadline
 end
 
---- Do anything which is due: retry neighbour discovery, and give up on neighbours which don't answer.
+--- Do anything which is due: run timers, retry neighbour discovery, and give up on neighbours which don't answer.
 function Stack:tick()
     local now = self.clock()
+
+    local due = {}
+    for timer in pairs(self.timers) do
+        if timer.time <= now then due[#due + 1] = timer end
+    end
+    table.sort(due, function(a, b) return a.time < b.time end)
+    for _, timer in ipairs(due) do
+        -- A timer may have been cancelled by an earlier one.
+        if self.timers[timer] then
+            self.timers[timer] = nil
+            local ok, err = pcall(timer.fn)
+            if not ok then self.log(err) end
+        end
+    end
     for _, interface in pairs(self.interfaces) do
         for addr, waiting in pairs(interface.waiting) do
             if waiting.deadline <= now then
@@ -519,6 +551,132 @@ function Stack:receive_icmp(packet)
         local handler = self.error_handlers[orig.proto]
         if handler then handler(orig, message, packet.src) end
     end
+end
+
+--- Run a function after a delay. Timers only run when [`Stack:tick`] is called.
+--
+-- @tparam number delay The delay, in seconds.
+-- @tparam function fn The function to run.
+-- @treturn table The timer, to pass to [`Stack:cancel`].
+function Stack:schedule(delay, fn)
+    local timer = { time = self.clock() + delay, fn = fn }
+    self.timers[timer] = true
+    self.wake("net_wakeup")
+    return timer
+end
+
+--- Cancel a timer.
+--
+-- @tparam table|nil timer The timer, or `nil` to do nothing.
+function Stack:cancel(timer)
+    if timer then self.timers[timer] = nil end
+end
+
+--[[- Send a packet to everyone on one interface's link. Unlike [`Stack:send`], this works on interfaces without an
+address, for instance to ask for one.
+
+@tparam string name The interface's name.
+@tparam string proto The protocol.
+@param body The packet's body.
+@treturn boolean Whether there is such an interface.
+]]
+function Stack:send_broadcast(name, proto, body)
+    local interface = self.interfaces[name]
+    if not interface then return false end
+
+    self.next_packet = self.next_packet + 1
+    self:transmit(interface, BROADCAST_ID, "ip", {
+        v = VERSION, src = interface.address or address.ANY, dst = address.BROADCAST, ttl = DEFAULT_TTL,
+        proto = proto, id = self.next_packet, body = body,
+    })
+    return true
+end
+
+--[[- Open a datagram socket.
+
+Datagrams sent to the socket's port are queued on the socket (at most 32, after which more are dropped), and a
+`net_datagram` event is queued with the port when the queue stops being empty. Alternatively, a handler is called
+straight away, which the stack's own services use.
+
+@tparam[opt] number port The port, or `nil` for any free port from 49152 up.
+@tparam[opt] function(data:any, from:number, port:number, interface:string|nil) handler Called for each datagram.
+@treturn[1] table The socket.
+@treturn[2] nil If the port is in use.
+@treturn[2] string An error message.
+]]
+function Stack:udp_open(port, handler)
+    if port then
+        if self.udp[port] then return nil, "Port " .. port .. " is in use" end
+    else
+        for _ = EPHEMERAL_FIRST, EPHEMERAL_LAST do
+            local candidate = self.next_port
+            self.next_port = candidate >= EPHEMERAL_LAST and EPHEMERAL_FIRST or candidate + 1
+            if not self.udp[candidate] then
+                port = candidate
+                break
+            end
+        end
+        if not port then return nil, "No free ports" end
+    end
+
+    local socket = { port = port, queue = {}, handler = handler }
+    self.udp[port] = socket
+    return socket
+end
+
+--- Close a datagram socket.
+--
+-- @tparam table socket The socket.
+function Stack:udp_close(socket)
+    if self.udp[socket.port] == socket then self.udp[socket.port] = nil end
+    socket.closed = true
+end
+
+--[[- Send a datagram.
+
+@tparam table socket The socket to send from.
+@tparam number dst Where to send it. The broadcast address reaches everyone on every interface, or with `name`, on one.
+@tparam number port The port to send it to.
+@param data The data.
+@tparam[opt] string name For broadcasts, the interface to send on.
+@treturn[1] true If it was sent.
+@treturn[2] nil If it couldn't be.
+@treturn[2] string Why not.
+]]
+function Stack:udp_send(socket, dst, port, data, name)
+    local body = { sp = socket.port, dp = port, data = data }
+    if dst == address.BROADCAST and name then
+        if not self:send_broadcast(name, "udp", body) then return nil, "No interface named '" .. name .. "'" end
+        return true
+    end
+
+    local ok, err = self:send(dst, "udp", body)
+    if not ok then return nil, err end
+    return true
+end
+
+function Stack:receive_udp(packet, interface)
+    local body = packet.body
+    if type(body) ~= "table" or type(body.sp) ~= "number" or type(body.dp) ~= "number" then return end
+
+    local socket = self.udp[body.dp]
+    if not socket then
+        if not is_broadcast(interface, packet.dst) then self:send_error(packet, "unreachable", "port") end
+        return
+    end
+
+    local name = interface and interface.name
+    if socket.handler then return socket.handler(body.data, packet.src, body.sp, name) end
+
+    local queue = socket.queue
+    if #queue >= MAX_QUEUED_DATAGRAMS then return end
+    queue[#queue + 1] = { data = body.data, from = packet.src, port = body.sp, interface = name }
+    if #queue == 1 then self.wake("net_datagram", socket.port) end
+end
+
+function Stack:udp_error(orig, message)
+    local socket = type(orig.sp) == "number" and self.udp[orig.sp]
+    if socket and socket.on_error then socket.on_error(describe_error(message), orig.dst) end
 end
 
 --[[- Send an echo request (a ping).

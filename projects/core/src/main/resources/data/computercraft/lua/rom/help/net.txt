@@ -2,9 +2,17 @@ Functions in the net (network stack) API:
 net.interfaces()
 net.setAddress( interface, address )
 net.getAddress( interface )
+net.getHostname()
 net.neighbours()
-net.ping( address, [timeout] )
+net.resolve( name )
+net.host( service, port )
+net.unhost( service )
+net.lookup( service, [timeout] )
+net.ping( target, [timeout] )
+net.udp.open( [port] )
 net.capture( enabled )
 net.getErrors()
 
-The network stack runs in the background on every computer. Every modem is a network interface, and interfaces with addresses on the same network can reach each other. See also the programs "ifconfig", "ping" and "netdump".
+Sockets from net.udp.open have the methods send( target, port, data ), receive( [timeout] ), getPort() and close().
+
+The network stack runs in the background on every computer. Every modem is a network interface. Interfaces get addresses from a DHCP server, or give themselves link-local ones, and computers answer to <hostname>.local. See also the programs "ifconfig", "ping", "nslookup", "netdump", "dhcpd" and "dnsd".

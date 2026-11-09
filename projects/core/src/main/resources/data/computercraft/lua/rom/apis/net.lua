@@ -2,28 +2,37 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
---[[- A network stack: network addresses, neighbour discovery and ping, over any modem.
+--[[- A network stack: network addresses, names, datagrams and ping, over any modem.
 
-Every modem becomes a network *interface*. Each interface can have an address, such as `10.0.0.1/24`, and computers on
-the same network can then reach each other by address. The stack runs in the background on every computer, much like
-[`rednet`].
+Every modem becomes a network *interface*. Each interface gets an address, such as `10.0.0.17/24`, and computers on
+the same network can then reach each other by address or by name. The stack runs in the background on every computer,
+much like [`rednet`].
+
+By default, interfaces ask a DHCP server (the `dhcpd` program) for an address. If there isn't one, a computer gives
+itself a link-local address in `169.254.0.0/16`, so computers on the same link can talk with no setup at all. Fixed
+addresses are set with the `ifconfig` program, or with [`net.setAddress`]. `ifconfig` saves them in the settings
+`net.<interface>.address` (an address such as `"10.0.0.1/24"`, `"dhcp"` or `"none"`).
+
+Every computer has a hostname (the `net.hostname` setting, or its label) and answers to `<hostname>.local`. Other names
+are looked up in the `net.hosts` setting, then asked of DNS servers (the `dnsd` program), found through DHCP or the
+`net.dns` setting.
 
 Wired and ender modems are one interface each. A wireless modem is one interface on the short-range high band by default
 (channels 1024 and up). Set `net.<name>.band` to `"low"` to use the long-range low band instead (channels below 1024).
-An interface on the other band of the same modem can be added by giving `<name>:low` (or `<name>:high`) an address.
-
-Addresses are set with the `ifconfig` program, or with [`net.setAddress`]. `ifconfig` saves them in the settings
-`net.<interface>.address`, so they are restored when the computer starts.
+An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
+`net.<name>:high.address`).
 
 > [!WARNING]
 > The network stack doesn't encrypt or authenticate anything yet. Anyone can listen to, or pretend to be, any computer.
 
 @module net
-@usage Give this computer an address on the network its top modem is on, then ping another computer.
+@usage Send a message to another computer, and print its reply.
 
 ```lua
-net.setAddress("top", "10.0.0.1/24")
-print(net.ping("10.0.0.2"))
+local socket = net.udp.open()
+socket:send("other-computer.local", 7000, "Hello!")
+print(socket:receive(5))
+socket:close()
 ```
 ]]
 
@@ -32,15 +41,24 @@ local expect = dofile("rom/modules/main/cc/expect.lua").expect
 local DEFAULT_PREFIX = 24
 local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
+local DEFAULT_TIMEOUT = 2
 
-local stack, address, running
+local stack, address, dhcp, dns, running
 local add_modem
 local errors = {}
+local services = {}
+local cache = {}
 
 -- Remember an error, rather than printing it over whatever the user is doing.
 local function log_error(err)
     if #errors >= MAX_ERRORS then table.remove(errors, 1) end
     errors[#errors + 1] = tostring(err)
+end
+
+local function hostname()
+    local configured = settings.get("net.hostname")
+    return dhcp.clean_hostname(configured) or dhcp.clean_hostname(os.getComputerLabel())
+        or "computer-" .. os.getComputerID()
 end
 
 local function load()
@@ -50,11 +68,29 @@ local function load()
     local env = setmetatable({}, { __index = _ENV })
     env.require, env.package = dofile("rom/modules/main/cc/require.lua").make(env, "/")
     address = env.require("cc.net.address")
+    dhcp = env.require("cc.internal.net.dhcp")
+    dns = env.require("cc.internal.net.dns")
 
     settings.define("net.enabled", {
         description = "Run the network stack.",
         default = true,
         type = "boolean",
+    })
+    settings.define("net.hostname", {
+        description = "This computer's name on the network. The computer's label is used if this isn't set.",
+        type = "string",
+    })
+    settings.define("net.dns", {
+        description = "DNS servers to use as well as any from DHCP, separated by commas.",
+        type = "string",
+    })
+    settings.define("net.domain", {
+        description = "The domain to look names without dots up in, if DHCP doesn't give one.",
+        type = "string",
+    })
+    settings.define("net.hosts", {
+        description = "Fixed names, as a table of names to addresses.",
+        type = "table",
     })
 
     stack = env.require("cc.internal.net.stack").new {
@@ -66,7 +102,9 @@ local function load()
             if not ok then log_error(err) end
         end,
         wake = os.queueEvent,
+        log = log_error,
     }
+    dns.respond(stack, { hostname = hostname, services = services })
 
     for _, name in ipairs(peripheral.getNames()) do add_modem(name) end
     return stack
@@ -77,18 +115,41 @@ local function open_channels(interface)
     peripheral.call(interface.modem, "open", interface.broadcast)
 end
 
-local function configure(interface)
-    local configured = settings.get("net." .. interface.name .. ".address")
-    if type(configured) ~= "string" then return end
+local function stop_dhcp(name, release)
+    local client = stack.dhcp_clients and stack.dhcp_clients[name]
+    if client then client:stop(release) end
+end
 
-    local addr, prefix = address.parse(configured)
-    if addr then stack:set_address(interface.name, addr, prefix or DEFAULT_PREFIX) end
+-- Apply an address setting to an interface: "dhcp" (or nothing), "none", or an address.
+local function apply(name, mode)
+    if mode == nil or mode == "dhcp" then
+        local client = stack.dhcp_clients and stack.dhcp_clients[name]
+        if not client then
+            stack:set_address(name, nil)
+            dhcp.start(stack, name, {
+                hostname = hostname,
+                on_change = function() os.queueEvent("net_interface", name, "address") end,
+            })
+        end
+        return true
+    elseif mode == "none" or mode == "off" then
+        stop_dhcp(name, true)
+        stack:set_address(name, nil)
+        return true
+    end
+
+    local addr, prefix = address.parse(mode)
+    if not addr then return nil, prefix end
+    stop_dhcp(name, true)
+    stack:set_address(name, addr, prefix or DEFAULT_PREFIX)
+    return true
 end
 
 local function add_interface(name, modem, kind, band)
     local interface = stack:add_interface(name, modem, kind, band)
     open_channels(interface)
-    configure(interface)
+    local ok, err = apply(name, settings.get("net." .. name .. ".address"))
+    if not ok then log_error(("Bad address for %s: %s"):format(name, err)) end
     os.queueEvent("net_interface", name, "up")
 end
 
@@ -110,7 +171,10 @@ local function setup_modem(name)
 end
 
 local function remove_modem(name)
-    for _, interface in ipairs(stack:remove_modem(name)) do os.queueEvent("net_interface", interface, "down") end
+    for _, interface in ipairs(stack:remove_modem(name)) do
+        stop_dhcp(interface, false)
+        os.queueEvent("net_interface", interface, "down")
+    end
 end
 
 -- Set up the interfaces for a modem, if `name` is one. Peripherals which claim to be modems but don't behave like ours
@@ -121,6 +185,45 @@ function add_modem(name)
         log_error(("Cannot use modem %s: %s"):format(name, tostring(err)))
         stack:remove_modem(name)
     end
+end
+
+-- Start something which finishes by calling a callback, then wait for it. The stack's background process does the
+-- work, so this just waits for the callback to be called.
+local function await(start)
+    local done, results = false, nil
+    start(function(...)
+        done, results = true, table.pack(...)
+        os.queueEvent("net_done")
+    end)
+    while not done do os.pullEvent("net_done") end
+    return table.unpack(results, 1, results.n)
+end
+
+local function resolver_options()
+    local servers, domain = {}, settings.get("net.domain")
+    for server in (settings.get("net.dns") or ""):gmatch("[^,%s]+") do
+        local addr = address.parse(server)
+        if addr then servers[#servers + 1] = addr end
+    end
+    for _, client in pairs(stack.dhcp_clients or {}) do
+        local lease = client.lease
+        if lease then
+            for _, server in ipairs(lease.dns) do servers[#servers + 1] = server end
+            domain = domain or lease.domain
+        end
+    end
+
+    local hosts = {}
+    for name, value in pairs(settings.get("net.hosts") or {}) do
+        if type(name) == "string" and type(value) == "string" then hosts[dns.normalise(name)] = value end
+    end
+    return { hosts = hosts, servers = servers, domain = domain, hostname = hostname(), cache = cache }
+end
+
+-- Resolve a name (or address) to a number.
+local function resolve_number(name)
+    local s = load()
+    return await(function(callback) dns.resolve(s, name, resolver_options(), callback) end)
 end
 
 --- Run the network stack. This is started when the computer starts, and never returns, so there's no need to call it
@@ -178,7 +281,8 @@ end
 --[[- Get this computer's network interfaces.
 
 @treturn { {
-    name = string, kind = string, band = string, address? = string, prefix? = number,
+    name = string, kind = string, band = string, address? = string, prefix? = number, config = string,
+    dhcp? = string, lease? = number, link_local = boolean,
     duplicate = boolean, id = number, unicast = number, broadcast = number, neighbours = number,
     frames_in = number, frames_out = number, dropped = number
 }... } Each interface:
@@ -187,6 +291,11 @@ end
  - `kind`: `"wired"`, `"wireless"` or `"ender"`.
  - `band`: `"high"` or `"low"`. Only meaningful for wireless modems.
  - `address`, `prefix`: The interface's address and prefix length, if it has one.
+ - `config`: How the address is set: `"dhcp"`, `"static"` or `"none"`.
+ - `dhcp`: For DHCP, what the client is doing: `"discovering"`, `"requesting"`, `"bound"`, `"renewing"` or
+   `"link-local"` (no server answered).
+ - `lease`: For a DHCP lease, how many seconds are left.
+ - `link_local`: Whether the address is a link-local one, chosen without a DHCP server.
  - `duplicate`: Whether another computer is using the same address. The interface isn't used if so.
  - `id`: This computer's ID, which is its address on the link.
  - `unicast`, `broadcast`: The channels the interface listens on.
@@ -194,14 +303,27 @@ end
  - `frames_in`, `frames_out`, `dropped`: Statistics.
 ]]
 function interfaces()
-    return load():interface_info()
+    local s = load()
+    local result = s:interface_info()
+    for _, info in ipairs(result) do
+        local client = s.dhcp_clients and s.dhcp_clients[info.name]
+        if client then
+            local state = client:info()
+            info.config, info.dhcp, info.lease = "dhcp", state.state, state.expires
+        else
+            info.config = info.address and "static" or "none"
+        end
+        local interface = s.interfaces[info.name]
+        info.link_local = interface.address ~= nil and address.contains(0xA9FE0000, 16, interface.address)
+    end
+    return result
 end
 
---[[- Set or remove an interface's address. This lasts until the computer restarts: use `ifconfig` to keep it.
+--[[- Set how an interface gets its address. This lasts until the computer restarts: use `ifconfig` to keep it.
 
 @tparam string interface The interface's name.
-@tparam string|nil addr The address and prefix length, such as `"10.0.0.1/24"`, or `nil` to remove it. Without a prefix
-length, `/24` is assumed.
+@tparam string|nil addr An address and prefix length, such as `"10.0.0.1/24"`; `"dhcp"` to ask a DHCP server; or
+`nil` (or `"none"`) for no address. Without a prefix length, `/24` is assumed.
 @throws If there is no such interface, or the address is invalid.
 ]]
 function setAddress(interface, addr)
@@ -210,14 +332,9 @@ function setAddress(interface, addr)
     local s = load()
     if not s.interfaces[interface] then error("No interface named '" .. interface .. "'", 2) end
 
-    if addr == nil then
-        s:set_address(interface, nil)
-        return
-    end
-
-    local parsed, prefix = address.parse(addr)
-    if not parsed then error(prefix, 2) end
-    s:set_address(interface, parsed, prefix or DEFAULT_PREFIX)
+    if addr == "dhcp" then stop_dhcp(interface, false) end
+    local ok, err = apply(interface, addr or "none")
+    if not ok then error(err, 2) end
 end
 
 --[[- Get an interface's address.
@@ -231,6 +348,14 @@ function getAddress(interface)
     return found and found.address and address.format(found.address, found.prefix)
 end
 
+--- Get this computer's hostname: the `net.hostname` setting, or else its label, made safe for a name.
+--
+-- @treturn string The hostname. The computer answers to this name followed by `.local`.
+function getHostname()
+    load()
+    return hostname()
+end
+
 --[[- Get the computers this one has talked to directly.
 
 @treturn { { interface = string, address = string, id = number, expires = number, signal? = number }... } Each
@@ -241,9 +366,74 @@ function neighbours()
     return load():neighbour_info()
 end
 
+--[[- Find the address for a name.
+
+Names are looked up in this order: addresses (which are returned as they are), the `net.hosts` setting, this computer's
+own name, names ending in `.local` (asked of every computer on the local network), and then DNS servers. A name without
+dots is tried in the search domain, then as a `.local` name.
+
+@tparam string name The name, such as `"bank.home"` or `"turtle-7.local"`.
+@treturn[1] string The address.
+@treturn[2] nil If the name couldn't be found.
+@treturn[2] string Why not.
+@usage Find another computer's address.
+
+```lua
+print(net.resolve("my-friend.local"))
+```
+]]
+function resolve(name)
+    expect(1, name, "string")
+    local addr, err = resolve_number(name)
+    if not addr then return nil, err end
+    return address.format(addr)
+end
+
+--[[- Offer a service on the local network, so other computers can find it with [`net.lookup`].
+
+@tparam string service The service's name, such as `"chat"`.
+@tparam number port The port the service listens on.
+]]
+function host(service, port)
+    expect(1, service, "string")
+    expect(2, port, "number")
+    load()
+    services[dns.normalise(service)] = port
+end
+
+--- Stop offering a service.
+--
+-- @tparam string service The service's name.
+function unhost(service)
+    expect(1, service, "string")
+    load()
+    services[dns.normalise(service)] = nil
+end
+
+--[[- Find every computer offering a service on the local network.
+
+@tparam string service The service's name.
+@tparam[opt=1] number timeout How long to wait for answers, in seconds.
+@treturn { { host = string, address = string, port = number }... } Each computer which answered, with its name,
+address and the service's port.
+@usage Find chat servers.
+
+```lua
+for _, server in ipairs(net.lookup("chat")) do print(server.host, server.address, server.port) end
+```
+]]
+function lookup(service, timeout)
+    expect(1, service, "string")
+    expect(2, timeout, "number", "nil")
+    local s = load()
+    local results = await(function(callback) dns.lookup(s, service, timeout or 1, callback) end)
+    for _, result in ipairs(results) do result.address = address.format(result.address) end
+    return results
+end
+
 --[[- Send an echo request to another computer and wait for its reply.
 
-@tparam string addr The computer's address. A broadcast address gets the first reply from anyone.
+@tparam string target The computer's name or address. A broadcast address gets the first reply from anyone.
 @tparam[opt=2] number timeout How long to wait, in seconds.
 @treturn[1] number The round trip time, in seconds.
 @treturn[1] number The reply's remaining time to live.
@@ -257,19 +447,19 @@ local time, err = net.ping("10.0.0.2")
 if time then print(("Reply in %d ms"):format(time * 1000)) else print(err) end
 ```
 ]]
-function ping(addr, timeout)
-    expect(1, addr, "string")
+function ping(target, timeout)
+    expect(1, target, "string")
     expect(2, timeout, "number", "nil")
     local s = load()
 
-    local dst, err = address.parse(addr)
+    local dst, err = resolve_number(target)
     if not dst then return nil, err end
 
     local id
     id, err = s:echo(dst)
     if not id then return nil, err end
 
-    local timer = os.startTimer(timeout or 2)
+    local timer = os.startTimer(timeout or DEFAULT_TIMEOUT)
     while true do
         local event, arg = os.pullEvent()
         if event == "net_echo" and arg == id then
@@ -284,6 +474,99 @@ function ping(addr, timeout)
         end
     end
 end
+
+local Socket = {}
+Socket.__index = Socket
+
+--[[- Send a datagram from this socket.
+
+@tparam string target The name or address to send to. The broadcast address (`255.255.255.255`) reaches every
+computer on the local network.
+@tparam number port The port to send to.
+@param data The data: any value which can be sent through a modem.
+@tparam[opt] string interface For broadcasts, the only interface to send on.
+@treturn[1] true If it was sent. Datagrams may still be lost.
+@treturn[2] nil If it couldn't be sent.
+@treturn[2] string Why not.
+]]
+function Socket:send(target, port, data, interface)
+    expect(1, target, "string")
+    expect(2, port, "number")
+    expect(4, interface, "string", "nil")
+    if self.socket.closed then return nil, "Socket is closed" end
+
+    local dst, err = resolve_number(target)
+    if not dst then return nil, err end
+    return stack:udp_send(self.socket, dst, port, data, interface)
+end
+
+--[[- Wait for a datagram to arrive.
+
+@tparam[opt] number timeout How long to wait, in seconds. Waits forever if not given.
+@return[1] The datagram's data.
+@treturn[1] string The address it came from.
+@treturn[1] number The port it came from.
+@treturn[1] string The interface it arrived on.
+@treturn[2] nil If nothing arrived in time, or the socket is closed.
+]]
+function Socket:receive(timeout)
+    expect(1, timeout, "number", "nil")
+    local queue = self.socket.queue
+    local timer = timeout and os.startTimer(timeout)
+    while true do
+        local item = table.remove(queue, 1)
+        if item then
+            if timer then os.cancelTimer(timer) end
+            return item.data, address.format(item.from), item.port, item.interface
+        end
+        if self.socket.closed then return nil end
+
+        local event, arg = os.pullEvent()
+        if event == "timer" and arg == timer then return nil end
+    end
+end
+
+--- Get the port this socket is bound to.
+--
+-- @treturn number The port.
+function Socket:getPort()
+    return self.socket.port
+end
+
+--- Close this socket, freeing its port.
+function Socket:close()
+    stack:udp_close(self.socket)
+end
+
+--[[- Datagram sockets, for sending messages without connections. Datagrams may be lost, and nothing tells you if they
+are, much like UDP.
+
+@usage A server which echoes back anything it receives on port 7.
+
+```lua
+local socket = net.udp.open(7)
+while true do
+    local data, from, port = socket:receive()
+    socket:send(from, port, data)
+end
+```
+]]
+udp = {
+    --[[- Open a datagram socket. Close it once you're done, so its port is freed.
+
+    @tparam[opt] number port The port to listen on, or `nil` for any free port. Servers usually pick a port; clients
+    usually don't.
+    @treturn[1] table The socket, with `send`, `receive`, `getPort` and `close` methods.
+    @treturn[2] nil If the port is already in use.
+    @treturn[2] string An error message.
+    ]]
+    open = function(port)
+        expect(1, port, "number", "nil")
+        local socket, err = load():udp_open(port)
+        if not socket then return nil, err end
+        return setmetatable({ socket = socket }, Socket)
+    end,
+}
 
 --[[- Get the most recent errors in the network stack, for debugging. Errors are kept here rather than printed, so they
 don't interrupt other programs.

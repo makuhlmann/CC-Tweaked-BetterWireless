@@ -1,7 +1,8 @@
-ifconfig shows this computer's network interfaces, and sets their addresses. Every modem is an interface. Addresses are saved, so they are restored when the computer starts.
+ifconfig shows this computer's network interfaces and hostname, and sets how interfaces get their addresses. Every modem is an interface. By default, interfaces ask a DHCP server for an address, and give themselves a link-local one (169.254.x.y) if there isn't a server. Settings are saved, so they apply when the computer starts.
 
 ex:
 "ifconfig" shows every interface, its address, and how much traffic it has seen.
-"ifconfig top 10.0.0.1/24" gives the interface "top" the address 10.0.0.1 on network 10.0.0.0/24.
-"ifconfig top none" removes the address of the interface "top".
+"ifconfig top 10.0.0.1/24" gives the interface "top" the fixed address 10.0.0.1, on network 10.0.0.0/24.
+"ifconfig top dhcp" makes "top" ask a DHCP server again.
+"ifconfig top none" gives "top" no address at all.
 "ifconfig top band low" makes a wireless modem use the long-range low band after the computer restarts.

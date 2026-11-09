@@ -28,4 +28,16 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT)
     fun Net_ping_wired(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * Two computers with nothing set up give themselves link-local addresses, and find each other by name.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 2)
+    fun Net_zero_setup(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * A computer gets its address from a DHCP server, then finds the server by name with its DNS server.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 3)
+    fun Net_dhcp(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

@@ -8,66 +8,7 @@ describe("cc.internal.net.stack", function()
 
     local function ip(text) return (address.parse(text)) end
 
-    -- Modems hand each receiver its own copy of a message.
-    local function copy(value) return textutils.unserialise(textutils.serialise(value)) end
-
-    --- A virtual network: one link, which every stack's interface "top" is on.
-    local function network()
-        local self = { time = 0, queue = {}, stacks = {} }
-
-        function self.add(id, addr)
-            local stack
-            stack = Stack.new {
-                id = id,
-                clock = function() return self.time end,
-                transmit = function(_, channel, _, frame)
-                    table.insert(self.queue, { sender = stack, channel = channel, frame = copy(frame) })
-                end,
-                wake = function() end,
-            }
-            stack:add_interface("top", "top", "wired", "high")
-            if addr then
-                local parsed, prefix = address.parse(addr)
-                stack:set_address("top", parsed, prefix)
-            end
-            table.insert(self.stacks, stack)
-            return stack
-        end
-
-        --- Deliver frames until nobody sends anything more.
-        function self.run()
-            local count = 0
-            while #self.queue > 0 do
-                local item = table.remove(self.queue, 1)
-                for _, stack in ipairs(self.stacks) do
-                    if stack ~= item.sender then stack:receive("top", item.channel, copy(item.frame)) end
-                end
-
-                count = count + 1
-                if count > 1000 then error("Network never went quiet", 2) end
-            end
-        end
-
-        --- Let time pass, running any timers which are due.
-        function self.advance(seconds)
-            local target = self.time + seconds
-            while true do
-                local next
-                for _, stack in ipairs(self.stacks) do
-                    local deadline = stack:next_deadline()
-                    if deadline and (not next or deadline < next) then next = deadline end
-                end
-                if not next or next > target then break end
-
-                self.time = next
-                for _, stack in ipairs(self.stacks) do stack:tick() end
-                self.run()
-            end
-            self.time = target
-        end
-
-        return self
-    end
+    local network = require "support.virtual_network"
 
     it("uses separate channels for each band", function()
         expect({ Stack.channels(1500, "low") }):same { 500, 1000 }
@@ -184,5 +125,84 @@ describe("cc.internal.net.stack", function()
         expect(a.interfaces.top.duplicate):eq(true)
         expect(b.interfaces.top.duplicate):eq(true)
         expect({ a:echo(ip("10.0.0.5")) }):same { nil, "Network unreachable" }
+    end)
+
+    describe("datagrams", function()
+        it("are delivered to sockets", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            local b = net.add(2, "10.0.0.2/24")
+            net.run()
+
+            local server = b:udp_open(7000)
+            local client = a:udp_open()
+            expect(client.port >= 49152):eq(true)
+            expect(a:udp_send(client, ip("10.0.0.2"), 7000, { hello = "world" })):eq(true)
+            net.run()
+
+            expect(#server.queue):eq(1)
+            expect(server.queue[1]):same { data = { hello = "world" }, from = ip("10.0.0.1"), port = client.port, interface = "top" }
+        end)
+
+        it("call handlers instead of queueing", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            local b = net.add(2, "10.0.0.2/24")
+            net.run()
+
+            local received
+            b:udp_open(7000, function(data, from, port) received = { data, from, port } end)
+            local client = a:udp_open()
+            a:udp_send(client, ip("10.0.0.2"), 7000, "hi")
+            net.run()
+            expect(received):same { "hi", ip("10.0.0.1"), client.port }
+        end)
+
+        it("report closed ports", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            net.add(2, "10.0.0.2/24")
+            net.run()
+
+            local client = a:udp_open()
+            local reported
+            client.on_error = function(err) reported = err end
+            a:udp_send(client, ip("10.0.0.2"), 7000, "hi")
+            net.run()
+            expect(reported):eq("Port unreachable")
+        end)
+
+        it("can be broadcast without an address", function()
+            local net = network()
+            local a = net.add(1)
+            local b = net.add(2, "10.0.0.2/24")
+            net.run()
+
+            local server = b:udp_open(67)
+            local client = a:udp_open(68)
+            a:udp_send(client, 0xFFFFFFFF, 67, "anyone?", "top")
+            net.run()
+            expect(server.queue[1].from):eq(0)
+        end)
+
+        it("refuse ports which are in use", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            expect(a:udp_open(7000) ~= nil):eq(true)
+            expect({ a:udp_open(7000) }):same { nil, "Port 7000 is in use" }
+        end)
+    end)
+
+    it("runs timers in order, unless cancelled", function()
+        local net = network()
+        local a = net.add(1, "10.0.0.1/24")
+        local ran = {}
+        a:schedule(2, function() ran[#ran + 1] = "second" end)
+        a:schedule(1, function() ran[#ran + 1] = "first" end)
+        local cancelled = a:schedule(1.5, function() ran[#ran + 1] = "cancelled" end)
+        a:cancel(cancelled)
+
+        net.advance(3)
+        expect(ran):same { "first", "second" }
     end)
 end)

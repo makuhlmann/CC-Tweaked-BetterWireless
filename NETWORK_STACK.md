@@ -394,20 +394,23 @@ DHCP runs over datagrams, with the server on port 67 and clients on port 68.
 
 1. **Discover:** the client broadcasts from `0.0.0.0`, with its computer ID, hostname and any address it used before.
 2. **Offer:** each server answers with an address and the network's settings: prefix length, gateway, DNS servers,
-   domain, lease time, and the interface mode (§4).
+   domain and lease time. (Telling wireless clients to use station mode, §4, comes with routing in phase 3.)
 3. **Request:** the client broadcasts which offer it accepts, so other servers can withdraw theirs.
 4. **Ack** confirms the lease, or **Nak** refuses it.
 
-The client renews directly with its server halfway through the lease, and broadcasts to any server at seven eighths.
-`release` gives the address back. Lease times use real time (`os.epoch("utc")`), and the server keeps its leases on disk,
-so both survive restarts.
+The client starts renewing halfway through the lease, trying more often as it runs out, and starts again from
+scratch if it does. `release` gives the address back. The server's lease times use real time (`os.epoch("utc")`), and
+it keeps its leases in `/.dhcpd/<interface>.leases`, so they survive restarts.
 
-- **Server (`dhcpd`):** address pools per subnet, reservations by computer ID, and a quick ping before offering an
-  address in case something is already using it.
+- **Server (`dhcpd`):** one address range on one interface (by default `.100` to `.199`). A client gets back the
+  address it had before when it can, which works much like a reservation. Before offering a new address, the server
+  pings it in case a computer with a fixed address is using it. The settings `dhcpd.lease`, `dhcpd.dns`,
+  `dhcpd.domain` and `dhcpd.gateway` are passed on to clients.
 - **Relays:** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
   adding the address it received them on, so the server knows which pool to use. One server can cover a whole base.
-- **No server:** after three unanswered attempts, about ten seconds, the client takes a link-local address (§3) and
-  keeps trying every minute.
+- **No server:** after three unanswered attempts, about six seconds, the client takes a link-local address (§3). It
+  tries DHCP again after 15 seconds, then less often, doubling up to every five minutes, so a server started later is
+  found quickly without unconfigured computers flooding the network.
 
 ### DNS
 
@@ -423,10 +426,12 @@ DNS also runs over datagrams, on port 53.
   - `KEY`: a host's public key or certificate (§9)
   - `TXT`: free text
 - **Queries and answers:** `{id, name, type}` is answered with `{id, code, records = {{name, type, value, ttl}, ...}}`.
-- **Server (`dnsd`):** authoritative for zones read from `/etc/zones/<zone>.lua`. Other queries are forwarded to an
-  upstream server. The DHCP server can register clients' hostnames in a zone as it hands out leases (dynamic DNS).
-- **Resolver:** built into the stack. It caches answers until their TTL runs out, and checks `net.hosts` in settings
-  first.
+- **Server (`dnsd`):** answers for one zone, from `/zones/<zone>.txt`, which has one `name address` pair per line (`@`
+  is the zone itself). The file is read for every question, so edits apply at once. Computers which got their address
+  from `dhcpd` on the same computer are found by their hostname too, which gives dynamic DNS for free. Forwarding
+  other zones to an upstream server isn't done yet.
+- **Resolver:** built into the stack. It checks addresses, `net.hosts` in settings, its own name and its cache first.
+  A name without dots is tried in the search domain (from DHCP or `net.domain`), then as a `.local` name.
 - **`.local` names:** names and services ending in `.local` are asked for by broadcast on every interface. Whoever owns
   them answers, so small networks work with no servers, like rednet today.
 
@@ -1007,6 +1012,11 @@ Each phase is usable on its own.
   logic is `cc.internal.net.stack`, which takes its clock, modems and events as functions, so the tests in
   `test-rom/spec/modules/cc/internal/net/` run whole virtual networks. In the mod, `modem.isInterdimensional()` and the
   `max_message_size` limit for radio messages (64 KiB by default).
+- **Phase 2 is done:** datagram sockets (`net.udp.open`), DHCP (clients in the stack, which every interface uses unless
+  it has a fixed address; the `dhcpd` server), link-local fallback, names (`net.resolve`, `.local` names, services with
+  `net.host` and `net.lookup`, the `dnsd` server) and `nslookup`. The logic is in `cc.internal.net.dhcp` and
+  `cc.internal.net.dns`, tested on virtual networks, and two game tests show computers finding each other with no setup,
+  and through DHCP and DNS servers.
 
 | Phase | Delivers | Done when |
 |---|---|---|

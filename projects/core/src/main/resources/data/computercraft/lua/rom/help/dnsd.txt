@@ -1,0 +1,6 @@
+dnsd is a DNS server for one zone, such as "home". It answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home). Computers which got their address from dhcpd on the same computer can be found by their hostname too. Run it in the background with "bg" on an advanced computer, or from startup.
+
+Clients find the server through DHCP (set dhcpd.dns and dhcpd.domain), or the settings net.dns and net.domain.
+
+ex:
+"dnsd home" answers for names ending in .home.

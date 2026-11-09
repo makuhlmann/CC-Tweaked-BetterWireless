@@ -1,0 +1,7 @@
+dhcpd is a DHCP server: it hands out addresses to computers on one of its interfaces, which must have a fixed address. Leases are saved, so computers keep their addresses when the server restarts. Run it in the background with "bg" on an advanced computer, or from startup.
+
+The settings dhcpd.lease (seconds, default 3600), dhcpd.dns (DNS servers, separated by commas), dhcpd.domain and dhcpd.gateway are passed on to clients.
+
+ex:
+"dhcpd top" hands out .100 to .199 of the network on the interface "top".
+"dhcpd top 50 80" hands out .50 to .80.
