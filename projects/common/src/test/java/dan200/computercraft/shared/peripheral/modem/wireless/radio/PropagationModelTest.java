@@ -1,0 +1,177 @@
+// SPDX-FileCopyrightText: 2026 The CC: Tweaked Developers
+//
+// SPDX-License-Identifier: MPL-2.0
+
+package dan200.computercraft.shared.peripheral.modem.wireless.radio;
+
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.IntBinaryOperator;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+public class PropagationModelTest {
+    private static final int GROUND = 64;
+    private static final double VHF = 150, UHF = 2400;
+    private static final RadioEnvironment ENV = RadioEnvironment.DEFAULT;
+
+    /** A link budget which reaches exactly 1024 blocks over flat ground on VHF. */
+    private static final double BUDGET = ENV.flatGroundLoss(1024, VHF);
+
+    @Test
+    public void flatGroundMatchesCalibration() {
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        var link = evaluate(terrain, 0, 0, 1024, VHF);
+
+        assertEquals(BUDGET, link.loss(), 0.5, "Ground level antennas 1024 blocks apart are right at the edge");
+        assertEquals(0, link.through(), 1e-9);
+    }
+
+    @Test
+    public void heightIncreasesRange() {
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        var low = evaluate(terrain, 0, 0, 2048, VHF);
+        var high = PropagationModel.evaluate(0.5, GROUND + 30, 0.5, 2048.5, GROUND + 30, 0.5, VHF, BUDGET, ENV, terrain);
+
+        assertTrue(low.loss() > BUDGET, "Ground level antennas should not reach 2048 blocks");
+        assertTrue(high.loss() < BUDGET, "Antennas on 30m towers should: " + high.loss());
+    }
+
+    @Test
+    public void hillDiffracts() {
+        var flat = new FakeTerrain((x, z) -> GROUND);
+        // A 40-block high, 100-block wide ridge in the middle of the path.
+        var hill = new FakeTerrain((x, z) -> x >= 450 && x < 550 ? GROUND + 40 : GROUND);
+
+        var clear = evaluate(flat, 0, 0, 1000, VHF);
+        var blocked = evaluate(hill, 0, 0, 1000, VHF);
+
+        assertTrue(blocked.diffracted(), "Signal should go over the hill, not through it");
+        assertTrue(blocked.diffraction() > 15, "Hill should cost a fair amount: " + blocked.diffraction());
+        assertEquals(clear.baseLoss(), blocked.baseLoss(), 1e-6);
+        assertTrue(blocked.loss() > clear.loss());
+    }
+
+    @Test
+    public void higherFrequencyDiffractsWorse() {
+        var hill = new FakeTerrain((x, z) -> x >= 450 && x < 550 ? GROUND + 40 : GROUND);
+        var vhf = evaluate(hill, 0, 0, 1000, VHF);
+        var uhf = evaluate(hill, 0, 0, 1000, UHF);
+        assertTrue(uhf.diffraction() > vhf.diffraction());
+    }
+
+    @Test
+    public void wallNearAntennaAttenuates() {
+        // A single block thick, very tall rock wall 10 blocks from the transmitter, so going over it is expensive.
+        var terrain = new FakeTerrain((x, z) -> x == 10 ? GROUND + 200 : GROUND);
+        terrain.solid = (x, y, z) -> x == 10 && y < GROUND + 200 ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+
+        var link = evaluate(terrain, 0, 0, 100, VHF);
+        assertFalse(link.diffracted(), "Signal should go through the wall");
+        assertEquals(RadioMaterial.ROCK.attenuation(VHF), link.through(), 0.5);
+    }
+
+    @Test
+    public void woodIsCheaperThanRock() {
+        var rock = new FakeTerrain((x, z) -> x == 10 ? GROUND + 200 : GROUND);
+        rock.solid = (x, y, z) -> x == 10 && y < GROUND + 200 ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+        var wood = new FakeTerrain((x, z) -> x == 10 ? GROUND + 200 : GROUND);
+        wood.solid = (x, y, z) -> x == 10 && y < GROUND + 200 ? BlockRadioInfo.full(RadioMaterial.WOOD) : null;
+
+        assertTrue(evaluate(wood, 0, 0, 100, UHF).loss() < evaluate(rock, 0, 0, 100, UHF).loss());
+    }
+
+    @Test
+    public void buriedAntennaIsCutOff() {
+        // The transmitter sits 30 blocks underground; everything in that column above it is rock.
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        terrain.solid = (x, y, z) -> y < GROUND ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+
+        var link = PropagationModel.evaluate(0.5, GROUND - 30, 0.5, 200.5, GROUND + 1, 0.5, VHF, BUDGET, ENV, terrain);
+        assertTrue(link.loss() > BUDGET, "Signal should not escape 30 blocks of rock: " + link);
+    }
+
+    @Test
+    public void shallowAntennaGetsThrough() {
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        terrain.solid = (x, y, z) -> y < GROUND ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+
+        // Two blocks under the surface, transmitting straight up to a receiver above it.
+        var link = PropagationModel.evaluate(0.5, GROUND - 2, 0.5, 0.5, GROUND + 40, 0.5, VHF, BUDGET, ENV, terrain);
+        assertTrue(link.loss() < BUDGET, "Signal should escape two blocks of rock: " + link);
+    }
+
+    @Test
+    public void bunkerEscapesUpwards() {
+        // The transmitter is three blocks under the surface, and the receiver is far away at ground level, so the
+        // straight line between them runs through rock. The signal should instead escape through the ceiling.
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        terrain.solid = (x, y, z) -> y < GROUND ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+
+        var link = PropagationModel.evaluate(0.5, GROUND - 3, 0.5, 500.5, GROUND + 1, 0.5, VHF, BUDGET + 100, ENV, terrain);
+        assertTrue(link.diffracted(), "Signal should go up and over: " + link);
+        assertEquals(2 * RadioMaterial.ROCK.attenuation(VHF), link.over() - link.diffraction(), 0.5);
+    }
+
+    @Test
+    public void unknownTerrainIsInterpolated() {
+        // We only know the ground near each end; the model should assume it continues flat.
+        var terrain = new FakeTerrain((x, z) -> x < 50 || x > 950 ? GROUND : TerrainView.UNKNOWN);
+        var known = new FakeTerrain((x, z) -> GROUND);
+        assertEquals(evaluate(known, 0, 0, 1000, VHF).loss(), evaluate(terrain, 0, 0, 1000, VHF).loss(), 1e-6);
+    }
+
+    @Test
+    public void linksAreReciprocal() {
+        var terrain = new FakeTerrain((x, z) -> GROUND + (int) (20 * Math.sin(x / 50.0)) + (x == 30 ? 3 : 0));
+        var forward = PropagationModel.evaluate(0.5, GROUND + 25, 0.5, 700.5, GROUND + 30, 0.5, VHF, BUDGET + 100, ENV, terrain);
+        var backward = PropagationModel.evaluate(700.5, GROUND + 30, 0.5, 0.5, GROUND + 25, 0.5, VHF, BUDGET + 100, ENV, terrain);
+        assertTrue(forward.diffraction() > 0, "Hills should intrude on the Fresnel zone: " + forward);
+        assertEquals(forward.loss(), backward.loss(), 1.0);
+    }
+
+    private static LinkResult evaluate(TerrainView terrain, int fromX, int fromZ, int toX, double frequency) {
+        return PropagationModel.evaluate(fromX + 0.5, GROUND + 1, fromZ + 0.5, toX + 0.5, GROUND + 1, fromZ + 0.5, frequency, BUDGET + 200, ENV, terrain);
+    }
+
+    private static final class FakeTerrain implements TerrainView {
+        private final IntBinaryOperator height;
+        private final Map<Long, BlockRadioInfo> overrides = new HashMap<>();
+        BlockLookup solid = (x, y, z) -> null;
+
+        FakeTerrain(IntBinaryOperator height) {
+            this.height = height;
+        }
+
+        @Override
+        public int groundHeight(int x, int z) {
+            return height.applyAsInt(x, z);
+        }
+
+        @Override
+        public int surfaceHeight(int x, int z) {
+            return height.applyAsInt(x, z);
+        }
+
+        @Override
+        public @Nullable BlockRadioInfo block(int x, int y, int z) {
+            var override = overrides.get(((long) x << 40) ^ ((long) y << 20) ^ z);
+            if (override != null) return override;
+            var block = solid.get(x, y, z);
+            if (block != null) return block;
+
+            var ground = groundHeight(x, z);
+            if (ground == UNKNOWN) return null;
+            return y < ground ? BlockRadioInfo.full(RadioMaterial.ROCK) : BlockRadioInfo.AIR;
+        }
+    }
+
+    @FunctionalInterface
+    private interface BlockLookup {
+        @Nullable
+        BlockRadioInfo get(int x, int y, int z);
+    }
+}
