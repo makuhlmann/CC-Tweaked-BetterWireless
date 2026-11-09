@@ -50,6 +50,7 @@ dependencies {
     compileOnly(libs.mixin)
     compileOnly(libs.mixinExtra)
     compileOnly(libs.bundles.externalMods.common)
+    compileOnly(libs.distantHorizons.api)
 
     annotationProcessorEverywhere(libs.autoService)
     testFixturesAnnotationProcessor(libs.autoService)

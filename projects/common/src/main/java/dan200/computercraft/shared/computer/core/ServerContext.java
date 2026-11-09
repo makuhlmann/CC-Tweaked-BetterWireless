@@ -7,7 +7,6 @@ package dan200.computercraft.shared.computer.core;
 import com.google.common.annotations.VisibleForTesting;
 import dan200.computercraft.api.ComputerCraftAPI;
 import dan200.computercraft.api.filesystem.Mount;
-import dan200.computercraft.api.network.PacketNetwork;
 import dan200.computercraft.core.ComputerContext;
 import dan200.computercraft.core.apis.http.NettyHttp;
 import dan200.computercraft.core.computer.GlobalEnvironment;
@@ -100,6 +99,7 @@ public final class ServerContext {
         if (instance == null) return;
 
         instance.registry.close();
+        instance.wirelessNetwork.close();
         try {
             if (!instance.context.close(1, TimeUnit.SECONDS)) {
                 LOG.error("Failed to stop computers under deadline.");
@@ -128,6 +128,17 @@ public final class ServerContext {
         }
 
         return instance;
+    }
+
+    /**
+     * Get the {@link ServerContext} instance for a server, if it is running.
+     *
+     * @param server The current server.
+     * @return The current server context, or {@code null} if it has not been started or has already been stopped.
+     */
+    public static @Nullable ServerContext getIfRunning(MinecraftServer server) {
+        var instance = ServerContext.instance;
+        return instance != null && instance.server == server ? instance : null;
     }
 
     public static void reloadConfig() {
@@ -162,6 +173,7 @@ public final class ServerContext {
     public void tick() {
         registry.update();
         mainThread.tick();
+        wirelessNetwork.tick();
     }
 
     /**
@@ -213,7 +225,7 @@ public final class ServerContext {
      *
      * @return The wireless network.
      */
-    public PacketNetwork wirelessNetwork() {
+    public WirelessNetwork wirelessNetwork() {
         return wirelessNetwork;
     }
 

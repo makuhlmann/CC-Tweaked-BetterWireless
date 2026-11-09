@@ -59,7 +59,30 @@ public final class ConfigSpec {
 
     public static final ConfigFile.Value<Boolean> commandBlockEnabled;
     public static final ConfigFile.Value<Integer> modemRange;
+    public static final ConfigFile.Value<Integer> modemHighAltitudeRange;
     public static final ConfigFile.Value<Integer> modemRangeDuringStorm;
+    public static final ConfigFile.Value<Integer> modemHighAltitudeRangeDuringStorm;
+    public static final ConfigFile.Value<Boolean> radioEnabled;
+    public static final ConfigFile.Value<Integer> radioReferenceRange;
+    public static final ConfigFile.Value<Integer> radioMaxRange;
+    public static final ConfigFile.Value<Double> radioLowBandFrequency;
+    public static final ConfigFile.Value<Double> radioHighBandFrequency;
+    public static final ConfigFile.Value<Integer> radioHighBandFirstChannel;
+    public static final ConfigFile.Value<Double> radioHighBandBudgetOffset;
+    public static final ConfigFile.Value<Double> radioMetresPerBlock;
+    public static final ConfigFile.Value<Double> radioMetresPerBlockVertical;
+    public static final ConfigFile.Value<Double> radioEarthRadius;
+    public static final ConfigFile.Value<Boolean> radioGroundReflection;
+    public static final ConfigFile.Value<Double> radioMinAntennaHeight;
+    public static final ConfigFile.Value<Double> radioMaterialLossScale;
+    public static final ConfigFile.Value<Integer> radioVoxelRadius;
+    public static final ConfigFile.Value<Integer> radioProfileSamples;
+    public static final ConfigFile.Value<Double> radioStormPenalty;
+    public static final ConfigFile.Value<Integer> radioTickBudgetMicros;
+    public static final ConfigFile.Value<Integer> radioCacheTicks;
+    public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
+    public static final ConfigFile.Value<Boolean> radioUseGenerator;
+    public static final ConfigFile.Value<Boolean> radioUseDistantHorizons;
     public static final ConfigFile.Value<Integer> maxNotesPerTick;
     public static final ConfigFile.Value<Integer> monitorBandwidth;
 
@@ -277,12 +300,20 @@ public final class ConfigSpec {
                 .define("command_block_enabled", Config.enableCommandBlock);
 
             modemRange = builder
-                .comment("The maximum range of Wireless Modems in clear weather, in meters.")
+                .comment("The range of Wireless Modems at low altitude in clear weather, in meters.")
                 .defineInRange("modem_range", Config.modemRange, 0, MODEM_MAX_RANGE);
 
+            modemHighAltitudeRange = builder
+                .comment("The range of Wireless Modems at maximum altitude in clear weather, in meters.")
+                .defineInRange("modem_high_altitude_range", Config.modemHighAltitudeRange, 0, MODEM_MAX_RANGE);
+
             modemRangeDuringStorm = builder
-                .comment("The maximum range of Wireless Modems in stormy weather, in meters.")
+                .comment("The range of Wireless Modems at low altitude in stormy weather, in meters.")
                 .defineInRange("modem_range_during_storm", Config.modemRangeDuringStorm, 0, MODEM_MAX_RANGE);
+
+            modemHighAltitudeRangeDuringStorm = builder
+                .comment("The range of Wireless Modems at maximum altitude in stormy weather, in meters.")
+                .defineInRange("modem_high_altitude_range_during_storm", Config.modemHighAltitudeRangeDuringStorm, 0, MODEM_MAX_RANGE);
 
             maxNotesPerTick = builder
                 .comment("Maximum amount of notes a speaker can play at once.")
@@ -299,6 +330,116 @@ public final class ConfigSpec {
                        monitors to be updated in a single tick.
                     Set to 0 to disable.""")
                 .defineInRange("monitor_bandwidth", (int) Config.monitorBandwidth, 0, Integer.MAX_VALUE);
+
+            builder.comment("""
+                Simulate radio propagation for wireless modems. Rather than having a fixed range, signals are
+                attenuated by distance, terrain and the blocks they pass through. When disabled, the modem_range
+                options above are used instead.""");
+            builder.push("radio");
+
+            radioEnabled = builder
+                .comment("Whether to simulate radio propagation.")
+                .define("enabled", Config.radioEnabled);
+
+            radioReferenceRange = builder
+                .comment("""
+                    The range of two wireless modems placed on flat, open ground, in blocks. All other
+                    ranges follow from this: raising modems up increases their range, while hills and
+                    walls reduce it.""")
+                .defineInRange("reference_range", Config.radioReferenceRange, 1, MODEM_MAX_RANGE);
+
+            radioMaxRange = builder
+                .comment("""
+                    The maximum distance a wireless message can travel, in blocks, regardless of
+                    conditions. This bounds how much work the server does for each message.""")
+                .defineInRange("max_range", Config.radioMaxRange, 1, MODEM_MAX_RANGE);
+
+            radioLowBandFrequency = builder
+                .comment("The frequency of low channels (and rednet/GPS), in MHz. Lower frequencies penetrate and diffract better.")
+                .define("low_band_frequency", Config.radioLowBandFrequency);
+
+            radioHighBandFrequency = builder
+                .comment("The frequency of high channels, in MHz.")
+                .define("high_band_frequency", Config.radioHighBandFrequency);
+
+            radioHighBandFirstChannel = builder
+                .comment("""
+                    The first channel to use the high band. Channels 65533-65535 (used by rednet and GPS)
+                    always use the low band.""")
+                .defineInRange("high_band_first_channel", Config.radioHighBandFirstChannel, 0, 65535);
+
+            radioHighBandBudgetOffset = builder
+                .comment("How much stronger (or, if negative, weaker) high band transmitters are than low band ones, in dB.")
+                .define("high_band_power_offset", Config.radioHighBandBudgetOffset);
+
+            radioMetresPerBlock = builder
+                .comment("How many metres a block represents horizontally. Increase this for worlds generated at a reduced scale.")
+                .define("metres_per_block", Config.radioMetresPerBlock);
+
+            radioMetresPerBlockVertical = builder
+                .comment("How many metres a block represents vertically.")
+                .define("metres_per_block_vertical", Config.radioMetresPerBlockVertical);
+
+            radioEarthRadius = builder
+                .comment("""
+                    The radius of the planet, in kilometres, used to account for the curvature of the
+                    earth over long links. Set to 6371 for an Earth-scale world, or 0 for a flat world.""")
+                .define("earth_radius", Config.radioEarthRadius);
+
+            radioGroundReflection = builder
+                .comment("""
+                    Use the two-ray ground reflection model, under which signals close to the ground fade
+                    much faster. This makes the height of a modem matter.""")
+                .define("ground_reflection", Config.radioGroundReflection);
+
+            radioMinAntennaHeight = builder
+                .comment("The minimum height of an antenna above the surrounding terrain, in metres.")
+                .define("min_antenna_height", Config.radioMinAntennaHeight);
+
+            radioMaterialLossScale = builder
+                .comment("A multiplier for how much blocks attenuate signals. 1 is physically based.")
+                .define("material_loss_scale", Config.radioMaterialLossScale);
+
+            radioVoxelRadius = builder
+                .comment("""
+                    How far from each modem (in blocks) individual blocks are considered. Further away
+                    only heightmaps are used.""")
+                .defineInRange("block_radius", Config.radioVoxelRadius, 1, 512);
+
+            radioProfileSamples = builder
+                .comment("The maximum number of points sampled along the terrain between two modems.")
+                .defineInRange("profile_samples", Config.radioProfileSamples, 16, 4096);
+
+            radioStormPenalty = builder
+                .comment("How much noise thunderstorms add, in dB. Every 6dB roughly halves the range.")
+                .define("storm_noise", Config.radioStormPenalty);
+
+            radioTickBudgetMicros = builder
+                .comment("How long the server may spend evaluating radio links each tick, in microseconds.")
+                .defineInRange("tick_budget", Config.radioTickBudgetMicros, 100, 50_000);
+
+            radioCacheTicks = builder
+                .comment("How long to remember the strength of a link, in ticks.")
+                .defineInRange("cache_ticks", Config.radioCacheTicks, 0, 72_000);
+
+            radioLookupTimeoutTicks = builder
+                .comment("""
+                    How long to wait for the heights of unloaded chunks before guessing, in ticks.
+                    Messages crossing unloaded terrain are delayed by at most this long.""")
+                .defineInRange("lookup_timeout", Config.radioLookupTimeoutTicks, 0, 1200);
+
+            radioUseGenerator = builder
+                .comment("""
+                    Ask the world generator for the height of terrain which has never been generated.
+                    This is cheap for worlds generated from elevation data (e.g. Tellus) but somewhat
+                    expensive for vanilla terrain.""")
+                .define("use_generator", Config.radioUseGenerator);
+
+            radioUseDistantHorizons = builder
+                .comment("Read the height of unloaded terrain from Distant Horizons' LODs, if installed.")
+                .define("use_distant_horizons", Config.radioUseDistantHorizons);
+
+            builder.pop();
 
             builder.pop();
         }
@@ -418,8 +559,31 @@ public final class ConfigSpec {
         Config.enableCommandBlock = commandBlockEnabled.get();
         Config.maxNotesPerTick = maxNotesPerTick.get();
         Config.modemRange = modemRange.get();
+        Config.modemHighAltitudeRange = modemHighAltitudeRange.get();
         Config.modemRangeDuringStorm = modemRangeDuringStorm.get();
+        Config.modemHighAltitudeRangeDuringStorm = modemHighAltitudeRangeDuringStorm.get();
         Config.monitorBandwidth = monitorBandwidth.get();
+        Config.radioEnabled = radioEnabled.get();
+        Config.radioReferenceRange = radioReferenceRange.get();
+        Config.radioMaxRange = radioMaxRange.get();
+        Config.radioLowBandFrequency = Math.max(1, radioLowBandFrequency.get());
+        Config.radioHighBandFrequency = Math.max(1, radioHighBandFrequency.get());
+        Config.radioHighBandFirstChannel = radioHighBandFirstChannel.get();
+        Config.radioHighBandBudgetOffset = radioHighBandBudgetOffset.get();
+        Config.radioMetresPerBlock = Math.max(0.01, radioMetresPerBlock.get());
+        Config.radioMetresPerBlockVertical = Math.max(0.01, radioMetresPerBlockVertical.get());
+        Config.radioEarthRadius = Math.max(0, radioEarthRadius.get());
+        Config.radioGroundReflection = radioGroundReflection.get();
+        Config.radioMinAntennaHeight = Math.max(0.1, radioMinAntennaHeight.get());
+        Config.radioMaterialLossScale = Math.max(0, radioMaterialLossScale.get());
+        Config.radioVoxelRadius = radioVoxelRadius.get();
+        Config.radioProfileSamples = radioProfileSamples.get();
+        Config.radioStormPenalty = Math.max(0, radioStormPenalty.get());
+        Config.radioTickBudgetMicros = radioTickBudgetMicros.get();
+        Config.radioCacheTicks = radioCacheTicks.get();
+        Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();
+        Config.radioUseGenerator = radioUseGenerator.get();
+        Config.radioUseDistantHorizons = radioUseDistantHorizons.get();
 
         // Turtles
         Config.turtlesNeedFuel = turtlesNeedFuel.get();

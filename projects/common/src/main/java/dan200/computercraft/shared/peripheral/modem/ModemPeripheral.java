@@ -44,8 +44,13 @@ import java.util.Set;
  * <li><strong>Wireless modems:</strong> Wireless modems can send messages to any other wireless modem. They can be placed next to a
  * computer, or equipped as a pocket computer or turtle upgrade.
  * <p>
- * Wireless modems have a limited range, only sending messages to modems within 64 blocks. This range increases
- * linearly once the modem is above y=96, to a maximum of 384 at world height.</li>
+ * Wireless modems behave like real radios: their signal fades with distance, and is blocked by terrain and the blocks
+ * it passes through. Placing a modem higher up, in the open, greatly increases its range, while a modem in a cave or
+ * behind a hill may not reach anything at all. The strength of each received message is reported in the
+ * [`modem_message`] event.
+ * <p>
+ * Channels 1024 and above use a higher frequency than lower channels (and rednet and GPS), so have a shorter range
+ * and are blocked more easily by walls. Servers can configure all of this, or switch back to a simple fixed range.</li>
  * <li><strong>Ender modems:</strong> These are upgraded versions of normal wireless modems. They do not have a distance
  * limit, and can send messages between dimensions.</li>
  * <li><strong>Wired modems:</strong> These send messages to other any other wired modems connected to the same network
@@ -111,6 +116,18 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
 
     public void removed() {
         setNetwork(null);
+    }
+
+    @Override
+    public void receiveSameDimension(Packet packet, double distance) {
+        if (packet.sender() == this || !state.isOpen(packet.channel())) return;
+
+        synchronized (computers) {
+            for (var computer : computers) {
+                computer.queueEvent("modem_message",
+                    computer.getAttachmentName(), packet.channel(), packet.replyChannel(), packet.payload(), distance);
+            }
+        }
     }
 
     @Override

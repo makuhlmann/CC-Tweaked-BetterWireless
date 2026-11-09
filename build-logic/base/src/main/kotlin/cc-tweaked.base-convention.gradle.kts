@@ -38,6 +38,12 @@ base.archivesName.set("cc-tweaked-${libs.findVersion("minecraft").get()}-${proje
 repositories {
     mavenCentral()
 
+    // The Distant Horizons API is not mirrored, so fetch it from Modrinth directly.
+    exclusiveContent {
+        forRepositories(maven("https://api.modrinth.com/maven") { name = "Modrinth" })
+        filter { includeModule("maven.modrinth", "DistantHorizonsApi") }
+    }
+
     exclusiveContent {
         forRepositories(maven("https://maven.squiddev.cc/mirror"))
         filter {
@@ -46,7 +52,7 @@ repositories {
             includeGroup("com.simibubi.create")
             includeGroup("dev.architectury")
             includeGroup("dev.emi")
-            includeGroup("maven.modrinth")
+            includeModuleByRegex("maven\\.modrinth", "^(?!DistantHorizonsApi$).*")
             includeGroup("me.shedaniel.cloth")
             includeGroup("me.shedaniel")
             includeGroup("mezz.jei")

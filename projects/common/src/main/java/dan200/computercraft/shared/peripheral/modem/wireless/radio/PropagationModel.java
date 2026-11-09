@@ -264,7 +264,7 @@ public final class PropagationModel {
     }
 
     /**
-     * Walks the blocks along a ray from one antenna, tracking two things:
+     * Walks the blocks along a ray from one antenna. This tracks two things:
      * <ul>
      *     <li>The loss in the first {@code throughLength} blocks, for the straight-through path.</li>
      *     <li>The loss before the ray first reaches open air, for the path over the terrain.</li>

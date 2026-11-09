@@ -33,6 +33,7 @@ nightConfig = "3.9.0"
 
 # Minecraft mods
 complementary = "r5.9.3"
+distantHorizons = "7.1.0"
 iris-fabric = "1.11.7+26.3-fabric"
 iris-forge = "1.11.7+26.3-neoforge"
 jei = "31.9.0.56"
@@ -101,6 +102,7 @@ create-forge = { module = "com.simibubi.create:create-1.21.1", version.ref = "cr
 fabric-api = { module = "net.fabricmc.fabric-api:fabric-api", version.ref = "fabric-api" }
 fabric-junit = { module = "net.fabricmc:fabric-loader-junit", version.ref = "fabric-loader" }
 fabric-loader = { module = "net.fabricmc:fabric-loader", version.ref = "fabric-loader" }
+distantHorizons-api = { module = "maven.modrinth:DistantHorizonsApi", version.ref = "distantHorizons" }
 iris-fabric = { module = "maven.modrinth:iris", version.ref = "iris-fabric" }
 iris-forge = { module = "maven.modrinth:iris", version.ref = "iris-forge" }
 jei-api = { module = "mezz.jei:jei-26.3-common-api", version.ref = "jei" }

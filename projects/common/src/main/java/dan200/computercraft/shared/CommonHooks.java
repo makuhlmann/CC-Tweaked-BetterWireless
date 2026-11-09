@@ -87,8 +87,11 @@ public final class CommonHooks {
     }
 
     public static void onServerChunkUnload(LevelChunk chunk) {
-        if (!(chunk.getLevel() instanceof ServerLevel)) throw new IllegalArgumentException("Not a server chunk.");
+        if (!(chunk.getLevel() instanceof ServerLevel level)) throw new IllegalArgumentException("Not a server chunk.");
         TickScheduler.onChunkUnload(chunk);
+
+        var context = ServerContext.getIfRunning(level.getServer());
+        if (context != null) context.wirelessNetwork().onChunkUnload(chunk);
     }
 
     public static void onChunkWatch(LevelChunk chunk, ServerPlayer player) {

@@ -14,8 +14,32 @@ public final class Config {
     public static boolean commandRequireCreative = true;
 
     public static boolean enableCommandBlock = false;
-    public static int modemRange = 1024;
-    public static int modemRangeDuringStorm = 896;
+    public static int modemRange = 64;
+    public static int modemHighAltitudeRange = 384;
+    public static int modemRangeDuringStorm = 64;
+    public static int modemHighAltitudeRangeDuringStorm = 384;
+
+    public static boolean radioEnabled = true;
+    public static int radioReferenceRange = 1024;
+    public static int radioMaxRange = 16384;
+    public static double radioLowBandFrequency = 150;
+    public static double radioHighBandFrequency = 2400;
+    public static int radioHighBandFirstChannel = 1024;
+    public static double radioHighBandBudgetOffset = -20;
+    public static double radioMetresPerBlock = 1;
+    public static double radioMetresPerBlockVertical = 1;
+    public static double radioEarthRadius = 0;
+    public static boolean radioGroundReflection = true;
+    public static double radioMinAntennaHeight = 2;
+    public static double radioMaterialLossScale = 1;
+    public static int radioVoxelRadius = 64;
+    public static int radioProfileSamples = 512;
+    public static double radioStormPenalty = 6;
+    public static int radioTickBudgetMicros = 2000;
+    public static int radioCacheTicks = 100;
+    public static int radioLookupTimeoutTicks = 40;
+    public static boolean radioUseGenerator = true;
+    public static boolean radioUseDistantHorizons = true;
     public static int maxNotesPerTick = 8;
     public static int monitorDistance = 65;
     public static long monitorBandwidth = 1_000_000;
