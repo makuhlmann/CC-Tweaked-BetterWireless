@@ -87,6 +87,11 @@ describe("Routing", function()
 
             expect(net.ping(h1, ip("10.1.0.255"), nil, 1).from):eq(ip("10.1.0.1"))
             expect(r.forwarded):eq(0)
+
+            -- Nor broadcasts to a whole network on the other side.
+            expect(net.ping(h1, ip("10.2.0.255"), nil, 1)):eq(nil)
+            expect(r.forwarded):eq(0)
+            expect(r.interfaces.a.stats.dropped):eq(1)
         end)
     end)
 
@@ -303,6 +308,21 @@ describe("Routing", function()
             local result = net.ping(h1, ip("192.168.0.1"))
             expect(result.error):eq("Network unreachable")
             expect(result.from):eq(ip("10.23.0.3"))
+        end)
+
+        it("advertises each network once, at its lowest cost", function()
+            local _, _, _, routers, rips = line { nil, nil, { default = true } }
+            routers[3]:add_route { network = ip("10.3.0.0"), prefix = 24, gateway = ip("10.23.0.2"), metric = 5, source = "static" }
+            routers[3]:add_route { network = 0, prefix = 0, gateway = ip("10.3.0.9"), metric = 3, source = "static" }
+
+            local seen = {}
+            for _, route in ipairs(rips[3]:routes_for(routers[3].interfaces.bc)) do
+                local key = address.format(route.network, route.prefix)
+                expect(seen[key]):describe("Duplicate " .. key):eq(nil)
+                seen[key] = route.metric
+            end
+            expect(seen["10.3.0.0/24"]):eq(0)
+            expect(seen["0.0.0.0/0"]):eq(0)
         end)
 
         it("advertises fixed routes", function()

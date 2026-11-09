@@ -51,7 +51,7 @@ local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
 
 local stack, address, dhcp, dns, rip, running
-local rip_instance
+local rip_instance, rip_config
 local add_modem, apply_routing
 local errors = {}
 local services = {}
@@ -216,21 +216,23 @@ function apply_routing()
         if route then stack:add_route(route) else log_error(err) end
     end
 
-    if rip_instance then
-        rip_instance:stop()
-        rip_instance = nil
-    end
-    if settings.get("net.rip") then
-        local key = settings.get("net.rip.key")
-        if key and not crypto then
+    -- Only restart the routing protocol if its own settings changed: restarting forgets every learned route, which
+    -- would cut off traffic through this router until it learns them again.
+    local enabled, default, key = settings.get("net.rip") == true, settings.get("net.rip.default") == true, settings.get("net.rip.key")
+    local config = ("%s/%s/%s"):format(enabled, default, key or "")
+    if rip_instance and config == rip_config then
+        rip_instance:trigger() -- Fixed routes may have changed.
+    else
+        if rip_instance then
+            rip_instance:stop()
+            rip_instance = nil
+        end
+        rip_config = config
+        if enabled and key and not crypto then
             -- Running without the key would accept routes from anyone, which the key is there to stop.
             log_error("Cannot start routing: net.rip.key needs the crypto API, which is disabled.")
-        else
-            local ok, result = pcall(rip.start, stack, {
-                default = settings.get("net.rip.default") == true,
-                key = key,
-                hmac = key and crypto.hmac,
-            })
+        elseif enabled then
+            local ok, result = pcall(rip.start, stack, { default = default, key = key, hmac = key and crypto.hmac })
             if ok then rip_instance = result else log_error("Cannot start routing: " .. tostring(result)) end
         end
     end

@@ -87,14 +87,30 @@ function Rip:link_cost(interface, neighbour)
     return math.min(MAX_LINK_COST, 1 + math.max(0, math.floor((-60 - signal) / 10)))
 end
 
---- The routes to tell the neighbours on an interface about.
+--- The routes to tell the neighbours on an interface about. Each network appears once, with its lowest cost.
 --
 -- @tparam table interface The interface.
 -- @treturn { table... } The routes.
 function Rip:routes_for(interface)
-    local routes = {}
-    for _, other in pairs(self.stack.interfaces) do
-        if usable(other) then routes[#routes + 1] = { network = other.network, prefix = other.prefix, metric = 0 } end
+    local routes, seen = {}, {}
+    local function add(network, prefix, metric)
+        local key = network .. "/" .. prefix
+        local existing = seen[key]
+        if existing then
+            existing.metric = math.min(existing.metric, metric)
+        else
+            existing = { network = network, prefix = prefix, metric = metric }
+            seen[key] = existing
+            routes[#routes + 1] = existing
+        end
+    end
+
+    local names = {}
+    for name in pairs(self.stack.interfaces) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local other = self.stack.interfaces[name]
+        if usable(other) then add(other.network, other.prefix, 0) end
     end
     for _, route in ipairs(self.stack.routes) do
         if route.source == "rip" or route.source == "static" then
@@ -103,10 +119,10 @@ function Rip:routes_for(interface)
             -- back to us.
             if route.source == "rip" and route.interface == interface.name then metric = INFINITY end
             if route.gateway and address.contains(interface.network, interface.prefix, route.gateway) then metric = INFINITY end
-            routes[#routes + 1] = { network = route.network, prefix = route.prefix, metric = metric }
+            add(route.network, route.prefix, metric)
         end
     end
-    if self.options.default then routes[#routes + 1] = { network = 0, prefix = 0, metric = 0 } end
+    if self.options.default then add(0, 0, 0) end
     return routes
 end
 

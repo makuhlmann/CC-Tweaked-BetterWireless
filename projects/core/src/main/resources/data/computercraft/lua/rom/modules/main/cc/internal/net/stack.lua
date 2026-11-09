@@ -478,6 +478,11 @@ function Stack:forward(packet, interface)
 
     local out, next_hop = self:route(packet.dst)
     if not out then return self:send_error(packet, "unreachable", "net", interface) end
+    if packet.dst == out.broadcast_address then
+        -- Like real routers, don't broadcast to a whole network for someone on another: it makes floods too easy.
+        interface.stats.dropped = interface.stats.dropped + 1
+        return
+    end
 
     self.forwarded = self.forwarded + 1
     self:send_on(out, next_hop, packet)
