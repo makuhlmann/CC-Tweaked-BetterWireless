@@ -308,7 +308,7 @@ with `allow_keep_loaded` (default `true`).
 
 It's built on a chunk ticket the computer refreshes every tick. Once the computer turns off, is broken, or clears the
 setting, the ticket times out after five seconds and the chunk unloads as usual, so a computer can't leave a chunk
-loaded forever. Vanilla can save tickets with the world, but a world whose ticket list names an unknown ticket type
+loaded forever. Clearing the setting also removes the computer from the restart list (below) at once. Vanilla can save tickets with the world, but a world whose ticket list names an unknown ticket type
 fails to read all of it (including `/forceload` chunks), so removing the mod would break those. Instead,
 `computercraft/keep_loaded.json` lists the computers being kept loaded, and the server adds tickets for them when it
 starts. The computers then turn back on as their chunks load, and run their startup program. A computer which

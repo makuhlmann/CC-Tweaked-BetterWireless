@@ -136,6 +136,9 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         if (keepLoaded != newKeepLoaded) {
             keepLoaded = newKeepLoaded;
             setChanged();
+            if (!newKeepLoaded) {
+                ServerContext.get(computer.getLevel().getServer()).chunkLoader().release(computer.getLevel(), getBlockPos());
+            }
         }
         if (keepLoaded && (on || starting) && computer.canKeepLoaded()) {
             ServerContext.get(computer.getLevel().getServer()).chunkLoader().keepLoaded(computer.getLevel(), getBlockPos());

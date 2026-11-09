@@ -126,6 +126,41 @@ public final class ComputerChunkLoader {
     }
 
     /**
+     * Stop keeping a computer loaded, because it no longer wants to be. It's forgotten at once, so it won't be turned
+     * back on if the server restarts. Its ticket is left to time out, so its chunk doesn't unload while the computer is
+     * still running.
+     *
+     * @param level The level the computer is in.
+     * @param pos   The computer's position.
+     */
+    public void release(ServerLevel level, BlockPos pos) {
+        var positions = computers.get(level.dimension());
+        if (positions == null || !positions.containsKey(pos.asLong())) return;
+        positions.remove(pos.asLong());
+        save();
+    }
+
+    /**
+     * Forget every computer, and release the chunks loaded for them. The game tests use this, so computers left over
+     * from an earlier run aren't turned back on.
+     *
+     * @param server The current server.
+     */
+    public void reset(MinecraftServer server) {
+        for (var entry : computers.entrySet()) {
+            var level = server.getLevel(entry.getKey());
+            if (level == null) continue;
+
+            var positions = entry.getValue().keySet().iterator();
+            while (positions.hasNext()) {
+                level.getChunkSource().removeTicketWithRadius(TICKET, ChunkPos.containing(BlockPos.of(positions.nextLong())), RADIUS);
+            }
+        }
+        computers.clear();
+        save();
+    }
+
+    /**
      * Check whether a computer is being kept loaded.
      *
      * @param level The level the computer is in.

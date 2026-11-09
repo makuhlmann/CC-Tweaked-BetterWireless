@@ -95,6 +95,10 @@ object TestHooks {
 
         ManagedComputers.reset()
 
+        // Computers kept loaded by an earlier run were brought back as the server started. Release them before their
+        // chunks load, as they may share labels with this run's computers.
+        ServerContext.get(server).chunkLoader().reset(server)
+
         // Delete server context and add one with a mutable machine factory. This allows us to set the factory for
         // specific test batches without having to reset all computers.
         for (computer in ServerContext.get(server).registry().computers) {
