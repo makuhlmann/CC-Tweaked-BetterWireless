@@ -6,12 +6,15 @@ package dan200.computercraft.gametest
 
 import com.mojang.blaze3d.platform.InputConstants
 import dan200.computercraft.api.lua.Coerced
+import dan200.computercraft.api.lua.LuaException
 import dan200.computercraft.client.gui.AbstractComputerScreen
+import dan200.computercraft.core.apis.OSAPI
 import dan200.computercraft.core.apis.RedstoneAPI
 import dan200.computercraft.core.apis.TermAPI
 import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.shared.ModRegistry
+import dan200.computercraft.shared.computer.core.ServerContext
 import dan200.computercraft.test.core.assertArrayEquals
 import dan200.computercraft.test.core.computer.getApi
 import net.minecraft.client.input.KeyEvent
@@ -26,6 +29,7 @@ import net.minecraft.world.level.block.LeverBlock
 import net.minecraft.world.level.block.RedstoneLampBlock
 import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -75,6 +79,33 @@ class Computer_Test {
         thenExecute { context.setBlock(BlockPos(2, 1, 2), Blocks.AIR) }
         thenIdle(4)
         thenExecute { context.assertBlockHas(lamp, RedstoneLampBlock.LIT, false, "Lamp should not be lit") }
+    }
+
+    /**
+     * Check placed computers can ask to keep running when nobody is nearby, and that turtles can't.
+     */
+    @GameTest
+    fun Keep_loaded(context: GameTestHelper) = context.sequence {
+        val computer = BlockPos(1, 1, 2)
+
+        thenOnComputer("computer") {
+            val os = getApi<OSAPI>()
+            assertEquals(false, os.getKeepLoaded(), "Computer should not start out kept loaded")
+            os.setKeepLoaded(true)
+            assertEquals(true, os.getKeepLoaded(), "Computer should be kept loaded")
+        }
+        thenIdle(2)
+        thenExecute {
+            val chunkLoader = ServerContext.get(context.level.server).chunkLoader()
+            assertTrue(chunkLoader.isKeptLoaded(context.level, context.absolutePos(computer)), "Computer's chunk should be kept loaded")
+        }
+
+        thenOnComputer("turtle") {
+            val error = assertThrows(LuaException::class.java) { getApi<OSAPI>().setKeepLoaded(true) }
+            assertEquals("This computer cannot be kept loaded", error.message)
+        }
+
+        thenOnComputer("computer") { getApi<OSAPI>().setKeepLoaded(false) }
     }
 
     /**

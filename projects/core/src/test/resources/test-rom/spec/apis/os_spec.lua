@@ -124,6 +124,18 @@ describe("The os library", function()
         end)
     end)
 
+    describe("os.setKeepLoaded", function()
+        it("fails on computers which cannot be kept loaded", function()
+            expect.error(os.setKeepLoaded, true):eq("This computer cannot be kept loaded")
+            expect(os.getKeepLoaded()):eq(false)
+        end)
+
+        it("can always be turned off", function()
+            os.setKeepLoaded(false)
+            expect(os.getKeepLoaded()):eq(false)
+        end)
+    end)
+
     describe("os.time", function()
         it("supports in-game time", function()
             expect(os.time("ingame")):equal(os.time())

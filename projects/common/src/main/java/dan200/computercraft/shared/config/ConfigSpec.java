@@ -34,6 +34,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<String> defaultComputerSettings;
     public static final ConfigFile.Value<Boolean> logComputerErrors;
     public static final ConfigFile.Value<Boolean> commandRequireCreative;
+    public static final ConfigFile.Value<Boolean> allowKeepLoaded;
     public static final ConfigFile.Value<Integer> uploadMaxSize;
     public static final ConfigFile.Value<List<? extends String>> disabledGenericMethods;
 
@@ -156,6 +157,12 @@ public final class ConfigSpec {
                     Require players to be in creative mode and be opped in order to interact with
                     command computers. This is the default behaviour for vanilla's Command blocks.""")
                 .define("command_require_creative", Config.commandRequireCreative);
+
+            allowKeepLoaded = builder
+                .comment("""
+                    Allow computers to keep running when nobody is nearby, by keeping their chunk
+                    loaded (see os.setKeepLoaded). Only computers which ask for this are kept loaded.""")
+                .define("allow_keep_loaded", Config.allowKeepLoaded);
 
             disabledGenericMethods = builder
                 .comment("""
@@ -515,6 +522,7 @@ public final class ConfigSpec {
         CoreConfig.maximumFilesOpen = maximumFilesOpen.get();
         CoreConfig.defaultComputerSettings = defaultComputerSettings.get();
         Config.commandRequireCreative = commandRequireCreative.get();
+        Config.allowKeepLoaded = allowKeepLoaded.get();
 
         // Update our log filter if needed.
         var logFilter = MarkerFilter.createFilter(

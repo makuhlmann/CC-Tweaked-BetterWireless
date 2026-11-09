@@ -44,11 +44,13 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
     private static final String NBT_ID = "ComputerId";
     protected static final String NBT_LABEL = "Label";
     private static final String NBT_ON = "On";
+    private static final String NBT_KEEP_LOADED = "KeepLoaded";
     private static final String NBT_CAPACITY = "Capacity";
 
     private @Nullable UUID instanceID = null;
     private int computerID = -1;
     protected @Nullable String label = null;
+    protected boolean keepLoaded = false;
     protected long storageCapacity = -1;
     private boolean on = false;
     boolean startOn = false;
@@ -104,6 +106,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         }
 
         // If the computer isn't on and should be, then turn it on
+        var starting = startOn;
         if (startOn || (fresh && on)) {
             computer.turnOn();
             startOn = false;
@@ -125,6 +128,17 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         if (!Objects.equals(label, newLabel)) {
             label = newLabel;
             BlockEntityHelpers.updateBlock(this);
+        }
+
+        // If the computer wants to keep running when nobody is nearby, keep its chunk loaded. A computer which is just
+        // starting isn't on yet, but should still count.
+        var newKeepLoaded = computer.isKeepLoaded();
+        if (keepLoaded != newKeepLoaded) {
+            keepLoaded = newKeepLoaded;
+            setChanged();
+        }
+        if (keepLoaded && (on || starting) && computer.canKeepLoaded()) {
+            ServerContext.get(computer.getLevel().getServer()).chunkLoader().keepLoaded(computer.getLevel(), getBlockPos());
         }
 
         // Update the block state if needed.
@@ -150,6 +164,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         if (label != null) nbt.putString(NBT_LABEL, label);
         if (storageCapacity > 0) nbt.putLong(NBT_CAPACITY, storageCapacity);
         nbt.putBoolean(NBT_ON, on);
+        if (keepLoaded) nbt.putBoolean(NBT_KEEP_LOADED, true);
 
         lockCode.addToTag(nbt);
 
@@ -172,6 +187,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         label = nbt.getString(NBT_LABEL).orElse(null);
         storageCapacity = nbt.getLongOr(NBT_CAPACITY, -1);
         on = startOn = nbt.getBooleanOr(NBT_ON, false);
+        keepLoaded = nbt.getBooleanOr(NBT_KEEP_LOADED, false);
 
         lockCode = LockCode.fromTag(nbt);
     }
@@ -405,6 +421,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
             storageCapacity = copy.storageCapacity;
             on = copy.on;
             startOn = copy.startOn;
+            keepLoaded = copy.keepLoaded;
             lockCode = copy.lockCode;
 
             var computer = getServerComputer();

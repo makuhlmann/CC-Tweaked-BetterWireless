@@ -37,6 +37,7 @@ public class Computer {
     // Various properties of the computer
     private final int id;
     private @Nullable String label = null;
+    private volatile boolean keepLoaded = false;
 
     // Read-only fields about the computer
     private final GlobalEnvironment globalEnvironment;
@@ -143,6 +144,20 @@ public class Computer {
 
     public void setLabel(@Nullable String label) {
         this.label = label;
+    }
+
+    /**
+     * Whether this computer has asked to keep running when nobody is nearby.
+     *
+     * @return Whether this computer wants to be kept loaded.
+     * @see ComputerEnvironment#canKeepLoaded()
+     */
+    public boolean isKeepLoaded() {
+        return keepLoaded;
+    }
+
+    public void setKeepLoaded(boolean keepLoaded) {
+        this.keepLoaded = keepLoaded;
     }
 
     public void tick() {

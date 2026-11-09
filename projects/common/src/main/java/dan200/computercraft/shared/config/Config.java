@@ -12,6 +12,7 @@ package dan200.computercraft.shared.config;
 public final class Config {
     public static int uploadMaxSize = 512 * 1024; // 512 KB
     public static boolean commandRequireCreative = true;
+    public static boolean allowKeepLoaded = true;
 
     public static boolean enableCommandBlock = false;
     public static int modemRange = 64;

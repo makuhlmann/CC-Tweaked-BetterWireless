@@ -55,6 +55,7 @@ public class ServerComputer implements ComputerEnvironment {
     private final AtomicBoolean terminalChanged = new AtomicBoolean(false);
 
     private final long storageCapacity;
+    private final boolean canKeepLoaded;
 
     private int ticksSincePing;
 
@@ -78,6 +79,8 @@ public class ServerComputer implements ComputerEnvironment {
 
         computer = new Computer(context.computerContext(), this, terminal, properties.computerID);
         computer.setLabel(properties.label);
+        computer.setKeepLoaded(properties.keepLoaded);
+        canKeepLoaded = properties.canKeepLoaded;
 
         // Load in the externally registered APIs.
         for (var factory : ApiFactories.getAll()) {
@@ -250,6 +253,21 @@ public class ServerComputer implements ComputerEnvironment {
         computer.setLabel(label);
     }
 
+    /**
+     * Whether this computer has asked to keep running when nobody is nearby, using {@code os.setKeepLoaded}.
+     *
+     * @return Whether this computer wants to be kept loaded.
+     * @see #canKeepLoaded()
+     */
+    public final boolean isKeepLoaded() {
+        return computer.isKeepLoaded();
+    }
+
+    @Override
+    public final boolean canKeepLoaded() {
+        return canKeepLoaded && Config.allowKeepLoaded;
+    }
+
     @Override
     public final double getTimeOfDay() {
         return (level.getDefaultClockTime() + 6000) % 24000 / 1000.0;
@@ -283,6 +301,8 @@ public class ServerComputer implements ComputerEnvironment {
         private final int computerID;
         private @Nullable String label;
         private final ComputerFamily family;
+        private boolean keepLoaded;
+        private boolean canKeepLoaded;
 
         private int terminalWidth = Config.DEFAULT_COMPUTER_TERM_WIDTH;
         private int terminalHeight = Config.DEFAULT_COMPUTER_TERM_HEIGHT;
@@ -296,6 +316,29 @@ public class ServerComputer implements ComputerEnvironment {
 
         public Properties label(@Nullable String label) {
             this.label = label;
+            return this;
+        }
+
+        /**
+         * Set whether this computer starts out wanting to be kept loaded.
+         *
+         * @param keepLoaded Whether to keep this computer loaded.
+         * @return {@code this}, for chaining.
+         * @see #allowKeepLoaded()
+         */
+        public Properties keepLoaded(boolean keepLoaded) {
+            this.keepLoaded = keepLoaded;
+            return this;
+        }
+
+        /**
+         * Allow this computer to keep itself loaded, with {@code os.setKeepLoaded}. The caller is responsible for doing
+         * so, using {@link ComputerChunkLoader}.
+         *
+         * @return {@code this}, for chaining.
+         */
+        public Properties allowKeepLoaded() {
+            canKeepLoaded = true;
             return this;
         }
 

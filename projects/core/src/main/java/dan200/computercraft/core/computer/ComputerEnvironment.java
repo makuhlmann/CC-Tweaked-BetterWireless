@@ -33,6 +33,15 @@ public interface ComputerEnvironment {
     MetricsObserver getMetrics();
 
     /**
+     * Whether this computer may keep itself running when nobody is nearby, using {@code os.setKeepLoaded}.
+     *
+     * @return Whether this computer can be kept loaded.
+     */
+    default boolean canKeepLoaded() {
+        return false;
+    }
+
+    /**
      * Construct the mount for this computer's user-writable data.
      *
      * @return The constructed mount or {@code null} if the mount could not be created.

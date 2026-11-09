@@ -76,6 +76,9 @@ public final class CommonHooks {
         // ItemDetails requires creative tabs to be populated, however by default this is done lazily on the client and
         // not at all on the server! We instead do this once on server startup.
         CreativeModeTabs.tryRebuildTabContents(server.getWorldData().enabledFeatures(), false, server.registryAccess());
+
+        // Load the chunks of computers which were kept loaded, so they turn back on.
+        ServerContext.get(server).chunkLoader().start(server);
     }
 
     public static void onServerStopped() {

@@ -265,6 +265,42 @@ public class OSAPI implements ILuaAPI {
     }
 
     /**
+     * Keep this computer running when nobody is nearby, by keeping the chunk it is in loaded.
+     * <p>
+     * This is remembered until it is turned off again, including when the computer reboots or the server restarts: a
+     * computer which was on when the server stopped is turned back on when it starts. Note that the computer only runs
+     * its startup program when it turns back on, so put anything it should keep running in {@code startup.lua}.
+     * <p>
+     * Only computers placed in the world can be kept loaded, not turtles or pocket computers, and the server may disable
+     * this entirely.
+     *
+     * @param keepLoaded Whether to keep this computer running.
+     * @throws LuaException If this computer cannot be kept loaded.
+     * @cc.usage Keep a computer running a beacon, even when everyone is far away.
+     * <pre>{@code
+     * os.setKeepLoaded(true)
+     * shell.run("beacon")
+     * }</pre>
+     * @see #getKeepLoaded
+     */
+    @LuaFunction
+    public final void setKeepLoaded(boolean keepLoaded) throws LuaException {
+        if (keepLoaded && !apiEnvironment.canKeepLoaded()) throw new LuaException("This computer cannot be kept loaded");
+        apiEnvironment.setKeepLoaded(keepLoaded);
+    }
+
+    /**
+     * Check whether this computer keeps running when nobody is nearby.
+     *
+     * @return Whether this computer is being kept loaded.
+     * @see #setKeepLoaded
+     */
+    @LuaFunction
+    public final boolean getKeepLoaded() {
+        return apiEnvironment.isKeepLoaded() && apiEnvironment.canKeepLoaded();
+    }
+
+    /**
      * Returns the number of seconds that the computer has been running.
      *
      * @return The computer's uptime.

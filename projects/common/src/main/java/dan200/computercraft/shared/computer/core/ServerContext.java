@@ -63,6 +63,7 @@ public final class ServerContext {
     private final MainThread mainThread;
     private final IDAssigner idAssigner;
     private final WirelessNetwork wirelessNetwork = new WirelessNetwork();
+    private final ComputerChunkLoader chunkLoader;
     private final NettyHttp http = new NettyHttp(ConfigSpec.getHttpConfig());
     private final Path storageDir;
 
@@ -78,6 +79,7 @@ public final class ServerContext {
             .http(http)
             .build();
         idAssigner = new IDAssigner(storageDir.resolve("ids.json"));
+        chunkLoader = new ComputerChunkLoader(storageDir.resolve("keep_loaded.json"));
     }
 
     /**
@@ -174,6 +176,16 @@ public final class ServerContext {
         registry.update();
         mainThread.tick();
         wirelessNetwork.tick();
+        chunkLoader.tick(server);
+    }
+
+    /**
+     * Get the {@link ComputerChunkLoader}, which keeps computers running when nobody is nearby.
+     *
+     * @return The computer chunk loader.
+     */
+    public ComputerChunkLoader chunkLoader() {
+        return chunkLoader;
     }
 
     /**

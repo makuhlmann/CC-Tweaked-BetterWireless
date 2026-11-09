@@ -84,6 +84,20 @@ public abstract class BasicApiEnvironment implements IAPIEnvironment {
     }
 
     @Override
+    public boolean canKeepLoaded() {
+        return false;
+    }
+
+    @Override
+    public boolean isKeepLoaded() {
+        return false;
+    }
+
+    @Override
+    public void setKeepLoaded(boolean keepLoaded) {
+    }
+
+    @Override
     public int startTimer(long ticks) {
         throw new IllegalStateException("Cannot start timers");
     }

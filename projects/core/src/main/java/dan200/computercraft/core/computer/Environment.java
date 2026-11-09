@@ -158,6 +158,21 @@ public final class Environment implements IAPIEnvironment {
     }
 
     @Override
+    public boolean canKeepLoaded() {
+        return environment.canKeepLoaded();
+    }
+
+    @Override
+    public boolean isKeepLoaded() {
+        return computer.isKeepLoaded();
+    }
+
+    @Override
+    public void setKeepLoaded(boolean keepLoaded) {
+        computer.setKeepLoaded(keepLoaded);
+    }
+
+    @Override
     public int startTimer(long ticks) {
         synchronized (timers) {
             timers.put(nextTimerToken, new Timer(ticks));

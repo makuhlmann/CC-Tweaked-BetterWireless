@@ -52,6 +52,17 @@ public interface IAPIEnvironment {
 
     void setLabel(@Nullable String label);
 
+    /**
+     * Whether this computer may keep itself running when nobody is nearby.
+     *
+     * @return Whether this computer can be kept loaded.
+     */
+    boolean canKeepLoaded();
+
+    boolean isKeepLoaded();
+
+    void setKeepLoaded(boolean keepLoaded);
+
     int startTimer(long ticks);
 
     void cancelTimer(int id);

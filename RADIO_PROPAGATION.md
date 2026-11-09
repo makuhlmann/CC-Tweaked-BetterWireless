@@ -297,6 +297,23 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `lookup_timeout` | 40 | Maximum ticks to wait for unloaded terrain heights. |
 | `use_generator`, `use_distant_horizons` | `true` | Enable those height sources. |
 
+### Keeping computers running
+
+A cell site is only useful if it keeps transmitting while everyone is far away. `os.setKeepLoaded(true)` asks for
+that: while the computer is on, it keeps its own chunk ticking and the chunks around it loaded (so a modem across a
+chunk border still works). This is lighter than `/forceload`, which ticks a 3×3 area and loads 5×5. The setting is
+saved with the computer, survives reboots, and is cleared with `os.setKeepLoaded(false)`. `os.getKeepLoaded()` reads
+it. Only placed computers can do this; on turtles and pocket computers it is an error. The server can turn it off
+with `allow_keep_loaded` (default `true`).
+
+It's built on a chunk ticket the computer refreshes every tick. Once the computer turns off, is broken, or clears the
+setting, the ticket times out after five seconds and the chunk unloads as usual, so a computer can't leave a chunk
+loaded forever. Vanilla can save tickets with the world, but a world whose ticket list names an unknown ticket type
+fails to read all of it (including `/forceload` chunks), so removing the mod would break those. Instead,
+`computercraft/keep_loaded.json` lists the computers being kept loaded, and the server adds tickets for them when it
+starts. The computers then turn back on as their chunks load, and run their startup program. A computer which
+doesn't come back within a minute is forgotten.
+
 ## 6. Limitations and future work
 
 - **No reflections or multipath.** Signals don't bounce around corners or down streets; only diffraction over the
@@ -314,10 +331,11 @@ Everything lives under `[peripheral.radio]` in the server config:
 - **What has been verified:** the 26.3 port and the redesign compile for Fabric and NeoForge. The redesign passes
   checkstyle, Lua lint, all 75 `common` unit tests (including 24 for the physics: free space, two-ray, knife edge,
   Deygout, materials, voxel traversal, and whole-link scenarios such as flat ground, hills, walls near and far from
-  the antennas, long tunnels, buried and bunkered antennas, and reciprocity), and all 116 required Fabric game tests.
-  Those include rednet over wireless modems, new tests that wireless messages carry a signal strength and that modems
-  hanging from computers set into a stone ceiling can hear each other, and upstream's wired `transmits_messages` test,
-  which the original fork broke. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
+  the antennas, long tunnels, buried and bunkered antennas, and reciprocity), and all 117 required Fabric game tests.
+  Those include rednet over wireless modems, new tests that wireless messages carry a signal strength, that modems
+  hanging from computers set into a stone ceiling can hear each other, and that placed computers (but not turtles) can
+  be kept loaded, and upstream's wired `transmits_messages` test, which the original fork broke. No automated test can
+  show a kept-loaded chunk keeps ticking with nobody nearby, as game tests keep their area loaded anyway. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
   modems. The Distant Horizons conversion has unit tests, and its output was checked offline against a real 1:10
   Tellus save: LOD heights decoded from DH's database match the saved chunks' heightmaps, and running the model over
   them gives sensible results for four cells (clear line of sight from a 280m summit 4.3km away: -83dBm on the low
