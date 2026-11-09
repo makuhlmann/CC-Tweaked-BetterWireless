@@ -19,6 +19,7 @@ import dan200.computercraft.core.methods.PeripheralMethod;
 import dan200.computercraft.impl.AbstractComputerCraftAPI;
 import dan200.computercraft.impl.GenericSources;
 import dan200.computercraft.shared.CommonHooks;
+import dan200.computercraft.shared.computer.enclave.EnclaveStore;
 import dan200.computercraft.shared.computer.metrics.GlobalMetrics;
 import dan200.computercraft.shared.config.ConfigSpec;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessNetwork;
@@ -64,6 +65,7 @@ public final class ServerContext {
     private final IDAssigner idAssigner;
     private final WirelessNetwork wirelessNetwork = new WirelessNetwork();
     private final ComputerChunkLoader chunkLoader;
+    private final EnclaveStore enclaves;
     private final NettyHttp http = new NettyHttp(ConfigSpec.getHttpConfig());
     private final Path storageDir;
 
@@ -80,6 +82,7 @@ public final class ServerContext {
             .build();
         idAssigner = new IDAssigner(storageDir.resolve("ids.json"));
         chunkLoader = new ComputerChunkLoader(storageDir.resolve("keep_loaded.json"));
+        enclaves = new EnclaveStore(storageDir.resolve("enclave"));
     }
 
     /**
@@ -186,6 +189,15 @@ public final class ServerContext {
      */
     public ComputerChunkLoader chunkLoader() {
         return chunkLoader;
+    }
+
+    /**
+     * Get every computer's enclave, where programs keep keys they can use but not read.
+     *
+     * @return The enclave store.
+     */
+    public EnclaveStore enclaves() {
+        return enclaves;
     }
 
     /**

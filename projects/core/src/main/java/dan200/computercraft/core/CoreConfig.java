@@ -18,4 +18,7 @@ public final class CoreConfig {
     public static String defaultComputerSettings = "";
 
     public static boolean httpWebsocketEnabled = true;
+
+    /** Whether computers get the {@code crypto} (and, in Minecraft, {@code enclave}) APIs. */
+    public static boolean cryptoEnabled = true;
 }

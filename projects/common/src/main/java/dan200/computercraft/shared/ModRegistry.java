@@ -20,6 +20,7 @@ import dan200.computercraft.api.pocket.IPocketUpgrade;
 import dan200.computercraft.api.turtle.ITurtleUpgrade;
 import dan200.computercraft.api.upgrades.UpgradeBase;
 import dan200.computercraft.api.upgrades.UpgradeType;
+import dan200.computercraft.core.CoreConfig;
 import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.impl.PocketUpgrades;
 import dan200.computercraft.impl.TurtleUpgrades;
@@ -37,7 +38,9 @@ import dan200.computercraft.shared.computer.blocks.ComputerBlock;
 import dan200.computercraft.shared.computer.blocks.ComputerBlockEntity;
 import dan200.computercraft.shared.computer.core.ComputerFamily;
 import dan200.computercraft.shared.computer.core.ServerComputer;
+import dan200.computercraft.shared.computer.core.ServerContext;
 import dan200.computercraft.shared.computer.core.TerminalSize;
+import dan200.computercraft.shared.computer.enclave.EnclaveAPI;
 import dan200.computercraft.shared.computer.inventory.ComputerMenuWithoutInventory;
 import dan200.computercraft.shared.computer.items.ServerComputerReference;
 import dan200.computercraft.shared.config.Config;
@@ -664,6 +667,12 @@ public final class ModRegistry {
             var admin = computer.getComponent(ComputerComponents.ADMIN_COMPUTER);
             return admin == null ? null : new CommandAPI(computer, admin);
         });
+
+        // The level can't be accessed while the API is being created, so find the enclave when it's first used.
+        ComputerCraftAPI.registerAPIFactory(computer -> CoreConfig.cryptoEnabled
+            ? new EnclaveAPI(() -> ServerContext.get(computer.getLevel().getServer()).enclaves().get(computer.getID()))
+            : null
+        );
 
         VanillaDetailRegistries.ITEM_STACK.addProvider(ItemDetails::fill);
         VanillaDetailRegistries.BLOCK_IN_WORLD.addProvider(BlockDetails::fill);

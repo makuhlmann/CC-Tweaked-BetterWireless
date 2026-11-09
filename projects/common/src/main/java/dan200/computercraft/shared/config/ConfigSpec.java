@@ -35,6 +35,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Boolean> logComputerErrors;
     public static final ConfigFile.Value<Boolean> commandRequireCreative;
     public static final ConfigFile.Value<Boolean> allowKeepLoaded;
+    public static final ConfigFile.Value<Boolean> enableCrypto;
     public static final ConfigFile.Value<Integer> uploadMaxSize;
     public static final ConfigFile.Value<List<? extends String>> disabledGenericMethods;
 
@@ -163,6 +164,13 @@ public final class ConfigSpec {
                     Allow computers to keep running when nobody is nearby, by keeping their chunk
                     loaded (see os.setKeepLoaded). Only computers which ask for this are kept loaded.""")
                 .define("allow_keep_loaded", Config.allowKeepLoaded);
+
+            enableCrypto = builder
+                .comment("""
+                    Enable the "crypto" and "enclave" APIs on computers. These provide hashes, key
+                    exchange, signatures, encryption, and storage for keys that programs can use but
+                    not read. Changes apply when computers are next loaded.""")
+                .define("enable_crypto", CoreConfig.cryptoEnabled);
 
             disabledGenericMethods = builder
                 .comment("""
@@ -521,6 +529,7 @@ public final class ConfigSpec {
         Config.uploadMaxSize = uploadMaxSize.get();
         CoreConfig.maximumFilesOpen = maximumFilesOpen.get();
         CoreConfig.defaultComputerSettings = defaultComputerSettings.get();
+        CoreConfig.cryptoEnabled = enableCrypto.get();
         Config.commandRequireCreative = commandRequireCreative.get();
         Config.allowKeepLoaded = allowKeepLoaded.get();
 

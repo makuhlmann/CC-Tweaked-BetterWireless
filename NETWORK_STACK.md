@@ -485,18 +485,18 @@ computer means losing the key, and keys can't be cloned.
 | `enclave.generate(name, kind [, options])` | Creates a key of kind `"x25519"`, `"ed25519"` or `"secret"` (32 random bytes). Returns the public key, or nothing for a secret. Fails if the name is taken. `options.requirePin` protects it with the PIN (below). |
 | `enclave.import(name, kind, key [, options])` | Stores a key a program already has, such as a passphrase-derived one, so its copy can be deleted. Takes the same options. |
 | `enclave.publicKey(name)` | The public key, or `nil` |
-| `enclave.list()` | A table of names to kinds |
+| `enclave.list()` | A table of names to each key's kind and whether it needs the PIN |
 | `enclave.delete(name)` | Removes a key |
 | `enclave.exchange(name, peerPublic)` | X25519 with the stored private key; returns the shared secret |
 | `enclave.sign(name, data)` | Ed25519 signature |
 | `enclave.hmac(name, data)` | HMAC-SHA256 with a stored secret |
 | `enclave.seal(name, nonce, plaintext [, aad])`, `enclave.open(...)` | ChaCha20-Poly1305 with a stored secret, for example to encrypt files on a floppy disk so they're only readable on this computer |
 | `enclave.setPin(newPin [, oldPin])` | Sets, changes or (with `nil`) removes the PIN |
-| `enclave.unlock(pin)`, `enclave.lock()` | Unlocks or locks the PIN-protected keys |
+| `enclave.unlock(pin)`, `enclave.lock()` | Unlocks or locks the PIN-protected keys. `unlock` returns `true`, or `false` and why not. |
 | `enclave.status()` | Whether a PIN is set, whether it's unlocked, and any lockout time remaining |
 
 - **Storage:** keys are kept on the server, outside the computer's file system, in
-  `computercraft/enclave/<computer id>.dat` in the world save. Nothing in Lua can reach that file: not `fs`, not a disk
+  `computercraft/enclave/<computer id>.json` in the world save. Nothing in Lua can reach that file: not `fs`, not a disk
   drive, not another computer. It's never sent to clients.
 - **Following the computer:** because keys are stored by computer ID, they travel with the computer when it's broken and
   picked up, like its files.
@@ -994,7 +994,8 @@ The default fill fraction needs tuning in play.
 
 ## 14. Implementation plan
 
-Each phase is usable on its own.
+Each phase is usable on its own. **Phase 0 is done:** `crypto` lives in `core` (`CryptoAPI`, built on `Crypto`), the
+enclave in `common` (`EnclaveAPI`, `Enclave`, `EnclaveStore`), and `enable_crypto` in the server config turns both off.
 
 | Phase | Delivers | Done when |
 |---|---|---|

@@ -8,6 +8,7 @@ import com.mojang.blaze3d.platform.InputConstants
 import dan200.computercraft.api.lua.Coerced
 import dan200.computercraft.api.lua.LuaException
 import dan200.computercraft.client.gui.AbstractComputerScreen
+import dan200.computercraft.core.apis.CryptoAPI
 import dan200.computercraft.core.apis.OSAPI
 import dan200.computercraft.core.apis.RedstoneAPI
 import dan200.computercraft.core.apis.TermAPI
@@ -15,6 +16,7 @@ import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.shared.ModRegistry
 import dan200.computercraft.shared.computer.core.ServerContext
+import dan200.computercraft.shared.computer.enclave.EnclaveAPI
 import dan200.computercraft.test.core.assertArrayEquals
 import dan200.computercraft.test.core.computer.getApi
 import net.minecraft.client.input.KeyEvent
@@ -31,6 +33,8 @@ import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import java.nio.ByteBuffer
+import java.util.*
 import kotlin.time.Duration.Companion.milliseconds
 
 class Computer_Test {
@@ -106,6 +110,27 @@ class Computer_Test {
         }
 
         thenOnComputer("computer") { getApi<OSAPI>().setKeepLoaded(false) }
+    }
+
+    /**
+     * Check computers have an enclave, and that its keys work with the crypto API.
+     */
+    @GameTest
+    fun Enclave_signs(context: GameTestHelper) = context.sequence {
+        thenOnComputer {
+            val enclave = getApi<EnclaveAPI>()
+            val crypto = getApi<CryptoAPI>()
+
+            // Structures share computer IDs, and so enclaves, so start from a clean slate.
+            enclave.delete("test")
+            val public = enclave.generate("test", "ed25519", Optional.empty())!![0] as ByteArray
+            assertEquals(mapOf("kind" to "ed25519", "requirePin" to false), enclave.list()["test"])
+
+            val message = ByteBuffer.wrap("Hello, world!".toByteArray())
+            val signature = enclave.sign("test", message)
+            assertTrue(crypto.verify(ByteBuffer.wrap(public), message, ByteBuffer.wrap(signature)), "Signature should verify")
+            enclave.delete("test")
+        }
     }
 
     /**

@@ -238,6 +238,7 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.logComputerErrors, "Log computer errors");
         addConfigEntry(ConfigSpec.commandRequireCreative, "Command computers require creative");
         addConfigEntry(ConfigSpec.allowKeepLoaded, "Allow computers to stay loaded");
+        addConfigEntry(ConfigSpec.enableCrypto, "Enable the crypto and enclave APIs");
         addConfigEntry(ConfigSpec.disabledGenericMethods, "Disabled generic methods");
 
         addConfigGroup(ConfigSpec.serverSpec, "execution", "Execution");
