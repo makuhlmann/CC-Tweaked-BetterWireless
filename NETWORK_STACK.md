@@ -27,7 +27,7 @@ learn and reason about. None of them is wire-compatible with the real thing, and
 12. [Changes to the mod](#12-changes-to-the-mod)
 13. [Testing](#13-testing)
 14. [Implementation plan](#14-implementation-plan)
-15. [Open questions](#15-open-questions)
+15. [Decisions and open questions](#15-decisions-and-open-questions)
 
 **Goals:** computers on different networks can reach each other through routers; programs get both fire-and-forget
 datagrams and reliable connections; a new computer joins a network with no setup; traffic can be encrypted and
@@ -151,8 +151,9 @@ strings.
 | `127.0.0.0/8` | This computer (loopback) |
 | `169.254.0.0/16` | Link-local addresses a computer gives itself when there is no DHCP server (§8) |
 
-Everything else is usable. With no real internet to collide with, all of `10.0.0.0/8` is free, but on a multiplayer
-server players need to agree who uses which prefixes (§15).
+Everything else is usable. With no real internet to collide with, all of `10.0.0.0/8` is free. On multiplayer servers,
+players agree among themselves who uses which prefix, for example one `10.N.0.0/16` per player or group (256 subnets of
+254 computers each). The stack doesn't enforce this.
 
 An alternative is IPv6-style automatic addresses: the router advertises a prefix, and the computer ID fills in the host
 part, so addresses can never clash. It's elegant, but less familiar, and it ties addresses to hardware again. The design
@@ -174,9 +175,10 @@ An interface is a modem on one band:
 - **Wireless modems** are one interface on their configured band, by default the high band (short range, like Wi-Fi).
   The same modem can also be a second interface on the other band (`top:low`), so one modem can serve both a local
   network and a long-range link.
-- **Ender modems** behave like a wired interface that reaches everything, and make a good long-distance backbone. From
-  Lua they look like any other wireless modem (`isWireless()` is all a modem reports), so either the mod exposes the
-  difference (§12) or a setting marks them (`net.<interface>.ender`).
+- **Ender modems** currently reach everything, in every dimension. After their rework (§12) they are weak radios whose
+  signal also appears in other dimensions. Either way the stack needs to recognise them, but from Lua they look like
+  any other wireless modem: all three kinds of modem have the peripheral type `modem`, wired ones add `peripheral_hub`,
+  and `isWireless()` is true for both wireless and ender modems. So the mod adds `modem.isInterdimensional()` (§12).
 
 Interfaces come and go as modems are attached and removed, and the stack reports this with a `net_interface` event.
 
@@ -317,7 +319,7 @@ link-state protocol like OSPF, and that suits Lua:
 - A router with `net.rip.default` advertises a default route, typically the one connecting to a backbone.
 - Updates can be authenticated with a shared key (an HMAC over the update, §9), so nobody can inject routes.
 
-**Link cost** is 1 on wired and ender links. On radio links it comes from the moving average of the neighbour's signal
+**Link cost** is 1 on wired links. On radio links, including ender modems once they are radios (§12), it comes from the moving average of the neighbour's signal
 strength: 1 at −60 dBm or better, plus 1 for every 10 dB weaker. Routes prefer strong links over marginal ones, which
 lose fewer packets.
 
@@ -409,7 +411,8 @@ so both survive restarts.
 
 DNS also runs over datagrams, on port 53.
 
-- **Names** are dot-separated and case-insensitive (`bank.spawn`, `0042.tel.acme`).
+- **Names** are dot-separated and case-insensitive (`bank.spawn`, `0042.tel.acme`). As with addresses, players
+  agree among themselves who runs which top-level name.
 - **Record types:**
   - `A`: name to address
   - `PTR`: address to name
@@ -431,11 +434,13 @@ DNS also runs over datagrams, on port 53.
 
 - **In scope:** other players' computers can hear any channel within radio range or on a shared wired network. They can
   send frames with any source ID or address, and replay or alter traffic they see.
-- **Physical theft:** they can't read files on computers they can't reach. Someone who takes a computer, or its disk,
-  takes its keys. That's part of the game.
+- **Physical theft:** they can't read files on computers they can't reach. Someone who takes a computer can use the
+  keys in its enclave, but can't copy them to another computer. That's part of the game.
 - **Out of scope:**
   - Server operators can read everything on disk.
   - Flooding can't be prevented, only limited.
+  - Protecting genuinely valuable data. This is about keeping casual sniffing and spoofing out of a game, so the design
+    favours cheap operations over extra margins.
 
 ### Native crypto API
 
@@ -462,7 +467,45 @@ the JDK's standard providers (this branch builds and runs on Java 25). All argum
   DER header for X25519 or Ed25519 keys (X.509 for public keys, PKCS#8 for private ones), rather than going through the
   JDK's integer-based key specs.
 - **Limits:** inputs are capped (for example at 1 MiB per call) to bound the work one call can do.
+- **CPU cost:** calls run on the computer's own thread, never the server's main thread. Each is a single JDK operation
+  with no extra copying, and parsed key objects are cached. A secure connection costs two X25519 operations per side to
+  open, and one ChaCha20-Poly1305 operation per message after that.
+- **Server switch:** like the HTTP API, a server config option can turn `crypto` and `enclave` off.
 - **Uses beyond the stack:** passwords, signed files, and anything else players want to protect.
+
+### Key enclave
+
+Every computer, turtle and pocket computer has an **enclave**: a small key store that programs can use but never read
+from. A program can generate a key, sign with it, or use it in a key exchange, but the private key itself never reaches
+Lua. Malicious software can misuse a key while it runs on that computer, but can't copy it anywhere else. Losing the
+computer means losing the key, and keys can't be cloned.
+
+| Function | Result |
+|---|---|
+| `enclave.generate(name, kind)` | Creates a key of kind `"x25519"`, `"ed25519"` or `"secret"` (32 random bytes). Returns the public key, or nothing for a secret. Fails if the name is taken. |
+| `enclave.import(name, kind, key)` | Stores a key a program already has, such as a passphrase-derived one, so its copy can be deleted |
+| `enclave.publicKey(name)` | The public key, or `nil` |
+| `enclave.list()` | A table of names to kinds |
+| `enclave.delete(name)` | Removes a key |
+| `enclave.exchange(name, peerPublic)` | X25519 with the stored private key; returns the shared secret |
+| `enclave.sign(name, data)` | Ed25519 signature |
+| `enclave.hmac(name, data)` | HMAC-SHA256 with a stored secret |
+| `enclave.seal(name, nonce, plaintext [, aad])`, `enclave.open(...)` | ChaCha20-Poly1305 with a stored secret, for example to encrypt files on a floppy disk so they're only readable on this computer |
+
+- **Storage:** keys are kept on the server, outside the computer's file system, in
+  `computercraft/enclave/<computer id>.dat` in the world save. Nothing in Lua can reach that file: not `fs`, not a disk
+  drive, not another computer. It's never sent to clients.
+- **Following the computer:** because keys are stored by computer ID, they travel with the computer when it's broken and
+  picked up, like its files.
+- **Cloning:** in survival, computer IDs can't be duplicated. In creative, copying a computer with its data shares its
+  enclave, and server operators can read the file. Both are out of scope.
+- **Limits:** up to 32 keys per computer, with names of up to 64 characters.
+- **Speed:** keys are loaded once and kept as JDK key objects, so an operation costs the same as with `crypto`.
+- **Optional PIN:** with `enclave.setPin`, keys can't be used after each boot until `enclave.unlock(pin)` is called.
+  Three wrong guesses lock the enclave for a minute, doubling each time. A stolen phone with a PIN is useless, like a
+  phone with a locked SIM.
+
+The stack keeps its identity keys here (§9 Identities), and the cellular SIM is an enclave key (§11).
 
 ### Serialising for encryption
 
@@ -486,13 +529,16 @@ sealed with the session key and a counter as the nonce. Because connections deli
 counters stay in step without being sent. Both directions use separate keys, and both sides get forward secrecy: later
 theft of a computer's keys doesn't reveal past traffic.
 
+The handshake's steps that use a computer's long-term key call `enclave.exchange`, so that key never leaves the
+enclave. Ephemeral keys are made with `crypto.generateKeyPair` and thrown away after the handshake.
+
 Secure connections offer the same methods as plain ones, so programs switch by calling `net.secure.connect` instead of
 `net.tcp.connect`.
 
 ### Identities and trust
 
-- **Keys:** each computer has an X25519 key pair for Noise and an Ed25519 pair for signing. Both are generated on first
-  use and stored in `/.net/keys`.
+- **Keys:** each computer has an X25519 key for Noise (`net.identity`) and an Ed25519 key for signing (`net.signing`).
+  Both are generated in its enclave on first use.
 - **Trust on first use:** `/.net/known_hosts` remembers the key each name had the first time, and a changed key is a
   hard error, as in SSH. This needs no infrastructure.
 - **Certificates:** a certificate is `{name, key, expires, issuer}` signed with Ed25519. Computers trust the certificate
@@ -612,7 +658,7 @@ between towers. It follows LTE's structure, simplified.
 | Phone | User equipment | A pocket computer with a wireless modem |
 | Cell | eNodeB | A tower computer with a wireless modem, plus a backhaul link |
 | Controller | MME | A core computer: attach, authentication, handover, paging |
-| Subscriber database | HSS | A core computer: subscribers' keys and numbers |
+| Subscriber database | HSS | A core computer: subscribers' public keys and numbers |
 | Gateway | S-GW / P-GW | A core computer: phones' addresses, and the link to the rest of the network |
 
 A small operator runs the controller, database and gateway on one core computer. Cells, core computers and routers
@@ -625,14 +671,16 @@ must keep running when nobody is nearby, so they call `os.setKeepLoaded(true)` (
 - Cells broadcast system information on control channel 1001 every second. This is what `beacon.lua` does today.
 - Everything else goes between a phone and its cell over the link layer's unicast channels, as frames of type `cell`.
 
-System information is signed with the operator's key, which phones know from their SIM, so a rogue tower can't lure
-phones:
+System information is signed, so a rogue tower can't lure phones:
 
 ```lua
-{ op = "sib", network = "ACME", cell = 12, area = 3, load = 0.4, time = ..., sig = ... }
+{ op = "sib", network = "ACME", cell = 12, area = 3, load = 0.4, time = ..., cert = ..., sig = ... }
 ```
 
-`cell` is the tower's computer ID, `area` its tracking area (see idle mode below), and `load` how busy it is.
+`cell` is the tower's computer ID, `area` its tracking area (see idle mode below), and `load` how busy it is. Each cell
+signs with its own enclave key. `cert` is that key's certificate, signed by the operator, and phones check it against
+the operator's public key from their SIM. The operator's private key stays in the core computer's enclave, so
+no cell holds it.
 
 ### Choosing a cell
 
@@ -645,34 +693,44 @@ phones:
 
 ### Subscribers and SIMs
 
-A subscriber has an ID (`ACME-0042`), a phone number, and a secret 32-byte key K. The phone keeps these, with the
-operator's public key, in `/.net/sim`. The subscriber database has the same K.
+A phone's SIM is an X25519 key named `sim` in its enclave. Unlike LTE, where the phone and network share a secret, the
+operator only ever learns the phone's **public** key. Neither a hacked phone nor a stolen subscriber database can clone a
+subscription.
 
-Pocket computers have no disk drive, so a SIM is provisioned over the air in a shop: the operator's provisioning computer
-shows a one-time code on a monitor, and the phone's setup program uses it for a `Noise_NNpsk0` handshake. The code
-authenticates the exchange, and the SIM is sent encrypted. An eavesdropper can't guess the code offline, but an attacker
-posing as the shop gets one guess per attempt, so each code allows only a few.
+- **The subscriber database** holds each subscriber's ID (`ACME-0042`), phone number and SIM public key.
+- **The phone** keeps public information in `/.net/sim`: the operator's name and public keys, and its own subscriber ID
+  and number.
+
+**Provisioning in a shop.** Pocket computers have no disk drive, so this happens over the air:
+
+1. The phone's setup program generates the SIM key and sends its public key to the shop's computer over a short-range
+   high-band link.
+2. Both screens show a six-digit code derived from that key. The player checks they match, as in Bluetooth pairing.
+   That proves the shop received this phone's key and not an attacker's.
+3. The shop registers the key and sends back the operator's information.
+
+No secret ever moves, so there's nothing to intercept.
 
 ### Attaching
 
-Authentication is modelled on LTE's AKA. The phone and network prove to each other that they know K, without ever
-sending it:
+Attaching is a `Noise_IK_25519_ChaChaPoly_SHA256` handshake between the phone and the controller, relayed by the cell.
+The phone knows the controller's public key from its SIM, so this takes one round trip:
 
-1. The phone sends `attach {subscriber}` to the cell. The cell passes it to the controller over the backhaul, on a
-   secure connection.
-2. The controller gets an authentication vector from the subscriber database:
-   - a random challenge `RAND`
-   - a sequence number `SQN`
-   - `AUTN = HMAC(K, "net" .. RAND .. SQN)`, which proves the network knows K
-   - the expected response `XRES = HMAC(K, "ue" .. RAND)`
-   - the session key `K_s = HKDF(K, RAND, "session")`
-3. The cell sends the phone `{RAND, SQN, AUTN}`.
-4. The phone checks `AUTN`, and that `SQN` is newer than any it has seen (so a recorded challenge can't be replayed).
-   Then it answers with `RES`, computed the same way as `XRES`.
-5. If `RES` matches `XRES`, the controller derives a key for this cell from `K_s` and the cell's ID, and sends it to
-   the cell. The phone derives the same key.
-6. The gateway gives the phone an address from the operator's prefix and sets up a tunnel to the cell. The cell sends
+1. The phone sends `attach {network, handshake}` to the cell. Its own public key is encrypted inside the handshake,
+   so eavesdroppers can't tell who is attaching. The cell passes it to the controller over the backhaul, on a secure
+   connection.
+2. The controller answers, learning the phone's public key from the handshake. Unknown or barred keys are rejected.
+3. Both sides now share session keys with forward secrecy. The phone confirms with an encrypted `attach_complete`.
+   Those keys depend on the phone's private key (its side of the exchange ran in its enclave), so this proves the phone
+   is really there. Until then the controller allocates nothing, because the first handshake message alone could be a
+   recording.
+4. The controller derives a key for this cell from the handshake and the cell's ID, and sends it to the cell. The phone
+   derives the same key.
+5. The gateway gives the phone an address from the operator's prefix and sets up a tunnel to the cell. The cell sends
    the phone its address and DNS servers in an encrypted `attach_accept`.
+
+A recorded attach can't be used to get in: the session keys also depend on fresh ephemeral keys that only the real
+phone has.
 
 From then on, frames between the phone and its cell carry encrypted packets:
 
@@ -721,7 +779,7 @@ session, so it keeps its address.
 
 After 30 seconds without traffic, a cell drops a phone's radio context. The phone stays registered with its tracking
 area and keeps its address. When data arrives for it, the controller pages it on the control channel of every cell in
-that area. The phone reconnects with a short re-authentication from its stored keys. This saves towers work and makes
+that area. The phone reconnects with a fresh one-round-trip handshake. This saves towers work and makes
 "no service" behave realistically.
 
 ### Backhaul
@@ -729,7 +787,7 @@ that area. The phone reconnects with a short re-authentication from its stored k
 Cells are ordinary hosts on the network stack. Backhaul can be:
 - wired, where cells are close
 - point-to-point low-band radio links between tall towers, which the radio model rewards for height and line of sight
-- ender modems, as "fibre"
+- ender modems, which after their rework (§12) can hop through the Nether, covering eight times the distance
 
 Backhaul traffic uses secure connections or an encrypted link, because it may cross radio.
 
@@ -745,32 +803,96 @@ Backhaul traffic uses secure connections or an encrypted link, because it may cr
 
 ### Roaming and rogue towers
 
-- **Roaming:** a phone may attach to another operator's cells if its SIM allows. That operator's controller fetches the
-  authentication vector from the home operator's database over a secure connection, and traffic goes through the home
-  gateway.
-- **Rogue towers** can't complete authentication without K, and their unsigned beacons are ignored. Jamming isn't
-  possible in the radio model.
+- **Roaming:** a phone may attach to another operator's cells if its SIM allows. The visited network passes the
+  handshake to the phone's home controller, named in the attach request, over a secure connection. The home controller
+  completes it and sends back the cell key. Traffic goes through the home gateway.
+- **Rogue towers** can't complete the handshake without the operator's private key, and phones ignore beacons without a
+  valid certificate. Jamming isn't possible in the radio model.
 
 ## 12. Changes to the mod
 
-Most of the stack is Lua. The mod needs one change, and could use a few more for convenience and realism.
+Most of the stack is Lua. These changes to the mod are planned:
 
-**Required:**
+| Change | Why | When |
+|---|---|---|
+| `crypto` API (§9) | Fast, correct cryptography | Phase 0 |
+| `enclave` API (§9) | Keys programs can use but not copy | Phase 0 |
+| `modem.isInterdimensional()` | Lets the stack recognise ender modems (§4) | Phase 1 |
+| Wireless message size limit | Stops anyone broadcasting huge messages to everything in range | Phase 1 |
+| Transmit power by device | Phones are limited by their own weak transmitter | Before phase 6 |
+| Ender modem rework and cable recipe | Ender modems are too strong for their cost, and make cables pointless | Independent |
 
-- **The `crypto` API (§9).** Without it, secure connections and cellular authentication would be too slow to be
-  practical. It's useful on its own, too.
+### Transmit power by device
 
-**Small but useful:**
+Pocket computers and turtles transmit 10 dB weaker than placed computers (configurable per kind). A phone can then hear
+a tower that can't hear it, so towers have to be close enough for the phone's uplink, as in real networks. Ender modems
+lose another 10 dB on top (below).
 
-- **`modem.isInterdimensional()`,** so the stack can recognise ender modems (§4) without a setting.
+Path loss doesn't depend on transmit power, so this costs no extra propagation work. Links are evaluated with the
+strongest possible transmitter's budget, cached as now, and each sender's offset is subtracted from the signal strength
+when a message is delivered.
 
-**Optional, roughly in order of value:**
+### Wireless message size limit
 
-- **Transmit power by device.** Pocket computers and turtles would transmit, say, 10 dB weaker than placed computers.
-  Today links are symmetric. Real phones are limited by their own weak transmitter, which makes tower density matter.
-  The sender's offset would be added to the link budget, and the link cache would key on it.
-- **A size limit on wireless messages,** such as 64 KiB once serialised. This stops abuse and would require
-  fragmentation in the network layer.
+Wireless and ender modems refuse messages over 64 KiB, estimated by walking the value (string lengths, eight bytes per
+number, a small overhead per table entry). `transmit` then fails with "Message too large". Wired modems have no limit.
+The stack reports oversized datagrams the same way, as real UDP does, and the stream helper splits large data into
+chunks, so no fragmentation layer is needed.
+
+### Ender modems
+
+Today ender modems hear, and are heard by, every modem in every dimension, with no propagation at all. For the price of
+an ender pearl they make cables, relays and towers pointless.
+
+**New behaviour:**
+
+- **Weak radios.** Ender modems follow the radio model like wireless modems, on both bands, at 10% of the power (−10 dB).
+  Over the ground that cuts their range to a bit over half; in free space, to about a third.
+- **Into other dimensions.** An ender modem's signal also appears in every other dimension, at the corresponding
+  position:
+  - X and Z are scaled by `DimensionType.getTeleportationScale`: divided by 8 into the Nether, multiplied by 8 out of
+    it, unchanged for the End.
+  - Y stays the same, clamped to the dimension's height.
+  - From there it propagates through that dimension's terrain like any other signal. A link through the Nether covers
+    eight times the Overworld distance, just like Nether travel.
+- **Reciprocal links.** In reverse, an ender modem hears other dimensions at its corresponding position there. So a link
+  between dimensions needs at least one ender modem, and works the same in both directions. A link between two ender
+  modems in different dimensions is evaluated in both dimensions, and the better path counts.
+- **No distance across dimensions.** `modem_message` still reports no distance for messages from another dimension, as
+  today, so GPS keeps ignoring them. Distances between dimensions would mix coordinate systems and give wrong
+  positions.
+- **Configuration:** `ender_power_offset` (−10 dB) and `ender_cross_dimension` (on).
+- **Cable recipe:** to make wired networks the cheap option, one craft makes 32 networking cables instead of 6. The
+  recipe is generated by `RecipeProvider`.
+
+**Keeping it cheap:**
+
+1. **Only where someone listens.** A dimension is only evaluated if it has receivers, and receivers only exist while
+   they're loaded: a player is nearby, or the computer is kept loaded. A dimension nobody is in, with no kept-loaded
+   computers, costs nothing.
+2. **Reject by distance first.** The lower budget shrinks the maximum range. Receivers beyond it, measured from the
+   transmitter's corresponding position, are dropped before any terrain is looked at.
+3. **No chunk loading.** As today, terrain for unloaded chunks comes from cached heights, the world generator, or
+   Distant Horizons, and each dimension already has its own height cache. Propagation never loads a chunk.
+4. **Share and keep results.** Path loss doesn't depend on power (above), so ender links reuse the normal link cache,
+   keyed by dimension and the transmitter's corresponding position. Links between two placed computers never move, so
+   their results can be kept for minutes rather than five seconds, until either end changes.
+5. **Same tick budget.** Cross-dimension evaluations join the existing queue and share its per-tick time budget.
+
+**The Nether's ceiling.** The model assumes open sky. In the Nether, the heightmaps report the bedrock roof everywhere,
+so every unloaded column looks like solid rock, every antenna looks buried, and there's no path over the terrain.
+
+- Loaded chunks are fine, because the whole ray is walked through real blocks.
+- For unloaded chunks, either reconstruct open space from Distant Horizons' data (it keeps every vertical segment of a
+  column, not just the top), or treat unknown Nether space as partly open.
+- In dimensions with a ceiling, the path over the terrain is disabled.
+- A corresponding position inside netherrack is like a buried antenna. It could be moved to the nearest open space
+  within a few blocks, as portals are.
+
+This needs measuring in a real Nether before choosing.
+
+### Later
+
 - **Airtime.** A message's size would set how long it takes to send, at a rate depending on the band, and a modem would
   send one message at a time. Cells would then have limited capacity, so load balancing and the number of towers
   matter.
@@ -789,6 +911,9 @@ Most of the stack is Lua. The mod needs one change, and could use a few more for
   - RFC 5869 (HKDF)
   - RFC 4231 (HMAC)
   - RFC 7914 (PBKDF2)
+
+  The enclave gets tests that keys can be used but never read back, and that they survive a computer being broken and
+  placed again.
 - **Protocol logic:** Lua specs in the test ROM (`test-rom/spec/net/`). They connect many `Stack` objects with fake
   links and a controllable clock. Links can drop, delay, duplicate or reorder frames, and be cut and restored. This
   covers retransmission, routing convergence and DHCP races deterministically, without Minecraft.
@@ -807,23 +932,34 @@ Each phase is usable on its own.
 
 | Phase | Delivers | Done when |
 |---|---|---|
-| 0 | `crypto` API in Java | All RFC vectors pass |
-| 1 | `net` API and background process, link layer, neighbour discovery, static addresses, ICMP, `ifconfig`, `ping`, `netdump` | Two computers ping each other over wired and wireless modems |
+| 0 | `crypto` and `enclave` APIs in Java | All RFC vectors pass. Enclave keys work but can't be read back. |
+| 1 | `net` API and background process (as a datapack), link layer, neighbour discovery, static addresses, ICMP, `ifconfig`, `ping`, `netdump`. In the mod: `modem.isInterdimensional()`, wireless size limit. | Two computers ping each other over wired and wireless modems |
 | 2 | Datagrams and sockets, DHCP client and server, link-local addresses, DNS resolver and server, `.local` names | A new computer gets an address and resolves names with no setup |
 | 3 | Forwarding, static routes, distance-vector routing, firewall rules, `route`, `traceroute` | Ping across three routers. When one is broken, traffic finds another path. |
 | 4 | Connections, byte streams, `nc`, `ncp` | A 1 MB file crosses a lossy wireless path intact |
-| 5 | Codec, Noise sessions, keys, known hosts, certificates, encrypted wireless links, `rsh` | A remote shell works securely. Tampered or replayed messages are rejected. |
-| 6 | Cellular: system information, attach and authentication, tunnels, handover, messages | A connection stays open while walking across the eight test cells |
-| 7 | Radio realism in the mod, as wanted (§12) | |
+| 5 | Codec, Noise sessions with enclave keys, known hosts, certificates, encrypted wireless links, `rsh` | A remote shell works securely. Tampered or replayed messages are rejected. |
+| 6 | In the mod: transmit power by device. Cellular: system information, SIM provisioning, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
+| 7 | Move the stack from the datapack into the ROM | Every computer has it with no setup |
+| — | Ender modem rework and cable recipe, at any point | Ender links work across dimensions within the tick budget |
+| Later | Airtime and interference (§12) | |
 
-## 15. Open questions
+## 15. Decisions and open questions
 
-1. **Rednet:** remove it, or keep it running alongside while programs move over? The design assumes it stays for now.
-2. **Addresses:** IPv4-style addresses assigned by DHCP (this design), or IPv6-style prefixes plus computer ID?
-3. **Connections:** delivering Lua values (this design), or byte streams like real TCP?
-4. **Distribution:** in the ROM, shipped with the jar (every computer has it), or as a datapack or installable program?
-5. **Multiplayer:** who decides which prefixes and DNS names players may use? Server admins could run a registry and
-   the top-level DNS servers.
-6. **Crypto API:** available on every computer, or switchable in the server config? Note that programs on the same
-   computer can always read each other's files, so keys are only as safe as the computer.
-7. **Radio realism:** how much of §12 is wanted? Without airtime or interference, a single tower has unlimited capacity.
+| # | Question | Decision |
+|---|---|---|
+| 1 | Rednet | Keep it, unchanged, running alongside. It may later become a thin layer over datagrams. |
+| 2 | Addresses | IPv4-style, assigned by DHCP. Prefix plus computer ID only for link-local fallback addresses. |
+| 3 | Connections | Deliver Lua values, with a byte-stream helper for files and terminals |
+| 4 | Distribution | A datapack while developing (it can also replace `bios.lua`), then the ROM |
+| 5 | Multiplayer | Players agree among themselves on prefixes and top-level names; nothing enforces it |
+| 6 | Crypto | On every computer, kept cheap on CPU, with a server switch. Plus a key enclave (§9). |
+| 7 | Radio realism | Transmit power by device and a wireless size limit now; airtime and interference later |
+| 8 | Ender modems | Detected with `modem.isInterdimensional()`, and reworked into weak radios that reach other dimensions (§12). Cables: 32 per craft. |
+
+Still open:
+
+1. **Who hears an ender modem in another dimension?** The design assumes any modem there can, and that ender modems in
+   turn hear other dimensions, so links stay reciprocal. The alternative is that only ender modems talk across
+   dimensions.
+2. **Unloaded Nether terrain** for ender links: Distant Horizons data, or a simpler assumption (§12)?
+3. **Enclave PIN:** worth having in the first version, or later?
