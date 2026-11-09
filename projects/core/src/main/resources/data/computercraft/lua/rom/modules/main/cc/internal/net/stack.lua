@@ -316,7 +316,9 @@ function Stack:receive_packet(interface, src, packet, signal)
         return
     end
 
-    -- Every packet tells us where its sender is, which saves asking later.
+    -- Every packet tells us where its sender is, which saves asking later. learn() only accepts addresses on this
+    -- interface's own network: once routers forward packets, a packet from further away mustn't teach us that its
+    -- sender lives at the router's ID.
     self:learn(interface, packet.src, src, signal)
 
     if self:is_local(packet.dst) or is_broadcast(interface, packet.dst) then

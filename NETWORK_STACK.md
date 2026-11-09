@@ -192,7 +192,9 @@ only a filter: several computers may share one, and frames carry the real destin
 | Low | `id mod 1000` (0–999) | 1000 | 1001–1007 for cellular control (§11) |
 | High, and wired | `1024 + id mod 60000` (1024–61023) | 61024 | |
 
-Channels 1008–1023 and 61025–65532 are left for other programs. Servers with conflicting programs can move the ranges
+Rednet listens on `id mod 65500`, which can land on another computer's unicast channel here. Each side ignores the
+other's messages, so this only costs the odd wasted wakeup. Channels 1008–1023 and 61025–65532 are left for other
+programs. Servers with conflicting programs can move the ranges
 with settings. Frames always carry a version field, so the stack ignores anything that isn't its own.
 
 ### Frames
@@ -577,7 +579,7 @@ Secure connections offer the same methods as plain ones, so programs switch by c
 ### API sketch
 
 ```lua
--- Addresses and names
+-- Addresses and names (phase 1 also has net.setAddress, net.getAddress, net.neighbours, net.capture and net.getErrors)
 net.interfaces()                      --> { { name = "top", band = "high", address = "10.4.0.17", prefix = 24, ... } }
 net.resolve("bank.spawn")             --> "10.4.0.5"  (or nil, "not found")
 net.ping("bank.spawn", 2)             --> 0.1 (seconds), or nil, "timed out"
@@ -613,7 +615,8 @@ handle the events themselves:
 | `net_connection` | listening socket |
 | `net_data` | connection |
 | `net_closed` | connection, reason |
-| `net_interface` | interface name, `"up"` or `"down"` |
+| `net_interface` | interface name, `"up"`, `"down"` or `"duplicate"` |
+| `net_frame` | `"in"` or `"out"`, interface name, the frame, and for incoming radio frames the signal strength. Only while `net.capture` is on. |
 
 ### Settings
 
