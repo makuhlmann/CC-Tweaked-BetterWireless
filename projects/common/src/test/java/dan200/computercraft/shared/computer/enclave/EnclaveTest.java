@@ -179,6 +179,26 @@ public class EnclaveTest {
         var enclave = open();
         assertThrows(LuaException.class, () -> enclave.generate("key", Enclave.Kind.SECRET, false));
         assertEquals("not json", Files.readString(file));
+
+        // That isn't a PIN problem, so unlocking mustn't report it as one.
+        var error = assertThrows(LuaException.class, () -> enclave.unlock(PIN));
+        assertFalse(error instanceof Enclave.PinException, "Unreadable enclave should not be a PIN error");
+    }
+
+    @Test
+    public void pinFailuresArePinExceptions() throws LuaException {
+        var enclave = open();
+        assertThrows(Enclave.PinException.class, () -> enclave.unlock(PIN));
+        enclave.setPin(PIN, null);
+        assertThrows(Enclave.PinException.class, () -> enclave.unlock(WRONG_PIN));
+    }
+
+    @Test
+    public void importsUnclampedX25519Keys() throws LuaException {
+        var enclave = open();
+        var key = new byte[32];
+        java.util.Arrays.fill(key, (byte) 0xff);
+        assertArrayEquals(Crypto.publicKey(Crypto.KeyKind.X25519, key), enclave.importKey("dh", Enclave.Kind.X25519, key, false));
     }
 
     private static void assertThat(String actual, String expected) {

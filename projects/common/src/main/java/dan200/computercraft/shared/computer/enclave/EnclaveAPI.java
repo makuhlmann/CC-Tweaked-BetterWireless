@@ -93,6 +93,10 @@ public class EnclaveAPI implements ILuaAPI {
 
     /**
      * Store a key a program already has, such as one derived from a passphrase, so the program can delete its copy.
+     * <p>
+     * The enclave can only protect a key once nothing else has a copy. In particular, {@code requirePin} means little
+     * for a key the program still holds, since it could import it again without the flag. Keys made with
+     * {@link #generate} never leave the enclave at all.
      *
      * @param name    The key's name, up to 64 characters.
      * @param kind    {@code "x25519"}, {@code "ed25519"} or {@code "secret"}.
@@ -253,7 +257,7 @@ public class EnclaveAPI implements ILuaAPI {
      *
      * @param pin The PIN.
      * @return Whether the PIN was right.
-     * @throws LuaException If the PIN is too long.
+     * @throws LuaException If the PIN is too long, or the enclave can't be read or saved.
      * @cc.treturn boolean Whether the enclave is now unlocked.
      * @cc.treturn string|nil Why not: no PIN is set, the PIN was wrong, or there were too many wrong guesses.
      */
@@ -262,7 +266,8 @@ public class EnclaveAPI implements ILuaAPI {
         try {
             unlocked = enclave().unlock(CryptoAPI.bytes(pin, "PIN"));
             return new Object[]{ true };
-        } catch (LuaException e) {
+        } catch (Enclave.PinException e) {
+            // Other errors, such as an unreadable enclave, aren't something retrying will fix, so they're thrown.
             return new Object[]{ false, e.getMessage() };
         }
     }

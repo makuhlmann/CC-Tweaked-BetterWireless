@@ -13,6 +13,9 @@ import java.util.Map;
  * <p>
  * Storing keys by ID means they move with a computer when it's broken and placed again, as its files do. The directory
  * isn't part of any computer's file system, so programs can't read it.
+ * <p>
+ * Enclaves are kept in memory for as long as the server runs, once used. At up to 32 small keys each, that's fine for
+ * any realistic number of computers.
  */
 public final class EnclaveStore {
     private final Path directory;

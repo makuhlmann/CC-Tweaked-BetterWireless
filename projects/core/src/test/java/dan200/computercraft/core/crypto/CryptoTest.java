@@ -108,6 +108,19 @@ public class CryptoTest {
     }
 
     @Test
+    public void x25519AcceptsUnclampedScalars() throws InvalidKeyException {
+        // X25519 clamps private keys when they're used. Imported keys needn't be clamped already, so check one which
+        // isn't gives the same results whichever way round the exchange is done.
+        var unclamped = repeat(0xff, 32);
+        var publicKey = Crypto.publicKey(Crypto.KeyKind.X25519, unclamped);
+        var other = Crypto.generateKeyPair(Crypto.KeyKind.X25519);
+        assertArrayEquals(
+            Crypto.exchange(Crypto.privateKey(Crypto.KeyKind.X25519, unclamped), other.publicKey()),
+            Crypto.exchange(Crypto.privateKey(Crypto.KeyKind.X25519, other.privateKey()), publicKey)
+        );
+    }
+
+    @Test
     public void x25519RejectsLowOrderPoints() {
         // u = 0 is a point of small order, which would give an all-zero secret.
         var key = Crypto.privateKey(Crypto.KeyKind.X25519, ALICE_PRIVATE);

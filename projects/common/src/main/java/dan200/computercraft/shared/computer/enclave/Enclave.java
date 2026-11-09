@@ -90,6 +90,18 @@ public final class Enclave {
     }
 
     /**
+     * A PIN was wrong, missing, or can't be tried yet. These are expected, unlike other errors such as an unreadable
+     * enclave.
+     */
+    public static final class PinException extends LuaException {
+        private static final long serialVersionUID = 1L;
+
+        PinException(String message) {
+            super(message);
+        }
+    }
+
+    /**
      * What a program may know about a key.
      *
      * @param kind       The kind of key.
@@ -108,6 +120,10 @@ public final class Enclave {
     public record Status(boolean hasPin, boolean unlocked, long lockoutMillis) {
     }
 
+    /**
+     * A stored key. {@link #key} is the private key or secret: it must never leave this class, which is the whole point
+     * of the enclave. Only copies of {@link #publicKey} are handed out.
+     */
     private static final class Entry {
         final Kind kind;
         final byte[] key;
@@ -349,8 +365,8 @@ public final class Enclave {
 
         var current = pin;
         if (current != null) {
-            if (oldPin == null) throw new LuaException("The current PIN is needed to change it");
-            if (!checkPin(current, oldPin)) throw new LuaException("Wrong PIN");
+            if (oldPin == null) throw new PinException("The current PIN is needed to change it");
+            if (!checkPin(current, oldPin)) throw new PinException("Wrong PIN");
         } else if (newPin == null) {
             return LOCKED;
         }
@@ -371,20 +387,21 @@ public final class Enclave {
      *
      * @param attempt The PIN.
      * @return The PIN version, to pass to the methods which use keys.
-     * @throws LuaException If no PIN is set, the PIN is wrong, or there have been too many wrong guesses.
+     * @throws PinException If no PIN is set, the PIN is wrong, or there have been too many wrong guesses.
+     * @throws LuaException  If the enclave can't be read or saved.
      */
     public synchronized int unlock(byte[] attempt) throws LuaException {
         load();
         var current = pin;
-        if (current == null) throw new LuaException("No PIN is set");
-        if (!checkPin(current, attempt)) throw new LuaException("Wrong PIN");
+        if (current == null) throw new PinException("No PIN is set");
+        if (!checkPin(current, attempt)) throw new PinException("Wrong PIN");
         return pinVersion;
     }
 
     private boolean checkPin(Pin current, byte[] attempt) throws LuaException {
         var remaining = lockedUntil - clock.getAsLong();
         if (remaining > 0) {
-            throw new LuaException("Too many wrong PINs. Try again in " + ((remaining + 999) / 1000) + " seconds");
+            throw new PinException("Too many wrong PINs. Try again in " + ((remaining + 999) / 1000) + " seconds");
         }
 
         if (Crypto.constantTimeEquals(Crypto.pbkdf2(attempt, current.salt, current.iterations, Crypto.KEY_LENGTH), current.hash)) {
