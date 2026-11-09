@@ -308,16 +308,15 @@ function Stack:receive(modem, channel, frame, signal)
     if type(src) ~= "number" or src == self.id or (dst ~= self.id and dst ~= BROADCAST_ID) then return end
 
     local kind, body, forwarded = frame.type, frame.body, frame.fwd == true
-    if interface.link then
-        -- On an encrypted link, only frames sealed with our key count.
-        if kind ~= "sealed" then return end
-        kind, body, forwarded = link.open(interface.link, src, dst, body)
+    if interface.link or kind == "sealed" then
+        -- On an encrypted link, only frames sealed with our key count. Elsewhere, sealed frames mean nothing.
+        if interface.link and kind == "sealed" then kind, body, forwarded = link.open(interface.link, src, dst, body) else kind = nil end
         if not kind then
             interface.stats.dropped = interface.stats.dropped + 1
+            -- Still show it to netdump, so a wrong passphrase doesn't just look like silence.
+            if self:capturing() then self.wake("net_frame", "in", interface.name, frame, signal) end
             return
         end
-    elseif kind == "sealed" then
-        return
     end
 
     interface.stats.frames_in = interface.stats.frames_in + 1

@@ -140,8 +140,10 @@ elseif command == "install" and #args == 2 then
         printError("That certificate is for another computer's key.")
         return
     end
+    -- Replacing one, say when renewing it.
+    fs.delete(CERTIFICATE)
     fs.copy(shell.resolve(args[2]), CERTIFICATE)
-    print(("Installed the certificate for %s. Secure servers on this computer now offer it."):format(cert.name))
+    print(("Installed the certificate for %s. Secure servers started from now on offer it."):format(cert.name))
 else
     usage()
 end

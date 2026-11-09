@@ -8,6 +8,9 @@ net.setAddress(modem, "10.2.0.2/24")
 settings.set("net.gateway", "10.2.0.1")
 net.reload()
 fs.delete("rsh-proof")
+local hello = fs.open("hello.lua", "w")
+hello.write('print("Hello from far")')
+hello.close()
 
 parallel.waitForAll(
     -- The remote shell server.

@@ -28,6 +28,18 @@ local made = check:receive(10)
 check:close()
 if made ~= true then error("rsh didn't make the directory", 0) end
 
+-- What a remote command prints appears on this computer's terminal.
+local width, height = term.getSize()
+local screen = window.create(term.current(), 1, 1, width, height, false)
+local previous = term.redirect(screen)
+shell.run("rsh", "10.2.0.2", "hello")
+term.redirect(previous)
+local seen = false
+for y = 1, height do
+    if screen.getLine(y):find("Hello from far", 1, true) then seen = true end
+end
+if not seen then error("The remote command's output didn't appear", 0) end
+
 -- We know the far computer's key now, and a secure connection to it is still trusted.
 local secure = assert(net.secure.connect("10.2.0.2", 22))
 if secure:getTrust() ~= "known" then error("Expected to know the key, but trust is " .. tostring(secure:getTrust()), 0) end
