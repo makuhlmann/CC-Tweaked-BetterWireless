@@ -10,8 +10,9 @@ import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioAntenna;
 
-public abstract class WirelessModemPeripheral extends ModemPeripheral {
+public abstract class WirelessModemPeripheral extends ModemPeripheral implements RadioAntenna {
     public static final String NORMAL_ADJECTIVE = "upgrade.computercraft.wireless_modem_normal.adjective";
     public static final String ADVANCED_ADJECTIVE = "upgrade.computercraft.wireless_modem_advanced.adjective";
 

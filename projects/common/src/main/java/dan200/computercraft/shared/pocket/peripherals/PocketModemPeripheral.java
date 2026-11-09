@@ -31,6 +31,12 @@ public class PocketModemPeripheral extends WirelessModemPeripheral {
     }
 
     @Override
+    public Vec3 getAntennaPosition() {
+        // This is the holder's eyes, or the middle of a lectern, both of which are already a sensible place for it.
+        return access.getPosition();
+    }
+
+    @Override
     public boolean equals(@Nullable IPeripheral other) {
         return other instanceof PocketModemPeripheral;
     }

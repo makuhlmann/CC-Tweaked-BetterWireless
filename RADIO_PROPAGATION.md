@@ -131,6 +131,18 @@ Optionally, the terrain profile is bent by the earth's curvature (`earth_radius`
 radius factor for atmospheric refraction). This matters for Tellus at 1:1 scale, where the bulge is 1.5m at the
 middle of a 10km link and 36m over 50km.
 
+### Antenna position
+
+A modem's `getPosition()` is the corner of the block it is attached to (or of its turtle). The distance passed to
+`modem_message`, and so GPS, is measured from there, and stays that way. The model instead uses where the antenna
+actually is, through `RadioAntenna`: the middle of the modem block itself, the middle of a turtle, or a pocket
+computer holder's eyes (the middle of a lectern). The first block along the ray from each antenna, which it is
+mounted on, is ignored.
+
+An earlier version used `getPosition()` plus half a block. That put the antenna of a computer set into a tunnel
+ceiling inside the rock, so a modem hanging in plain sight lost the low band within 64 blocks, and the high band
+within 10.
+
 ### Bands
 
 Channels are split into two bands:
@@ -302,9 +314,10 @@ Everything lives under `[peripheral.radio]` in the server config:
 - **What has been verified:** the 26.3 port and the redesign compile for Fabric and NeoForge. The redesign passes
   checkstyle, Lua lint, all 75 `common` unit tests (including 24 for the physics: free space, two-ray, knife edge,
   Deygout, materials, voxel traversal, and whole-link scenarios such as flat ground, hills, walls near and far from
-  the antennas, long tunnels, buried and bunkered antennas, and reciprocity), and all 115 required Fabric game tests. Those include rednet over wireless modems, a new
-  test that wireless messages carry a signal strength, and upstream's wired `transmits_messages` test, which the
-  original fork broke. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
+  the antennas, long tunnels, buried and bunkered antennas, and reciprocity), and all 116 required Fabric game tests.
+  Those include rednet over wireless modems, new tests that wireless messages carry a signal strength and that modems
+  hanging from computers set into a stone ceiling can hear each other, and upstream's wired `transmits_messages` test,
+  which the original fork broke. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
   modems. The Distant Horizons conversion has unit tests, and its output was checked offline against a real 1:10
   Tellus save: LOD heights decoded from DH's database match the saved chunks' heightmaps, and running the model over
   them gives sensible results for four cells (clear line of sight from a 280m summit 4.3km away: -83dBm on the low

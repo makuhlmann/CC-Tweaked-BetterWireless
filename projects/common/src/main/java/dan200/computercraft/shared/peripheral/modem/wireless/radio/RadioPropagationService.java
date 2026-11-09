@@ -61,9 +61,6 @@ public final class RadioPropagationService {
     /** The maximum number of links to remember. */
     private static final int MAX_CACHED_LINKS = 1 << 14;
 
-    /** The antenna sits on top of the modem, not in the middle of it. */
-    private static final double ANTENNA_OFFSET = 0.5;
-
     private final Queue<Transmission> incoming = new ConcurrentLinkedQueue<>();
     private final AtomicInteger queued = new AtomicInteger();
 
@@ -83,7 +80,7 @@ public final class RadioPropagationService {
     private long tick;
     private long lastErrorLog = Long.MIN_VALUE;
 
-    private record Transmission(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers) {
+    private record Transmission(Packet packet, ServerLevel level, Vec3 origin, Vec3 antenna, List<PacketReceiver> receivers) {
     }
 
     private record Delivery(Packet packet, PacketReceiver receiver, double distance, boolean thundering) {
@@ -128,7 +125,7 @@ public final class RadioPropagationService {
      *
      * @param packet    The packet to send.
      * @param level     The level the packet was sent in.
-     * @param origin    Where the packet was sent from.
+     * @param origin    Where the packet was sent from. This is used for the distance reported to the receiver.
      * @param receivers The receivers which might be able to hear it.
      */
     public void submit(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers) {
@@ -138,7 +135,7 @@ public final class RadioPropagationService {
             queued.addAndGet(-receivers.size());
             return;
         }
-        incoming.add(new Transmission(packet, level, origin, receivers));
+        incoming.add(new Transmission(packet, level, origin, RadioAntenna.of(packet.sender(), origin), receivers));
     }
 
     /**
@@ -175,12 +172,13 @@ public final class RadioPropagationService {
             var level = transmission.level();
             var thundering = level.isThundering();
             var band = settings.band(transmission.packet().channel());
-            var from = transmission.origin().add(0, ANTENNA_OFFSET, 0);
+            var from = transmission.antenna();
 
             for (var receiver : transmission.receivers()) {
                 if (receiver.getLevel() != level) continue;
-                var to = receiver.getPosition().add(0, ANTENNA_OFFSET, 0);
-                var delivery = new Delivery(transmission.packet(), receiver, transmission.origin().distanceTo(receiver.getPosition()), thundering);
+                var position = receiver.getPosition();
+                var to = RadioAntenna.of(receiver, position);
+                var delivery = new Delivery(transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering);
 
                 var key = LinkKey.of(level, from, to, band);
                 var cached = links.get(key);

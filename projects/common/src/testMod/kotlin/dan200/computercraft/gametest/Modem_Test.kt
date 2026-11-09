@@ -103,6 +103,32 @@ class Modem_Test {
     }
 
     /**
+     * Sends a high band message between two computers set into a thick stone ceiling, with their modems hanging
+     * underneath. The computers are buried, but the modems can see each other, so the message should get through.
+     */
+    @GameTest
+    fun Ceiling_modems_see_each_other(context: GameTestHelper) = context.sequence {
+        thenStartComputer("send") {
+            val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
+            while (true) {
+                callPeripheral(modem, "transmit", 2000, 34, "Hello")
+                sleep(50.milliseconds)
+            }
+        }
+        thenOnComputer("receive") {
+            val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
+            callPeripheral(modem, "open", 2000)
+
+            val event = pullEvent("modem_message")
+            assertEquals("Hello", event[4])
+
+            // Nothing but air between the modems, so the signal should be strong (around -70dBm).
+            val signal = (event[6] as Number).toDouble()
+            if (signal <= -85) throw AssertionError("Signal is too weak: $signal")
+        }
+    }
+
+    /**
      * Assert that full block modems act like cables.
      *
      * @see [#1278](https://github.com/cc-tweaked/CC-Tweaked/issues/1278)

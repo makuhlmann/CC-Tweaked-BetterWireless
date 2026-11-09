@@ -38,6 +38,13 @@ public class WirelessModemBlockEntity extends BlockEntity {
         }
 
         @Override
+        public Vec3 getAntennaPosition() {
+            // The position above is the block we're attached to, which may well be buried in a wall. The modem itself
+            // sticks out into the block in front of it.
+            return Vec3.atCenterOf(entity.getBlockPos());
+        }
+
+        @Override
         public boolean equals(@Nullable IPeripheral other) {
             return this == other || (other instanceof Peripheral o && entity == o.entity);
         }

@@ -50,6 +50,11 @@ public class TurtleModem extends AbstractTurtleUpgrade {
         }
 
         @Override
+        public Vec3 getAntennaPosition() {
+            return Vec3.atCenterOf(turtle.getPosition());
+        }
+
+        @Override
         public boolean equals(@Nullable IPeripheral other) {
             return this == other || (other instanceof Peripheral modem && modem.turtle == turtle);
         }
