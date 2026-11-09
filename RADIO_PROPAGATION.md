@@ -110,11 +110,13 @@ exists.
 
 On top of that, the signal takes the better of two paths:
 
-- **Through**: straight through whatever is in the way. Within `block_radius` (64) blocks of each antenna we walk the
-  actual blocks with an exact voxel traversal (Amanatides & Woo, not Bresenham, so no voxels are skipped and no
-  diagonal correction is needed) and sum each block's attenuation × path length × fill fraction. Further away we only
-  have heightmaps, so the ray is classified as underground (rock), in vegetation (between the ground and surface
-  heightmaps), or in the open.
+- **Through**: straight through whatever is in the way. We walk every block along the ray with an exact voxel
+  traversal (Amanatides & Woo, not Bresenham, so no voxels are skipped and no diagonal correction is needed) and sum
+  each block's attenuation × path length × fill fraction. Where a chunk isn't loaded we only have heightmaps, so the
+  ray is classified as underground (rock), in vegetation (between the ground and surface heightmaps), or in the open.
+  An earlier version only walked real blocks within `block_radius` of each antenna and used heightmaps for the whole
+  middle of the link, even through loaded chunks. A heightmap can't see a tunnel, so a straight 3×5 tunnel cut out
+  at 134 blocks: past 2 × 64 blocks, the middle was assumed to be rock, at 7.4dB a block on the low band.
 - **Over**: escape any enclosure around each antenna (walls, a forest canopy, a cave), then **diffract over the terrain
   profile** between them. Diffraction uses Deygout's method with the ITU-R P.526 knife-edge approximation
   `J(ν) = 6.9 + 20log(√((ν−0.1)²+1) + ν − 0.1)`, recursing one level either side of the main edge. If the straight
@@ -185,9 +187,10 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    the packet and returns immediately.
 2. At the start of each server tick, `RadioPropagationService` evaluates queued links on the server thread, reading
    loaded chunks directly through `getChunkNow` and chunk sections (no cross-thread hops, no loading). Work is capped
-   at `tick_budget` (2ms) per tick; leftovers wait for the next tick. Each evaluation is bounded regardless of distance:
-   at most two `block_radius` voxel walks and a `profile_samples`-point profile. A rough micro-benchmark puts one link at
-   ~30µs.
+   at `tick_budget` (2ms) per tick; leftovers wait for the next tick. Each evaluation is one voxel walk along the ray
+   (which stops as soon as the signal is lost), a `block_radius` walk at each end to find where the signal leaves any
+   enclosure, and a `profile_samples`-point profile. A rough micro-benchmark puts one link at ~15µs for 1km, ~30µs for
+   4km and ~85µs at the 16km maximum range.
 3. Results are cached for `cache_ticks` (5s) per *unordered* pair of block positions and band. Path loss is reciprocal,
    so the reply to a rednet message or GPS ping is a cache hit, as are repeated messages between stationary computers.
    Concurrent requests for the same link share one evaluation.
@@ -274,7 +277,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `ground_reflection` | `true` | Two-ray model (height matters) vs free space only. |
 | `min_antenna_height` | 2 | Minimum antenna height above average terrain, in metres. |
 | `material_loss_scale` | 1 | Multiplier for block attenuation. |
-| `block_radius` | 64 | How far from each modem individual blocks are considered. |
+| `block_radius` | 64 | How far from each modem to look for a way out of a building, cave or tunnel, for the path over the terrain. |
 | `profile_samples` | 512 | Maximum terrain profile points. |
 | `storm_noise` | 6 | Thunderstorm noise in dB. |
 | `tick_budget` | 2000 | Microseconds per tick for evaluating links. |
@@ -297,9 +300,9 @@ Everything lives under `[peripheral.radio]` in the server config:
 - **No fading.** Reception is a hard threshold, so messages are deterministic. A small random fade margin near the
   threshold would be more realistic, at the cost of making GPS less reliable at the edge of coverage.
 - **What has been verified:** the 26.3 port and the redesign compile for Fabric and NeoForge. The redesign passes
-  checkstyle, Lua lint, all 68 `common` unit tests (including 21 for the physics: free space, two-ray, knife edge,
-  Deygout, materials, voxel traversal, and whole-link scenarios such as flat ground, hills, walls, buried and bunkered
-  antennas, and reciprocity), and all 115 required Fabric game tests. Those include rednet over wireless modems, a new
+  checkstyle, Lua lint, all 75 `common` unit tests (including 24 for the physics: free space, two-ray, knife edge,
+  Deygout, materials, voxel traversal, and whole-link scenarios such as flat ground, hills, walls near and far from
+  the antennas, long tunnels, buried and bunkered antennas, and reciprocity), and all 115 required Fabric game tests. Those include rednet over wireless modems, a new
   test that wireless messages carry a signal strength, and upstream's wired `transmits_messages` test, which the
   original fork broke. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
   modems. The Distant Horizons conversion has unit tests, and its output was checked offline against a real 1:10

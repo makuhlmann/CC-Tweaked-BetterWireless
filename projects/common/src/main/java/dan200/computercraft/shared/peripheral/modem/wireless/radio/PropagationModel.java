@@ -19,8 +19,8 @@ import java.util.Arrays;
  *     </li>
  *     <li>
  *         <strong>Through</strong>: the loss of the signal travelling in a straight line through whatever is in the
- *         way. Near each antenna we walk individual blocks and use their material's attenuation. Further away we only
- *         have heightmaps, so we classify the ray as being underground, in vegetation, or in the open air.
+ *         way. We walk every block along the ray and use its material's attenuation. In chunks which aren't loaded we
+ *         only have heightmaps, so we classify the ray as being underground, in vegetation, or in the open air.
  *     </li>
  *     <li>
  *         <strong>Over</strong>: the loss of the signal leaving any enclosure around each antenna (walls, a cave),
@@ -29,8 +29,9 @@ import java.util.Arrays;
  * </ol>
  * The signal takes whichever of the through and over paths is better.
  * <p>
- * Evaluating a link costs at most two short voxel walks and one profile of a bounded size, regardless of how far apart
- * the antennas are. The model never loads chunks: anything not exposed by the {@link TerrainView} is guessed.
+ * Evaluating a link costs one walk along the ray (which stops as soon as the signal is lost), a short walk at each end
+ * to find where the signal leaves any enclosure, and one profile of a bounded size. The model never loads chunks:
+ * anything not exposed by the {@link TerrainView} is guessed.
  */
 public final class PropagationModel {
     /**
@@ -164,18 +165,17 @@ public final class PropagationModel {
 
         // Straight through: the walked bits near each end, plus whatever is in the middle.
         var through = fromTx.through + fromRx.through;
-        var middleStart = txThrough / rayBlocks;
-        var middleEnd = 1 - rxThrough / rayBlocks;
-        for (var i = 0; i < segments && through <= headroom; i++) {
-            var start = Math.max(middleStart, (double) i / segments);
-            var end = Math.min(middleEnd, (double) (i + 1) / segments);
-            if (end <= start) continue;
-
-            var midpoint = (start + end) / 2;
-            var rayY = ty + dy * midpoint;
-            var sample = (int) Math.round(midpoint * segments);
-            var material = rayY < ground[sample] ? TERRAIN : rayY < surface[sample] ? RadioMaterial.VEGETATION : RadioMaterial.AIR;
-            through += material.attenuation(frequencyMHz) * (end - start) * rayBlocks * lossScale;
+        var middleLength = rayBlocks - txThrough - rxThrough;
+        if (middleLength > 0 && through <= headroom) {
+            var start = txThrough / rayBlocks;
+            var end = 1 - rxThrough / rayBlocks;
+            var middle = new MiddleWalk(terrain, frequencyMHz, lossScale, headroom - through, ground, surface, start, 1 / rayBlocks);
+            VoxelRay.traverse(
+                tx + (rx - tx) * start, ty + dy * start, tz + (rz - tz) * start,
+                tx + (rx - tx) * end, ty + dy * end, tz + (rz - tz) * end,
+                middleLength, middle
+            );
+            through += middle.loss;
         }
 
         // Over the top: escape any enclosure around each antenna, then diffract over the terrain.
@@ -260,6 +260,95 @@ public final class PropagationModel {
             Arrays.fill(values, fallback);
         } else {
             for (var j = previous + 1; j < values.length; j++) values[j] = values[previous];
+        }
+    }
+
+    /**
+     * Walks the blocks in the middle of a link, between the sections walked from each antenna.
+     * <p>
+     * Where the chunk is loaded, this uses the real blocks, so tunnels, buildings and caves work however long the link
+     * is. Elsewhere we only have heightmaps, so we guess: anything below the ground is rock, and anything between the
+     * ground and the surface is vegetation. Where we don't even have heightmaps, we use the (interpolated) profile.
+     */
+    private static final class MiddleWalk implements VoxelRay.Visitor {
+        private final TerrainView terrain;
+        private final double frequencyMHz;
+        private final double lossScale;
+        private final double cap;
+        private final double[] ground;
+        private final double[] surface;
+        private final double start;
+        private final double scale;
+        private final double[] attenuation = new double[RadioMaterial.values().length];
+
+        double loss;
+
+        /**
+         * Create a new walk.
+         *
+         * @param terrain      The terrain to walk through.
+         * @param frequencyMHz The frequency, in MHz.
+         * @param lossScale    A multiplier for material attenuation.
+         * @param cap          The loss at which to give up.
+         * @param ground       The ground heights along the profile.
+         * @param surface      The surface heights along the profile.
+         * @param start        How far along the whole link the walk starts, between 0 and 1.
+         * @param scale        The fraction of the whole link covered by one block.
+         */
+        MiddleWalk(
+            TerrainView terrain, double frequencyMHz, double lossScale, double cap,
+            double[] ground, double[] surface, double start, double scale
+        ) {
+            this.terrain = terrain;
+            this.frequencyMHz = frequencyMHz;
+            this.lossScale = lossScale;
+            this.cap = cap;
+            this.ground = ground;
+            this.surface = surface;
+            this.start = start;
+            this.scale = scale;
+            Arrays.fill(attenuation, Double.NaN);
+        }
+
+        @Override
+        public boolean visit(int x, int y, int z, double enter, double exit) {
+            var info = terrain.block(x, y, z);
+            double blockAttenuation;
+            if (info != null) {
+                if (info.fill() == 0) return true;
+                blockAttenuation = attenuation(info.material()) * info.fill();
+            } else {
+                blockAttenuation = attenuation(guessMaterial(x, y, z, (enter + exit) / 2));
+            }
+
+            loss += blockAttenuation * lossScale * (exit - enter);
+            return loss <= cap;
+        }
+
+        private RadioMaterial guessMaterial(int x, int y, int z, double distance) {
+            var groundY = terrain.groundHeight(x, z);
+            var surfaceY = terrain.surfaceHeight(x, z);
+            if (groundY != TerrainView.UNKNOWN && surfaceY != TerrainView.UNKNOWN) return classify(y, groundY, surfaceY);
+
+            var sample = Math.clamp(Math.round((start + distance * scale) * (ground.length - 1)), 0, ground.length - 1);
+            return classify(y, ground[sample], surface[sample]);
+        }
+
+        private static RadioMaterial classify(int y, double ground, double surface) {
+            return y < ground ? TERRAIN : y < surface ? RadioMaterial.VEGETATION : RadioMaterial.AIR;
+        }
+
+        /**
+         * Get a material's attenuation. This is fairly expensive to compute, and we may visit thousands of blocks, so
+         * we cache it.
+         *
+         * @param material The material.
+         * @return The material's attenuation at our frequency, in dB per metre.
+         */
+        private double attenuation(RadioMaterial material) {
+            var value = attenuation[material.ordinal()];
+            if (Double.isNaN(value)) attenuation[material.ordinal()] = value = material.attenuation(frequencyMHz);
+            return value;
         }
     }
 

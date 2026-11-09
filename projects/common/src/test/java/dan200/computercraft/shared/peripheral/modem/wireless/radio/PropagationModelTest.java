@@ -117,6 +117,44 @@ public class PropagationModelTest {
     }
 
     @Test
+    public void longTunnelCarriesSignal() {
+        // A straight tunnel, 3 wide and 5 tall, 50 blocks underground. The link is much longer than the block radius,
+        // so this relies on walking the real blocks in the middle too.
+        var terrain = tunnel();
+        var link = PropagationModel.evaluate(0.5, GROUND + 1.5, 0.5, 300.5, GROUND + 0.5, 0.5, VHF, BUDGET, ENV, terrain);
+
+        assertEquals(0, link.through(), 1e-9, "Nothing in the way: " + link);
+        assertTrue(link.loss() < BUDGET, "Signal should reach the end of the tunnel: " + link);
+    }
+
+    @Test
+    public void unloadedTunnelIsSolid() {
+        // If the middle of the tunnel isn't loaded, all we know is that it's underground, so we assume it's rock.
+        var terrain = tunnel();
+        terrain.loaded = (x, z) -> x < 100 || x > 200;
+        var link = PropagationModel.evaluate(0.5, GROUND + 1.5, 0.5, 300.5, GROUND + 0.5, 0.5, VHF, BUDGET, ENV, terrain);
+
+        assertTrue(link.loss() > BUDGET, "Signal should not get through 100 blocks of (presumed) rock: " + link);
+    }
+
+    @Test
+    public void wallFarFromAntennasAttenuates() {
+        // The same wall as wallNearAntennaAttenuates, but in the middle of a link much longer than the block radius.
+        var terrain = new FakeTerrain((x, z) -> x == 300 ? GROUND + 200 : GROUND);
+        terrain.solid = (x, y, z) -> x == 300 && y < GROUND + 200 ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+
+        var link = evaluate(terrain, 0, 0, 600, VHF);
+        assertFalse(link.diffracted(), "Signal should go through the wall");
+        assertEquals(RadioMaterial.ROCK.attenuation(VHF), link.through(), 0.5);
+    }
+
+    private static FakeTerrain tunnel() {
+        var terrain = new FakeTerrain((x, z) -> GROUND + 50);
+        terrain.solid = (x, y, z) -> x >= -1 && x <= 302 && z >= -1 && z <= 1 && y >= GROUND && y < GROUND + 5 ? BlockRadioInfo.AIR : null;
+        return terrain;
+    }
+
+    @Test
     public void unknownTerrainIsInterpolated() {
         // We only know the ground near each end; the model should assume it continues flat.
         var terrain = new FakeTerrain((x, z) -> x < 50 || x > 950 ? GROUND : TerrainView.UNKNOWN);
@@ -141,6 +179,7 @@ public class PropagationModelTest {
         private final IntBinaryOperator height;
         private final Map<Long, BlockRadioInfo> overrides = new HashMap<>();
         BlockLookup solid = (x, y, z) -> null;
+        ColumnTest loaded = (x, z) -> true;
 
         FakeTerrain(IntBinaryOperator height) {
             this.height = height;
@@ -158,6 +197,7 @@ public class PropagationModelTest {
 
         @Override
         public @Nullable BlockRadioInfo block(int x, int y, int z) {
+            if (!loaded.test(x, z)) return null;
             var override = overrides.get(((long) x << 40) ^ ((long) y << 20) ^ z);
             if (override != null) return override;
             var block = solid.get(x, y, z);
@@ -173,5 +213,10 @@ public class PropagationModelTest {
     private interface BlockLookup {
         @Nullable
         BlockRadioInfo get(int x, int y, int z);
+    }
+
+    @FunctionalInterface
+    private interface ColumnTest {
+        boolean test(int x, int z);
     }
 }

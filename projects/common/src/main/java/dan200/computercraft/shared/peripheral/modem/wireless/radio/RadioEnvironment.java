@@ -15,8 +15,8 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
  * @param groundReflection       Whether to use the two-ray ground reflection model, rather than just free space loss.
  * @param minAntennaHeight       The minimum height of an antenna above the average terrain, in metres.
  * @param materialLossScale      A multiplier applied to all material attenuation.
- * @param voxelRadius            How far from each end of the link, in blocks, we look at individual blocks rather than
- *                               just heightmaps.
+ * @param voxelRadius            How far from each end of the link, in blocks, we look for the signal to leave any
+ *                               enclosure, so it can go over the terrain.
  * @param maxProfileSamples      The maximum number of points we sample along the terrain profile.
  */
 public record RadioEnvironment(

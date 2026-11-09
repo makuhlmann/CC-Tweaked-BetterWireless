@@ -402,8 +402,8 @@ public final class ConfigSpec {
 
             radioVoxelRadius = builder
                 .comment("""
-                    How far from each modem (in blocks) individual blocks are considered. Further away
-                    only heightmaps are used.""")
+                    How far from each modem (in blocks) to look for a way out of a building, cave or
+                    tunnel, so the signal can go over the terrain rather than through it.""")
                 .defineInRange("block_radius", Config.radioVoxelRadius, 1, 512);
 
             radioProfileSamples = builder
