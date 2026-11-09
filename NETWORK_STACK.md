@@ -194,8 +194,8 @@ only a filter: several computers may share one, and frames carry the real destin
 
 Rednet listens on `id mod 65500`, which can land on another computer's unicast channel here. Each side ignores the
 other's messages, so this only costs the odd wasted wakeup. Channels 1008–1023 and 61025–65532 are left for other
-programs. Servers with conflicting programs can move the ranges
-with settings. Frames always carry a version field, so the stack ignores anything that isn't its own.
+programs. The ranges are fixed for now; settings to move them could
+be added if a server's programs conflict. Frames always carry a version field, so the stack ignores anything that isn't its own.
 
 ### Frames
 
