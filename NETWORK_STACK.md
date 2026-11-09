@@ -843,14 +843,13 @@ Most of the stack is Lua. These changes to the mod are planned:
 | `enclave` API (§9) | Keys programs can use but not copy | Phase 0 |
 | `modem.isInterdimensional()` | Lets the stack recognise ender modems (§4) | Phase 1 |
 | Wireless message size limit | Stops anyone broadcasting huge messages to everything in range | Phase 1 |
-| Transmit power by device | Phones are limited by their own weak transmitter | Before phase 6 |
+| Transmit and receive power by device | Phones are weaker than fixed computers, in both directions | Before phase 6 |
 | Ender modem rework and cable recipe | Ender modems are too strong for their cost, and make cables pointless | Independent |
 
-### Transmit power by device
+### Transmit and receive power by device
 
-Pocket computers and turtles transmit 10 dB weaker than placed computers (configurable per kind). A phone can then hear
-a tower that can't hear it, so towers have to be close enough for the phone's uplink, as in real networks. Ender modems
-lose another 10 dB on top (below).
+Pocket computers and turtles transmit 10 dB weaker than placed computers, and receive 7 dB worse (both configurable per
+kind). Ender modems transmit another 10 dB weaker on top (below).
 
 A tall tower doesn't change this, because path loss is the same in both directions. The two-ray model uses the product
 of both antenna heights, and the diffraction and block losses don't depend on direction either (a unit test checks
@@ -858,10 +857,12 @@ this). So height helps a phone's uplink exactly as much as its downlink, and the
 10 dB gap, over the ground, a phone stops being heard at 56% of the distance at which it can still hear the tower.
 
 Real networks close most of that gap at the tower, with directional antennas, better receivers and several receive
-antennas. The proposal (§15) does the equivalent: phones also get a weaker receiver, for example −10 dB transmitting and
-−7 dB receiving relative to placed computers. The uplink then still runs out a little earlier, at 84% of the
-distance, but phones no longer show a usable signal far beyond where they can be heard. Fixed links between placed
-computers are unaffected.
+antennas. Phones' weaker receiver does the equivalent here. With −10 dB transmitting and −7 dB receiving, the uplink
+runs out at 84% of the distance at which a phone hears the tower, rather than 56%, so phones don't show a usable signal
+far beyond where they can be heard.
+
+Links between placed computers are unaffected. Two phones talking directly lose 17 dB, which over the ground leaves
+them about 38% of the range of two placed computers: closer to walkie-talkies than to towers.
 
 Path loss doesn't depend on transmit or receive offsets, so neither costs any extra propagation work. Links are evaluated with the
 strongest possible transmitter's budget, cached as now, and each sender's and receiver's offsets are subtracted from the
@@ -887,7 +888,15 @@ an ender pearl they make cables, relays and towers pointless.
   position:
   - X and Z are scaled by `DimensionType.getTeleportationScale`: divided by 8 into the Nether, multiplied by 8 out of
     it, unchanged for the End.
-  - Y stays the same, clamped to the dimension's height.
+  - Y stays the same, but is clamped to a range for each dimension. Without this, a tall Tellus world (up to Y 2031)
+    would put most signals above the Nether's build height.
+    - **The Nether: 0–128,** between the bedrock floor and the top of the roof. Signals from high up in the Overworld
+      appear on top of the roof, where Nether-roof highways and other infrastructure are built. To the radio model the
+      roof is flat, open ground, so links along it carry well.
+    - **The End: also 0–128.** There's no need to narrow it to the islands' height (around Y 55–70). The End has no
+      ceiling, so a signal above an island still has a clear path down to it. A signal clamped to island height, on the
+      other hand, could land inside an island and be buried.
+    - **Other dimensions** use their full height.
   - From there it propagates through that dimension's terrain like any other signal. A link through the Nether covers
     eight times the Overworld distance, just like Nether travel.
 - **Only ender modems talk across dimensions.** A normal wireless modem never hears another dimension, and an ender
@@ -897,7 +906,8 @@ an ender pearl they make cables, relays and towers pointless.
 - **No distance across dimensions.** `modem_message` still reports no distance for messages from another dimension, as
   today, so GPS keeps ignoring them. Distances between dimensions would mix coordinate systems and give wrong
   positions.
-- **Configuration:** `ender_power_offset` (−10 dB) and `ender_cross_dimension` (on).
+- **Configuration:** `ender_power_offset` (−10 dB), `ender_cross_dimension` (on), and `ender_y_ranges`
+  (`minecraft:the_nether=0..128`, `minecraft:the_end=0..128`).
 - **Cable recipe:** to make wired networks the cheap option, one craft makes 32 networking cables instead of 6. The
   recipe is generated by `RecipeProvider`.
 
@@ -974,7 +984,7 @@ Each phase is usable on its own.
 | 3 | Forwarding, static routes, distance-vector routing, firewall rules, `route`, `traceroute` | Ping across three routers. When one is broken, traffic finds another path. |
 | 4 | Connections, byte streams, `nc`, `ncp` | A 1 MB file crosses a lossy wireless path intact |
 | 5 | Codec, Noise sessions with enclave keys, known hosts, certificates, encrypted wireless links, `rsh` | A remote shell works securely. Tampered or replayed messages are rejected. |
-| 6 | In the mod: transmit power by device. Cellular: system information, activation, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
+| 6 | In the mod: transmit and receive power by device. Cellular: system information, activation, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
 | 7 | Move the stack from the datapack into the ROM | Every computer has it with no setup |
 | — | Ender modem rework and cable recipe, at any point | Ender links work across dimensions within the tick budget |
 | Later | Airtime and interference (§12) | |
@@ -989,13 +999,13 @@ Each phase is usable on its own.
 | 4 | Distribution | A datapack while developing (it can also replace `bios.lua`), then the ROM |
 | 5 | Multiplayer | Players agree among themselves on prefixes and top-level names; nothing enforces it |
 | 6 | Crypto | On every computer, kept cheap on CPU, with a server switch. Plus a key enclave (§9). |
-| 7 | Radio realism | Transmit power by device and a wireless size limit now; airtime and interference later |
+| 7 | Radio realism | Transmit and receive power by device and a wireless size limit now; airtime and interference later |
 | 8 | Ender modems | Detected with `modem.isInterdimensional()`, and reworked into weak radios. Only ender modems talk across dimensions (§12). Cables: 32 per craft. |
 | 9 | SIM activation | Over the air, anywhere in range of the network, with a code from the network's administrator (§11) |
+| 10 | Phone power | Pocket computers and turtles transmit 10 dB weaker and receive 7 dB worse than placed computers (§12) |
+| 11 | Ender heights | Y is kept but clamped per dimension: 0–128 in the Nether and the End (§12) |
 
 Still open:
 
-1. **Balancing phones' weaker transmitter (§12).** Should phones also get a weaker receiver, so the gap between
-   hearing a tower and being heard by it stays small, as in real networks?
-2. **Unloaded Nether terrain** for ender links: Distant Horizons data, or a simpler assumption (§12)?
-3. **Enclave PIN:** worth having in the first version, or later?
+1. **Unloaded Nether terrain** for ender links: Distant Horizons data, or a simpler assumption (§12)?
+2. **Enclave PIN:** worth having in the first version, or later?
