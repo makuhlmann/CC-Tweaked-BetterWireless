@@ -40,4 +40,11 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 3)
     fun Net_dhcp(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * A computer pings another on a different network, through a router with a cable on one side and a wireless modem
+     * on the other.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 2)
+    fun Net_route(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

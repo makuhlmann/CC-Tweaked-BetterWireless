@@ -1,0 +1,10 @@
+route shows the routing table, and sets up routes and routers. Settings are saved, and apply straight away.
+
+ex:
+"route" shows every route: where it leads, the router to send to, and its cost.
+"route default 10.0.0.1" sends anything for other networks to 10.0.0.1.
+"route add 10.5.0.0/16 10.4.0.1" sends anything for 10.5.0.0/16 to 10.4.0.1.
+"route delete 10.5.0.0/16" removes that route.
+"route forwarding on" makes this computer a router, forwarding packets between its interfaces.
+"route rip on" makes this router learn routes from other routers, and tell them its own.
+"route rip default" does the same, and tells them this router is the way to everywhere else.

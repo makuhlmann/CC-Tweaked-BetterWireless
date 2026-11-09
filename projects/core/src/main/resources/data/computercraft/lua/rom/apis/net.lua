@@ -19,6 +19,11 @@ Every computer has a hostname (the `net.hostname` setting, or its label) and ans
 are looked up in the `net.hosts` setting, then asked of DNS servers (the `dnsd` program), found through DHCP or the
 `net.dns` setting.
 
+Computers on different networks reach each other through routers: computers with several interfaces and
+`net.forwarding` on. Hosts send everything they can't reach directly to their gateway (from DHCP, or the `net.gateway`
+setting). Routers learn routes from each other with `net.rip`, or are given them with `net.routes`; the `route` program
+sets these. `net.firewall` holds rules for which packets a router forwards.
+
 Wired and ender modems are one interface each. A wireless modem is one interface on the short-range high band by default
 (channels 1024 and up). Set `net.<name>.band` to `"low"` to use the long-range low band instead (channels below 1024).
 An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
@@ -45,8 +50,9 @@ local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
 
-local stack, address, dhcp, dns, running
-local add_modem
+local stack, address, dhcp, dns, rip, running
+local rip_instance
+local add_modem, apply_routing
 local errors = {}
 local services = {}
 local cache = {}
@@ -72,6 +78,7 @@ local function load()
     address = env.require("cc.net.address")
     dhcp = env.require("cc.internal.net.dhcp")
     dns = env.require("cc.internal.net.dns")
+    rip = env.require("cc.internal.net.rip")
 
     settings.define("net.enabled", {
         description = "Run the network stack.",
@@ -94,6 +101,37 @@ local function load()
         description = "Fixed names, as a table of names to addresses.",
         type = "table",
     })
+    settings.define("net.forwarding", {
+        description = "Forward packets between networks, making this computer a router.",
+        default = false,
+        type = "boolean",
+    })
+    settings.define("net.gateway", {
+        description = "The router to send packets for other networks to, if DHCP doesn't give one.",
+        type = "string",
+    })
+    settings.define("net.routes", {
+        description = "Fixed routes, as a list of strings such as \"10.5.0.0/16 via 10.4.0.1\".",
+        type = "table",
+    })
+    settings.define("net.rip", {
+        description = "Learn routes from other routers, and tell them ours.",
+        default = false,
+        type = "boolean",
+    })
+    settings.define("net.rip.default", {
+        description = "Tell other routers that this one is the way to everywhere else.",
+        default = false,
+        type = "boolean",
+    })
+    settings.define("net.rip.key", {
+        description = "A key shared by every router, to sign routing updates and ignore unsigned ones.",
+        type = "string",
+    })
+    settings.define("net.firewall", {
+        description = "Rules for which packets a router forwards. Use the firewall program to change them.",
+        type = "table",
+    })
 
     stack = env.require("cc.internal.net.stack").new {
         id = os.getComputerID(),
@@ -107,6 +145,7 @@ local function load()
         log = log_error,
     }
     dns.respond(stack, { hostname = hostname, services = services })
+    apply_routing()
 
     for _, name in ipairs(peripheral.getNames()) do add_modem(name) end
     return stack
@@ -120,6 +159,83 @@ end
 local function stop_dhcp(name, release)
     local client = stack.dhcp_clients and stack.dhcp_clients[name]
     if client then client:stop(release) end
+    stack:remove_routes(function(route) return route.source == "dhcp" and route.interface == name end)
+end
+
+-- Parse "10.5.0.0/16 via 10.4.0.1", optionally followed by "metric 3".
+local function parse_route(text)
+    if type(text) ~= "string" then return nil, "Routes must be strings" end
+    local network, gateway, rest = text:match("^%s*(%S+)%s+via%s+(%S+)%s*(.-)%s*$")
+    local metric = rest and (rest == "" and 1 or tonumber(rest:match("^metric%s+(%d+)$")))
+    local addr, prefix = address.parse(network or "")
+    local hop = address.parse(gateway or "")
+    if not addr or not prefix or not hop or not metric then
+        return nil, ("Invalid route %q: expected something like \"10.5.0.0/16 via 10.4.0.1\""):format(text)
+    end
+    return { network = addr, prefix = prefix, gateway = hop, metric = metric, source = "static" }
+end
+
+local function parse_network(text)
+    if text == nil then return nil end
+    local addr, prefix = address.parse(text)
+    if not addr then error(prefix, 0) end
+    return addr, prefix or 32
+end
+
+-- Turn the net.firewall setting into rules the stack understands.
+local function firewall_rules()
+    local rules = {}
+    for i, rule in ipairs(settings.get("net.firewall") or {}) do
+        local ok, err = pcall(function()
+            if type(rule) ~= "table" or (rule.action ~= "allow" and rule.action ~= "deny") then
+                error("expected an action of allow or deny", 0)
+            end
+            local src, src_prefix = parse_network(rule.from)
+            local dst, dst_prefix = parse_network(rule.to)
+            rules[#rules + 1] = {
+                action = rule.action, proto = rule.proto, port = tonumber(rule.port), interface = rule.on,
+                src = src, src_prefix = src_prefix, dst = dst, dst_prefix = dst_prefix,
+            }
+        end)
+        if not ok then log_error(("Firewall rule %d: %s"):format(i, err)) end
+    end
+    return rules
+end
+
+-- Apply the routing settings: forwarding, fixed routes, the routing protocol and the firewall.
+function apply_routing()
+    stack.forwarding = settings.get("net.forwarding") == true
+
+    stack:remove_routes(function(route) return route.source == "static" end)
+    local gateway = settings.get("net.gateway")
+    if type(gateway) == "string" and address.parse(gateway) then
+        stack:add_route { network = 0, prefix = 0, gateway = address.parse(gateway), metric = 1, source = "static" }
+    end
+    for _, text in ipairs(settings.get("net.routes") or {}) do
+        local route, err = parse_route(text)
+        if route then stack:add_route(route) else log_error(err) end
+    end
+
+    if rip_instance then
+        rip_instance:stop()
+        rip_instance = nil
+    end
+    if settings.get("net.rip") then
+        local key = settings.get("net.rip.key")
+        if key and not crypto then
+            -- Running without the key would accept routes from anyone, which the key is there to stop.
+            log_error("Cannot start routing: net.rip.key needs the crypto API, which is disabled.")
+        else
+            local ok, result = pcall(rip.start, stack, {
+                default = settings.get("net.rip.default") == true,
+                key = key,
+                hmac = key and crypto.hmac,
+            })
+            if ok then rip_instance = result else log_error("Cannot start routing: " .. tostring(result)) end
+        end
+    end
+
+    stack:set_firewall(firewall_rules())
 end
 
 -- Apply an address setting to an interface: "dhcp", "none", or an address. Without a setting, wired interfaces use
@@ -136,7 +252,15 @@ local function apply(name, mode)
             stack:set_address(name, nil)
             dhcp.start(stack, name, {
                 hostname = hostname,
-                on_change = function() os.queueEvent("net_interface", name, "address") end,
+                on_change = function(client)
+                    -- A gateway from DHCP becomes this interface's default route.
+                    stack:remove_routes(function(route) return route.source == "dhcp" and route.interface == name end)
+                    local gateway = client.lease and client.lease.gateway
+                    if gateway then
+                        stack:add_route { network = 0, prefix = 0, gateway = gateway, interface = name, metric = 10, source = "dhcp" }
+                    end
+                    os.queueEvent("net_interface", name, "address")
+                end,
             })
         end
         return true
@@ -439,15 +563,44 @@ function lookup(service, timeout)
     return results
 end
 
+--[[- Get the routing table.
+
+@treturn { { network = string, gateway? = string, interface? = string, metric = number, source = string, expires? = number }... }
+Each route: the network it leads to (such as `"10.5.0.0/16"`); the router to send to (or none for our own networks);
+the interface; the cost; where it came from (`"connected"`, `"static"`, `"dhcp"` or `"rip"`); and for learned routes, how
+many seconds until it's forgotten unless refreshed.
+]]
+function routes()
+    local result = {}
+    for i, route in ipairs(load():route_info()) do
+        result[i] = {
+            network = address.format(route.network, route.prefix),
+            gateway = route.gateway and address.format(route.gateway),
+            interface = route.interface, metric = route.metric, source = route.source, expires = route.expires,
+        }
+    end
+    return result
+end
+
+--- Apply changes to the routing settings (`net.forwarding`, `net.gateway`, `net.routes`, `net.rip` and its options,
+-- and `net.firewall`) without restarting.
+function reload()
+    load()
+    apply_routing()
+end
+
 --[[- Send an echo request to another computer and wait for its reply.
 
 @tparam string target The computer's name or address. A broadcast address gets the first reply from anyone.
 @tparam[opt=2] number timeout How long to wait, in seconds.
+@tparam[opt=32] number ttl How many routers the request may pass. Lower values find the routers on the way, as
+`traceroute` does.
 @treturn[1] number The round trip time, in seconds.
 @treturn[1] number The reply's remaining time to live.
 @treturn[1] string The address the reply came from.
 @treturn[2] nil If there was no reply.
-@treturn[2] string Why not, such as `"Timed out"` or `"Host unreachable"`.
+@treturn[2] string Why not, such as `"Timed out"`, `"Host unreachable"` or `"TTL expired"`.
+@treturn[2] string|nil The address of the router which reported the error, if one did.
 @usage Check another computer can be reached.
 
 ```lua
@@ -455,16 +608,17 @@ local time, err = net.ping("10.0.0.2")
 if time then print(("Reply in %d ms"):format(time * 1000)) else print(err) end
 ```
 ]]
-function ping(target, timeout)
+function ping(target, timeout, ttl)
     expect(1, target, "string")
     expect(2, timeout, "number", "nil")
+    expect(3, ttl, "number", "nil")
     local s = load()
 
     local dst, err = resolve_number(target)
     if not dst then return nil, err end
 
     local id
-    id, err = s:echo(dst)
+    id, err = s:echo(dst, nil, ttl)
     if not id then return nil, err end
 
     local timer = os.startTimer(timeout or DEFAULT_TIMEOUT)
@@ -474,7 +628,7 @@ function ping(target, timeout)
             os.cancelTimer(timer)
             local result = s:echo_result(id)
             s:forget_echo(id)
-            if result.error then return nil, result.error end
+            if result.error then return nil, result.error, result.from and address.format(result.from) end
             return result.rtt, result.ttl, address.format(result.from)
         elseif event == "timer" and arg == timer then
             s:forget_echo(id)

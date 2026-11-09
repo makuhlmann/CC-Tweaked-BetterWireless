@@ -8,11 +8,13 @@ net.resolve( name )
 net.host( service, port )
 net.unhost( service )
 net.lookup( service, [timeout] )
-net.ping( target, [timeout] )
+net.ping( target, [timeout], [ttl] )
+net.routes()
+net.reload()
 net.udp.open( [port] )
 net.capture( enabled )
 net.getErrors()
 
 Sockets from net.udp.open have the methods send( target, port, data ), receive( [timeout] ), getPort() and close().
 
-The network stack runs in the background on every computer. Every modem is a network interface. Interfaces get addresses from a DHCP server, or give themselves link-local ones, and computers answer to <hostname>.local. See also the programs "ifconfig", "ping", "nslookup", "netdump", "dhcpd" and "dnsd".
+The network stack runs in the background on every computer. Every modem is a network interface. Interfaces get addresses from a DHCP server, or give themselves link-local ones, and computers answer to <hostname>.local. Routers forward packets between networks. See also the programs "ifconfig", "ping", "traceroute", "route", "firewall", "nslookup", "netdump", "dhcpd" and "dnsd".

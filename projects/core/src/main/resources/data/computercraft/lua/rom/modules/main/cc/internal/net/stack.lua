@@ -39,6 +39,9 @@ local ECHO_LIFETIME = 60
 -- How long frame capture lasts unless renewed, in seconds.
 local CAPTURE_LIFETIME = 30
 
+--- A route metric meaning "can't get there".
+local INFINITY = 16
+
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
 local EPHEMERAL_FIRST, EPHEMERAL_LAST = 49152, 65535
 local MAX_QUEUED_DATAGRAMS = 32
@@ -125,6 +128,11 @@ local function new(options)
         timers = {},
         udp = {},
         next_port = EPHEMERAL_FIRST,
+
+        routes = {},
+        forwarding = false,
+        firewall = nil,
+        forwarded = 0,
     }, Stack)
 
     self.protocols.udp = function(packet, interface) return self:receive_udp(packet, interface) end
@@ -310,19 +318,169 @@ local function is_broadcast(interface, addr)
     return addr == address.BROADCAST or (interface ~= nil and addr == interface.broadcast_address)
 end
 
---- Find the interface to reach an address on.
+local function usable(interface)
+    return interface ~= nil and interface.address ~= nil and not interface.duplicate
+end
+
+--- Find the interface on whose network an address is.
 --
 -- @tparam number addr The address.
--- @treturn table|nil The interface, or `nil` if no interface is on that address's network.
-function Stack:route(addr)
+-- @treturn table|nil The interface, or `nil` if the address isn't on any of our networks.
+function Stack:on_link(addr)
     local best
     for _, interface in pairs(self.interfaces) do
-        if interface.address and not interface.duplicate and address.contains(interface.network, interface.prefix, addr)
+        if usable(interface) and address.contains(interface.network, interface.prefix, addr)
             and (not best or interface.prefix > best.prefix or (interface.prefix == best.prefix and interface.name < best.name)) then
             best = interface
         end
     end
     return best
+end
+
+--- Find how to reach an address: the most specific route, then the cheapest. Our own networks cost nothing.
+--
+-- @tparam number addr The address.
+-- @treturn table|nil The interface to send on, or `nil` if there's no route.
+-- @treturn number The next hop: the address itself, or the router to hand it to.
+-- @treturn table|nil The route used, or `nil` for one of our own networks.
+function Stack:route(addr)
+    local best, best_hop, best_route, best_prefix, best_metric
+    local function consider(interface, hop, route, prefix, metric)
+        if not best or prefix > best_prefix or (prefix == best_prefix and (metric < best_metric
+            or (metric == best_metric and interface.name < best.name))) then
+            best, best_hop, best_route, best_prefix, best_metric = interface, hop, route, prefix, metric
+        end
+    end
+
+    local direct = self:on_link(addr)
+    if direct then consider(direct, addr, nil, direct.prefix, 0) end
+
+    for _, route in ipairs(self.routes) do
+        if route.metric < INFINITY and address.contains(route.network, route.prefix, addr) then
+            if route.gateway then
+                -- A router must be on one of our own networks.
+                local interface = route.interface and self.interfaces[route.interface] or self:on_link(route.gateway)
+                if usable(interface) and address.contains(interface.network, interface.prefix, route.gateway) then
+                    consider(interface, route.gateway, route, route.prefix, route.metric)
+                end
+            elseif usable(self.interfaces[route.interface]) then
+                consider(self.interfaces[route.interface], addr, route, route.prefix, route.metric)
+            end
+        end
+    end
+
+    return best, best_hop, best_route
+end
+
+--[[- Add a route.
+
+@tparam {
+    network = number, prefix = number, gateway? = number, interface? = string, metric? = number,
+    source = string, expires? = number,
+} route Where the route goes; the router to hand packets to (or the interface, for a network reached directly); its
+cost (1 by default); and where it came from, such as `"static"`, `"dhcp"` or `"rip"`.
+@treturn table The route, which may be changed in place.
+]]
+function Stack:add_route(route)
+    route.network = address.network(route.network, route.prefix)
+    route.metric = route.metric or 1
+    self.routes[#self.routes + 1] = route
+    return route
+end
+
+--- Remove every route matching a test.
+--
+-- @tparam function(route:table):boolean test Whether to remove a route.
+-- @treturn number How many were removed.
+function Stack:remove_routes(test)
+    local kept, removed = {}, 0
+    for _, route in ipairs(self.routes) do
+        if test(route) then removed = removed + 1 else kept[#kept + 1] = route end
+    end
+    self.routes = kept
+    return removed
+end
+
+--- Describe every route, including our own networks.
+--
+-- @treturn { table... } Each route's `network` and `prefix`; `gateway` and `interface`; `metric`; `source`; and, for
+-- learned routes, `expires` (seconds left).
+function Stack:route_info()
+    local result, now = {}, self.clock()
+    for _, interface in pairs(self.interfaces) do
+        if usable(interface) then
+            result[#result + 1] = {
+                network = interface.network, prefix = interface.prefix, interface = interface.name, metric = 0,
+                source = "connected",
+            }
+        end
+    end
+    for _, route in ipairs(self.routes) do
+        result[#result + 1] = {
+            network = route.network, prefix = route.prefix, gateway = route.gateway, metric = route.metric,
+            interface = route.interface or (route.gateway and self:on_link(route.gateway) or {}).name,
+            source = route.source, expires = route.expires and route.expires - now,
+        }
+    end
+    table.sort(result, function(a, b)
+        if a.prefix ~= b.prefix then return a.prefix > b.prefix end
+        if a.network ~= b.network then return a.network < b.network end
+        return a.metric < b.metric
+    end)
+    return result
+end
+
+--[[- Set the rules for which packets this computer forwards. Rules are tried in order, and the first which matches a
+packet decides. Packets which match no rule are forwarded.
+
+@tparam { {
+    action = string, proto? = string, src? = number, src_prefix? = number, dst? = number, dst_prefix? = number,
+    port? = number, interface? = string,
+}... } rules Each rule's action (`"allow"` or `"deny"`), and what it matches: the protocol, source and destination
+networks, destination port, and the interface the packet arrived on.
+]]
+function Stack:set_firewall(rules)
+    self.firewall = #rules > 0 and rules or nil
+end
+
+local function firewall_matches(rule, packet, interface)
+    if rule.proto and rule.proto ~= packet.proto then return false end
+    if rule.src and not address.contains(rule.src, rule.src_prefix, packet.src) then return false end
+    if rule.dst and not address.contains(rule.dst, rule.dst_prefix, packet.dst) then return false end
+    if rule.interface and rule.interface ~= interface.name then return false end
+    if rule.port then
+        local body = packet.body
+        if type(body) ~= "table" or body.dp ~= rule.port then return false end
+    end
+    return true
+end
+
+--- Check whether the firewall lets a packet through.
+--
+-- @tparam table packet The packet.
+-- @tparam table interface The interface it arrived on.
+-- @treturn boolean Whether to forward it.
+function Stack:firewall_allows(packet, interface)
+    for _, rule in ipairs(self.firewall or {}) do
+        if firewall_matches(rule, packet, interface) then return rule.action ~= "deny" end
+    end
+    return true
+end
+
+--- Forward a packet which isn't for us, if we're a router.
+--
+-- @tparam table packet The packet.
+-- @tparam table interface The interface it arrived on.
+function Stack:forward(packet, interface)
+    packet.ttl = packet.ttl - 1
+    if packet.ttl <= 0 then return self:send_error(packet, "time_exceeded", nil, interface) end
+    if not self:firewall_allows(packet, interface) then return self:send_error(packet, "unreachable", "admin", interface) end
+
+    local out, next_hop = self:route(packet.dst)
+    if not out then return self:send_error(packet, "unreachable", "net", interface) end
+
+    self.forwarded = self.forwarded + 1
+    self:send_on(out, next_hop, packet)
 end
 
 function Stack:receive_packet(interface, src, packet, signal)
@@ -338,6 +496,8 @@ function Stack:receive_packet(interface, src, packet, signal)
 
     if self:is_local(packet.dst) or is_broadcast(interface, packet.dst) then
         self:deliver(packet, interface)
+    elseif self.forwarding and packet.src ~= address.ANY and not address.is_loopback(packet.dst) then
+        self:forward(packet, interface)
     else
         -- Hosts don't forward packets.
         interface.stats.dropped = interface.stats.dropped + 1
@@ -380,7 +540,8 @@ end
 @tparam number dst Where to send it.
 @tparam string proto The protocol, such as `"icmp"`.
 @param body The packet's body.
-@tparam[opt] { ttl? = number } options Options.
+@tparam[opt] { ttl? = number, src? = number } options The time to live, and the source address to use rather than the
+outgoing interface's (routers report errors from the interface the packet arrived on).
 @treturn[1] table The packet.
 @treturn[2] nil If it couldn't be sent.
 @treturn[2] string Why not.
@@ -409,11 +570,11 @@ function Stack:send(dst, proto, body, options)
         return packet
     end
 
-    local interface = self:route(dst)
+    local interface, next_hop = self:route(dst)
     if not interface then return nil, "Network unreachable" end
 
-    packet.src = interface.address
-    self:send_on(interface, dst, packet)
+    packet.src = options and options.src or interface.address
+    self:send_on(interface, next_hop, packet)
     return packet
 end
 
@@ -509,7 +670,8 @@ end
 -- @tparam table packet The packet.
 -- @tparam string kind `"unreachable"` or `"time_exceeded"`.
 -- @tparam[opt] string code The kind of unreachable.
-function Stack:send_error(packet, kind, code)
+-- @tparam[opt] table interface The interface the packet arrived on, whose address the error comes from.
+function Stack:send_error(packet, kind, code, interface)
     -- Never report errors about errors, about broadcasts, or to nobody.
     local body = packet.body
     if packet.proto == "icmp" and (type(body) ~= "table" or (body.type ~= "echo" and body.type ~= "echo_reply")) then return end
@@ -521,7 +683,9 @@ function Stack:send_error(packet, kind, code)
         self.last_error[packet.src] = now
     end
 
-    self:send(packet.src, "icmp", { type = kind, code = code, orig = summarise(packet) })
+    self:send(packet.src, "icmp", { type = kind, code = code, orig = summarise(packet) }, {
+        src = interface and interface.address,
+    })
 end
 
 function Stack:receive_icmp(packet)
@@ -686,11 +850,12 @@ to see what happened, and [`Stack:forget_echo`] once done.
 
 @tparam number dst Where to send it.
 @param[opt] data Data to send, which comes back in the reply.
+@tparam[opt] number ttl The time to live. Small values find the routers on the way, for `traceroute`.
 @treturn[1] number The request's ID.
 @treturn[2] nil If it couldn't be sent.
 @treturn[2] string Why not.
 ]]
-function Stack:echo(dst, data)
+function Stack:echo(dst, data, ttl)
     local now = self.clock()
     for id, echo in pairs(self.echoes) do
         if now - echo.sent > ECHO_LIFETIME then self.echoes[id] = nil end
@@ -700,7 +865,7 @@ function Stack:echo(dst, data)
     local id = self.next_echo
     self.echoes[id] = { sent = now, done = false }
 
-    local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = 1, data = data })
+    local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = 1, data = data }, { ttl = ttl })
     if not ok then
         self.echoes[id] = nil
         return nil, err
@@ -765,6 +930,7 @@ end
 return {
     new = new,
     channels = channels,
+    INFINITY = INFINITY,
     VERSION = VERSION,
     BROADCAST_ID = BROADCAST_ID,
 }

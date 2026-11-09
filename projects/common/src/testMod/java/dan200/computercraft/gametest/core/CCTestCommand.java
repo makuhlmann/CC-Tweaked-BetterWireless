@@ -99,9 +99,11 @@ class CCTestCommand {
     public static void importFiles(MinecraftServer server) {
         try {
             Copier.replicate(getSourceComputerPath(), getWorldComputerPath(server));
-            // Computer 2 gets the same files, for tests which need two computers with different IDs (computer 1 runs
-            // Kotlin rather than Lua).
-            Copier.replicate(getSourceComputerPath(), server.getWorldPath(LOCATION).resolve("computer").resolve("2"));
+            // Computers 2 and 3 get the same files, for tests which need several computers with different IDs
+            // (computer 1 runs Kotlin rather than Lua).
+            for (var id : new String[]{ "2", "3" }) {
+                Copier.replicate(getSourceComputerPath(), server.getWorldPath(LOCATION).resolve("computer").resolve(id));
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

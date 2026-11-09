@@ -1,0 +1,8 @@
+firewall shows and changes the rules for which packets a router forwards. Rules are tried in order, and the first which matches a packet decides. Packets which match no rule are forwarded. Packets which are denied get a "Prohibited" error.
+
+ex:
+"firewall" lists the rules.
+"firewall deny from 10.2.0.0/16 to 10.1.0.0/16" stops 10.2.0.0/16 reaching 10.1.0.0/16 through this router.
+"firewall deny udp port 7" stops datagrams to port 7.
+"firewall allow from 10.2.0.5" lets one computer through, if added before a rule denying its network.
+"firewall delete 1" deletes the first rule.

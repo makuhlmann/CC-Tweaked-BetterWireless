@@ -268,7 +268,10 @@ When a packet arrives, or a program sends one:
 5. Find the next hop's computer ID with neighbour discovery, and send the frame on the route's interface.
 
 Packets waiting for neighbour discovery are queued briefly, a few per destination, and dropped with "host unreachable"
-if no answer comes within two seconds.
+if three questions, a second apart, go unanswered.
+
+A router reports "time exceeded" and "network unreachable" from the address of the interface the packet arrived on,
+which is the address `traceroute` shows for that hop.
 
 ### ICMP
 
@@ -279,7 +282,7 @@ ICMP messages are packets with `proto = "icmp"`:
 | `echo`, `echo_reply` | `ping` |
 | `unreachable` with code `net`, `host`, `port`, `proto` or `admin` | Reporting why a packet couldn't be delivered (`admin` means a firewall rule) |
 | `time_exceeded` | TTL ran out. `traceroute` relies on this. |
-| `redirect` | A router telling a host there's a better first hop on the same link |
+| `redirect` | A router telling a host there's a better first hop on the same link. Not implemented yet. |
 
 Error messages carry the original packet's header (addresses, protocol, ID and ports), so the sender can tell which
 packet failed. They are never sent about other ICMP errors or about broadcasts, and are limited to two per second per
@@ -303,8 +306,11 @@ DHCP or settings. Static routes can be added in settings, for example `"10.5.0.0
 ### Routers
 
 A router is a computer with forwarding on and usually several modems, for example a wired modem on a base's network and
-a wireless one towards the next base. Routers can also filter: a list of rules, each matching addresses, protocol and
-port, that allow or reject with ICMP "admin". There's no NAT, because addresses aren't scarce.
+a wireless one towards the next base. Routers can also filter: a list of rules (`net.firewall`, edited with the
+`firewall` program), each matching source and destination networks, protocol, destination port and the interface a
+packet arrived on, that allow or reject with ICMP "admin" (shown as "Prohibited"). The first matching rule decides, and
+packets matching none are forwarded. Rules only apply to packets being forwarded, not to the router's own. There's no
+NAT, because addresses aren't scarce.
 
 ### Distance-vector routing
 
@@ -318,12 +324,14 @@ link-state protocol like OSPF, and that suits Lua:
 - Routes aren't advertised back over the interface they were learned from, except as unreachable ("split horizon with
   poisoned reverse"), which stops most routing loops.
 - A route not refreshed for 90 seconds becomes unreachable and is removed 60 seconds later.
-- A router with `net.rip.default` advertises a default route, typically the one connecting to a backbone.
+- A router with `net.rip.default` advertises a default route, typically the one connecting to a backbone. It never
+  learns a default route from others, which would send packets for unknown places in a loop.
+- Static routes are advertised too, so a router with a fixed route to a network without routers shares it.
 - Updates can be authenticated with a shared key (an HMAC over the update, §9), so nobody can inject routes.
 
-**Link cost** is 1 on wired links. On radio links, including ender modems once they are radios (§12), it comes from the moving average of the neighbour's signal
-strength: 1 at −60 dBm or better, plus 1 for every 10 dB weaker. Routes prefer strong links over marginal ones, which
-lose fewer packets.
+**Link cost** is 1 on wired and ender links. On wireless links it comes from the neighbour's last signal strength: 1 at
+−60 dBm or better, plus 1 for every 10 dB weaker, at most 8. Routes prefer strong links over marginal ones, which lose
+fewer packets. (Ender modems will need the same once they are radios, §12.)
 
 `traceroute` sends packets with increasing TTL and lists the routers that answer with "time exceeded".
 
@@ -394,7 +402,7 @@ DHCP runs over datagrams, with the server on port 67 and clients on port 68.
 
 1. **Discover:** the client broadcasts from `0.0.0.0`, with its computer ID, hostname and any address it used before.
 2. **Offer:** each server answers with an address and the network's settings: prefix length, gateway, DNS servers,
-   domain and lease time. (Telling wireless clients to use station mode, §4, comes with routing in phase 3.)
+   domain and lease time. (Telling wireless clients to use station mode, §4, is left for later.)
 3. **Request:** the client broadcasts which offer it accepts, so other servers can withdraw theirs.
 4. **Ack** confirms the lease, or **Nak** refuses it.
 
@@ -406,7 +414,7 @@ it keeps its leases in `/.dhcpd/<interface>.leases`, so they survive restarts.
   address it had before when it can, which works much like a reservation. Before offering a new address, the server
   pings it in case a computer with a fixed address is using it. The settings `dhcpd.lease`, `dhcpd.dns`,
   `dhcpd.domain` and `dhcpd.gateway` are passed on to clients.
-- **Relays (phase 3):** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
+- **Relays (later):** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
   adding the address it received them on, so the server knows which pool to use. One server can cover a whole base.
 - **No server:** after three unanswered attempts, about six seconds, the client takes a link-local address (§3). It
   tries DHCP again after 15 seconds, then less often, doubling up to every five minutes, so a server started later is
@@ -638,14 +646,16 @@ handle the events themselves:
 | `net.hosts` | `{}` | Local names, like `/etc/hosts` |
 | `net.forwarding` | `false` | Act as a router |
 | `net.rip`, `net.rip.default`, `net.rip.key` | `false`, `false`, none | Routing protocol |
-| `net.dhcp.relay` | none | DHCP server to relay to |
+| `net.firewall` | `{}` | Firewall rules, each `{ action = "allow" or "deny", proto, from, to, port, on }` |
+| `net.dhcp.relay` | none | DHCP server to relay to (later) |
 
 ### Programs
 
 | Program | Purpose |
 |---|---|
 | `ifconfig` | Show and set interface addresses |
-| `route` | Show and edit the routing table |
+| `route` | Show and edit the routing table, and turn forwarding and RIP on |
+| `firewall` | Show and edit a router's firewall rules |
 | `ping`, `traceroute` | Test reachability and paths |
 | `netstat` | Sockets, connections, neighbours, statistics and recent errors |
 | `nslookup` | Query DNS |
@@ -1018,6 +1028,12 @@ Each phase is usable on its own.
   `net.host` and `net.lookup`, the `dnsd` server) and `nslookup`. The logic is in `cc.internal.net.dhcp` and
   `cc.internal.net.dns`, tested on virtual networks, and two game tests show computers finding each other with no setup,
   and through DHCP and DNS servers.
+- **Phase 3 is done:** forwarding (`net.forwarding`), static and default routes (`net.routes`, `net.gateway`, and
+  gateways from DHCP), the routing protocol (`net.rip`, in `cc.internal.net.rip`), firewall rules (`net.firewall`), and
+  the `route`, `traceroute` and `firewall` programs. The virtual networks in the tests have several links, so routers
+  can be tested in a line and in a square, where breaking one router makes traffic take the other way. A game test pings
+  through a router from a cable to a wireless modem. DHCP relays and telling wireless clients to use station mode (§4)
+  are left for later.
 
 | Phase | Delivers | Done when |
 |---|---|---|

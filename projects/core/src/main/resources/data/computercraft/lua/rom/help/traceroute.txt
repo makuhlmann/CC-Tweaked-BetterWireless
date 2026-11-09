@@ -1,0 +1,4 @@
+traceroute shows the routers on the way to another computer. It sends echo requests which may pass one router, then two, and so on: each router where a request runs out reports back.
+
+ex:
+"traceroute bank.home" shows the route to bank.home.
