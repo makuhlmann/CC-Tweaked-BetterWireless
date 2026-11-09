@@ -30,8 +30,23 @@ local RESOLVE_INTERVAL = 1
 local RESOLVE_ATTEMPTS = 3
 local MAX_WAITING = 4
 
--- How often we may send an error to the same computer, in seconds.
+-- How many neighbours an interface remembers, and how many it looks for at once. However many addresses a flood of
+-- packets comes from or goes to, it can't use more memory, or send more neighbour discovery broadcasts, than this.
+local MAX_NEIGHBOURS = 512
+local MAX_RESOLVING = 64
+
+-- How often we may send an error to the same computer, in seconds, and to how many computers in that time.
 local ERROR_INTERVAL = 0.5
+local MAX_ERROR_TARGETS = 256
+
+-- The most time to live a packet may have. Packets with more, or with a time which isn't a whole number, are dropped:
+-- they could go round a routing loop for ever.
+local MAX_TTL = 255
+
+-- A computer which has only just taken an address (within this many seconds) gives it up if someone else already has
+-- it. One which has had it longer defends it, by telling everyone again, at most once a second.
+local PROBATION = 3
+local DEFEND_INTERVAL = 1
 
 -- How long an echo request is remembered, in seconds.
 local ECHO_LIFETIME = 60
@@ -120,7 +135,9 @@ local function new(options)
         next_echo = 0,
         echoes = {},
         last_error = {},
+        last_error_count = 0,
         capture_until = nil,
+        wake_pending = false,
 
         inbox = {},
         delivering = false,
@@ -153,7 +170,7 @@ function Stack:add_interface(name, modem, kind, band)
     local interface = {
         name = name, modem = modem, kind = kind, band = band,
         unicast = unicast, broadcast = broadcast,
-        neighbours = {}, waiting = {},
+        neighbours = {}, waiting = {}, neighbour_count = 0, waiting_count = 0,
         stats = { frames_in = 0, frames_out = 0, dropped = 0 },
     }
     self.interfaces[name] = interface
@@ -181,13 +198,17 @@ end
 --
 -- @tparam string name The interface's name.
 -- @tparam number|nil addr The address, or `nil` to remove it.
--- @tparam[opt] number prefix The prefix length.
+-- @tparam[opt] number prefix The prefix length, from 1 to 32.
 function Stack:set_address(name, addr, prefix)
     local interface = self.interfaces[name]
     if not interface then error("No interface named '" .. name .. "'", 2) end
+    if addr ~= nil and (not address.is_valid(addr) or type(prefix) ~= "number" or prefix % 1 ~= 0 or prefix < 1 or prefix > 32) then
+        error(("Invalid address %s/%s"):format(tostring(addr), tostring(prefix)), 2)
+    end
 
     interface.address, interface.prefix, interface.duplicate = addr, addr and prefix, false
-    interface.neighbours, interface.waiting = {}, {}
+    interface.neighbours, interface.waiting, interface.neighbour_count, interface.waiting_count = {}, {}, 0, 0
+    interface.address_since, interface.defended = self.clock(), nil
     if addr then
         interface.network = address.network(addr, prefix)
         interface.broadcast_address = prefix < 31 and address.broadcast(addr, prefix) or nil
@@ -204,10 +225,11 @@ end
 -- @tparam number id The receiving computer's ID, or `-1` for everyone.
 -- @tparam string kind The frame's type.
 -- @param body The frame's body.
-function Stack:transmit(interface, id, kind, body)
+-- @tparam[opt] boolean forwarded Whether this is a packet from another computer, which we're forwarding.
+function Stack:transmit(interface, id, kind, body, forwarded)
     local channel = interface.broadcast
     if id ~= BROADCAST_ID then channel = channels(id, interface.band) end
-    local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body }
+    local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body, fwd = forwarded or nil }
     interface.stats.frames_out = interface.stats.frames_out + 1
     if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
     self._transmit(interface.modem, channel, interface.unicast, frame)
@@ -249,7 +271,7 @@ function Stack:receive(modem, channel, frame, signal)
     if frame.type == "nd" then
         self:receive_nd(interface, src, frame.body, signal)
     elseif frame.type == "ip" then
-        self:receive_packet(interface, src, frame.body, signal)
+        self:receive_packet(interface, src, frame.body, signal, frame.fwd == true)
     end
 end
 
@@ -260,24 +282,49 @@ end
 -- @tparam number id The computer's ID.
 -- @tparam[opt] number signal The signal strength of its last frame.
 function Stack:learn(interface, addr, id, signal)
-    if not interface.address or addr == interface.address or addr == interface.broadcast_address
+    if not interface.address or not address.is_valid(addr) or addr == interface.address or addr == interface.broadcast_address
         or not address.contains(interface.network, interface.prefix, addr) then
         return
     end
 
     local neighbour = interface.neighbours[addr]
     if not neighbour then
+        if interface.neighbour_count >= MAX_NEIGHBOURS then self:forget_neighbours(interface) end
         neighbour = {}
         interface.neighbours[addr] = neighbour
+        interface.neighbour_count = interface.neighbour_count + 1
     end
     neighbour.id, neighbour.expires = id, self.clock() + NEIGHBOUR_LIFETIME
-    if signal then neighbour.signal = signal end
+    if type(signal) == "number" then neighbour.signal = signal end
 
     local waiting = interface.waiting[addr]
     if waiting then
         interface.waiting[addr] = nil
-        for _, packet in ipairs(waiting.packets) do self:transmit(interface, id, "ip", packet) end
+        interface.waiting_count = interface.waiting_count - 1
+        for _, item in ipairs(waiting.packets) do self:transmit(interface, id, "ip", item.packet, item.forwarded) end
     end
+end
+
+--- Make room in a full neighbour table: forget neighbours we haven't heard from in a while, and if that's not enough,
+-- the quarter we heard from longest ago.
+--
+-- @tparam table interface The interface.
+function Stack:forget_neighbours(interface)
+    local now, entries = self.clock(), {}
+    for addr, neighbour in pairs(interface.neighbours) do
+        if neighbour.expires <= now then
+            interface.neighbours[addr] = nil
+        else
+            entries[#entries + 1] = { addr = addr, expires = neighbour.expires }
+        end
+    end
+    local forget = 0
+    if #entries >= MAX_NEIGHBOURS then
+        table.sort(entries, function(a, b) return a.expires < b.expires end)
+        forget = math.floor(#entries / 4)
+        for i = 1, forget do interface.neighbours[entries[i].addr] = nil end
+    end
+    interface.neighbour_count = #entries - forget
 end
 
 function Stack:receive_nd(interface, src, body, signal)
@@ -290,15 +337,28 @@ function Stack:receive_nd(interface, src, body, signal)
         end
     elseif body.op == "is" then
         if interface.address and body.addr == interface.address then
-            -- Someone else is using our address. Tell them too, so both sides know.
-            if not interface.duplicate then
-                interface.duplicate = true
-                self:transmit(interface, BROADCAST_ID, "nd", { op = "is", addr = interface.address })
-                self.wake("net_interface", interface.name, "duplicate")
-            end
+            self:address_conflict(interface)
         else
             self:learn(interface, body.addr, src, signal)
         end
+    end
+end
+
+--- Someone else says they have one of our addresses. If we only just took it, give it up: it's theirs. If we've had
+-- it a while, defend it by telling everyone it's ours, so one computer can't take another's address away. (A computer
+-- which took it at the same time as us gives it up too.)
+--
+-- @tparam table interface The interface with the address.
+function Stack:address_conflict(interface)
+    if interface.duplicate then return end
+    local now = self.clock()
+    if now - interface.address_since < PROBATION then
+        interface.duplicate = true
+        self.wake("net_interface", interface.name, "duplicate")
+    elseif not interface.defended or now - interface.defended >= DEFEND_INTERVAL then
+        interface.defended = now
+        self:transmit(interface, BROADCAST_ID, "nd", { op = "is", addr = interface.address })
+        self.wake("net_interface", interface.name, "conflict")
     end
 end
 
@@ -472,6 +532,12 @@ end
 -- @tparam table packet The packet.
 -- @tparam table interface The interface it arrived on.
 function Stack:forward(packet, interface)
+    -- Link-local addresses only mean something on their own link.
+    if address.is_link_local(packet.src) or address.is_link_local(packet.dst) then
+        interface.stats.dropped = interface.stats.dropped + 1
+        return
+    end
+
     packet.ttl = packet.ttl - 1
     if packet.ttl <= 0 then return self:send_error(packet, "time_exceeded", nil, interface) end
     if not self:firewall_allows(packet, interface) then return self:send_error(packet, "unreachable", "admin", interface) end
@@ -485,19 +551,20 @@ function Stack:forward(packet, interface)
     end
 
     self.forwarded = self.forwarded + 1
-    self:send_on(out, next_hop, packet)
+    self:send_on(out, next_hop, packet, true)
 end
 
-function Stack:receive_packet(interface, src, packet, signal)
-    if type(packet) ~= "table" or packet.v ~= VERSION or type(packet.src) ~= "number" or type(packet.dst) ~= "number"
-        or type(packet.ttl) ~= "number" or type(packet.proto) ~= "string" then
+function Stack:receive_packet(interface, src, packet, signal, forwarded)
+    if type(packet) ~= "table" or packet.v ~= VERSION or not address.is_valid(packet.src) or not address.is_valid(packet.dst)
+        or type(packet.ttl) ~= "number" or packet.ttl % 1 ~= 0 or packet.ttl < 0 or packet.ttl > MAX_TTL
+        or type(packet.proto) ~= "string" then
         return
     end
 
-    -- Every packet tells us where its sender is, which saves asking later. learn() only accepts addresses on this
-    -- interface's own network: once routers forward packets, a packet from further away mustn't teach us that its
-    -- sender lives at the router's ID.
-    self:learn(interface, packet.src, src, signal)
+    -- Every packet tells us where its sender is, which saves asking later. But not packets a router forwarded: their
+    -- sender lives somewhere else, even when its address is on this link (as when a router sends a packet back out the
+    -- way it came). learn() also only accepts addresses on this interface's own network.
+    if not forwarded then self:learn(interface, packet.src, src, signal) end
 
     if self:is_local(packet.dst) or is_broadcast(interface, packet.dst) then
         self:deliver(packet, interface)
@@ -552,7 +619,9 @@ outgoing interface's (routers report errors from the interface the packet arrive
 @treturn[2] string Why not.
 ]]
 function Stack:send(dst, proto, body, options)
-    local ttl = options and options.ttl or DEFAULT_TTL
+    local ttl = options and options.ttl
+    if type(ttl) ~= "number" or ttl ~= ttl then ttl = DEFAULT_TTL end
+    ttl = math.max(1, math.min(MAX_TTL, math.floor(ttl)))
     self.next_packet = self.next_packet + 1
     local packet = { v = VERSION, dst = dst, ttl = ttl, proto = proto, id = self.next_packet, body = body }
 
@@ -588,30 +657,45 @@ end
 -- @tparam table interface The interface.
 -- @tparam number next_hop The address of the computer to hand the packet to.
 -- @tparam table packet The packet.
-function Stack:send_on(interface, next_hop, packet)
+-- @tparam[opt] boolean forwarded Whether the packet is from another computer, which we're forwarding.
+function Stack:send_on(interface, next_hop, packet, forwarded)
     if is_broadcast(interface, next_hop) then
-        return self:transmit(interface, BROADCAST_ID, "ip", packet)
+        return self:transmit(interface, BROADCAST_ID, "ip", packet, forwarded)
     end
 
     local neighbour = interface.neighbours[next_hop]
     if neighbour and neighbour.expires > self.clock() then
-        return self:transmit(interface, neighbour.id, "ip", packet)
+        return self:transmit(interface, neighbour.id, "ip", packet, forwarded)
     end
 
     local waiting = interface.waiting[next_hop]
     if not waiting then
+        if interface.waiting_count >= MAX_RESOLVING then
+            -- Looking for too many computers at once, which is probably a flood. Don't add to it.
+            interface.stats.dropped = interface.stats.dropped + 1
+            return self:send_error(packet, "unreachable", "host")
+        end
         waiting = { packets = {}, attempts = 0 }
         interface.waiting[next_hop] = waiting
+        interface.waiting_count = interface.waiting_count + 1
         self:resolve(interface, next_hop, waiting)
     end
-    if #waiting.packets < MAX_WAITING then waiting.packets[#waiting.packets + 1] = packet end
+    if #waiting.packets < MAX_WAITING then waiting.packets[#waiting.packets + 1] = { packet = packet, forwarded = forwarded } end
 end
 
 function Stack:resolve(interface, addr, waiting)
     waiting.attempts = waiting.attempts + 1
     waiting.deadline = self.clock() + RESOLVE_INTERVAL
     self:transmit(interface, BROADCAST_ID, "nd", { op = "who", addr = addr, from = interface.address })
-    -- The background process may be waiting for something else, so make sure it notices our deadline.
+    self:request_wakeup()
+end
+
+--- Make sure whoever calls [`Stack:tick`] notices a new deadline. The background process may be waiting for something
+-- else, so it needs an event. But one is enough until it next calls [`Stack:next_deadline`]: an event for every timer
+-- could fill the computer's event queue (which holds 256), and lose other events.
+function Stack:request_wakeup()
+    if self.wake_pending then return end
+    self.wake_pending = true
     self.wake("net_wakeup")
 end
 
@@ -619,6 +703,7 @@ end
 --
 -- @treturn number|nil The time, or `nil` if nothing is waiting.
 function Stack:next_deadline()
+    self.wake_pending = false
     local deadline
     for timer in pairs(self.timers) do
         if not deadline or timer.time < deadline then deadline = timer.time end
@@ -653,7 +738,8 @@ function Stack:tick()
             if waiting.deadline <= now then
                 if waiting.attempts >= RESOLVE_ATTEMPTS then
                     interface.waiting[addr] = nil
-                    for _, packet in ipairs(waiting.packets) do self:send_error(packet, "unreachable", "host") end
+                    interface.waiting_count = interface.waiting_count - 1
+                    for _, item in ipairs(waiting.packets) do self:send_error(item.packet, "unreachable", "host") end
                 else
                     self:resolve(interface, addr, waiting)
                 end
@@ -685,12 +771,32 @@ function Stack:send_error(packet, kind, code, interface)
     if not self:is_local(packet.src) then
         local now, last = self.clock(), self.last_error[packet.src]
         if last and now - last < ERROR_INTERVAL then return end
+        if not last then
+            if self.last_error_count >= MAX_ERROR_TARGETS then self:forget_errors(now) end
+            -- Still too many: errors are being sent to many computers at once, probably because of a flood.
+            if self.last_error_count >= MAX_ERROR_TARGETS then return end
+            self.last_error_count = self.last_error_count + 1
+        end
         self.last_error[packet.src] = now
     end
 
     self:send(packet.src, "icmp", { type = kind, code = code, orig = summarise(packet) }, {
         src = interface and interface.address,
     })
+end
+
+--- Forget which computers we sent errors to, except in the last half second.
+--
+-- @tparam number now The time.
+function Stack:forget_errors(now)
+    local kept, count = {}, 0
+    for addr, time in pairs(self.last_error) do
+        if now - time < ERROR_INTERVAL then
+            kept[addr] = time
+            count = count + 1
+        end
+    end
+    self.last_error, self.last_error_count = kept, count
 end
 
 function Stack:receive_icmp(packet)
@@ -728,9 +834,12 @@ end
 -- @tparam function fn The function to run.
 -- @treturn table The timer, to pass to [`Stack:cancel`].
 function Stack:schedule(delay, fn)
-    local timer = { time = self.clock() + delay, fn = fn }
+    if type(delay) ~= "number" or delay ~= delay or delay == math.huge or delay == -math.huge then
+        error("Invalid delay " .. tostring(delay), 2)
+    end
+    local timer = { time = self.clock() + math.max(0, delay), fn = fn }
     self.timers[timer] = true
-    self.wake("net_wakeup")
+    self:request_wakeup()
     return timer
 end
 

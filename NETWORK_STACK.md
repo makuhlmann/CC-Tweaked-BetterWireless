@@ -1000,9 +1000,11 @@ The default fill fraction needs tuning in play.
 
   The enclave gets tests that keys can be used but never read back, and that they survive a computer being broken and
   placed again.
-- **Protocol logic:** Lua specs in the test ROM (`test-rom/spec/net/`). They connect many `Stack` objects with fake
-  links and a controllable clock. Links can drop, delay, duplicate or reorder frames, and be cut and restored. This
-  covers retransmission, routing convergence and DHCP races deterministically, without Minecraft.
+- **Protocol logic:** Lua specs in the test ROM (`test-rom/spec/modules/cc/internal/net/`). They connect many `Stack`
+  objects with virtual links (`test-rom/spec/support/virtual_network.lua`) and a clock which only moves when told to.
+  Links can be slow and lose frames, computers can be removed, and anything can be put on a link. The network counts
+  frames and queued events, to measure floods. This covers routing convergence and DHCP races deterministically,
+  without Minecraft. Each spec must finish within 10 seconds, which limits how big a network one can simulate.
 - **Noise:** the published test vectors.
 - **Game tests:** real computers and modems:
   - ping through a router
@@ -1011,6 +1013,56 @@ The default fill fraction needs tuning in play.
   - a phone attaching to a cell
 - **In a world:** the "Test 3" save's eight cell sites become real cells with a core network. A phone with an open
   connection is walked across them.
+
+### Robustness
+
+After phase 3, the stack was tested against big networks, bad links and misbehaving computers:
+
+- **Fuzzing** (`fuzz_spec.lua`): about 1,400 cases. Every field of every message the stack reads (frames, neighbour
+  discovery, packet headers, ICMP, datagrams, RIP updates, mDNS questions, DHCP offers, acks and requests, and DNS
+  answers) is filled with each of 12 bad values: missing, NaN, ±infinity, 10^18, −1, 0.5, 2^32, a string, a table, a
+  boolean, and a table which contains itself. After each, the target must have no error, nothing invalid in its tables,
+  no timer that can never fire, and still answer and forward pings.
+- **Scale and bad links** (`robustness_spec.lua`): a 4×4 grid of routers running RIP (40 networks, paths through 7
+  routers), which reroutes when three routers are broken. A line of 17 routers. 80 DHCP clients sharing 60 addresses.
+  Three routers joined by radio links with 300 ms of latency and 10% loss per hop.
+- **Floods, loops and conflicts:** 2,000 forged source addresses, 500 unknown destinations, a 3,000-route RIP update,
+  routing loops with forged TTLs, a computer taking a router's address, link-local clashes, a DHCP server handing out a
+  fixed computer's address, two DHCP servers on one link, and a DHCP server which refuses everything.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| A DHCP lease of NaN or infinity stopped every timer in the stack for good. Negative or very short leases made clients renew constantly (480 frames a minute at 0.5 seconds). Addresses and prefix lengths weren't checked at all. | Clients reject network, broadcast, loopback, link-local and multicast addresses and invalid prefixes, keep leases between 30 seconds and a week, and ignore a gateway that isn't on the network. |
+| A server that offered addresses but never confirmed them had clients asking every 2 seconds for ever. One that refused every request made them ask in a tight loop. | Failed offers and refusals count as attempts, with a pause after a refusal. Then clients take a link-local address and back off. |
+| Any computer could take any other off the network by announcing its address: both were marked as duplicates. | Only a computer which took the address in the last 3 seconds gives it up. One that has had it longer defends it, at most once a second. |
+| A DHCP server that didn't know about a fixed address handed it out, and both computers lost it. | Clients notice the clash within a second and decline the address. The server avoids it for 10 minutes and offers another. |
+| Two computers whose IDs give the same link-local address clashed on every retry, and ended up with none. | Retries pick random addresses. |
+| In a routing loop, ICMP errors never reached the sender. Each router had learned the sender's address from the other's forwarded packets, so errors bounced between them. | Routers mark frames they forward, and nobody learns addresses from those frames. |
+| A packet with a TTL of NaN, infinity or 10^9 would go round a routing loop for ever. | TTLs must be whole numbers from 0 to 255. `net.ping` rejects others. |
+| Floods grew tables without limit: neighbours (one per forged source address), the error rate limit, and pending neighbour lookups, each costing three broadcasts. 2,000 unknown destinations meant 6,000 broadcasts. | At most 512 neighbours per interface, 64 lookups at once, and errors to 256 computers per half second. |
+| Every timer and lookup queued a `net_wakeup` event. A computer's event queue holds 256 and drops the rest, including the stack's own timer event, which stopped the stack. | One wakeup event at a time. The background process also restarts its timers if one is well overdue. |
+| RIP accepted fractional prefixes and costs and unlimited routes (all 3,000 from one update). It advertised link-local networks. Each update took time proportional to routes × entries. | Updates are checked. Learned routes are capped at 1,024. Loopback, link-local and multicast networks aren't shared. Lookups use an index. |
+| DNS answers could resolve names to NaN, −1 or 2^32, and be cached with a NaN lifetime. | Answers must be real addresses. Lifetimes must be numbers. |
+| The DHCP server crashed on client IDs of NaN or infinity, and on requests whose address wasn't a number. Its leases and offers grew with every client ever seen. Choosing an address took time proportional to the pool size × the leases. | Requests are checked. An address is only ever in one lease. Expired offers are forgotten. Address choice uses a set. |
+| Routers forwarded packets to and from link-local addresses. `net.setAddress` accepted `0.0.0.0`, broadcast and network addresses, loopback, multicast, and `/0`. | Both are refused. |
+
+**Left as they are:**
+
+- **Spoofing.** A computer on a link can claim any address, answer for any `.local` name, or, without `net.rip.key`,
+  advertise routes that draw traffic to itself. Security is phase 5's job.
+- **Broadcast pings.** Every computer on a link answers a broadcast ping, so a forged one makes them all reply to one
+  computer. This stays within a link, since routers don't forward broadcasts.
+- **DHCP starvation.** A computer inventing IDs can take every address in a pool. This is the same as real DHCP.
+- **RIP's limits.** Networks can be at most 15 routers across, and routing around a broken router takes up to two
+  minutes.
+- **Modem floods.** A computer sending frames as fast as it can fills the event queue of every computer in range. This
+  is true of every protocol in CC, rednet included.
+- **`dhcpd` probes.** `dhcpd` pings each new address for half a second before offering it, one client at a time, so
+  100 computers starting at once take about 50 seconds to all get addresses. Clients now find clashes themselves, so
+  this probe could become optional.
+- **`netdump`.** It queues an event for every frame while capturing, as a debugging tool.
 
 ## 14. Implementation plan
 

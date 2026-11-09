@@ -25,6 +25,8 @@ local address = require "cc.net.address"
 local PORT = 520
 
 local INFINITY = 16
+-- The most routes a router learns. More than this is probably a misbehaving neighbour, and would slow down every packet.
+local MAX_ROUTES = 1024
 local UPDATE_INTERVAL, UPDATE_JITTER = 15, 3
 local TIMEOUT, GARBAGE = 90, 60
 local CHECK_INTERVAL = 5
@@ -46,6 +48,17 @@ end
 
 local function usable(interface)
     return interface ~= nil and interface.address ~= nil and not interface.duplicate
+end
+
+--- Whether a network may be routed: not loopback, link-local or multicast addresses, which only mean something on
+-- this computer or this link.
+--
+-- @tparam number network The network.
+-- @tparam number prefix Its prefix length.
+-- @treturn boolean Whether routers may share routes to it.
+local function routable(network, prefix)
+    if prefix == 0 then return true end
+    return not address.is_loopback(network) and not address.is_link_local(network) and network < 0xE0000000
 end
 
 --[[- Start the routing protocol on a stack.
@@ -110,7 +123,7 @@ function Rip:routes_for(interface)
     table.sort(names)
     for _, name in ipairs(names) do
         local other = self.stack.interfaces[name]
-        if usable(other) then add(other.network, other.prefix, 0) end
+        if usable(other) and routable(other.network, other.prefix) then add(other.network, other.prefix, 0) end
     end
     for _, route in ipairs(self.stack.routes) do
         if route.source == "rip" or route.source == "static" then
@@ -167,17 +180,29 @@ function Rip:check()
     self.check_timer = self.stack:schedule(CHECK_INTERVAL, function() self:check() end)
 end
 
-local function find(stack, network, prefix)
+-- The routes we learned, by network and prefix, and how many there are.
+local function learned(stack)
+    local index, count = {}, 0
     for _, route in ipairs(stack.routes) do
-        if route.source == "rip" and route.network == network and route.prefix == prefix then return route end
+        if route.source == "rip" then
+            index[route.network * 64 + route.prefix] = route
+            count = count + 1
+        end
     end
+    return index, count
 end
 
-local function connected(stack, network, prefix)
+-- Our own networks, by network and prefix.
+local function connected(stack)
+    local result = {}
     for _, interface in pairs(stack.interfaces) do
-        if usable(interface) and interface.network == network and interface.prefix == prefix then return true end
+        if usable(interface) then result[interface.network * 64 + interface.prefix] = true end
     end
-    return false
+    return result
+end
+
+local function is_integer(value, min, max)
+    return type(value) == "number" and value % 1 == 0 and value >= min and value <= max
 end
 
 --- Handle an update from a neighbour.
@@ -192,24 +217,27 @@ function Rip:receive(message, from, name)
     -- Only listen to routers on this link.
     if from == interface.address or not address.contains(interface.network, interface.prefix, from) then return end
 
+    -- Ignore anything which isn't a route, so nothing odd ends up in the routing table.
     local routes = {}
     for _, route in ipairs(message.routes) do
-        if type(route) == "table" and type(route.network) == "number" and type(route.prefix) == "number"
-            and type(route.metric) == "number" and route.prefix >= 0 and route.prefix <= 32 then
+        if type(route) == "table" and address.is_valid(route.network) and is_integer(route.prefix, 0, 32)
+            and is_integer(route.metric, 0, math.huge) then
             routes[#routes + 1] = route
         end
     end
     if self.options.key and message.mac ~= self.options.hmac(self.options.key, canonical(routes)) then return end
 
     local now, cost, changed = stack.clock(), self:link_cost(interface, from), false
+    local index, count = learned(stack)
+    local ours = connected(stack)
     for _, entry in ipairs(routes) do
         local network = address.network(entry.network, entry.prefix)
         -- A router offering the default route is the way to everywhere else, so mustn't learn another way there: it
         -- would send packets for unknown places to a neighbour, which sends them straight back.
-        local ours = entry.prefix == 0 and self.options.default
-        if not ours and not connected(stack, network, entry.prefix) then
-            local metric = math.min(INFINITY, math.max(0, entry.metric) + cost)
-            local existing = find(stack, network, entry.prefix)
+        local default = entry.prefix == 0 and self.options.default
+        if not default and not ours[network * 64 + entry.prefix] and routable(network, entry.prefix) then
+            local metric = math.min(INFINITY, entry.metric + cost)
+            local existing = index[network * 64 + entry.prefix]
             if existing and existing.gateway == from then
                 -- News from the router we already use: believe it, good or bad.
                 if metric < INFINITY then
@@ -223,13 +251,14 @@ function Rip:receive(message, from, name)
             elseif metric < INFINITY and (not existing or metric < existing.metric) then
                 if existing then
                     existing.gateway, existing.interface, existing.metric, existing.expires = from, name, metric, now + TIMEOUT
-                else
-                    stack:add_route {
+                    changed = true
+                elseif count < MAX_ROUTES then
+                    index[network * 64 + entry.prefix] = stack:add_route {
                         network = network, prefix = entry.prefix, gateway = from, interface = name, metric = metric,
                         source = "rip", expires = now + TIMEOUT,
                     }
+                    count, changed = count + 1, true
                 end
-                changed = true
             end
         end
     end

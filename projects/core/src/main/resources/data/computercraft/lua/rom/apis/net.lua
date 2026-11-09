@@ -274,8 +274,16 @@ local function apply(name, mode)
 
     local addr, prefix = address.parse(mode)
     if not addr then return nil, prefix end
+    prefix = prefix or DEFAULT_PREFIX
+    if prefix < 1 then return nil, "The prefix length must be from 1 to 32" end
+    if addr == 0 or addr >= 0xE0000000 or address.is_loopback(addr) then
+        return nil, address.format(addr) .. " can't be a computer's address"
+    end
+    if prefix <= 30 and (addr == address.network(addr, prefix) or addr == address.broadcast(addr, prefix)) then
+        return nil, ("%s is the address of the network itself, or its broadcast address"):format(address.format(addr, prefix))
+    end
     stop_dhcp(name, true)
-    stack:set_address(name, addr, prefix or DEFAULT_PREFIX)
+    stack:set_address(name, addr, prefix)
     return true
 end
 
@@ -375,7 +383,7 @@ function run()
     end
 
     local timer, timer_at
-    local channel_check = os.startTimer(CHANNEL_CHECK_INTERVAL)
+    local channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), os.clock() + CHANNEL_CHECK_INTERVAL
 
     local function handle(event, a, b, c, d, e, f)
         if event == "modem_message" then
@@ -389,7 +397,7 @@ function run()
                 for _, interface in pairs(s.interfaces) do
                     if peripheral.isPresent(interface.modem) then open_channels(interface) end
                 end
-                channel_check = os.startTimer(CHANNEL_CHECK_INTERVAL)
+                channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), os.clock() + CHANNEL_CHECK_INTERVAL
             end
         elseif event == "peripheral" then
             add_modem(a)
@@ -401,6 +409,14 @@ function run()
     while true do
         local ok, err = pcall(function()
             handle(os.pullEventRaw())
+
+            -- Events are lost when a computer's event queue is full, timers included. If one of ours is well overdue,
+            -- it isn't coming: start another, or the network stack would stop.
+            local now = os.clock()
+            if timer_at and now > timer_at + 1 then timer, timer_at = nil, nil end
+            if now > channel_check_at + CHANNEL_CHECK_INTERVAL then
+                channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), now + CHANNEL_CHECK_INTERVAL
+            end
 
             local deadline = s:next_deadline()
             if deadline and (not timer_at or deadline < timer_at) then
@@ -595,7 +611,7 @@ end
 
 @tparam string target The computer's name or address. A broadcast address gets the first reply from anyone.
 @tparam[opt=2] number timeout How long to wait, in seconds.
-@tparam[opt=32] number ttl How many routers the request may pass. Lower values find the routers on the way, as
+@tparam[opt=32] number ttl How many routers the request may pass, from 1 to 255. Lower values find the routers on the way, as
 `traceroute` does.
 @treturn[1] number The round trip time, in seconds.
 @treturn[1] number The reply's remaining time to live.
@@ -614,6 +630,10 @@ function ping(target, timeout, ttl)
     expect(1, target, "string")
     expect(2, timeout, "number", "nil")
     expect(3, ttl, "number", "nil")
+    if timeout and not (timeout >= 0 and timeout < math.huge) then error("bad argument #2 (invalid timeout)", 2) end
+    if ttl and not (ttl % 1 == 0 and ttl >= 1 and ttl <= 255) then
+        error("bad argument #3 (TTL must be a whole number from 1 to 255)", 2)
+    end
     local s = load()
 
     local dst, err = resolve_number(target)

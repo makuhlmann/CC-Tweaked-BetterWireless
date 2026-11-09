@@ -127,7 +127,9 @@ local function find_record(answer, kind)
 end
 
 local function ttl(record)
-    return math.min(type(record.ttl) == "number" and record.ttl or 60, MAX_TTL)
+    local value = record.ttl
+    if type(value) ~= "number" or value ~= value then return 60 end
+    return math.max(0, math.min(value, MAX_TTL))
 end
 
 --[[- Resolve a name to an address.
@@ -196,7 +198,7 @@ local function resolve(stack, name, options, callback)
         ask(stack, servers[server], DNS_PORT, { id = math.random(1, 0x7FFFFFFF), name = candidate, type = "A" }, DNS_TIMEOUT,
             function(answer)
                 record = find_record(answer, "A")
-                if record and type(record.value) == "number" then
+                if record and address.is_valid(record.value) then
                     result = record.value
                 elseif answer.code == "not_found" then
                     missing = true
@@ -227,7 +229,7 @@ local function resolve(stack, name, options, callback)
         ask(stack, address.BROADCAST, MDNS_PORT, { id = math.random(1, 0x7FFFFFFF), name = candidate[1], type = "A" }, MDNS_TIMEOUT,
             function(answer)
                 record = find_record(answer, "A")
-                if record and type(record.value) == "number" then
+                if record and address.is_valid(record.value) then
                     result = record.value
                     return true
                 end
@@ -256,7 +258,8 @@ local function lookup(stack, service, timeout, callback)
         function(answer)
             local record = find_record(answer, "SRV")
             local value = record and record.value
-            if type(value) == "table" and type(value.address) == "number" and type(value.port) == "number" and not seen[value.address] then
+            if type(value) == "table" and address.is_valid(value.address) and type(value.port) == "number" and value.port % 1 == 0
+                and not seen[value.address] then
                 seen[value.address] = true
                 results[#results + 1] = { host = tostring(value.host), address = value.address, port = value.port }
             end

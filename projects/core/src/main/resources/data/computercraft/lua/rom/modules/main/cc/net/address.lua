@@ -121,6 +121,25 @@ local function is_loopback(address)
     return extract(address, 24, 8) == 127
 end
 
+--- Check whether a value is an address at all: a whole number from 0 to 2^32 - 1. Use this on addresses from other
+-- computers, which may be anything.
+--
+-- @param value The value.
+-- @treturn boolean Whether it is an address.
+local function is_valid(value)
+    return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFFFFFFFF
+end
+
+--- Check whether an address is a link-local one (`169.254.0.0/16`), which computers give themselves when there's no
+-- DHCP server. These only mean something on their own link, so routers don't forward them.
+--
+-- @tparam number address The address.
+-- @treturn boolean Whether it is a link-local address.
+local function is_link_local(address)
+    expect(1, address, "number")
+    return extract(address, 16, 16) == 0xA9FE
+end
+
 return {
     BROADCAST = BROADCAST,
     ANY = ANY,
@@ -131,4 +150,6 @@ return {
     broadcast = broadcast,
     contains = contains,
     is_loopback = is_loopback,
+    is_valid = is_valid,
+    is_link_local = is_link_local,
 }

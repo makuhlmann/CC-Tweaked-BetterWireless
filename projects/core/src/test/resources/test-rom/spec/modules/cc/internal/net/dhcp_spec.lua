@@ -102,7 +102,8 @@ describe("cc.internal.net.dhcp", function()
         client(stack)
         net.advance(10)
 
-        expect(stack.interfaces.top.address):eq(dhcp.link_local(2, 2))
+        expect(stack.interfaces.top.address):ne(dhcp.link_local(2, 1))
+        expect(address.is_link_local(stack.interfaces.top.address)):eq(true)
         expect(stack.interfaces.top.duplicate):eq(false)
     end)
 
