@@ -174,10 +174,10 @@ annotations = ["checkerFramework", "jetbrainsAnnotations", "jspecify"]
 kotlin = ["kotlin-stdlib", "kotlin-coroutines"]
 
 # Minecraft
-externalMods-common = ["iris-fabric", "jei-api", "nightConfig-core", "nightConfig-toml"]
-externalMods-forge-compile = ["iris-forge", "jei-api"]
+externalMods-common = ["distantHorizons-api", "iris-fabric", "jei-api", "nightConfig-core", "nightConfig-toml"]
+externalMods-forge-compile = ["distantHorizons-api", "iris-forge", "jei-api"]
 externalMods-forge-runtime = ["jei-forge"]
-externalMods-fabric-compile = ["iris-fabric", "jei-api", "rei-api", "rei-builtin"]
+externalMods-fabric-compile = ["distantHorizons-api", "iris-fabric", "jei-api", "rei-api", "rei-builtin"]
 externalMods-fabric-runtime = ["modmenu", "jei-fabric"]
 
 # Testing

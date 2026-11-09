@@ -222,6 +222,13 @@ a `ServerLevel` to DH's wrapper by matching `getWrappedMcObject()`, then read a 
 `getAllTerrainDataAtChunkPos` and a soft cache. Columns are ordered top to bottom, so the first non-air point gives the
 surface and the first ground-like point the ground.
 
+Watch out for Y positions: `DhApiTerrainDataPoint`'s Javadoc says they are relative to the level's minimum height, which
+is true for points handed *to* DH by a world generator (Tellus writes them that way). But the terrain repository adds
+the minimum height when reading them back (`DhApiTerrainDataPointUtil.createApiDatapoint`), so what we get is absolute.
+Reading them as relative put every DH column `-minY` blocks too low, 512 in a Tellus world, which made mountains
+vanish: a cell 8.5km away behind a 580m ridge came through at -86dBm rather than being out of range. Since the top of
+every column is open sky reaching the top of the level, we check where that ends to tell the two conventions apart.
+
 Two caveats from DH's source: the call is synchronous, hitting DH's database, and `getFullDataProvider().getAsync(pos)
 .get()` may queue LOD generation if nothing exists yet. So DH calls run on their own thread with a 2s timeout, falling
 through to the generator.
@@ -295,5 +302,7 @@ Everything lives under `[peripheral.radio]` in the server config:
   antennas, and reciprocity), and all 115 required Fabric game tests. Those include rednet over wireless modems, a new
   test that wireless messages carry a signal strength, and upstream's wired `transmits_messages` test, which the
   original fork broke. Three optional game tests (loot chest, turtle placement, shulker push/pull) fail, unrelated to
-  modems. The Distant Horizons and Tellus paths are **not** tested at runtime, and the model hasn't been played with
-  in a real world yet, so the defaults will need tuning.
+  modems. The Distant Horizons conversion has unit tests, and its output was checked offline against a real 1:10
+  Tellus save: LOD heights decoded from DH's database match the saved chunks' heightmaps, and running the model over
+  them gives sensible results for four cells (clear line of sight from a 280m summit 4.3km away: -83dBm on the low
+  band; cells behind 420m and 580m ridges: out of range). The defaults still need tuning in play.

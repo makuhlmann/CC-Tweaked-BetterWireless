@@ -9,6 +9,7 @@ import com.seibel.distanthorizons.api.enums.worldGeneration.EDhApiLevelType;
 import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataCache;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiWorldProxy;
+import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
 import dan200.computercraft.core.util.ThreadUtils;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.state.BlockState;
@@ -20,6 +21,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 /**
  * Reads terrain heights from Distant Horizons' level of detail data.
@@ -59,12 +61,26 @@ final class DistantHorizonsHeightSource implements HeightSource {
 
         var result = repo.getAllTerrainDataAtChunkPos(wrapper, chunkX, chunkZ, cache);
         var data = result.payload;
-        if (!result.success || data == null || data.length < 16) return null;
+        if (!result.success || data == null) return null;
 
-        var minY = level.getMinY();
+        return toHeights(data, level.getMinY(), level.getMaxY(), Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque());
+    }
+
+    /**
+     * Convert DH's data for a chunk into heights.
+     *
+     * @param data     The chunk's data, as returned by {@code getAllTerrainDataAtChunkPos}: a 16x16 grid of columns,
+     *                 each ordered from top to bottom.
+     * @param minY     The level's minimum Y position.
+     * @param maxY     The level's maximum Y position, inclusive.
+     * @param isGround Whether a block counts as ground, for blocks DH gives us a {@link BlockState} for.
+     * @return The heights, or {@code null} if DH doesn't have data for every column.
+     */
+    static @Nullable ChunkHeights toHeights(DhApiTerrainDataPoint[][][] data, int minY, int maxY, Predicate<BlockState> isGround) {
+        if (data.length < 16) return null;
+
         var ground = new short[256];
         var surface = new short[256];
-        var isGround = Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque();
 
         for (var x = 0; x < 16; x++) {
             var row = data[x];
@@ -75,12 +91,12 @@ final class DistantHorizonsHeightSource implements HeightSource {
                 // DH has no data for this column (it's not been generated yet), so we can't use this chunk.
                 if (column == null || column.length == 0) return null;
 
+                var offset = columnOffset(column, minY, maxY);
                 int surfaceY = TerrainView.UNKNOWN, groundY = minY;
-                // Columns are ordered from top to bottom.
                 for (var point : column) {
                     if (point == null || point.blockStateWrapper == null || point.blockStateWrapper.isAir()) continue;
 
-                    var top = minY + point.topYBlockPos;
+                    var top = Math.clamp(offset + point.topYBlockPos, minY, maxY + 1);
                     if (surfaceY == TerrainView.UNKNOWN) surfaceY = top;
 
                     var state = point.blockStateWrapper.getWrappedMcObject();
@@ -96,6 +112,30 @@ final class DistantHorizonsHeightSource implements HeightSource {
         }
 
         return new ChunkHeights(ground, surface, ChunkHeights.Source.DISTANT_HORIZONS, System.currentTimeMillis());
+    }
+
+    /**
+     * Work out what to add to a column's Y positions to make them absolute.
+     * <p>
+     * {@link DhApiTerrainDataPoint}'s documentation says positions are relative to the bottom of the level, which is
+     * true of the points you give DH when generating terrain. However, the terrain repository adds the level's minimum
+     * height when reading them back, so its positions are absolute. Treating them as relative puts the terrain
+     * {@code -minY} blocks too low (512 blocks in a Tellus world), which hides mountains entirely.
+     * <p>
+     * In case DH ever changes this, we check: the top of each column is open sky, which reaches the top of the level.
+     * Absolute positions end there, while relative positions end {@code -minY} blocks above it.
+     *
+     * @param column The column, ordered from top to bottom.
+     * @param minY   The level's minimum Y position.
+     * @param maxY   The level's maximum Y position, inclusive.
+     * @return The offset to add to every position in this column.
+     */
+    private static int columnOffset(DhApiTerrainDataPoint[] column, int minY, int maxY) {
+        var top = Integer.MIN_VALUE;
+        for (var point : column) {
+            if (point != null) top = Math.max(top, point.topYBlockPos);
+        }
+        return minY < 0 && top > maxY + 1 - minY / 2 ? minY : 0;
     }
 
     private static @Nullable IDhApiLevelWrapper findLevel(IDhApiWorldProxy world, ServerLevel level) {
