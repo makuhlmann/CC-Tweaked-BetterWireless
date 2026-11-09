@@ -157,7 +157,8 @@ players agree among themselves who uses which prefix, for example one `10.N.0.0/
 
 An alternative is IPv6-style automatic addresses: the router advertises a prefix, and the computer ID fills in the host
 part, so addresses can never clash. It's elegant, but less familiar, and it ties addresses to hardware again. The design
-uses it only for link-local addresses: `169.254.(1 + ⌊id / 256⌋ mod 254).(id mod 256)`, checked for conflicts.
+uses it only for link-local addresses: `169.254.(1 + ⌊id / 256⌋ mod 254).(id mod 256)`, checked for conflicts. After a
+clash, the computer tries random link-local addresses instead.
 
 ### Names
 
@@ -220,9 +221,13 @@ To send a packet to a network address on the same link, the stack needs that com
 
 - `{op = "who", addr = A}` is broadcast. The computer with address `A` replies `{op = "is", addr = A}` directly.
 - Answers are cached for five minutes, along with the interface and last signal strength. The cache is also filled
-  passively from frames received.
-- A computer announces a newly configured address with an unsolicited `is`. If anyone answers `who` for its own address,
-  the address is a duplicate and isn't used.
+  passively from packets received, but not from packets a router forwarded, whose sender is elsewhere. Routers mark
+  those frames. The cache holds at most 512 computers per interface, and at most 64 are looked for at once.
+- A computer announces a newly configured address with an unsolicited `is`. If another computer already has the
+  address, it answers with an `is` of its own, and the newcomer marks the address as a duplicate and doesn't use it. A
+  computer that has had its address for more than 3 seconds keeps it when someone else claims it. It defends the
+  address with another `is`, at most once a second, so one computer can't take another's address away. A DHCP client
+  whose new address turns out to be taken declines it, and asks for another.
 
 ### Wireless links aren't fully connected
 
@@ -629,7 +634,7 @@ handle the events themselves:
 | `net_connection` | listening socket |
 | `net_data` | connection |
 | `net_closed` | connection, reason |
-| `net_interface` | interface name, `"up"`, `"down"` or `"duplicate"` |
+| `net_interface` | interface name, `"up"`, `"down"`, `"address"`, `"duplicate"` (we gave our address up) or `"conflict"` (we defended it) |
 | `net_frame` | `"in"` or `"out"`, interface name, the frame, and for incoming radio frames the signal strength. Only while `net.capture` is on. |
 
 ### Settings
