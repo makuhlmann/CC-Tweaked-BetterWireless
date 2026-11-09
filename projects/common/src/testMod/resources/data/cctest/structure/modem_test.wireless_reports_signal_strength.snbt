@@ -27,8 +27,8 @@
         {pos: [4, 0, 2], state: "minecraft:polished_andesite"},
         {pos: [4, 0, 3], state: "minecraft:polished_andesite"},
         {pos: [4, 0, 4], state: "minecraft:polished_andesite"},
-        {pos: [1, 1, 2], state: "computercraft:computer_advanced{facing:north,state:on}", nbt: {ComputerId: 0, Label: "modem_test.wireless_reports_signal_strength.receive", On: 1b, id: "computercraft:computer_advanced"}},
-        {pos: [3, 1, 2], state: "computercraft:computer_advanced{facing:north,state:blinking}", nbt: {ComputerId: 0, Label: "modem_test.wireless_reports_signal_strength.send", On: 1b, id: "computercraft:computer_advanced"}},
+        {pos: [1, 1, 2], state: "computercraft:computer_advanced{facing:north,state:on}", nbt: {ComputerId: 1, Label: "modem_test.wireless_reports_signal_strength.receive", On: 1b, id: "computercraft:computer_advanced"}},
+        {pos: [3, 1, 2], state: "computercraft:computer_advanced{facing:north,state:blinking}", nbt: {ComputerId: 1, Label: "modem_test.wireless_reports_signal_strength.send", On: 1b, id: "computercraft:computer_advanced"}},
         {pos: [1, 2, 2], state: "computercraft:wireless_modem_normal{facing:down,on:true,waterlogged:false}", nbt: {id: "computercraft:wireless_modem_normal"}},
         {pos: [3, 2, 2], state: "computercraft:wireless_modem_normal{facing:down,on:true,waterlogged:false}", nbt: {id: "computercraft:wireless_modem_normal"}}
     ],

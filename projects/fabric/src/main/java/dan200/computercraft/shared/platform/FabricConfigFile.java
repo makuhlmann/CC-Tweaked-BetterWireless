@@ -157,6 +157,14 @@ public final class FabricConfigFile extends ConfigFile {
         }
 
         @Override
+        public Value<Double> defineInRange(String name, double defaultValue, double min, double max) {
+            var path = getPath(name);
+            spec.define(path, defaultValue, x -> x instanceof Number n && n.doubleValue() >= min && n.doubleValue() <= max);
+            return defineValue(name, takeComment(), "Range: " + min + " ~ " + max, defaultValue,
+                (config, key, fallback) -> config.get(key) instanceof Number n ? n.doubleValue() : fallback);
+        }
+
+        @Override
         public <T> Value<List<? extends T>> defineList(String name, List<? extends T> defaultValue, Supplier<T> newValue, Predicate<Object> elementValidator) {
             var path = getPath(name);
             spec.defineList(path, defaultValue, elementValidator);

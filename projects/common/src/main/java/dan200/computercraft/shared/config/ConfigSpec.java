@@ -356,11 +356,11 @@ public final class ConfigSpec {
 
             radioLowBandFrequency = builder
                 .comment("The frequency of low channels (and rednet/GPS), in MHz. Lower frequencies penetrate and diffract better.")
-                .define("low_band_frequency", Config.radioLowBandFrequency);
+                .defineInRange("low_band_frequency", Config.radioLowBandFrequency, 1, 100_000);
 
             radioHighBandFrequency = builder
                 .comment("The frequency of high channels, in MHz.")
-                .define("high_band_frequency", Config.radioHighBandFrequency);
+                .defineInRange("high_band_frequency", Config.radioHighBandFrequency, 1, 100_000);
 
             radioHighBandFirstChannel = builder
                 .comment("""
@@ -370,21 +370,21 @@ public final class ConfigSpec {
 
             radioHighBandBudgetOffset = builder
                 .comment("How much stronger (or, if negative, weaker) high band transmitters are than low band ones, in dB.")
-                .define("high_band_power_offset", Config.radioHighBandBudgetOffset);
+                .defineInRange("high_band_power_offset", Config.radioHighBandBudgetOffset, -100, 100);
 
             radioMetresPerBlock = builder
                 .comment("How many metres a block represents horizontally. Increase this for worlds generated at a reduced scale.")
-                .define("metres_per_block", Config.radioMetresPerBlock);
+                .defineInRange("metres_per_block", Config.radioMetresPerBlock, 0.01, 10_000);
 
             radioMetresPerBlockVertical = builder
                 .comment("How many metres a block represents vertically.")
-                .define("metres_per_block_vertical", Config.radioMetresPerBlockVertical);
+                .defineInRange("metres_per_block_vertical", Config.radioMetresPerBlockVertical, 0.01, 10_000);
 
             radioEarthRadius = builder
                 .comment("""
                     The radius of the planet, in kilometres, used to account for the curvature of the
                     earth over long links. Set to 6371 for an Earth-scale world, or 0 for a flat world.""")
-                .define("earth_radius", Config.radioEarthRadius);
+                .defineInRange("earth_radius", Config.radioEarthRadius, 0, 1_000_000);
 
             radioGroundReflection = builder
                 .comment("""
@@ -394,11 +394,11 @@ public final class ConfigSpec {
 
             radioMinAntennaHeight = builder
                 .comment("The minimum height of an antenna above the surrounding terrain, in metres.")
-                .define("min_antenna_height", Config.radioMinAntennaHeight);
+                .defineInRange("min_antenna_height", Config.radioMinAntennaHeight, 0.1, 1000);
 
             radioMaterialLossScale = builder
                 .comment("A multiplier for how much blocks attenuate signals. 1 is physically based.")
-                .define("material_loss_scale", Config.radioMaterialLossScale);
+                .defineInRange("material_loss_scale", Config.radioMaterialLossScale, 0, 100);
 
             radioVoxelRadius = builder
                 .comment("""
@@ -412,7 +412,7 @@ public final class ConfigSpec {
 
             radioStormPenalty = builder
                 .comment("How much noise thunderstorms add, in dB. Every 6dB roughly halves the range.")
-                .define("storm_noise", Config.radioStormPenalty);
+                .defineInRange("storm_noise", Config.radioStormPenalty, 0, 100);
 
             radioTickBudgetMicros = builder
                 .comment("How long the server may spend evaluating radio links each tick, in microseconds.")
@@ -566,19 +566,19 @@ public final class ConfigSpec {
         Config.radioEnabled = radioEnabled.get();
         Config.radioReferenceRange = radioReferenceRange.get();
         Config.radioMaxRange = radioMaxRange.get();
-        Config.radioLowBandFrequency = Math.max(1, radioLowBandFrequency.get());
-        Config.radioHighBandFrequency = Math.max(1, radioHighBandFrequency.get());
+        Config.radioLowBandFrequency = radioLowBandFrequency.get();
+        Config.radioHighBandFrequency = radioHighBandFrequency.get();
         Config.radioHighBandFirstChannel = radioHighBandFirstChannel.get();
         Config.radioHighBandBudgetOffset = radioHighBandBudgetOffset.get();
-        Config.radioMetresPerBlock = Math.max(0.01, radioMetresPerBlock.get());
-        Config.radioMetresPerBlockVertical = Math.max(0.01, radioMetresPerBlockVertical.get());
-        Config.radioEarthRadius = Math.max(0, radioEarthRadius.get());
+        Config.radioMetresPerBlock = radioMetresPerBlock.get();
+        Config.radioMetresPerBlockVertical = radioMetresPerBlockVertical.get();
+        Config.radioEarthRadius = radioEarthRadius.get();
         Config.radioGroundReflection = radioGroundReflection.get();
-        Config.radioMinAntennaHeight = Math.max(0.1, radioMinAntennaHeight.get());
-        Config.radioMaterialLossScale = Math.max(0, radioMaterialLossScale.get());
+        Config.radioMinAntennaHeight = radioMinAntennaHeight.get();
+        Config.radioMaterialLossScale = radioMaterialLossScale.get();
         Config.radioVoxelRadius = radioVoxelRadius.get();
         Config.radioProfileSamples = radioProfileSamples.get();
-        Config.radioStormPenalty = Math.max(0, radioStormPenalty.get());
+        Config.radioStormPenalty = radioStormPenalty.get();
         Config.radioTickBudgetMicros = radioTickBudgetMicros.get();
         Config.radioCacheTicks = radioCacheTicks.get();
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();

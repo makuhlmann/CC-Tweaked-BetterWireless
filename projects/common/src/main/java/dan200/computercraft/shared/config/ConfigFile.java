@@ -211,6 +211,18 @@ public abstract class ConfigFile {
 
         public abstract ConfigFile.Value<Integer> defineInRange(String name, int defaultValue, int min, int max);
 
+        /**
+         * Define a decimal value within a range. Unlike {@link #define(String, Object)}, this accepts any number, so
+         * users can write {@code 8} rather than {@code 8.0}.
+         *
+         * @param name         The name of the value we're defining.
+         * @param defaultValue The default value.
+         * @param min          The minimum value, inclusive.
+         * @param max          The maximum value, inclusive.
+         * @return The accessor for this config option.
+         */
+        public abstract ConfigFile.Value<Double> defineInRange(String name, double defaultValue, double min, double max);
+
         public abstract <T> ConfigFile.Value<List<? extends T>> defineList(String name, List<? extends T> defaultValue, Supplier<T> newValue, Predicate<Object> elementValidator);
 
         public abstract <V extends Enum<V>> ConfigFile.Value<V> defineEnum(String name, V defaultValue);

@@ -88,6 +88,12 @@ public final class ForgeConfigFile extends ConfigFile {
         }
 
         @Override
+        public ConfigFile.Value<Double> defineInRange(String name, double defaultValue, double min, double max) {
+            translation(name);
+            return defineValue(name, builder.defineInRange(name, defaultValue, min, max));
+        }
+
+        @Override
         public <T> ConfigFile.Value<List<? extends T>> defineList(String name, List<? extends T> defaultValue, Supplier<T> newValue, Predicate<Object> elementValidator) {
             translation(name);
             return defineValue(name, builder.defineList(name, defaultValue, newValue, elementValidator));

@@ -78,8 +78,10 @@ public final class RadioPropagationService {
     private final Map<ResourceKey<Level>, LevelHeights> heights = new ConcurrentHashMap<>();
     private final ExecutorService worker = Executors.newSingleThreadExecutor(ThreadUtils.lowPriorityFactory("Radio-Terrain"));
 
-    private RadioSettings settings = RadioSettings.fromConfig();
+    /** Written on the server thread, read by computer threads when transmitting. */
+    private volatile RadioSettings settings = RadioSettings.fromConfig();
     private long tick;
+    private long lastErrorLog = Long.MIN_VALUE;
 
     private record Transmission(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers) {
     }
@@ -205,8 +207,25 @@ public final class RadioPropagationService {
         for (var i = 0; i < count && System.nanoTime() < deadline; i++) {
             var evaluation = pending.poll();
             if (evaluation == null) break;
-            if (!tryEvaluate(evaluation)) pending.add(evaluation);
+
+            boolean done;
+            try {
+                done = tryEvaluate(evaluation);
+            } catch (RuntimeException e) {
+                // This runs as part of the server tick, so must never throw. Drop the link instead.
+                logError("Failed to evaluate radio link", e);
+                evaluating.remove(evaluation.key);
+                done = true;
+            }
+            if (!done) pending.add(evaluation);
         }
+    }
+
+    private void logError(String message, Exception e) {
+        var now = System.currentTimeMillis();
+        if (now - lastErrorLog < 60_000) return;
+        lastErrorLog = now;
+        LOG.error("{} (further errors in the next minute are suppressed)", message, e);
     }
 
     private boolean tryEvaluate(Evaluation evaluation) {
@@ -262,7 +281,11 @@ public final class RadioPropagationService {
         var threshold = RadioBand.SENSITIVITY + (delivery.thundering() ? settings.stormPenalty() : 0);
         if (signal < threshold) return;
 
-        delivery.receiver().receiveSameDimension(delivery.packet(), delivery.distance(), Math.round(signal * 10) / 10.0);
+        try {
+            delivery.receiver().receiveSameDimension(delivery.packet(), delivery.distance(), Math.round(signal * 10) / 10.0);
+        } catch (RuntimeException e) {
+            logError("Packet receiver " + delivery.receiver() + " failed to receive a packet", e);
+        }
     }
 
     private LevelHeights getHeights(ServerLevel level) {
