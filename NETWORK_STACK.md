@@ -50,7 +50,7 @@ These facts about CC: Tweaked (as of 1.121.0, on this branch) shape the design:
 | Anyone can open any channel, and the sender of a message is whatever the message says. | Without cryptography there is no privacy and no authentication. |
 | Each computer's event queue holds 256 events. Further events are silently dropped. | A flood of messages loses some of them. The stack must keep its queue short and treat drops as loss. |
 | `bios.lua` runs `rednet.run` in parallel with the shell, and every coroutine under `parallel` sees every event. | The stack can run its background process the same way. Apps must ignore events that aren't theirs. |
-| `require` gives each program its own copy of a module. Files in `rom/apis` are loaded once at boot into globals shared by all programs. | The stack's state must live in a global API (`net`), like rednet, not in a `require`d module. |
+| `require` gives each program its own copy of a module, and isn't available to APIs. Files in `rom/apis` are loaded once at boot, in alphabetical order, into globals shared by all programs. | The stack's state must live in a global API (`net`), like rednet, not in a `require`d module. `net.lua` loads before `parallel`, `peripheral`, `rednet` and `settings` exist. |
 | Computers, turtles and pocket computers share one ID space, unique within a world. | Computer IDs make good hardware addresses. |
 | Lua strings are byte strings. Java functions can take and return them (`IArguments.getBytes`, `ByteBuffer`). Cobalt has `string.pack` and `bit32`. | A native crypto API can work on raw bytes, and binary encodings are possible in Lua. |
 | Datapacks can add files to the ROM (`data/computercraft/lua/rom/...`). | The stack can be developed as a datapack without rebuilding the jar, then moved into the ROM. |
@@ -73,8 +73,11 @@ network.
 
 ### Process model
 
-The stack is a global API, `net`, loaded from `rom/apis/net.lua` like rednet. It loads its internal modules once at boot,
-so every program on the computer shares one instance. `bios.lua` runs its background process next to the shell:
+The stack is a global API, `net`, loaded from `rom/apis/net.lua` like rednet, so every program on the computer shares
+one instance. APIs load in alphabetical order, before `settings`, `peripheral` and the rest exist, so the file's top
+level only defines functions. All setup happens when `net.run` starts: defining settings, finding modems, and loading
+the internal modules with `dofile` (APIs can't use `require`). `bios.lua` runs that background process next to the
+shell:
 
 ```lua
 parallel.waitForAny(shell, rednet.run, net.run)
@@ -82,12 +85,14 @@ parallel.waitForAny(shell, rednet.run, net.run)
 
 The background process only handles input: `modem_message` events, its own timers, and modems being attached or
 removed. Sending happens directly in the calling program's coroutine, through the shared state. That is safe because CC
-coroutines only switch when they yield.
+coroutines only switch when they yield, and `modem.transmit` doesn't. The send path must never call anything that does,
+such as `sleep` or a peripheral method that runs on the main thread.
 
 To be robust:
 
 - Each event handler runs under `pcall`. Errors go to a log ring buffer (shown by `netstat -e`) and the stack keeps
-  running. A crashed background process would leave the computer offline.
+  running. This is essential: if `net.run` ever returns or errors, `parallel.waitForAny` returns and `bios.lua` shuts
+  the computer down. The outer loop itself must not be able to fail.
 - The stack keeps one OS timer for its earliest deadline (retransmissions, leases, routing updates) instead of one per
   packet, so it doesn't flood the event queue.
 - Programs waiting on the network are woken by events the background process queues (`net_data` and so on). These are
@@ -169,7 +174,9 @@ An interface is a modem on one band:
 - **Wireless modems** are one interface on their configured band, by default the high band (short range, like Wi-Fi).
   The same modem can also be a second interface on the other band (`top:low`), so one modem can serve both a local
   network and a long-range link.
-- **Ender modems** behave like a wired interface that reaches everything. They make a good long-distance backbone.
+- **Ender modems** behave like a wired interface that reaches everything, and make a good long-distance backbone. From
+  Lua they look like any other wireless modem (`isWireless()` is all a modem reports), so either the mod exposes the
+  difference (§12) or a setting marks them (`net.<interface>.ender`).
 
 Interfaces come and go as modems are attached and removed, and the stack reports this with a `net_interface` event.
 
@@ -460,8 +467,8 @@ the JDK's standard providers (this branch builds and runs on Java 25). All argum
 ### Serialising for encryption
 
 Encryption works on bytes, but packets carry Lua values. The stack includes a binary codec (`net.codec`): type-tagged
-values written with `string.pack`, tables with their keys in sorted order so the same value always encodes the same way
-(needed for signatures), and no cycles or functions. If it proves too slow, it can move into Java (§12).
+values written with `string.pack`, tables with their keys sorted (numbers before strings, then by value) so the same
+value always encodes the same way (needed for signatures), and no cycles or functions. If it proves too slow, it can move into Java (§12).
 
 ### Secure connections
 
@@ -608,7 +615,9 @@ between towers. It follows LTE's structure, simplified.
 | Subscriber database | HSS | A core computer: subscribers' keys and numbers |
 | Gateway | S-GW / P-GW | A core computer: phones' addresses, and the link to the rest of the network |
 
-A small operator runs the controller, database and gateway on one core computer.
+A small operator runs the controller, database and gateway on one core computer. Cells, core computers and routers
+must keep running when nobody is nearby, so they call `os.setKeepLoaded(true)` (see
+[RADIO_PROPAGATION.md](RADIO_PROPAGATION.md#keeping-computers-running)).
 
 ### Radio
 
@@ -641,7 +650,8 @@ operator's public key, in `/.net/sim`. The subscriber database has the same K.
 
 Pocket computers have no disk drive, so a SIM is provisioned over the air in a shop: the operator's provisioning computer
 shows a one-time code on a monitor, and the phone's setup program uses it for a `Noise_NNpsk0` handshake. The code
-authenticates the exchange, and the SIM is sent encrypted.
+authenticates the exchange, and the SIM is sent encrypted. An eavesdropper can't guess the code offline, but an attacker
+posing as the shop gets one guess per attempt, so each code allows only a few.
 
 ### Attaching
 
@@ -670,7 +680,8 @@ From then on, frames between the phone and its cell carry encrypted packets:
 { op = "data", ctr = 812, ct = crypto.seal(cellKey, nonce(direction, ctr), net.codec.encode(packet)) }
 ```
 
-The receiver rejects counters it has already seen.
+The receiver keeps a 64-entry replay window, as for secure datagrams (§9), rather than requiring counters to increase:
+radio frames can arrive out of order, for example when a phone moves while a link is being evaluated.
 
 ### Getting packets to a moving phone
 
@@ -742,12 +753,16 @@ Backhaul traffic uses secure connections or an encrypted link, because it may cr
 
 ## 12. Changes to the mod
 
-Most of the stack is Lua. The mod needs one change, and could use a few more for realism.
+Most of the stack is Lua. The mod needs one change, and could use a few more for convenience and realism.
 
 **Required:**
 
 - **The `crypto` API (§9).** Without it, secure connections and cellular authentication would be too slow to be
   practical. It's useful on its own, too.
+
+**Small but useful:**
+
+- **`modem.isInterdimensional()`,** so the stack can recognise ender modems (§4) without a setting.
 
 **Optional, roughly in order of value:**
 
