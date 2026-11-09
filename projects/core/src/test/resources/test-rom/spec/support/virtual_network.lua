@@ -68,6 +68,8 @@ return function()
         stack = Stack.new {
             id = id,
             clock = function() return self.time end,
+            epoch = function() return 1.7e12 + self.time * 1000 end,
+            crypto = crypto,
             transmit = function(link, channel, _, frame) send(stack, link, channel, frame) end,
             wake = function(event) wakes[event] = (wakes[event] or 0) + 1 end,
             log = function(err) table.insert(self.errors, err) end,

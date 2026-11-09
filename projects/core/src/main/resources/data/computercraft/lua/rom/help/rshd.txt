@@ -1,0 +1,10 @@
+rshd lets other computers open a shell on this one with "rsh". Only computers it knows may log in: either ones allowed by their key, or ones which give the password. A computer which gives the right password is remembered. Three wrong passwords end the connection.
+
+Anyone who logs in can do anything on this computer, so choose a good password. The first time a computer connects to this one, it learns this computer's key: someone pretending to be this computer at that moment could learn the password, so check the fingerprint rsh shows matches the one "netkeys" shows here.
+
+ex:
+"rshd" waits for remote shells, until Ctrl+T is pressed.
+"rshd password" sets the password, and "rshd password none" removes it.
+"rshd keys" lists the computers allowed to log in.
+"rshd allow <key> laptop" allows a computer by its key, which "netkeys" shows on that computer.
+"rshd deny laptop" stops it logging in.

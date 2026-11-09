@@ -34,7 +34,8 @@ deliver messages in order and exactly once, resending any which are lost. [`net.
 connection, like a file.
 
 > [!WARNING]
-> The network stack doesn't encrypt or authenticate anything yet. Anyone can listen to, or pretend to be, any computer.
+> Datagrams and plain connections aren't encrypted or authenticated: anyone in range can read them, or pretend to be
+> any computer. Use secure connections ([`net.secure`]) for anything which matters.
 
 @module net
 @usage Send a message to another computer, and print its reply.
@@ -54,8 +55,14 @@ local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
 local CONNECT_TIMEOUT = 5
+local HANDSHAKE_TIMEOUT = 5
 
-local stack, address, dhcp, dns, rip, connections, streams, running
+-- Where secure connections keep what they know.
+local KNOWN_HOSTS = "/.net/known_hosts"
+local TRUSTED = "/.net/trust"
+local CERTIFICATE = "/.net/certificate"
+
+local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, running
 local rip_instance, rip_config
 local add_modem, apply_routing
 local errors = {}
@@ -86,6 +93,9 @@ local function load()
     rip = env.require("cc.internal.net.rip")
     connections = env.require("cc.internal.net.tcp")
     streams = env.require("cc.internal.net.stream")
+    secure_connections = env.require("cc.internal.net.secure")
+    links = env.require("cc.internal.net.link")
+    certificates = env.require("cc.internal.net.certificate")
 
     settings.define("net.enabled", {
         description = "Run the network stack.",
@@ -143,6 +153,8 @@ local function load()
     stack = env.require("cc.internal.net.stack").new {
         id = os.getComputerID(),
         clock = os.clock,
+        epoch = function() return os.epoch("utc") end,
+        crypto = crypto,
         transmit = function(modem, channel, reply, frame)
             -- A modem which fails (for instance, because it was just removed) loses the frame, like a real network.
             local ok, err = pcall(peripheral.call, modem, "transmit", channel, reply, frame)
@@ -295,9 +307,27 @@ local function apply(name, mode)
     return true
 end
 
+-- Encrypt an interface with its passphrase, if it has one. If it should be encrypted but can't be, it sends and accepts
+-- nothing, rather than sending in the clear.
+local function apply_passphrase(name, passphrase)
+    if passphrase == nil then
+        stack:set_link_key(name, nil)
+    elseif type(passphrase) ~= "string" or passphrase == "" then
+        log_error(("The passphrase for %s must be text"):format(name))
+        stack:set_link_key(name, false)
+    elseif not crypto then
+        log_error(("%s has a passphrase, but the crypto API is turned off, so it can't be used"):format(name))
+        stack:set_link_key(name, false)
+    else
+        stack:set_link_key(name, links.derive(crypto, passphrase))
+    end
+end
+
 local function add_interface(name, modem, kind, band)
     local interface = stack:add_interface(name, modem, kind, band)
     open_channels(interface)
+    -- Before the address, so the first announcement is encrypted too.
+    apply_passphrase(name, settings.get("net." .. name .. ".psk"))
     local ok, err = apply(name, settings.get("net." .. name .. ".address"))
     if not ok then log_error(("Bad address for %s: %s"):format(name, err)) end
     os.queueEvent("net_interface", name, "up")
@@ -493,6 +523,28 @@ function setAddress(interface, addr)
     if addr == "dhcp" then stop_dhcp(interface, false) end
     local ok, err = apply(interface, addr or "none")
     if not ok then error(err, 2) end
+end
+
+--[[- Encrypt everything sent on an interface with a passphrase, and only accept what's encrypted with the same one.
+Every computer on the link needs the same passphrase, much like a Wi-Fi password. This keeps others off the network,
+but anyone with the passphrase can read everything sent with it, so use secure connections for anything sensitive.
+
+To keep it when the computer restarts, set `net.<interface>.psk` too (the `ifconfig` program does both).
+
+@tparam string interface The interface's name.
+@tparam string|nil passphrase The passphrase, or `nil` to stop encrypting.
+@throws If there is no such interface.
+]]
+function setPassphrase(interface, passphrase)
+    expect(1, interface, "string")
+    expect(2, passphrase, "string", "nil")
+    local s = load()
+    local found = s.interfaces[interface]
+    if not found then error("No interface named '" .. interface .. "'", 2) end
+
+    apply_passphrase(interface, passphrase)
+    -- Announce our address again, so the computers which share the passphrase hear it.
+    if found.address then s:set_address(interface, found.address, found.prefix) end
 end
 
 --[[- Get an interface's address.
@@ -970,6 +1022,348 @@ tcp = {
     end,
 }
 
+local function to_hex(bytes)
+    return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end))
+end
+
+local function from_hex(text)
+    if type(text) ~= "string" or #text % 2 ~= 0 or text:find("[^%x]") then return nil end
+    return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end))
+end
+
+-- Read and write the small tables secure connections keep in /.net.
+local function read_table(path)
+    local file = fs.open(path, "r")
+    if not file then return {} end
+    local value = textutils.unserialise(file.readAll() or "")
+    file.close()
+    return type(value) == "table" and value or {}
+end
+
+local function write_table(path, value)
+    local file = assert(fs.open(path, "w"))
+    file.write(textutils.serialise(value))
+    file.close()
+end
+
+local function require_crypto()
+    if not crypto or not enclave then
+        error("Secure connections need the crypto and enclave APIs, which are turned off on this server", 3)
+    end
+end
+
+-- This computer's key for secure connections. It lives in the enclave, so it can't be copied.
+local function identity()
+    require_crypto()
+    local public = enclave.publicKey("net.identity") or enclave.generate("net.identity", "x25519")
+    return { public = public, exchange = function(peer) return enclave.exchange("net.identity", peer) end }
+end
+
+--[[- Get this computer's key for secure connections, which other computers see when it connects to them.
+
+@treturn string The key, as 64 hexadecimal digits.
+]]
+function getIdentity()
+    return to_hex(identity().public)
+end
+
+--[[- Get a short fingerprint of a key, for people to compare.
+
+@tparam string key The key, as hexadecimal digits.
+@treturn string The fingerprint, such as `"3f9a 0c41 77d2 e810 5b6e"`.
+]]
+function fingerprint(key)
+    expect(1, key, "string")
+    require_crypto()
+    local bytes = from_hex(key) or key
+    return to_hex(crypto.sha256(bytes)):sub(1, 20):gsub("(....)", "%1 "):sub(1, -2)
+end
+
+--[[- Get the authorities this computer trusts to issue certificates (in `/.net/trust`).
+
+@treturn { [string] = string } Each authority's key (as hexadecimal digits), and a description.
+]]
+function trusted()
+    local result = {}
+    for key, label in pairs(read_table(TRUSTED)) do
+        if from_hex(key) and #key == 64 then result[key:lower()] = tostring(label) end
+    end
+    return result
+end
+
+--[[- Get the keys this computer has seen for other computers, when connecting securely (in `/.net/known_hosts`).
+
+@treturn { [string] = string } Each name, and its key as hexadecimal digits.
+]]
+function knownHosts()
+    return read_table(KNOWN_HOSTS)
+end
+
+--[[- Forget the key this computer has seen for a name, so the next secure connection to it learns a new one. Use this
+when a computer's key changed for a good reason, such as the computer being replaced.
+
+@tparam string name The name.
+@treturn boolean Whether a key was forgotten.
+]]
+function forgetHost(name)
+    expect(1, name, "string")
+    load()
+    local hosts = read_table(KNOWN_HOSTS)
+    name = dns.normalise(name)
+    if hosts[name] == nil then return false end
+    hosts[name] = nil
+    write_table(KNOWN_HOSTS, hosts)
+    return true
+end
+
+local SecureConnection = setmetatable({}, { __index = Connection })
+SecureConnection.__index = SecureConnection
+
+--[[- Send a message, encrypted. Any value [`cc.net.codec`] can encode works, up to about 60 KiB.
+
+@param value The message.
+@treturn[1] true If it was sent.
+@treturn[2] nil If it couldn't be sent.
+@treturn[2] string Why not.
+]]
+function SecureConnection:send(value)
+    return self.session:send(value)
+end
+
+--[[- Wait for the next message.
+
+@tparam[opt] number timeout How long to wait, in seconds.
+@return[1] The message.
+@treturn[2] nil If the other side has closed, and every message has been received.
+@treturn[3] nil If nothing arrived in time, or the connection failed.
+@treturn[3] string Why: `"Timed out"`, `"Message was tampered with"`, `"Connection closed unexpectedly"` (someone may
+have cut it short), or what went wrong with the connection.
+]]
+function SecureConnection:receive(timeout)
+    expect(1, timeout, "number", "nil")
+    return self.session:receive(timeout)
+end
+
+--- Close our side of the connection, telling the other side we're done.
+function SecureConnection:close()
+    self.session:close()
+end
+
+--- Drop the connection at once.
+function SecureConnection:abort()
+    self.session:abort()
+end
+
+--- Get the other side's key.
+--
+-- @treturn string|nil The key, as 64 hexadecimal digits, or `nil` if it didn't say who it is.
+function SecureConnection:getPeerKey()
+    return self.session.peer_key and to_hex(self.session.peer_key)
+end
+
+--- Get the name the other side's certificate vouches for, if it had one this computer trusts.
+--
+-- @treturn string|nil The name.
+function SecureConnection:getPeerName()
+    return self.peer_name
+end
+
+--[[- Get how we know the other side is who it says it is.
+
+@treturn string|nil `"certificate"` (a trusted authority vouches for it), `"pinned"` (its key was the one asked for),
+`"known"` (it had the same key last time), `"new"` (it's the first connection to this name, so its key was learnt now),
+or `nil` for the server's side of a connection.
+]]
+function SecureConnection:getTrust()
+    return self.trust
+end
+
+local function wrap_session(connection, session, extra)
+    local result = setmetatable({ connection = connection.connection, plain = connection, session = session }, SecureConnection)
+    for k, v in pairs(extra or {}) do result[k] = v end
+    return result
+end
+
+local SecureListener = {}
+SecureListener.__index = SecureListener
+
+--[[- Wait for a secure connection. Connections which fail their handshake are dropped, and waiting carries on.
+
+While a client does its handshake, others wait: one which stalls holds them up for up to 5 seconds.
+
+@tparam[opt] number timeout How long to wait, in seconds. Waits until one comes if not given.
+@treturn[1] table The connection, with the same methods as one from [`net.secure.connect`].
+@treturn[2] nil If none came in time, or the listener is closed.
+@treturn[2] string Why not.
+]]
+function SecureListener:accept(timeout)
+    expect(1, timeout, "number", "nil")
+    local deadline = timeout and os.clock() + timeout
+    while true do
+        local remaining = deadline and math.max(0, deadline - os.clock())
+        local connection, err = self.listener:accept(remaining)
+        if not connection then return nil, err end
+
+        local session, handshake_err = secure_connections.server(connection, {
+            crypto = crypto, static = self.identity, certificate = self.certificate, timeout = HANDSHAKE_TIMEOUT,
+            anonymous = self.anonymous,
+        })
+        if session then return wrap_session(connection, session) end
+        log_error(("Secure connection from %s failed: %s"):format(connection:getPeer(), handshake_err))
+    end
+end
+
+--- Stop listening, freeing the port.
+function SecureListener:close()
+    self.listener:close()
+end
+
+--- Get the port this listener is on.
+--
+-- @treturn number The port.
+function SecureListener:getPort()
+    return self.listener:getPort()
+end
+
+--[[- Secure connections: like [`net.tcp`], but encrypted, and both sides know who they're talking to.
+
+Each computer has a key, kept in its enclave so it can't be copied. When a client connects, it checks the server is who
+it should be, in this order:
+
+ 1. If the client gave the server's key (`options.key`), it must match.
+ 2. If the server has a certificate from an authority the client trusts (see the `netkeys` program), it must be for
+    the name the client asked for.
+ 3. Otherwise the client remembers the server's key the first time it connects to a name (in `/.net/known_hosts`), and
+    refuses to connect if the key is ever different, as SSH does. Someone pretending to be the server on the very first
+    connection would go unnoticed, so check the fingerprint (`getPeerKey` and [`net.fingerprint`]) when it matters.
+
+The server learns the client's key too, which it can check against a list of keys it allows.
+
+Messages are encrypted and authenticated: anything changed, replayed or cut short on the way is noticed, and ends the
+connection. Messages are encoded with [`cc.net.codec`], so tables which contain themselves can't be sent.
+
+@usage Connect to a server, and print its key's fingerprint.
+
+```lua
+local connection = assert(net.secure.connect("bank.spawn", 443))
+print(net.fingerprint(connection:getPeerKey()))
+```
+]]
+secure = {
+    --[[- Connect securely to another computer.
+
+    @tparam string target The name or address to connect to.
+    @tparam number port The port to connect to.
+    @tparam[opt] {
+        timeout? = number, key? = string, trust? = string, anonymous? = boolean,
+    } options How long to wait for each step, in seconds (5 by default); the server's key, as hexadecimal digits, if
+    it's known; `"certificate"` to only accept a server with a trusted certificate; and whether to connect without
+    saying who we are (which needs the server's key, given or known).
+    @treturn[1] table The connection, with the same methods as one from `net.tcp.connect`, and `getPeerKey`,
+    `getPeerName` and `getTrust`.
+    @treturn[2] nil If it couldn't connect.
+    @treturn[2] string Why not.
+    ]]
+    connect = function(target, port, options)
+        expect(1, target, "string")
+        expect(2, port, "number")
+        expect(3, options, "table", "nil")
+        options = options or {}
+        require_crypto()
+        load()
+
+        local name = dns.normalise(target)
+        local pinned = options.key and from_hex(options.key)
+        if options.key and (not pinned or #pinned ~= 32) then error("bad option key (expected 64 hexadecimal digits)", 2) end
+        local remote_static
+        if options.anonymous then
+            remote_static = pinned or from_hex(read_table(KNOWN_HOSTS)[name] or "")
+            if not remote_static or #remote_static ~= 32 then return nil, "Connecting anonymously needs the server's key" end
+        end
+
+        local connection, err = tcp.connect(target, port, options.timeout)
+        if not connection then return nil, err end
+
+        local trust, peer_name
+        local function verify(key, info)
+            if pinned then
+                if not crypto.equals(key, pinned) then return nil, "The server's key isn't the one given" end
+                trust = "pinned"
+                return true
+            end
+
+            local problem = "has no certificate"
+            local certificate = info.certificate and certificates.decode(info.certificate)
+            if certificate then
+                local ok, reason = certificates.verify(crypto, certificate, {
+                    name = name, key = key, now = os.epoch("utc"), trusted = (function()
+                        local result = {}
+                        for authority in pairs(trusted()) do result[from_hex(authority)] = true end
+                        return result
+                    end)(),
+                })
+                if ok then
+                    trust, peer_name = "certificate", certificate.name
+                    return true
+                end
+                problem = reason
+            end
+            if options.trust == "certificate" then return nil, "The server's certificate " .. problem end
+
+            local hosts = read_table(KNOWN_HOSTS)
+            local known = hosts[name]
+            if known == nil then
+                hosts[name] = to_hex(key)
+                write_table(KNOWN_HOSTS, hosts)
+                trust = "new"
+            elseif known ~= to_hex(key) then
+                return nil, ("The key for %s has changed! Something may be pretending to be it. If you know why it " ..
+                    "changed, forget the old key with 'netkeys forget %s'."):format(name, name)
+            else
+                trust = "known"
+            end
+            return true
+        end
+
+        local session
+        session, err = secure_connections.client(connection, {
+            crypto = crypto, static = not options.anonymous and identity() or nil,
+            pattern = options.anonymous and "NK" or "XX", remote_static = remote_static,
+            timeout = options.timeout or HANDSHAKE_TIMEOUT, verify = verify,
+        })
+        if not session then return nil, err end
+        return wrap_session(connection, session, { trust = trust or "pinned", peer_name = peer_name })
+    end,
+
+    --[[- Listen for secure connections on a port.
+
+    @tparam number port The port.
+    @tparam[opt] { anonymous? = boolean } options Whether to accept clients which don't say who they are.
+    @treturn[1] table The listener, with `accept`, `close` and `getPort` methods.
+    @treturn[2] nil If the port is in use.
+    @treturn[2] string An error message.
+    ]]
+    listen = function(port, options)
+        expect(1, port, "number")
+        expect(2, options, "table", "nil")
+        require_crypto()
+        local own = identity()
+        local listener, err = tcp.listen(port)
+        if not listener then return nil, err end
+
+        -- Offer our certificate, if we have one.
+        local certificate
+        local file = fs.open(CERTIFICATE, "rb")
+        if file then
+            certificate = file.readAll()
+            file.close()
+        end
+        return setmetatable({
+            listener = listener, identity = own, certificate = certificate, anonymous = options and options.anonymous,
+        }, SecureListener)
+    end,
+}
+
 --[[- Read and write bytes over a connection, like a file. Writes are collected and sent in chunks of 16 KiB, so call
 `flush` (or `close`) to send the last of them.
 
@@ -991,7 +1385,8 @@ stream.close()
 ]]
 function stream(connection)
     expect(1, connection, "table")
-    if getmetatable(connection) ~= Connection then error("bad argument #1 (expected a connection)", 2) end
+    local kind = getmetatable(connection)
+    if kind ~= Connection and kind ~= SecureConnection then error("bad argument #1 (expected a connection)", 2) end
     return streams.wrap(connection)
 end
 

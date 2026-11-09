@@ -15,6 +15,7 @@ to [`new`], so tests can connect several stacks together without any modems.
 
 local expect = require "cc.expect".expect
 local address = require "cc.net.address"
+local link = require "cc.internal.net.link"
 
 --- The version of the frame and packet formats. Frames from other versions are ignored.
 local VERSION = 1
@@ -122,6 +123,8 @@ local function new(options)
     local self = setmetatable({
         id = options.id,
         clock = options.clock,
+        crypto = options.crypto,
+        epoch = options.epoch or function() return options.clock() * 1000 end,
         _transmit = options.transmit,
         wake = options.wake,
         log = options.log or function() end,
@@ -240,9 +243,38 @@ function Stack:transmit(interface, id, kind, body, forwarded)
     local channel = interface.broadcast
     if id ~= BROADCAST_ID then channel = channels(id, interface.band) end
     local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body, fwd = forwarded or nil }
-    interface.stats.frames_out = interface.stats.frames_out + 1
     if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
+
+    -- On an encrypted link, everything but who it's from and to is sealed.
+    if interface.link then
+        local sealed = link.seal(interface.link, self.id, id, kind, body, forwarded)
+        if not sealed then
+            interface.stats.dropped = interface.stats.dropped + 1
+            return
+        end
+        frame = { net = VERSION, src = self.id, dst = id, type = "sealed", body = sealed }
+    end
+
+    interface.stats.frames_out = interface.stats.frames_out + 1
     self._transmit(interface.modem, channel, interface.unicast, frame)
+end
+
+--[[- Encrypt everything sent on an interface, and only accept frames encrypted with the same key.
+
+Set this before the interface's address, so its first announcement is encrypted too.
+
+@tparam string name The interface's name.
+@tparam string|false|nil key The key (see `cc.internal.net.link`); `false` to send and accept nothing, for an
+interface which should be encrypted but can't be; or `nil` to stop encrypting.
+]]
+function Stack:set_link_key(name, key)
+    local interface = self.interfaces[name]
+    if not interface then error("No interface named '" .. name .. "'", 2) end
+    if key == nil then
+        interface.link = nil
+    else
+        interface.link = link.new(key and self.crypto, key or nil, self.epoch)
+    end
 end
 
 --- Whether frames are being captured, for `netdump`.
@@ -275,13 +307,28 @@ function Stack:receive(modem, channel, frame, signal)
     local src, dst = frame.src, frame.dst
     if type(src) ~= "number" or src == self.id or (dst ~= self.id and dst ~= BROADCAST_ID) then return end
 
-    interface.stats.frames_in = interface.stats.frames_in + 1
-    if self:capturing() then self.wake("net_frame", "in", interface.name, frame, signal) end
+    local kind, body, forwarded = frame.type, frame.body, frame.fwd == true
+    if interface.link then
+        -- On an encrypted link, only frames sealed with our key count.
+        if kind ~= "sealed" then return end
+        kind, body, forwarded = link.open(interface.link, src, dst, body)
+        if not kind then
+            interface.stats.dropped = interface.stats.dropped + 1
+            return
+        end
+    elseif kind == "sealed" then
+        return
+    end
 
-    if frame.type == "nd" then
-        self:receive_nd(interface, src, frame.body, signal)
-    elseif frame.type == "ip" then
-        self:receive_packet(interface, src, frame.body, signal, frame.fwd == true)
+    interface.stats.frames_in = interface.stats.frames_in + 1
+    if self:capturing() then
+        self.wake("net_frame", "in", interface.name, { net = VERSION, src = src, dst = dst, type = kind, body = body, fwd = forwarded or nil }, signal)
+    end
+
+    if kind == "nd" then
+        self:receive_nd(interface, src, body, signal)
+    elseif kind == "ip" then
+        self:receive_packet(interface, src, body, signal, forwarded)
     end
 end
 

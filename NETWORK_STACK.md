@@ -509,8 +509,8 @@ the JDK's standard providers (this branch builds and runs on Java 25). All argum
   JDK's integer-based key specs.
 - **Limits:** inputs are capped (for example at 1 MiB per call) to bound the work one call can do.
 - **CPU cost:** calls run on the computer's own thread, never the server's main thread. Each is a single JDK operation
-  with no extra copying, and parsed key objects are cached. A secure connection costs two X25519 operations per side to
-  open, and one ChaCha20-Poly1305 operation per message after that.
+  with no extra copying, and parsed key objects are cached. A secure connection costs three X25519 operations per side
+  to open (two with `NK`), plus making an ephemeral key, and one ChaCha20-Poly1305 operation per message after that.
 - **Server switch:** like the HTTP API, a server config option can turn `crypto` and `enclave` off.
 - **Uses beyond the stack:** passwords, signed files, and anything else players want to protect.
 
@@ -566,9 +566,13 @@ The stack keeps its identity keys here (§9 Identities), and the cellular SIM is
 
 ### Serialising for encryption
 
-Encryption works on bytes, but packets carry Lua values. The stack includes a binary codec (`net.codec`): type-tagged
-values written with `string.pack`, tables with their keys sorted (numbers before strings, then by value) so the same
-value always encodes the same way (needed for signatures), and no cycles or functions. If it proves too slow, it can move into Java (§12).
+Encryption works on bytes, but packets carry Lua values. The stack includes a binary codec, the public module
+`cc.net.codec`. Values are type-tagged and written with `string.pack`. Tables have their keys sorted (numbers, then
+strings, then `false` and `true`), so the same value always encodes the same way, which signatures need. `-0` is
+written as `0`. It refuses functions, tables as keys, tables which contain themselves, and nesting deeper than 64.
+Decoding checks everything, including the depth, so bytes from someone else can't crash or overflow it. Plain
+connections can carry tables which contain themselves; secure ones can't. If it proves too slow, it can move into
+Java (§12).
 
 ### Secure connections
 
@@ -581,36 +585,74 @@ hash, and its key derivation is exactly RFC 5869 HKDF with an empty info string.
 - `Noise_NK_25519_ChaChaPoly_SHA256` when only the server is authenticated and the client already knows its key, from
   DNS or an earlier visit. One round trip; like most HTTPS.
 
-The handshake runs as the first messages of an ordinary connection (§7). Each later message is the codec's encoding,
-sealed with the session key and a counter as the nonce. Because connections deliver each message once and in order, the
-counters stay in step without being sent. Both directions use separate keys, and both sides get forward secrecy: later
-theft of a computer's keys doesn't reveal past traffic.
+The handshake runs as the first messages of an ordinary connection (§7). The first is a table naming the pattern,
+`{ secure = 1, pattern, message }`, and the rest are strings. The server's handshake payload carries its certificate, if
+it has one. Each later message is `{ d = value }`, encoded, and sealed with the session key and a counter as the nonce.
+Because connections deliver each message once and in order, the counters stay in step without being sent. Both
+directions use separate keys, and both sides get forward secrecy: later theft of a computer's keys doesn't reveal past
+traffic. The implementation (`cc.internal.net.noise`) matches the cacophony test vectors for both patterns.
+
+- **Check before saying who you are:** in `XX`, the client checks the server's key (pinned key, certificate or known
+  host, below) after the second message, and only then sends its own identity in the third. A server which fails the
+  check never learns who tried to connect.
+- **Anything wrong ends the connection:** a message which doesn't decrypt was changed, replayed or reordered. Nothing
+  after it can be trusted, so the connection is aborted with "Message was tampered with". Connections are reliable
+  underneath, so this only happens when someone interferes.
+- **Closing is authenticated:** `close` first sends an encrypted `{ close = true }`. A connection which ends without one
+  was cut short (say, by a forged F), and the receiver gets "Connection closed unexpectedly" rather than a clean end.
+  Once the marker has arrived, whatever happens to the connection afterwards is a clean end.
+- **Anonymous clients:** `NK` clients don't say who they are, so servers refuse them unless they're listening with
+  `anonymous = true`. A server which needs to know its clients, like `rshd`, can't forget to check.
+- **Handshakes in `accept`:** the server's half of the handshake runs inside `accept`, so a client which stalls holds up
+  others for up to 5 seconds. Handshakes which fail are logged and skipped.
 
 The handshake's steps that use a computer's long-term key call `enclave.exchange`, so that key never leaves the
 enclave. Ephemeral keys are made with `crypto.generateKeyPair` and thrown away after the handshake.
 
 Secure connections offer the same methods as plain ones, so programs switch by calling `net.secure.connect` instead of
-`net.tcp.connect`.
+`net.tcp.connect`. They add `getPeerKey()` (hexadecimal), `getPeerName()` (from a certificate) and `getTrust()`:
+`"pinned"`, `"certificate"`, `"known"` or `"new"`. `net.stream` works on both.
 
 ### Identities and trust
 
-- **Keys:** each computer has an X25519 key for Noise (`net.identity`) and an Ed25519 key for signing (`net.signing`).
-  Both are generated in its enclave on first use.
+- **Keys:** each computer has an X25519 key for Noise (`net.identity`), generated in its enclave on first use. A
+  computer which acts as a certificate authority also has an Ed25519 key (`net.authority`).
+- **The order of checks:** a key the program pinned (`options.key`) must match. Otherwise, a certificate from a trusted
+  authority for the name asked for is enough. Otherwise trust on first use applies (unless the program asked for
+  `trust = "certificate"`).
 - **Trust on first use:** `/.net/known_hosts` remembers the key each name had the first time, and a changed key is a
-  hard error, as in SSH. This needs no infrastructure.
-- **Certificates:** a certificate is `{name, key, expires, issuer}` signed with Ed25519. Computers trust the certificate
-  authorities listed in `/.net/trust`, and DNS `KEY` records can carry certificates. This suits servers where an admin
-  or a player-run authority vouches for important services such as banks.
+  hard error, as in SSH. This needs no infrastructure. Its weakness is the first connection: someone pretending to be
+  the server then goes unnoticed, and could, say, learn the password `rsh` sends. `rsh` shows the fingerprint on a first
+  connection for that reason.
+- **Certificates:** a certificate is `{v, name, key, expires, issuer, signature}`. The Ed25519 signature covers the
+  other fields, encoded after a fixed prefix. Verifying checks that the issuer is trusted, the signature, that the key
+  is the one the server proved it has in the handshake (or any certificate would vouch for anyone), the name, and the
+  expiry (real time). Computers trust the authorities listed in `/.net/trust`, and a server offers the certificate in
+  `/.net/certificate`. The `netkeys` program makes authorities, issues and installs certificates, and edits the lists.
+  DNS `KEY` records carrying certificates are left for later.
 - **Signed routing and DHCP:** routing updates can carry an HMAC with a shared key. DHCP isn't authenticated, as on real
   networks, but a computer that only trusts authenticated services gains little by being given a fake gateway.
 
 ### Secure datagrams and encrypted links
 
-- **Datagrams** to a known peer can be sealed with a key from an earlier handshake. Each carries an explicit counter,
-  and a 64-entry window rejects replays.
-- **Wireless interfaces** can have a pre-shared passphrase (`net.<interface>.psk`). Frame bodies are then sealed with a
-  key derived with PBKDF2, with the sender ID and a counter as the nonce. Like WPA, this keeps outsiders off a base's
-  wireless network. It has no forward secrecy, so sensitive traffic should still use secure connections.
+- **Datagrams** to a known peer could be sealed with a key from an earlier handshake, with an explicit counter and a
+  window which rejects replays. This is left for later.
+- **Encrypted links:** any interface can have a pre-shared passphrase (`net.<interface>.psk`, set with `ifconfig
+  <interface> psk <passphrase>` or `net.setPassphrase`). The key is derived with PBKDF2 (4096 iterations, a fixed salt).
+  Every frame then becomes `{ type = "sealed", body = { counter, data } }`. `data` holds the real type, body and
+  forwarded flag, sealed with ChaCha20-Poly1305. The nonce is the sender's ID and the counter, and the sender, receiver
+  and counter are authenticated too. Neighbour discovery is sealed like everything else, and the key is set before the
+  address, so even the first announcement is. Frames which aren't sealed with the key are dropped, as are sealed frames
+  on an interface without one.
+  - **Counters come from real time:** `os.epoch("utc")` in milliseconds, times 1024. They keep growing across
+    restarts, so a nonce is never reused. Every computer on a server shares that clock, so frames more than a minute
+    from now are refused. Receivers only remember each sender's recent frames (the last two seconds' worth, so frames
+    can arrive a little out of order) to refuse replays. A sender forgotten for lack of room can't have its old frames
+    replayed, as they're too old by then.
+  - **Failing closed:** an interface with a passphrase but no crypto API sends and accepts nothing, rather than sending
+    in the clear.
+  - **Limits:** like WPA, this keeps outsiders off a base's network, but has no forward secrecy, and everyone with the
+    passphrase can read everything. Sensitive traffic should still use secure connections.
 - **Cellular** radio links are encrypted with per-session keys from the attach procedure (§11).
 
 ## 10. The Lua API, settings and tools
@@ -667,7 +709,7 @@ handle the events themselves:
 | `net.hostname` | The computer's label, or `computer-<id>` | This computer's name, registered with DHCP and `.local` |
 | `net.<interface>.address` | `"dhcp"` for wired interfaces, `"none"` for wireless and ender ones, so idle radios stay quiet | `"dhcp"`, `"none"`, or a static address such as `"10.4.0.1/24"` |
 | `net.<interface>.band` | `"high"` | Band for a wireless interface |
-| `net.<interface>.psk` | none | Passphrase for an encrypted wireless link |
+| `net.<interface>.psk` | none | Passphrase for an encrypted link (any kind of interface) |
 | `net.gateway`, `net.dns`, `net.domain` | from DHCP | Static network settings |
 | `net.routes` | `{}` | Static routes |
 | `net.hosts` | `{}` | Local names, like `/etc/hosts` |
@@ -690,7 +732,9 @@ handle the events themselves:
 | `dhcpd`, `dnsd` | DHCP and DNS servers |
 | `nc` | Send and receive datagrams or connection messages from the shell |
 | `ncp` | Copy files over a connection |
-| `rsh` | Remote shell over a secure connection, with the remote terminal redirected |
+| `rsh` | Remote shell over a secure connection, with the remote terminal redirected, or one command |
+| `rshd` | Remote shell server, with the computers allowed in by key, or by a password which then remembers them |
+| `netkeys` | This computer's key and fingerprint, known hosts, certificate authorities and certificates |
 | `chat` | A replacement for `rednet/chat` |
 
 The API lives in `rom/apis/net.lua`, its internals in `rom/modules/main/cc/internal/net/`, address helpers in the
@@ -1107,6 +1151,17 @@ Each phase is usable on its own.
   `net.host` and `net.lookup`, the `dnsd` server) and `nslookup`. The logic is in `cc.internal.net.dhcp` and
   `cc.internal.net.dns`, tested on virtual networks, and two game tests show computers finding each other with no setup,
   and through DHCP and DNS servers.
+- **Phase 5 is done:** the codec (`cc.net.codec`), Noise `XX` and `NK` handshakes (`cc.internal.net.noise`, checked
+  against the cacophony test vectors), secure connections (`net.secure`, `cc.internal.net.secure`) with enclave keys,
+  known hosts and pinned keys, certificates (`cc.internal.net.certificate`), encrypted links (`cc.internal.net.link`),
+  and the `rsh`, `rshd` and `netkeys` programs.
+  - **Tests:** specs check that changed, replayed and cut-short messages end a secure connection; that the client
+    checks the server before saying who it is; and that encrypted links refuse frames which are replayed, changed, too
+    old, or from computers without the passphrase. A game test runs a command with `rsh` through a router whose radio
+    link is encrypted.
+  - **Not automated:** `rshd`'s password prompt and interactive `rsh` sessions.
+  - **Left for later:** secure datagrams, DNS `KEY` records, client certificates, and more than one `rshd` session at a
+    time.
 - **Phase 4 is done:** connections (`net.tcp`, in `cc.internal.net.tcp`), byte streams (`net.stream`, in
   `cc.internal.net.stream`), and the `nc` and `ncp` programs. A spec carries a megabyte across three radio hops which
   lose a tenth of their frames and reorder them, in about 15 seconds. Others cover ordering, flow control with a lost

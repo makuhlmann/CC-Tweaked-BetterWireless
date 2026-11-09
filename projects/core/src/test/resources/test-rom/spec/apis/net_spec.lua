@@ -43,6 +43,86 @@ describe("The net library", function()
         end)
     end)
 
+    describe("net.secure", function()
+        -- The enclave is part of the mod, not the computer, so pretend to have one.
+        local function with_enclave(fn)
+            local keys, base = {}, "\9" .. ("\0"):rep(31)
+            _G.enclave = {
+                publicKey = function(name) return keys[name] and keys[name].public end,
+                generate = function(name)
+                    local private = crypto.generateKeyPair("x25519")
+                    keys[name] = { private = private, public = crypto.exchange(private, base) }
+                    return keys[name].public
+                end,
+                exchange = function(name, public) return crypto.exchange(keys[name].private, public) end,
+            }
+            local ok, err = pcall(fn)
+            _G.enclave = nil
+            fs.delete("/.net")
+            if not ok then error(err, 0) end
+        end
+
+        -- Connect, with the listener accepting at the same time. When the client is expected to give up, the listener
+        -- only waits a moment, rather than for the next client.
+        local function connect(listener, options, accept_timeout)
+            local client, server, err
+            parallel.waitForAll(
+                function() client, err = net.secure.connect("127.0.0.1", 4400, options) end,
+                function() server = listener:accept(accept_timeout or 5) end
+            )
+            return client, server, err
+        end
+
+        it("connects securely to this computer, and remembers its key", function()
+            with_enclave(function()
+                local listener = assert(net.secure.listen(4400))
+                local client, server = connect(listener)
+                expect(client:getTrust()):eq("new")
+                expect(client:getPeerKey()):eq(net.getIdentity())
+                expect(server:getPeerKey()):eq(net.getIdentity())
+                expect(net.knownHosts()["127.0.0.1"]):eq(net.getIdentity())
+                expect(#net.fingerprint(net.getIdentity())):eq(24)
+
+                client:send({ hello = "secure" })
+                expect(server:receive(1)):same { hello = "secure" }
+                local out = net.stream(server)
+                out.write(("secret "):rep(5000))
+                out.close()
+                expect(net.stream(client).readAll()):eq(("secret "):rep(5000))
+                client:close()
+
+                -- The second time, it's known.
+                client = connect(listener)
+                expect(client:getTrust()):eq("known")
+                client:abort()
+
+                -- A pinned key must match.
+                local _, _, err = connect(listener, { key = ("00"):rep(32) }, 0.5)
+                expect(err):eq("The server's key isn't the one given")
+                client = connect(listener, { key = net.getIdentity() })
+                expect(client:getTrust()):eq("pinned")
+                client:abort()
+
+                -- A changed key is refused, until it's forgotten.
+                local file = fs.open("/.net/known_hosts", "w")
+                file.write(textutils.serialise({ ["127.0.0.1"] = ("ab"):rep(32) }))
+                file.close()
+                _, _, err = connect(listener, nil, 0.5)
+                expect(err:find("The key for 127.0.0.1 has changed!", 1, true)):eq(1)
+                expect(net.forgetHost("127.0.0.1")):eq(true)
+                client = connect(listener)
+                expect(client:getTrust()):eq("new")
+                client:abort()
+
+                listener:close()
+            end)
+        end)
+
+        it("needs the enclave", function()
+            expect.error(net.secure.listen, 4401):eq("Secure connections need the crypto and enclave APIs, which are turned off on this server")
+        end)
+    end)
+
     describe("net.ping", function()
         it("validates its arguments", function()
             expect.error(net.ping, nil):eq("bad argument #1 (string expected, got nil)")

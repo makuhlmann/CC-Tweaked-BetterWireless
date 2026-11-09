@@ -53,4 +53,11 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 4)
     fun Net_connection(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * A computer runs a command on another with rsh, over a secure connection, through a router whose radio link is
+     * encrypted with a passphrase.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 4)
+    fun Net_secure(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

@@ -1,0 +1,13 @@
+netkeys shows this computer's key for secure connections, and manages the keys of other computers and certificates.
+
+Each computer has a key, kept in its enclave so it can't be copied. Computers remember the keys of the computers they connect to, and refuse to connect if one changes. A certificate authority can vouch for a computer's name instead: computers which trust the authority accept the certificate.
+
+ex:
+"netkeys" shows this computer's key and its fingerprint.
+"netkeys hosts" lists the computers whose keys this one knows.
+"netkeys forget bank.home" forgets the key of bank.home, after it changed for a good reason.
+"netkeys export my.key" writes this computer's key to a file, to send to an authority.
+"netkeys authority ca.key" makes this computer an authority, and writes its key to a file.
+"netkeys trust ca.key" trusts certificates from that authority.
+"netkeys sign bank.home bank.key 365" issues a certificate for bank.home, valid for a year, written to bank.home.cert.
+"netkeys install bank.home.cert" makes this computer offer the certificate to computers connecting to it.

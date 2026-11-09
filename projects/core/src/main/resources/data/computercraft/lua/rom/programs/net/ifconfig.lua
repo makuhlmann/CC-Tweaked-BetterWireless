@@ -14,6 +14,7 @@ local function usage()
     print(name .. " <interface> dhcp")
     print(name .. " <interface> none")
     print(name .. " <interface> band <low|high>")
+    print(name .. " <interface> psk <passphrase|none>")
 end
 
 local function heading(text)
@@ -97,6 +98,19 @@ if value == "band" then
 
     save("net." .. name .. ".band", band ~= "high" and band or nil)
     print(("%s will use the %s band when the computer restarts."):format(name, band))
+    return
+end
+
+if value == "psk" then
+    local passphrase = table.concat(args, " ", 3)
+    if passphrase == "" then
+        usage()
+        return
+    end
+    if passphrase == "none" then passphrase = nil end
+    save("net." .. name .. ".psk", passphrase)
+    if find(name) then net.setPassphrase(name, passphrase) end
+    print(passphrase and (name .. " is encrypted. Every computer on it needs the same passphrase.") or (name .. " is no longer encrypted."))
     return
 end
 

@@ -1,0 +1,7 @@
+rsh opens a shell on another computer which is running "rshd", over a secure connection. What you type goes to the other computer, and its screen is drawn on yours. Ctrl+T goes to the other computer too: type "exit" to leave. With a command, rsh runs just that, and shows its output.
+
+The first time rsh connects to a computer, it shows the fingerprint of its key, and remembers it. If the key ever changes, rsh refuses to connect, as someone may be pretending to be that computer. If the other computer asks for a password, a correct one makes it remember this computer, so it needn't ask again.
+
+ex:
+"rsh base.home" opens a shell on base.home.
+"rsh base.home ls" lists the files on base.home.
