@@ -482,8 +482,8 @@ computer means losing the key, and keys can't be cloned.
 
 | Function | Result |
 |---|---|
-| `enclave.generate(name, kind)` | Creates a key of kind `"x25519"`, `"ed25519"` or `"secret"` (32 random bytes). Returns the public key, or nothing for a secret. Fails if the name is taken. |
-| `enclave.import(name, kind, key)` | Stores a key a program already has, such as a passphrase-derived one, so its copy can be deleted |
+| `enclave.generate(name, kind [, options])` | Creates a key of kind `"x25519"`, `"ed25519"` or `"secret"` (32 random bytes). Returns the public key, or nothing for a secret. Fails if the name is taken. `options.requirePin` protects it with the PIN (below). |
+| `enclave.import(name, kind, key [, options])` | Stores a key a program already has, such as a passphrase-derived one, so its copy can be deleted. Takes the same options. |
 | `enclave.publicKey(name)` | The public key, or `nil` |
 | `enclave.list()` | A table of names to kinds |
 | `enclave.delete(name)` | Removes a key |
@@ -491,6 +491,9 @@ computer means losing the key, and keys can't be cloned.
 | `enclave.sign(name, data)` | Ed25519 signature |
 | `enclave.hmac(name, data)` | HMAC-SHA256 with a stored secret |
 | `enclave.seal(name, nonce, plaintext [, aad])`, `enclave.open(...)` | ChaCha20-Poly1305 with a stored secret, for example to encrypt files on a floppy disk so they're only readable on this computer |
+| `enclave.setPin(newPin [, oldPin])` | Sets, changes or (with `nil`) removes the PIN |
+| `enclave.unlock(pin)`, `enclave.lock()` | Unlocks or locks the PIN-protected keys |
+| `enclave.status()` | Whether a PIN is set, whether it's unlocked, and any lockout time remaining |
 
 - **Storage:** keys are kept on the server, outside the computer's file system, in
   `computercraft/enclave/<computer id>.dat` in the world save. Nothing in Lua can reach that file: not `fs`, not a disk
@@ -501,9 +504,22 @@ computer means losing the key, and keys can't be cloned.
   enclave, and server operators can read the file. Both are out of scope.
 - **Limits:** up to 32 keys per computer, with names of up to 64 characters.
 - **Speed:** keys are loaded once and kept as JDK key objects, so an operation costs the same as with `crypto`.
-- **Optional PIN:** with `enclave.setPin`, keys can't be used after each boot until `enclave.unlock(pin)` is called.
-  Three wrong guesses lock the enclave for a minute, doubling each time. A stolen phone with a PIN is useless, like a
-  phone with a locked SIM.
+
+**PIN protection** is optional, off by default, and chosen per key, so programs that need more security can ask for it
+while others, like cell towers that must come back by themselves after a restart, don't:
+
+- **Flag:** a key generated or imported with `requirePin` carries that flag for life. A program can't remove it; the
+  only way is to delete the key and make a new one, which for a SIM means activating again. Otherwise malware could
+  simply clear it.
+- **No PIN, no use:** a flagged key can't be used while no PIN is set. A program that asks for protection can't be
+  undermined by a user who never sets one.
+- **Unlocking:** with a PIN set, flagged keys stay locked after each boot until `enclave.unlock(pin)`. Keys without
+  the flag always work.
+- **Wrong guesses:** three wrong PINs lock the enclave for a minute, doubling each time. The lockout is stored
+  with the keys, so rebooting doesn't reset it.
+- **Storage:** the PIN is stored as a salted PBKDF2 hash in the enclave file, never readable from Lua.
+
+A stolen phone whose SIM key needs the PIN is useless to the thief, like a phone with a locked SIM.
 
 The stack keeps its identity keys here (§9 Identities), and the cellular SIM is an enclave key (§11).
 
@@ -714,7 +730,7 @@ Activation is part of the cellular protocol, alongside attaching.
 
    The administrator passes the code on however they like: in chat, or in a book.
 2. **The player runs `cell activate`** on the phone. It lists the networks it can hear; the player picks one and types
-   the code. The phone creates its SIM key in its enclave.
+   the code. The phone creates its SIM key in its enclave, with the PIN flag if the player wants a SIM PIN (§9).
 3. **The phone sends `activate {tag, handshake}`** to a cell of that network, which relays it to the controller. `tag`
    is the code's first group. The handshake is `Noise_XXpsk3_25519_ChaChaPoly_SHA256`, with a pre-shared key derived
    from the code's secret. Both sides send their long-term public keys: the phone's SIM key, and the operator's key.
@@ -928,14 +944,18 @@ an ender pearl they make cables, relays and towers pointless.
 **The Nether's ceiling.** The model assumes open sky. In the Nether, the heightmaps report the bedrock roof everywhere,
 so every unloaded column looks like solid rock, every antenna looks buried, and there's no path over the terrain.
 
-- Loaded chunks are fine, because the whole ray is walked through real blocks.
-- For unloaded chunks, either reconstruct open space from Distant Horizons' data (it keeps every vertical segment of a
-  column, not just the top), or treat unknown Nether space as partly open.
-- In dimensions with a ceiling, the path over the terrain is disabled.
-- A corresponding position inside netherrack is like a buried antenna. It could be moved to the nearest open space
-  within a few blocks, as portals are.
+- **Loaded chunks are fine,** because the whole ray is walked through real blocks.
+- **Unloaded Nether space** between the floor and the roof is treated as mostly open, with a fixed loss: rock with a
+  small fill fraction (`nether_unknown_fill`, 2% by default). That's about 0.15 dB per block on the low band, so 100
+  blocks of unknown Nether cost about 15 dB, and it scales with frequency like every other material. It's a magical
+  hell dimension, and physics can bend a little. Reconstructing the caverns from Distant Horizons' data would be more
+  accurate, but isn't worth the code.
+- **Above the roof** is open ground, as in the Overworld.
+- **No path over the terrain** in dimensions with a ceiling. There's nothing to go over.
+- **Buried positions:** a corresponding position inside netherrack is like a buried antenna. It could be moved to the
+  nearest open space within a few blocks, as portals are.
 
-This needs measuring in a real Nether before choosing.
+The default fill fraction needs tuning in play.
 
 ### Later
 
@@ -978,7 +998,7 @@ Each phase is usable on its own.
 
 | Phase | Delivers | Done when |
 |---|---|---|
-| 0 | `crypto` and `enclave` APIs in Java | All RFC vectors pass. Enclave keys work but can't be read back. |
+| 0 | `crypto` and `enclave` APIs in Java, including PIN-protected keys | All RFC vectors pass. Enclave keys work but can't be read back. PIN-protected keys refuse to work until unlocked. |
 | 1 | `net` API and background process (as a datapack), link layer, neighbour discovery, static addresses, ICMP, `ifconfig`, `ping`, `netdump`. In the mod: `modem.isInterdimensional()`, wireless size limit. | Two computers ping each other over wired and wireless modems |
 | 2 | Datagrams and sockets, DHCP client and server, link-local addresses, DNS resolver and server, `.local` names | A new computer gets an address and resolves names with no setup |
 | 3 | Forwarding, static routes, distance-vector routing, firewall rules, `route`, `traceroute` | Ping across three routers. When one is broken, traffic finds another path. |
@@ -1004,8 +1024,7 @@ Each phase is usable on its own.
 | 9 | SIM activation | Over the air, anywhere in range of the network, with a code from the network's administrator (§11) |
 | 10 | Phone power | Pocket computers and turtles transmit 10 dB weaker and receive 7 dB worse than placed computers (§12) |
 | 11 | Ender heights | Y is kept but clamped per dimension: 0–128 in the Nether and the End (§12) |
+| 12 | Unloaded Nether terrain | A fixed loss per block, tunable; the Nether can bend physics a little (§12) |
+| 13 | Enclave PIN | Optional, off by default, and set per key with a flag that can't be removed. Part of phase 0. (§9) |
 
-Still open:
-
-1. **Unloaded Nether terrain** for ender links: Distant Horizons data, or a simpler assumption (§12)?
-2. **Enclave PIN:** worth having in the first version, or later?
+Nothing is open. Values such as the Nether fill fraction and the phone power offsets will need tuning in play.
