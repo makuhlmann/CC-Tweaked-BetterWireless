@@ -855,12 +855,12 @@ lose another 10 dB on top (below).
 A tall tower doesn't change this, because path loss is the same in both directions. The two-ray model uses the product
 of both antenna heights, and the diffraction and block losses don't depend on direction either (a unit test checks
 this). So height helps a phone's uplink exactly as much as its downlink, and the uplink always runs out first. With a
-10 dB gap, over the ground, the outer 44% of the area where a phone hears a tower is one-way.
+10 dB gap, over the ground, a phone stops being heard at 56% of the distance at which it can still hear the tower.
 
 Real networks close most of that gap at the tower, with directional antennas, better receivers and several receive
 antennas. The proposal (§15) does the equivalent: phones also get a weaker receiver, for example −10 dB transmitting and
-−7 dB receiving relative to placed computers. Coverage then still ends a little earlier for the uplink, about the outer
-16% of the area, but phones no longer show strong signal where they can't be heard. Fixed links between placed
+−7 dB receiving relative to placed computers. The uplink then still runs out a little earlier, at 84% of the
+distance, but phones no longer show a usable signal far beyond where they can be heard. Fixed links between placed
 computers are unaffected.
 
 Path loss doesn't depend on transmit or receive offsets, so neither costs any extra propagation work. Links are evaluated with the
