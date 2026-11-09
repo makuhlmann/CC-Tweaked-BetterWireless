@@ -395,6 +395,23 @@ describe("cc.internal.net.tcp", function()
         expect(server.error):eq("Connection reset")
     end)
 
+    it("clears a half open connection whose other side gave up", function()
+        local net, a, b = pair()
+        local listener = assert(tcp.listen(b, 80))
+        local client = tcp.connect(a, ip("10.0.0.2"), 80)
+        -- The server's answer is lost, and the client gives up waiting.
+        net.remove(a)
+        net.run()
+        client:abort()
+        table.insert(net.stacks, a)
+        expect(listener.pending):eq(1)
+
+        -- The server answers again, and is told there's no such connection.
+        net.advance(3)
+        expect(next(b.tcp.connections)):eq(nil)
+        expect(listener.pending):eq(0)
+    end)
+
     it("fails connections when their address goes", function()
         local net, a, b = pair()
         tcp.listen(b, 80)

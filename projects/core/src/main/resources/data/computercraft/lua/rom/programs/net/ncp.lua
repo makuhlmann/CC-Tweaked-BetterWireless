@@ -60,9 +60,13 @@ local function receive_files(directory)
             connection:send({ ok = false, error = "Not enough space for " .. name })
             return "Not enough space for " .. name
         end
+        local file, open_err = fs.open(path, "wb")
+        if not file then
+            connection:send({ ok = false, error = open_err or ("Cannot write " .. name) })
+            return open_err or ("Cannot write " .. name)
+        end
         connection:send({ ok = true })
 
-        local file = fs.open(path, "wb")
         local input, size = net.stream(connection), 0
         local ok, read_err = pcall(function()
             while true do

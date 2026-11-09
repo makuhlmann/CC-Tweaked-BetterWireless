@@ -529,9 +529,7 @@ end
 @treturn[2] string Why not: `"Full"` if the program should wait for `net_sent` and try again, or an error.
 ]]
 function Connection:send(value)
-    local ok, err = check_message(value)
-    if not ok then return nil, err end
-    -- Still opening: wait until it's open.
+    -- Still opening, or no room: wait. Only then check the message, as a program which is waiting tries again often.
     if self.state == "syn_sent" or self.state == "syn_received" then
         self.waiting_to_send = true
         return nil, "Full"
@@ -541,6 +539,8 @@ function Connection:send(value)
         self.waiting_to_send = true
         return nil, "Full"
     end
+    local ok, err = check_message(value)
+    if not ok then return nil, err end
 
     self.queue[#self.queue + 1] = { data = value }
     self:try_send()
@@ -651,14 +651,12 @@ end
 -- rate-limited like ICMP errors, so a flood of segments doesn't make us flood back.
 local function reset(stack, packet, segment, flags)
     if flags.R or not stack:may_report(packet.src) then return end
-    local body = { sp = segment.dp, dp = segment.sp, flags = "R" }
-    if flags.A then
-        body.seq = segment.ack
-    else
-        local length = (flags.S and 1 or 0) + (flags.F and 1 or 0) + (segment.data ~= nil and 1 or 0)
-        body.flags, body.seq, body.ack, body.win = "RA", 0, segment.seq + length, 0
-    end
-    stack:send(packet.src, "tcp", body, { src = packet.dst })
+    -- The reset acknowledges the segment, so a connection still opening (which only believes resets acknowledging its
+    -- open) is reset too: say, one whose other side gave up waiting.
+    local length = (flags.S and 1 or 0) + (flags.F and 1 or 0) + (segment.data ~= nil and 1 or 0)
+    stack:send(packet.src, "tcp", {
+        sp = segment.dp, dp = segment.sp, flags = "RA", seq = flags.A and segment.ack or 0, ack = segment.seq + length, win = 0,
+    }, { src = packet.dst })
 end
 
 local function parse_flags(text)
