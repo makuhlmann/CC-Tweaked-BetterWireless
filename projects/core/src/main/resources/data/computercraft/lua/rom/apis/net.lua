@@ -478,7 +478,8 @@ end
 local Socket = {}
 Socket.__index = Socket
 
---[[- Send a datagram from this socket.
+--[[- Send a datagram from this socket. Sending to a name waits while the name is looked up, so do that in a program,
+not in something which must not wait.
 
 @tparam string target The name or address to send to. The broadcast address (`255.255.255.255`) reaches every
 computer on the local network.

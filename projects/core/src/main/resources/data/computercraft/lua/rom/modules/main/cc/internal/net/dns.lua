@@ -159,10 +159,14 @@ local function resolve(stack, name, options, callback)
     if cached and cached.expires > stack.clock() then return callback(cached.address) end
 
     if name == options.hostname or name == options.hostname .. ".local" then
-        for _, interface in pairs(stack.interfaces) do
-            if interface.address and not interface.duplicate then return callback(interface.address) end
+        -- With several interfaces, always pick the same one.
+        local names = {}
+        for interface_name, interface in pairs(stack.interfaces) do
+            if interface.address and not interface.duplicate then names[#names + 1] = interface_name end
         end
-        return callback(address.parse("127.0.0.1"))
+        table.sort(names)
+        if names[1] then return callback(stack.interfaces[names[1]].address) end
+        return callback((address.parse("127.0.0.1")))
     end
 
     -- The names to try, in order: { name, how }.

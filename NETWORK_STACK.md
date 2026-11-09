@@ -406,7 +406,7 @@ it keeps its leases in `/.dhcpd/<interface>.leases`, so they survive restarts.
   address it had before when it can, which works much like a reservation. Before offering a new address, the server
   pings it in case a computer with a fixed address is using it. The settings `dhcpd.lease`, `dhcpd.dns`,
   `dhcpd.domain` and `dhcpd.gateway` are passed on to clients.
-- **Relays:** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
+- **Relays (phase 3):** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
   adding the address it received them on, so the server knows which pool to use. One server can cover a whole base.
 - **No server:** after three unanswered attempts, about six seconds, the client takes a link-local address (§3). It
   tries DHCP again after 15 seconds, then less often, doubling up to every five minutes, so a server started later is
@@ -420,11 +420,11 @@ DNS also runs over datagrams, on port 53.
   agree among themselves who runs which top-level name.
 - **Record types:**
   - `A`: name to address
-  - `PTR`: address to name
+  - `PTR` (later): address to name
   - `SRV`: service to host and port. It replaces `rednet.host` and `rednet.lookup`: `chat` maps to every computer
     offering chat.
-  - `KEY`: a host's public key or certificate (§9)
-  - `TXT`: free text
+  - `KEY` (later): a host's public key or certificate (§9)
+  - `TXT` (later): free text
 - **Queries and answers:** `{id, name, type}` is answered with `{id, code, records = {{name, type, value, ttl}, ...}}`.
 - **Server (`dnsd`):** answers for one zone, from `/zones/<zone>.txt`, which has one `name address` pair per line (`@`
   is the zone itself). The file is read for every question, so edits apply at once. Computers which got their address
@@ -584,7 +584,8 @@ Secure connections offer the same methods as plain ones, so programs switch by c
 ### API sketch
 
 ```lua
--- Addresses and names (phase 1 also has net.setAddress, net.getAddress, net.neighbours, net.capture and net.getErrors)
+-- Addresses and names (there are also net.setAddress, net.getAddress, net.getHostname, net.neighbours, net.host,
+-- net.unhost, net.lookup, net.capture and net.getErrors)
 net.interfaces()                      --> { { name = "top", band = "high", address = "10.4.0.17", prefix = 24, ... } }
 net.resolve("bank.spawn")             --> "10.4.0.5"  (or nil, "not found")
 net.ping("bank.spawn", 2)             --> 0.1 (seconds), or nil, "timed out"
