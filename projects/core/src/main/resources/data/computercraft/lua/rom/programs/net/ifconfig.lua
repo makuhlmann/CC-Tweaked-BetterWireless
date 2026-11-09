@@ -102,7 +102,7 @@ end
 
 local setting, text
 if value == "dhcp" then
-    setting, text = nil, "dhcp"
+    setting, text = "dhcp", "dhcp"
 elseif value == "none" then
     setting, text = "none", nil
 else

@@ -1,4 +1,4 @@
-ifconfig shows this computer's network interfaces and hostname, and sets how interfaces get their addresses. Every modem is an interface. By default, interfaces ask a DHCP server for an address, and give themselves a link-local one (169.254.x.y) if there isn't a server. Settings are saved, so they apply when the computer starts.
+ifconfig shows this computer's network interfaces and hostname, and sets how interfaces get their addresses. Every modem is an interface. By default, wired interfaces ask a DHCP server for an address, and give themselves a link-local one (169.254.x.y) if there isn't a server. Wireless and ender interfaces have no address until you give them one, so idle computers don't flood the airwaves. Settings are saved, so they apply when the computer starts.
 
 ex:
 "ifconfig" shows every interface, its address, and how much traffic it has seen.

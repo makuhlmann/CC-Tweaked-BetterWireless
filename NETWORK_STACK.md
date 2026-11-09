@@ -630,7 +630,7 @@ handle the events themselves:
 |---|---|---|
 | `net.enabled` | `true` | Run the stack at all |
 | `net.hostname` | The computer's label, or `computer-<id>` | This computer's name, registered with DHCP and `.local` |
-| `net.<interface>.address` | `"dhcp"` | `"dhcp"`, `"off"`, or a static address such as `"10.4.0.1/24"` |
+| `net.<interface>.address` | `"dhcp"` for wired interfaces, `"none"` for wireless and ender ones, so idle radios stay quiet | `"dhcp"`, `"none"`, or a static address such as `"10.4.0.1/24"` |
 | `net.<interface>.band` | `"high"` | Band for a wireless interface |
 | `net.<interface>.psk` | none | Passphrase for an encrypted wireless link |
 | `net.gateway`, `net.dns`, `net.domain` | from DHCP | Static network settings |

@@ -8,8 +8,10 @@ Every modem becomes a network *interface*. Each interface gets an address, such 
 the same network can then reach each other by address or by name. The stack runs in the background on every computer,
 much like [`rednet`].
 
-By default, interfaces ask a DHCP server (the `dhcpd` program) for an address. If there isn't one, a computer gives
-itself a link-local address in `169.254.0.0/16`, so computers on the same link can talk with no setup at all. Fixed
+By default, wired interfaces ask a DHCP server (the `dhcpd` program) for an address. If there isn't one, a computer
+gives itself a link-local address in `169.254.0.0/16`, so computers on the same cable can talk with no setup at all.
+Wireless and ender interfaces have no address until given one, so idle computers don't fill the airwaves with DHCP
+requests: set them to `"dhcp"` or an address to use them. Fixed
 addresses are set with the `ifconfig` program, or with [`net.setAddress`]. `ifconfig` saves them in the settings
 `net.<interface>.address` (an address such as `"10.0.0.1/24"`, `"dhcp"` or `"none"`).
 
@@ -120,9 +122,15 @@ local function stop_dhcp(name, release)
     if client then client:stop(release) end
 end
 
--- Apply an address setting to an interface: "dhcp" (or nothing), "none", or an address.
+-- Apply an address setting to an interface: "dhcp", "none", or an address. Without a setting, wired interfaces use
+-- DHCP, and radios (wireless and ender modems) stay quiet.
 local function apply(name, mode)
-    if mode == nil or mode == "dhcp" then
+    if mode == nil then
+        local interface = stack.interfaces[name]
+        mode = interface and interface.kind == "wired" and "dhcp" or "none"
+    end
+
+    if mode == "dhcp" then
         local client = stack.dhcp_clients and stack.dhcp_clients[name]
         if not client then
             stack:set_address(name, nil)
