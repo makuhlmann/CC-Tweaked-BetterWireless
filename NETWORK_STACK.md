@@ -701,15 +701,39 @@ subscription.
 - **The phone** keeps public information in `/.net/sim`: the operator's name and public keys, and its own subscriber ID
   and number.
 
-**Provisioning in a shop.** Pocket computers have no disk drive, so this happens over the air:
+### Activation
 
-1. The phone's setup program generates the SIM key and sends its public key to the shop's computer over a short-range
-   high-band link.
-2. Both screens show a six-digit code derived from that key. The player checks they match, as in Bluetooth pairing.
-   That proves the shop received this phone's key and not an attacker's.
-3. The shop registers the key and sends back the operator's information.
+Phones are activated over the air, anywhere in range of the network, with a code from the network's administrator.
+Activation is part of the cellular protocol, alongside attaching.
 
-No secret ever moves, so there's nothing to intercept.
+1. **The administrator creates a subscription** on the core computer (`cellctl add`). It returns an activation code
+   such as `7Q2M-K4XD-9PRB-T6WN-HJ3C`, in Crockford base32 so there are no ambiguous characters.
+   - The first group identifies the pending subscription.
+   - The other four groups, 80 random bits, are the secret.
+   - The code works once and expires after a day.
+
+   The administrator passes the code on however they like: in chat, or in a book.
+2. **The player runs `cell activate`** on the phone. It lists the networks it can hear; the player picks one and types
+   the code. The phone creates its SIM key in its enclave.
+3. **The phone sends `activate {tag, handshake}`** to a cell of that network, which relays it to the controller. `tag`
+   is the code's first group. The handshake is `Noise_XXpsk3_25519_ChaChaPoly_SHA256`, with a pre-shared key derived
+   from the code's secret. Both sides send their long-term public keys: the phone's SIM key, and the operator's key.
+   The handshake only succeeds if both knew the code.
+4. **The controller records** the phone's SIM public key in the subscription and marks the code as used. It then sends
+   an encrypted `activate_accept` with the subscriber ID, phone number and the operator's public keys.
+5. **The phone trusts the operator's keys** only once that encrypted reply arrives, since only someone who knew the
+   code could have produced it. It stores them in `/.net/sim` and attaches as usual.
+
+Only the code is secret, and it's never sent:
+
+- **Rogue towers:** an unactivated phone can't check beacon signatures yet, so a rogue tower can pose as the network.
+  It still can't complete the handshake without the code, so the phone just gives up.
+- **Guessing offline:** Noise's pre-shared keys aren't a password-based key exchange. A rogue tower that runs the
+  handshake with a phone can test guesses at the code offline. That's why the secret is 80 random bits rather than a
+  short PIN: far too many to try.
+- **Guessing online:** the controller cancels a code after a few failed attempts.
+- **Moving to a new phone:** the administrator issues a new code for the same subscription. Activating it replaces the
+  SIM key, and the old phone loses service, as when moving an eSIM.
 
 ### Attaching
 
@@ -828,9 +852,20 @@ Pocket computers and turtles transmit 10 dB weaker than placed computers (config
 a tower that can't hear it, so towers have to be close enough for the phone's uplink, as in real networks. Ender modems
 lose another 10 dB on top (below).
 
-Path loss doesn't depend on transmit power, so this costs no extra propagation work. Links are evaluated with the
-strongest possible transmitter's budget, cached as now, and each sender's offset is subtracted from the signal strength
-when a message is delivered.
+A tall tower doesn't change this, because path loss is the same in both directions. The two-ray model uses the product
+of both antenna heights, and the diffraction and block losses don't depend on direction either (a unit test checks
+this). So height helps a phone's uplink exactly as much as its downlink, and the uplink always runs out first. With a
+10 dB gap, over the ground, the outer 44% of the area where a phone hears a tower is one-way.
+
+Real networks close most of that gap at the tower, with directional antennas, better receivers and several receive
+antennas. The proposal (§15) does the equivalent: phones also get a weaker receiver, for example −10 dB transmitting and
+−7 dB receiving relative to placed computers. Coverage then still ends a little earlier for the uplink, about the outer
+16% of the area, but phones no longer show strong signal where they can't be heard. Fixed links between placed
+computers are unaffected.
+
+Path loss doesn't depend on transmit or receive offsets, so neither costs any extra propagation work. Links are evaluated with the
+strongest possible transmitter's budget, cached as now, and each sender's and receiver's offsets are subtracted from the
+signal strength when a message is delivered.
 
 ### Wireless message size limit
 
@@ -855,9 +890,10 @@ an ender pearl they make cables, relays and towers pointless.
   - Y stays the same, clamped to the dimension's height.
   - From there it propagates through that dimension's terrain like any other signal. A link through the Nether covers
     eight times the Overworld distance, just like Nether travel.
-- **Reciprocal links.** In reverse, an ender modem hears other dimensions at its corresponding position there. So a link
-  between dimensions needs at least one ender modem, and works the same in both directions. A link between two ender
-  modems in different dimensions is evaluated in both dimensions, and the better path counts.
+- **Only ender modems talk across dimensions.** A normal wireless modem never hears another dimension, and an ender
+  modem's signal there only reaches other ender modems. A link between two ender modems in different dimensions can be
+  evaluated in either dimension: from the first modem's corresponding position to the second, or the other way round.
+  Both are evaluated and the better path counts, so links work the same in both directions.
 - **No distance across dimensions.** `modem_message` still reports no distance for messages from another dimension, as
   today, so GPS keeps ignoring them. Distances between dimensions would mix coordinate systems and give wrong
   positions.
@@ -867,9 +903,9 @@ an ender pearl they make cables, relays and towers pointless.
 
 **Keeping it cheap:**
 
-1. **Only where someone listens.** A dimension is only evaluated if it has receivers, and receivers only exist while
-   they're loaded: a player is nearby, or the computer is kept loaded. A dimension nobody is in, with no kept-loaded
-   computers, costs nothing.
+1. **Only where someone listens.** Signals only cross into another dimension if an ender modem there is listening, and
+   modems only listen while they're loaded: a player is nearby, or the computer is kept loaded. Ender modems are rare,
+   so most transmissions never leave their own dimension.
 2. **Reject by distance first.** The lower budget shrinks the maximum range. Receivers beyond it, measured from the
    transmitter's corresponding position, are dropped before any terrain is looked at.
 3. **No chunk loading.** As today, terrain for unloaded chunks comes from cached heights, the world generator, or
@@ -938,7 +974,7 @@ Each phase is usable on its own.
 | 3 | Forwarding, static routes, distance-vector routing, firewall rules, `route`, `traceroute` | Ping across three routers. When one is broken, traffic finds another path. |
 | 4 | Connections, byte streams, `nc`, `ncp` | A 1 MB file crosses a lossy wireless path intact |
 | 5 | Codec, Noise sessions with enclave keys, known hosts, certificates, encrypted wireless links, `rsh` | A remote shell works securely. Tampered or replayed messages are rejected. |
-| 6 | In the mod: transmit power by device. Cellular: system information, SIM provisioning, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
+| 6 | In the mod: transmit power by device. Cellular: system information, activation, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
 | 7 | Move the stack from the datapack into the ROM | Every computer has it with no setup |
 | — | Ender modem rework and cable recipe, at any point | Ender links work across dimensions within the tick budget |
 | Later | Airtime and interference (§12) | |
@@ -954,12 +990,12 @@ Each phase is usable on its own.
 | 5 | Multiplayer | Players agree among themselves on prefixes and top-level names; nothing enforces it |
 | 6 | Crypto | On every computer, kept cheap on CPU, with a server switch. Plus a key enclave (§9). |
 | 7 | Radio realism | Transmit power by device and a wireless size limit now; airtime and interference later |
-| 8 | Ender modems | Detected with `modem.isInterdimensional()`, and reworked into weak radios that reach other dimensions (§12). Cables: 32 per craft. |
+| 8 | Ender modems | Detected with `modem.isInterdimensional()`, and reworked into weak radios. Only ender modems talk across dimensions (§12). Cables: 32 per craft. |
+| 9 | SIM activation | Over the air, anywhere in range of the network, with a code from the network's administrator (§11) |
 
 Still open:
 
-1. **Who hears an ender modem in another dimension?** The design assumes any modem there can, and that ender modems in
-   turn hear other dimensions, so links stay reciprocal. The alternative is that only ender modems talk across
-   dimensions.
+1. **Balancing phones' weaker transmitter (§12).** Should phones also get a weaker receiver, so the gap between
+   hearing a tower and being heard by it stays small, as in real networks?
 2. **Unloaded Nether terrain** for ender links: Distant Horizons data, or a simpler assumption (§12)?
 3. **Enclave PIN:** worth having in the first version, or later?
