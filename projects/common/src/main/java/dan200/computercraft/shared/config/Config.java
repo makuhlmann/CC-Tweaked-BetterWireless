@@ -23,6 +23,7 @@ public final class Config {
     public static boolean radioEnabled = true;
     public static int radioReferenceRange = 1024;
     public static int radioMaxRange = 16384;
+    public static int radioMaxMessageSize = 64 * 1024;
     public static double radioLowBandFrequency = 150;
     public static double radioHighBandFrequency = 2400;
     public static int radioHighBandFirstChannel = 1024;

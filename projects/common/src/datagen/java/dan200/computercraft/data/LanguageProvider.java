@@ -271,6 +271,7 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioEnabled, "Enable radio propagation");
         addConfigEntry(ConfigSpec.radioReferenceRange, "Reference range (flat ground)");
         addConfigEntry(ConfigSpec.radioMaxRange, "Maximum range");
+        addConfigEntry(ConfigSpec.radioMaxMessageSize, "Maximum message size");
         addConfigEntry(ConfigSpec.radioLowBandFrequency, "Low band frequency (MHz)");
         addConfigEntry(ConfigSpec.radioHighBandFrequency, "High band frequency (MHz)");
         addConfigEntry(ConfigSpec.radioHighBandFirstChannel, "First high band channel");

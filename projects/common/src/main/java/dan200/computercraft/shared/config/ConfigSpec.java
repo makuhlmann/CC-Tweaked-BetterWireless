@@ -67,6 +67,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Boolean> radioEnabled;
     public static final ConfigFile.Value<Integer> radioReferenceRange;
     public static final ConfigFile.Value<Integer> radioMaxRange;
+    public static final ConfigFile.Value<Integer> radioMaxMessageSize;
     public static final ConfigFile.Value<Double> radioLowBandFrequency;
     public static final ConfigFile.Value<Double> radioHighBandFrequency;
     public static final ConfigFile.Value<Integer> radioHighBandFirstChannel;
@@ -369,6 +370,12 @@ public final class ConfigSpec {
                     conditions. This bounds how much work the server does for each message.""")
                 .defineInRange("max_range", Config.radioMaxRange, 1, MODEM_MAX_RANGE);
 
+            radioMaxMessageSize = builder
+                .comment("""
+                    The largest message a wireless or ender modem will send, in bytes (estimated from
+                    the message's contents). Larger messages are refused. 0 means no limit.""")
+                .defineInRange("max_message_size", Config.radioMaxMessageSize, 0, Integer.MAX_VALUE);
+
             radioLowBandFrequency = builder
                 .comment("The frequency of low channels (and rednet/GPS), in MHz. Lower frequencies penetrate and diffract better.")
                 .defineInRange("low_band_frequency", Config.radioLowBandFrequency, 1, 100_000);
@@ -583,6 +590,7 @@ public final class ConfigSpec {
         Config.radioEnabled = radioEnabled.get();
         Config.radioReferenceRange = radioReferenceRange.get();
         Config.radioMaxRange = radioMaxRange.get();
+        Config.radioMaxMessageSize = radioMaxMessageSize.get();
         Config.radioLowBandFrequency = radioLowBandFrequency.get();
         Config.radioHighBandFrequency = radioHighBandFrequency.get();
         Config.radioHighBandFirstChannel = radioHighBandFirstChannel.get();

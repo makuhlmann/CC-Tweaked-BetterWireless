@@ -166,6 +166,8 @@
   "gui.computercraft.config.peripheral.radio.low_band_frequency.tooltip": "The frequency of low channels (and rednet/GPS), in MHz. Lower frequencies penetrate and diffract better.",
   "gui.computercraft.config.peripheral.radio.material_loss_scale": "Material loss multiplier",
   "gui.computercraft.config.peripheral.radio.material_loss_scale.tooltip": "A multiplier for how much blocks attenuate signals. 1 is physically based.",
+  "gui.computercraft.config.peripheral.radio.max_message_size": "Maximum message size",
+  "gui.computercraft.config.peripheral.radio.max_message_size.tooltip": "The largest message a wireless or ender modem will send, in bytes (estimated from\nthe message's contents). Larger messages are refused. 0 means no limit.",
   "gui.computercraft.config.peripheral.radio.max_range": "Maximum range",
   "gui.computercraft.config.peripheral.radio.max_range.tooltip": "The maximum distance a wireless message can travel, in blocks, regardless of\nconditions. This bounds how much work the server does for each message.",
   "gui.computercraft.config.peripheral.radio.metres_per_block": "Metres per block (horizontal)",

@@ -281,6 +281,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `enabled` | `true` | When `false`, upstream behaviour (and the `modem_range` options) is used. |
 | `reference_range` | 1024 | Range of two ground-level VHF modems on flat, open ground, in blocks. |
 | `max_range` | 16384 | Hard cap on link distance. Bounds server work. |
+| `max_message_size` | 65536 | Largest wireless or ender message, in bytes, estimated from its contents. 0 for no limit. |
 | `low_band_frequency`, `high_band_frequency` | 150, 2400 | Band frequencies in MHz. |
 | `high_band_first_channel` | 1024 | First channel on the high band. |
 | `high_band_power_offset` | -20 | High band budget relative to low band, in dB. |

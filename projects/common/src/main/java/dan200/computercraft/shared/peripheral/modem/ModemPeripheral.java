@@ -13,6 +13,7 @@ import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.api.network.PacketSender;
 import dan200.computercraft.api.peripheral.IComputerAccess;
 import dan200.computercraft.api.peripheral.IPeripheral;
+import dan200.computercraft.shared.config.Config;
 import org.jspecify.annotations.Nullable;
 
 import java.util.HashSet;
@@ -236,6 +237,11 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
         parseChannel(channel);
         parseChannel(replyChannel);
 
+        var maxSize = Config.radioMaxMessageSize;
+        if (Config.radioEnabled && maxSize > 0 && isWireless() && MessageSize.exceeds(payload, maxSize)) {
+            throw new LuaException("Message too large (at most " + maxSize + " bytes)");
+        }
+
         var world = getLevel();
         var position = getPosition();
         var network = this.network;
@@ -262,6 +268,17 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
     public final boolean isWireless() {
         var network = this.network;
         return network != null && network.isWireless();
+    }
+
+    /**
+     * Determine if this modem can reach other dimensions. This is {@code true} for ender modems, which otherwise look
+     * the same as other wireless modems.
+     *
+     * @return {@code true} if this is an ender modem.
+     */
+    @LuaFunction("isInterdimensional")
+    public final boolean isInterdimensionalModem() {
+        return isInterdimensional();
     }
 
     @Override

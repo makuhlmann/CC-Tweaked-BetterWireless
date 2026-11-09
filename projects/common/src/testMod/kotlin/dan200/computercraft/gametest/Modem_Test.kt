@@ -4,6 +4,7 @@
 
 package dan200.computercraft.gametest
 
+import dan200.computercraft.api.lua.LuaException
 import dan200.computercraft.api.lua.ObjectArguments
 import dan200.computercraft.core.apis.PeripheralAPI
 import dan200.computercraft.core.computer.ComputerSide
@@ -99,6 +100,25 @@ class Modem_Test {
 
             val signal = (event[6] as Number).toDouble()
             if (signal <= -100 || signal >= 0) throw AssertionError("Unexpected signal strength $signal")
+        }
+    }
+
+    /**
+     * Wireless modems refuse messages over the size limit, and say they aren't ender modems.
+     */
+    @GameTest
+    fun Wireless_rejects_large_messages(context: GameTestHelper) = context.sequence {
+        thenOnComputer {
+            val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
+            assertEquals(false, callPeripheral(modem, "isInterdimensional")!![0])
+
+            callPeripheral(modem, "transmit", 1, 1, "x".repeat(1000))
+            try {
+                callPeripheral(modem, "transmit", 1, 1, "x".repeat(100_000))
+                throw AssertionError("A 100 KB message should be refused")
+            } catch (e: LuaException) {
+                assertEquals("Message too large (at most 65536 bytes)", e.message)
+            }
         }
     }
 
