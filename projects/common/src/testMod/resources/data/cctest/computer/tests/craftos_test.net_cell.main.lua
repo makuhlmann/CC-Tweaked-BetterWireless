@@ -41,3 +41,18 @@ while true do
         error("The message didn't arrive", 0)
     end
 end
+
+-- This computer can manage the core too, through the network itself, once the core allows it.
+if not shell.run("cellcore", "remote", "10.64.0.1", "subscribers") then error("Couldn't manage the core", 0) end
+local admin = assert(net.secure.connect("10.64.0.1", 2123))
+admin:send({ role = "admin", id = os.getComputerID() })
+local reply = admin:receive(5)
+if type(reply) ~= "table" or not reply.ok then error("Not allowed: " .. textutils.serialise(reply), 0) end
+admin:send({ op = "status" })
+local status = admin:receive(5)
+admin:close()
+local subscriber = status.subscribers[1]
+if #status.subscribers ~= 1 or subscriber.id ~= "TEST-1" or not subscriber.cell then
+    error("Wrong subscribers: " .. textutils.serialise(status.subscribers), 0)
+end
+if #status.cells ~= 1 then error("Wrong cells: " .. textutils.serialise(status.cells), 0) end

@@ -100,8 +100,9 @@ class CCTestCommand {
         try {
             Copier.replicate(getSourceComputerPath(), getWorldComputerPath(server));
             // Computers 2 and 3 get the same files, for tests which need several computers with different IDs
-            // (computer 1 runs Kotlin rather than Lua).
-            for (var id : new String[]{ "2", "3" }) {
+            // (computer 1 runs Kotlin rather than Lua). Computers with the same ID share their files, so 40 and 41 are
+            // for the cellular test alone: its core and cell start with any computer which has their files.
+            for (var id : new String[]{ "2", "3", "40", "41" }) {
                 Copier.replicate(getSourceComputerPath(), server.getWorldPath(LOCATION).resolve("computer").resolve(id));
             }
         } catch (IOException e) {

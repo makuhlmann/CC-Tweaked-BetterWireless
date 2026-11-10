@@ -64,10 +64,16 @@ local CERTIFICATE = "/.net/certificate"
 
 local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, running
 local rip_instance, rip_config
-local add_modem, apply_routing, start_phone, env_require
+local add_modem, apply_routing, start_phone, start_cellular, env_require
 local errors = {}
 local services = {}
 local cache = {}
+
+-- Services which run in the background process, such as a cellular network's core, by name. Each has a `resume`
+-- method, which is passed every event.
+local background = {}
+-- Whether a "net_cell" event, which wakes services, is queued already.
+local cell_wake_queued = false
 
 -- Remember an error, rather than printing it over whatever the user is doing.
 local function log_error(err)
@@ -427,6 +433,10 @@ function run()
         while true do os.pullEventRaw() end
     end
 
+    -- Start a cellular network's core, and a cell, if this computer is one.
+    local started, start_err = pcall(start_cellular)
+    if not started then log_error(start_err) end
+
     local timer, timer_at
     local channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), os.clock() + CHANNEL_CHECK_INTERVAL
 
@@ -445,6 +455,8 @@ function run()
                 end
                 channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), os.clock() + CHANNEL_CHECK_INTERVAL
             end
+        elseif event == "net_cell" then
+            cell_wake_queued = false
         elseif event == "peripheral" then
             add_modem(a)
         elseif event == "peripheral_detach" then
@@ -453,8 +465,15 @@ function run()
     end
 
     while true do
+        local event = table.pack(os.pullEventRaw())
         local ok, err = pcall(function()
-            handle(os.pullEventRaw())
+            handle(table.unpack(event, 1, event.n))
+
+            -- Then the services, which may use the network as programs do.
+            for _, service in pairs(background) do
+                local service_ok, service_err = pcall(service.resume, service, table.unpack(event, 1, event.n))
+                if not service_ok then log_error(service_err) end
+            end
 
             -- Events are lost when a computer's event queue is full, timers included. If one of ours is well overdue,
             -- it isn't coming: start another, or the network stack would stop.
@@ -1440,6 +1459,103 @@ function start_phone()
     new_phone({ network = sim.network, key = key, signing = signing })
 end
 
+local CORE_CONFIG, CELL_CONFIG = "/.cell/config", "/.cell/cell"
+local CONTROL_PORT = 2123
+
+-- Services queue an event to wake their tasks. One at a time is enough, and many would fill the event queue.
+local function cell_wake()
+    if cell_wake_queued then return end
+    cell_wake_queued = true
+    os.queueEvent("net_cell")
+end
+
+-- Start a network's core: its controller, subscriber database and gateway.
+local function new_core(options)
+    local public = enclave.publicKey("cell.operator") or enclave.generate("cell.operator", "x25519")
+    local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
+    if not enclave.list()["cell.secret"] then enclave.generate("cell.secret", "secret") end
+    -- Phones' packets go through this computer. Keep the setting on too, or reloading the network settings (such as
+    -- with the route program) would turn forwarding off again.
+    if not settings.get("net.forwarding") then
+        settings.set("net.forwarding", true)
+        settings.save()
+    end
+    stack.forwarding = true
+    return env_require("cc.internal.net.cell.core").new {
+        stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
+        operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
+        signing = signing, subscribers = options.subscribers, codes = options.codes,
+        tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
+        epoch = function() return os.epoch("utc") end, on_event = options.on_event,
+    }
+end
+
+-- Run the core in the background.
+local function start_core_service()
+    if background.core then return true end
+    require_crypto()
+    load()
+    -- The background process may not have started yet (as when startup.lua runs), but it will, unless it's turned off.
+    if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
+    local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
+    local service, err = env_require("cc.internal.net.cell.core_service").new {
+        dir = "/.cell", identity = getIdentity(), fingerprint = fingerprint,
+        listen = function() return secure.listen(CONTROL_PORT) end,
+        start_core = new_core,
+        signing = signing, sign = function(data) return enclave.sign("cell.signing", data) end,
+        clock = os.clock, epoch = function() return os.epoch("utc") end, wake = cell_wake,
+    }
+    if not service then return nil, err end
+    -- The core must keep running when nobody is nearby.
+    pcall(os.setKeepLoaded, true)
+    background.core = service
+    return true
+end
+
+-- Run a cell in the background.
+local function start_cell_service(config)
+    if background.cell then return true end
+    require_crypto()
+    load()
+    if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
+    if not cell_interface() then return nil, "A cell needs a wireless modem" end
+    local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
+    background.cell = env_require("cc.internal.net.cell.cell_service").new {
+        core = config.core, area = config.area, id = os.getComputerID(), identity = getIdentity(),
+        fingerprint = fingerprint, signing = to_hex(signing),
+        connect = function(core) return secure.connect(core, CONTROL_PORT) end,
+        start_tower = function(welcome, control)
+            local name = cell_interface()
+            if not name then error("A cell needs a wireless modem", 0) end
+            return env_require("cc.internal.net.cell.tower").new {
+                stack = stack, crypto = crypto, interface = name, network = welcome.network, area = welcome.area,
+                certificate = welcome.certificate, sign = function(data) return enclave.sign("cell.tower", data) end,
+                epoch = function() return os.epoch("utc") end, core = address.parse(welcome.core),
+                tunnel_key = welcome.tunnel_key, control = control,
+            }
+        end,
+        sleep = sleep, wake = cell_wake,
+    }
+    -- Cells must keep running when nobody is nearby.
+    pcall(os.setKeepLoaded, true)
+    return true
+end
+
+-- Start the core and the cell, if this computer is set up as either, when the computer starts.
+function start_cellular()
+    if not crypto or not enclave then return end
+    local core = read_table(CORE_CONFIG)
+    if type(core.network) == "string" and core.enabled ~= false then
+        local ok, err = start_core_service()
+        if not ok then log_error("Cannot start the cellular core: " .. tostring(err)) end
+    end
+    local cell = read_table(CELL_CONFIG)
+    if type(cell.core) == "string" and cell.enabled ~= false then
+        local ok, err = start_cell_service(cell)
+        if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
+    end
+end
+
 --[[- Cellular networks: pocket computers as phones, which keep their address and connections while moving between cells.
 
 A phone needs a SIM, activated on a network with a code from its administrator (`cell activate`, or
@@ -1447,7 +1563,8 @@ A phone needs a SIM, activated on a network with a code from its administrator (
 It moves between cells by itself. Phones can send each other messages by number, which the network keeps until the phone
 they're for is reachable.
 
-Cells run `celld`, and the network's core runs `cellcore`.
+Cells run `celld`, and the network's core runs `cellcore`. Both run in the stack's background process, so the computer
+can be used for other things, and start again when it does.
 
 The stack queues `cell_state` (with the phone's state) when it attaches or loses service, and `cell_message` (with the
 sender's number and the text) when a message arrives.
@@ -1524,60 +1641,92 @@ cell = {
         return read_table(INBOX_FILE)
     end,
 
-    --[[- Start a cell on this computer. This is for the `celld` program.
+    --[[- Run a cell of a cellular network on this computer, in the background, from now on (also when the computer
+    starts). It connects to the network's core, and if the core hasn't allowed this computer yet, waits until it does.
+    This is for the `celld` program.
 
-    @tparam {
-        network = string, area? = number, certificate = string, sign = function(data:string):string,
-        core = string, tunnel_key = string, control = function(message:table),
-    } options The network; the cell's tracking area; its certificate and a way to sign with its key; the core's address
-    and the key for the tunnel to it; and a way to send the core control messages.
-    @treturn table The cell, with `control(message)` and `stop()`.
+    @tparam string core The core's name or address.
+    @tparam[opt] number area The cell's tracking area.
+    @treturn[1] true If it started.
+    @treturn[2] nil If it couldn't.
+    @treturn[2] string Why not.
     ]]
-    startCell = function(options)
-        expect(1, options, "table")
+    startCell = function(core, area)
+        expect(1, core, "string")
+        expect(2, area, "number", "nil")
         require_crypto()
-        load()
-        local name = cell_interface()
-        if not name then error("A cell needs a wireless modem", 2) end
-        return env_require("cc.internal.net.cell.tower").new {
-            stack = stack, crypto = crypto, interface = name, network = options.network, area = options.area,
-            certificate = options.certificate, sign = options.sign, epoch = function() return os.epoch("utc") end,
-            core = address.parse(options.core), tunnel_key = options.tunnel_key, control = options.control,
+        local config = { core = core, area = area or 0 }
+        local old = read_table(CELL_CONFIG)
+        -- Start again with new settings, or to try again at once after losing the core.
+        if background.cell and (old.core ~= core or (old.area or 0) ~= config.area or background.cell.state ~= "serving") then
+            background.cell:stop()
+            background.cell = nil
+        end
+        write_table(CELL_CONFIG, config)
+        return start_cell_service(config)
+    end,
+
+    --- Stop this computer's cell, and don't start it when the computer starts.
+    stopCell = function()
+        local config = read_table(CELL_CONFIG)
+        if type(config.core) == "string" then
+            config.enabled = false
+            write_table(CELL_CONFIG, config)
+        end
+        if background.cell then
+            background.cell:stop()
+            background.cell = nil
+        end
+    end,
+
+    --[[- Get the state of this computer's cell.
+
+    @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
+    `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
+    why; the `core`; the `network` it serves; its `area`; and its `id` and `fingerprint`, which the core's administrator
+    checks before allowing it.
+    ]]
+    cellInfo = function()
+        if background.cell then return background.cell:info() end
+        local config = read_table(CELL_CONFIG)
+        return {
+            state = "stopped", core = config.core, area = config.area, id = os.getComputerID(),
+            fingerprint = crypto and enclave and fingerprint(getIdentity()) or nil,
         }
     end,
 
-    --[[- Start a network's core on this computer: its controller, subscriber database and gateway. This is for the
-    `cellcore` program. The operator's keys live in the enclave: `cell.operator` (X25519), `cell.signing` (Ed25519) and
-    `cell.secret`. This computer forwards packets, as phones' packets go through it.
+    --[[- Run this computer's cellular core, in the background, from now on (also when the computer starts). Set it up
+    first, with `cellcore setup`. The `cellcore` program manages it while it runs, over the control port. This is for
+    the `cellcore` program.
 
-    @tparam {
-        network = string, prefix = string, subscribers = table, codes = table,
-        on_event? = function(event:string, ...:any),
-    } options The network's name; its network for phones' addresses; the subscribers and activation codes; and what to
-    call with events.
-    @treturn table The core.
+    The operator's keys live in the enclave: `cell.operator` (X25519), `cell.signing` (Ed25519) and `cell.secret`. This
+    computer forwards packets, as phones' packets go through it.
+
+    @treturn[1] true If it started, or was running already.
+    @treturn[2] nil If it couldn't start.
+    @treturn[2] string Why not.
     ]]
-    startCore = function(options)
-        expect(1, options, "table")
+    startCore = function()
         require_crypto()
-        load()
-        local public = enclave.publicKey("cell.operator") or enclave.generate("cell.operator", "x25519")
-        local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
-        if not enclave.list()["cell.secret"] then enclave.generate("cell.secret", "secret") end
-        -- Phones' packets go through this computer. Keep the setting on too, or reloading the network settings (such as
-        -- with the route program) would turn forwarding off again.
-        if not settings.get("net.forwarding") then
-            settings.set("net.forwarding", true)
-            settings.save()
+        local config = read_table(CORE_CONFIG)
+        if config.enabled == false then
+            config.enabled = nil
+            write_table(CORE_CONFIG, config)
         end
-        stack.forwarding = true
-        return env_require("cc.internal.net.cell.core").new {
-            stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
-            operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
-            signing = signing, subscribers = options.subscribers, codes = options.codes,
-            tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
-            epoch = function() return os.epoch("utc") end, on_event = options.on_event,
-        }
+        return start_core_service()
+    end,
+
+    --- Stop this computer's cellular core, and don't start it when the computer starts.
+    stopCore = function()
+        local config = read_table(CORE_CONFIG)
+        if type(config.network) == "string" then
+            config.enabled = false
+            write_table(CORE_CONFIG, config)
+        end
+        if background.core then
+            background.core:stop()
+            background.core = nil
+        end
     end,
 }
 

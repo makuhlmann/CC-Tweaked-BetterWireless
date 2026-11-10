@@ -1,8 +1,16 @@
-cellcore runs a cellular network's core: it lets phones attach, gives them addresses, carries their packets between cells and the rest of the network, and keeps their messages. The operator's keys stay in this computer's enclave.
+cellcore sets up and manages a cellular network's core: it lets phones attach, gives them addresses, carries their packets between cells and the rest of the network, and keeps their messages. The core runs in the background and starts with the computer, so this computer stays free, and the core keeps running while it's managed. The operator's keys stay in this computer's enclave.
+
+Cells (and computers which manage the core from elsewhere) wait until they're allowed here. Allow one by its computer ID, and check the fingerprint shown here matches the one the cell shows.
 
 ex:
-"cellcore setup ACME 10.64.0.0/16" sets up the network ACME, giving phones addresses in 10.64.0.0/16.
-"cellcore" runs the core, until Ctrl+T is pressed.
+"cellcore setup ACME 10.64.0.0/16" sets up the network ACME, giving phones addresses in 10.64.0.0/16, and starts it.
+"cellcore" shows how the core is doing, and who is waiting to be allowed.
+"cellcore stop" stops the core, and "cellcore start" starts it again.
+"cellcore log" shows what the core has done lately, and keeps showing new lines until Ctrl+T is pressed.
 "cellcore add ACME-0042 0042" makes an activation code for a subscriber with the number 0042, for a day.
-"cellcore allow <key> tower-3" lets the cell with that key join the network.
-"cellcore subscribers" lists the subscribers.
+"cellcore subscribers" lists the subscribers, and where their phones are.
+"cellcore remove ACME-0042" removes a subscriber.
+"cellcore cells" lists the cells, and the computers allowed in or refused.
+"cellcore allow 7" allows computer 7, which is waiting, after checking its fingerprint.
+"cellcore deny 7" refuses computer 7 from now on.
+"cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time.

@@ -120,9 +120,50 @@ function Core:add_tower(id, cell_address, send)
     return key
 end
 
+--[[- Forget a cell, once it has gone. Its phones lose service until they find another cell.
+
+@tparam number id The cell's ID.
+@tparam[opt] function send The function [`Core:add_tower`] was given. If the cell has been added again since, with
+another, the new one is kept.
+]]
+function Core:remove_tower(id, send)
+    local tower = self.towers[id]
+    if tower and (send == nil or tower.send == send) then self.towers[id] = nil end
+end
+
 function Core:send(tower_id, message)
     local tower = self.towers[tower_id]
     if tower then tower.send(message) end
+end
+
+--[[- Remove a subscriber. If their phone is attached, its cell forgets it, and it's refused when it tries again.
+
+@tparam string sim The subscriber's SIM key, as hexadecimal digits.
+]]
+function Core:remove_subscriber(sim)
+    self.subscribers[sim] = nil
+    local session = self.sessions[sim]
+    if not session then return end
+    if session.teid then
+        self.by_teid[session.teid] = nil
+        if session.cell then self:send(session.cell, { op = "release", teid = session.teid }) end
+        if session.handover then self:send(session.handover, { op = "release", teid = session.teid }) end
+    end
+    self.by_address[session.address] = nil
+    self.sessions[sim] = nil
+end
+
+--- Stop the core: phones lose service, and the gateway's interface and port are freed, so it can be started again.
+function Core:stop()
+    for _, tower in pairs(self.towers) do
+        for _, session in pairs(self.sessions) do
+            if session.teid and session.cell == tower.id then tower.send({ op = "release", teid = session.teid }) end
+        end
+    end
+    self.stack:cancel(self.retry_timer)
+    self.stack:udp_close(self.socket)
+    self.stack:remove_interface("cellular")
+    self.towers, self.sessions, self.by_teid, self.by_address, self.pending = {}, {}, {}, {}, {}
 end
 
 -- Find or make a phone's session, keeping its address when it attaches again.
@@ -385,11 +426,14 @@ end
 
 --- Describe the phones with sessions.
 --
--- @treturn { table... } Each phone's SIM key, address and cell.
+-- @treturn { table... } Each phone's SIM key, address and cell, and whether it's attached now.
 function Core:info()
     local result = {}
     for sim, session in pairs(self.sessions) do
-        result[#result + 1] = { sim = sim, address = address.format(session.address), cell = session.cell }
+        result[#result + 1] = {
+            sim = sim, address = address.format(session.address), cell = session.cell,
+            attached = session.teid ~= nil and self.towers[session.cell] ~= nil,
+        }
     end
     table.sort(result, function(a, b) return a.address < b.address end)
     return result

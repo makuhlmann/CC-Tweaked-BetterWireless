@@ -63,7 +63,8 @@ class CraftOs_Test {
 
     /**
      * A phone activates on a cellular network over the air, attaches through a cell, reaches the network, and sends
-     * itself a message. The other computer is the network's core and its cell.
+     * itself a message. The other computer is the network's core and its cell, both running in the background. Then
+     * the phone manages the core through the network, once the core has allowed it.
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 4)
     fun Net_cell(context: GameTestHelper) = context.sequence { thenComputerOk("main") }

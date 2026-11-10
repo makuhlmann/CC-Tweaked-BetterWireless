@@ -960,8 +960,9 @@ Backhaul traffic uses secure connections or an encrypted link, because it may cr
 
 ### As built (phase 6)
 
-The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and the programs `cell` (phones), `celld`
-(cells, in place of `beacon.lua`) and `cellcore` (the core). Where they differ from the design above:
+The modules are `cc.internal.net.cell.common`, `phone`, `tower`, `core`, `core_service` and `cell_service`, and the
+programs `cell` (phones), `celld` (cells, in place of `beacon.lua`) and `cellcore` (the core). Where they differ from
+the design above:
 
 - **System information** goes out as a link-layer `cell` frame on the low band's broadcast channel (1000), rather than
   on channel 1001: the stack only hears channels it has opened. A cell's certificate is issued by the core when the cell
@@ -970,10 +971,10 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and 
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
   know. Messages between a phone and its cell carry a counter, and the receiver keeps a 64-message replay window.
-- **Backhaul:** cells reach the core by any route, with a secure connection to port 2123 for control messages. The core
-  only accepts cells whose key it allows (`cellcore allow`), or its own. Tunnels are datagrams between ports 2152 (the
-  gateway) and 2153 (cells, so a computer can be a cell and the core), sealed with a key per cell from a secret in the
-  core's enclave, with a replay window. Packets travel inside them encoded as bytes.
+- **Backhaul:** cells reach the core by any route, with a secure connection to port 2123 for control messages. Tunnels
+  are datagrams between ports 2152 (the gateway) and 2153 (cells, so a computer can be a cell and the core), sealed
+  with a key per cell from a secret in the core's enclave, with a replay window. Packets travel inside them encoded as
+  bytes.
 - **Handover goes through the core** (like LTE's S1 handover) rather than between cells, so cells needn't reach each
   other. Packets on their way to the old cell during a handover are lost, not forwarded; the connection layer resends
   them. A phone reports a stronger cell after it has been 3 dB stronger for two seconds, measured every second.
@@ -982,8 +983,22 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and 
   every 10 seconds. They're only kept in memory, so restarting the core loses undelivered ones.
 - **Addresses** are kept for the core's lifetime: a phone which attaches again gets the same one. Restarting the core
   gives phones new addresses, which ends their connections.
-- **Codes** live in `/.cell/codes` on the core, so `cellcore add` works while the core runs; subscribers are in
-  `/.cell/subscribers`.
+- **The core and cells run in the background process,** as the phone does, so the computer stays free, and they start
+  with it. `cellcore setup` (or `cellcore start`) and `celld <core>` start them and remember to; `cellcore stop` and
+  `celld stop` stop them. `net.run` passes every event to each service after the stack has handled it, and services
+  never see `terminate`. A service is a set of coroutines (`cc.internal.net.tasks`) which use connections as programs
+  do; anything the stack itself sends them is queued, with a `net_cell` event (at most one queued) to wake them.
+- **Managing the core** happens while it runs, over the same port: a connection's hello says whether it's a cell or an
+  administrator. The core's own computer is always allowed, so `cellcore` on it is just a client over the loopback
+  address, and `cellcore remote <core>` works the same from anywhere, even a phone through the core's gateway address.
+  Requests are `status`, `allow`, `deny`, `add`, `remove` and `log` (the last 100 lines, kept in memory).
+- **Allowing computers:** a computer the core doesn't know yet waits, with its connection open, and the core lists it
+  with its claimed ID and its key's fingerprint. `cellcore allow <ID>` shows the fingerprint and asks whether it
+  matches the one the computer shows, then saves the full key (never the ID alone) with its role in `/.cell/cells`.
+  The waiting computer carries on at once. At most 16 wait at a time, each for up to ten minutes. `cellcore deny`
+  refuses a key from then on and drops its connections.
+- **Files:** subscribers are in `/.cell/subscribers` and codes in `/.cell/codes`, both on the core, and only the
+  running core changes them.
 - **Forwarding:** `cellcore` turns `net.forwarding` on and saves it, as phones' packets go through the core.
 - **Floods:** each attach request costs the core three X25519 operations, and nothing limits how often a cell relays
   them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
@@ -991,7 +1006,9 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and 
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
 the virtual network, a phone walks past three cells with an open connection and keeps every message. A game test
-activates a phone over the air, attaches, reaches the network, and sends itself a message, through one cell.
+activates a phone over the air, attaches, reaches the network, and sends itself a message, through one cell, with the
+core and cell running in the background. Then the phone manages the core through the network, once the core has allowed
+it.
 
 ## 12. Changes to the mod
 
@@ -1264,7 +1281,9 @@ Each phase is usable on its own.
 - **Phase 6 is built, and waiting for the walk across the test cells:** transmit and receive power by device (in the
   mod), Noise `IK` and `XXpsk3` (checked against the cacophony vectors), virtual interfaces and frame handlers in the
   stack, and the cellular network (§11, as built): system information, activation, attach, tunnels, handover and
-  messages, with the `cell`, `celld` and `cellcore` programs and the `net.cell` API.
+  messages, with the `cell`, `celld` and `cellcore` programs and the `net.cell` API. The core and cells run in the
+  background, and the core is managed while it runs, from its own computer or another, with cells and administrators
+  allowed by their ID once their fingerprint is checked.
 - **Phase 5 is done:** the codec (`cc.net.codec`), Noise `XX` and `NK` handshakes (`cc.internal.net.noise`, checked
   against the cacophony test vectors), secure connections (`net.secure`, `cc.internal.net.secure`) with enclave keys,
   known hosts and pinned keys, certificates (`cc.internal.net.certificate`), encrypted links (`cc.internal.net.link`),

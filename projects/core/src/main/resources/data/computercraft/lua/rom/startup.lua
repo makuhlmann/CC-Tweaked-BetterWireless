@@ -134,6 +134,19 @@ shell.setCompletionFunction("rom/programs/http/pastebin.lua", completion.build(
     completePastebinPut
 ))
 shell.setCompletionFunction("rom/programs/rednet/chat.lua", completion.build({ completion.choice, { "host ", "join " } }))
+local cellcore_commands = {
+    "status", "log", "add ", "subscribers", "remove ", "cells", "allow ", "deny ",
+}
+shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, index, text, previous)
+    if index == 1 then
+        local choices = { "setup ", "start", "stop", "remote " }
+        for _, choice in ipairs(cellcore_commands) do choices[#choices + 1] = choice end
+        return completion.choice(shell, text, previous, choices)
+    elseif index == 3 and previous[2] == "remote" then
+        return completion.choice(shell, text, previous, cellcore_commands)
+    end
+end)
+shell.setCompletionFunction("rom/programs/net/celld.lua", completion.build({ completion.choice, { "stop" } }))
 shell.setCompletionFunction("rom/programs/command/exec.lua", completion.build(completion.command))
 shell.setCompletionFunction("rom/programs/http/wget.lua", completion.build({ completion.choice, { "run " } }))
 
