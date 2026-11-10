@@ -236,8 +236,8 @@ describe("The network stack, given bad messages,", function()
     it("connection segments to a listening port", function()
         local cases = {}
         for _, flags in ipairs { "S", "A", "SA", "FA", "R" } do
-            local segment = { sp = 1234, dp = 22, flags = flags, seq = 1000, ack = 5, win = 16, sack = { 7 }, data = "x" }
-            for _, case in ipairs(variants("segment " .. flags, segment, { "sp", "dp", "flags", "seq", "ack", "win", "sack", "data" }, function(x)
+            local segment = { sp = 1234, dp = 22, flags = flags, seq = 1000, ack = 5, win = 16, sack = { 7 }, data = "x", ts = 1, echo = 1 }
+            for _, case in ipairs(variants("segment " .. flags, segment, { "sp", "dp", "flags", "seq", "ack", "win", "sack", "data", "ts", "echo" }, function(x)
                 return frame(packet(x, "tcp"))
             end)) do
                 cases[#cases + 1] = case
@@ -249,7 +249,7 @@ describe("The network stack, given bad messages,", function()
     it("connection segments in an open connection", function()
         local failures = {}
         for _, flags in ipairs { "A", "FA", "KA", "R", "SA" } do
-            for _, field in ipairs { "seq", "ack", "win", "sack", "data", "flags" } do
+            for _, field in ipairs { "seq", "ack", "win", "sack", "data", "flags", "ts", "echo" } do
                 for _, bad in ipairs(BAD) do
                     local name = ("segment %s with %s = %s"):format(flags, field, bad[1])
                     local net, target, peer = target_network()
@@ -262,6 +262,7 @@ describe("The network stack, given bad messages,", function()
                         local segment = {
                             sp = client.local_port, dp = 22, flags = flags, seq = client.snd_nxt + (exact and 0 or 100),
                             ack = client.rcv_nxt, win = 16, sack = { client.rcv_nxt + 1 }, data = flags == "A" and "forged" or nil,
+                            ts = net.time, echo = net.time,
                         }
                         segment = with(segment, field, bad[2])
                         net.inject("top", target.interfaces.top.unicast, {

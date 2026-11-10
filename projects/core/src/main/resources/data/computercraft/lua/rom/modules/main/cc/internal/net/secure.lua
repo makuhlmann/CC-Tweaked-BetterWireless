@@ -140,10 +140,12 @@ local function client_handshake(transport, options)
         static = options.static, remote_static = options.remote_static,
     }
 
-    local ok, err = transport:send({ secure = VERSION, pattern = pattern, message = handshake:write(codec.encode({ v = VERSION })) })
+    local message, err = handshake:write(codec.encode({ v = VERSION }))
+    if not message then return nil, "The handshake failed: " .. err end
+    local ok
+    ok, err = transport:send({ secure = VERSION, pattern = pattern, message = message })
     if not ok then return nil, err end
 
-    local message
     message, err = transport:receive(options.timeout)
     if message == nil then return nil, "The handshake failed: " .. (err or "the server closed the connection") end
     local info = decode_payload(handshake:read(message))
@@ -156,7 +158,9 @@ local function client_handshake(transport, options)
     end
 
     if not handshake:done() then
-        ok, err = transport:send(handshake:write(codec.encode({ v = VERSION })))
+        message, err = handshake:write(codec.encode({ v = VERSION }))
+        if not message then return nil, "The handshake failed: " .. err end
+        ok, err = transport:send(message)
         if not ok then return nil, err end
     end
     return new_session(transport, handshake, info)
@@ -176,12 +180,14 @@ local function server_handshake(transport, options)
     }
     if not decode_payload(handshake:read(first.message)) then return nil, "The handshake failed" end
 
-    local ok
-    ok, err = transport:send(handshake:write(codec.encode({ v = VERSION, certificate = options.certificate })))
+    -- Answering uses the key the client just sent, which may be one no secret can be agreed with.
+    local message, ok
+    message, err = handshake:write(codec.encode({ v = VERSION, certificate = options.certificate }))
+    if not message then return nil, "The handshake failed: " .. err end
+    ok, err = transport:send(message)
     if not ok then return nil, err end
 
     if not handshake:done() then
-        local message
         message, err = transport:receive(options.timeout)
         if message == nil then return nil, err or "The client closed the connection" end
         if not decode_payload(handshake:read(message)) then return nil, "The handshake failed" end

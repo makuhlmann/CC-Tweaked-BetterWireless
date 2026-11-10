@@ -19,6 +19,8 @@ A connection carries messages (any Lua value a modem can send), not bytes. Each 
     win = 12,             -- how many more messages, from ack on, the sender of this segment will take
     sack = { 979, 980 },  -- messages after ack which have already arrived, if any
     data = "...",         -- the message, if any
+    ts = 1234.5,          -- when this was sent, by the sender's clock, if it uses up a sequence number
+    echo = 1230.25,       -- the ts of the segment this one answers, if it had one
 }
 ```
 
@@ -27,8 +29,10 @@ A segment uses up a sequence number if it opens (S) or closes (F) the connection
 numbers count exactly far beyond what any connection could send.
 
 Lost segments are found by timeouts, and sooner by duplicate acknowledgements and the `sack` list, so a lossy radio
-link doesn't stall a connection. How many messages are in flight is limited by both the receiver's window and a
-congestion window, which grows while everything gets through and shrinks when messages are lost.
+link doesn't stall a connection. Timeouts follow the round trip time, which `ts` and `echo` measure: whatever answers a
+segment at once sends its `ts` back, so the time is right even for segments which were sent more than once. How many
+messages are in flight is limited by both the receiver's window and a congestion window, which grows while everything
+gets through and shrinks when messages are lost.
 
 The stack queues these events for programs: `net_connection` (port) when a listening port has a connection to accept,
 `net_data` (connection ID) when there's something new to receive (a message, or the end), `net_sent` (connection ID)
@@ -76,6 +80,7 @@ local function is_integer(value, min, max)
 end
 
 local function is_seq(value) return is_integer(value, 0, 2 ^ 53) end
+local function is_finite(value) return type(value) == "number" and value == value and value > -math.huge and value < math.huge end
 local function is_port(value) return is_integer(value, 1, 65535) end
 
 local function key(local_addr, local_port, remote_addr, remote_port)
@@ -142,7 +147,12 @@ local function registry(stack)
     local tcp = stack.tcp
     if tcp then return tcp end
 
-    tcp = { connections = {}, by_id = {}, listeners = {}, count = 0, next_id = 0, next_port = EPHEMERAL_FIRST, ports = {} }
+    tcp = {
+        connections = {}, by_id = {}, listeners = {}, count = 0, next_id = 0, ports = {},
+        -- Start somewhere different each time. A computer which has just restarted would otherwise use the ports its
+        -- old connections had, which the other sides may still think are open.
+        next_port = math.random(EPHEMERAL_FIRST, EPHEMERAL_LAST),
+    }
     stack.tcp = tcp
     stack.protocols.tcp = function(packet, interface) return receive(stack, packet, interface) end
     stack.error_handlers.tcp = function(orig, message) return on_error(stack, orig, message) end
@@ -195,9 +205,12 @@ function Connection:wake(event, ...)
     self.stack.wake(event, self.id, ...)
 end
 
--- Send a segment. Every segment but the first acknowledges what we've received.
-function Connection:segment(flags, seq, data)
+-- Send a segment. Every segment but the first acknowledges what we've received. Timed segments say when they were
+-- sent, and the first segment sent in answer to one sends that back.
+function Connection:segment(flags, seq, data, timed)
     local body = { sp = self.local_port, dp = self.remote_port, flags = flags, seq = seq, data = data }
+    if timed then body.ts = self.stack.clock() end
+    if self.echo then body.echo, self.echo = self.echo, nil end
     if self.rcv_nxt then
         body.flags, body.ack, body.win = flags .. "A", self.rcv_nxt, self:window()
         self.last_window = body.win
@@ -217,16 +230,14 @@ function Connection:send_ack(flags)
 end
 
 -- Send (or resend) the message with a sequence number.
-function Connection:transmit(seq, retransmit)
+function Connection:transmit(seq)
     local message = self.unacked[seq]
-    message.sent = self.stack.clock()
-    if retransmit then message.retransmitted = true end
     if message.syn then
-        self:segment("S", seq)
+        self:segment("S", seq, nil, true)
     elseif message.fin then
-        self:segment("F", seq)
+        self:segment("F", seq, nil, true)
     else
-        self:segment("", seq, message.data)
+        self:segment("", seq, message.data, true)
     end
     if not self.rto_timer then self:arm_timer() end
 end
@@ -261,7 +272,7 @@ end
 function Connection:retransmit_first()
     for seq = self.snd_una, self.snd_nxt - 1 do
         local message = self.unacked[seq]
-        if message and not message.sacked then return self:transmit(seq, true) end
+        if message and not message.sacked then return self:transmit(seq) end
     end
 end
 
@@ -334,18 +345,26 @@ function Connection:process_ack(segment, carries)
         self.snd_edge = math.max(self.snd_edge, ack + segment.win)
     end
 
-    -- Round trips are measured from messages acknowledged as they arrive, and only ones sent once (Karn's algorithm).
-    -- Messages which arrived early and were only acknowledged once the gap before them filled have been waiting, so
-    -- their times would be far too long.
-    local now, sample = self.stack.clock(), nil
+    -- Measure the round trip, if this answers a segment of ours at once: it then says when that segment was sent.
+    -- Working it out from which message was acknowledged goes wrong when messages are sent twice, or wait at the
+    -- other side for a gap before them to fill, and one bad measurement of half a minute takes a long time to forget.
+    local now, echo = self.stack.clock(), segment.echo
+    if type(echo) == "number" and echo <= now and now - echo <= MAX_RTO then
+        local sample = now - echo
+        if not self.srtt then
+            self.srtt, self.rttvar = sample, sample / 2
+        else
+            self.rttvar = 0.75 * self.rttvar + 0.25 * math.abs(self.srtt - sample)
+            self.srtt = 0.875 * self.srtt + 0.125 * sample
+        end
+        self.rto = math.max(MIN_RTO, math.min(MAX_RTO, self.srtt + 4 * self.rttvar))
+    end
+
     if type(segment.sack) == "table" then
         for i = 1, math.min(#segment.sack, MAX_SACK) do
             local seq = segment.sack[i]
             local message = is_seq(seq) and seq > ack and self.unacked[seq]
-            if message and not message.sacked then
-                message.sacked = true
-                if not message.retransmitted then sample = now - message.sent end
-            end
+            if message then message.sacked = true end
         end
     end
 
@@ -354,22 +373,20 @@ function Connection:process_ack(segment, carries)
         for seq = self.snd_una, ack - 1 do
             local message = self.unacked[seq]
             if message then
-                if seq == ack - 1 and not message.retransmitted and not message.sacked then sample = now - message.sent end
                 if message.fin then self.fin_acked = true end
                 self.unacked[seq] = nil
             end
         end
         self.snd_una, self.retries, self.dupacks = ack, 0, 0
 
-        if sample then
-            if not self.srtt then
-                self.srtt, self.rttvar = sample, sample / 2
-            else
-                self.rttvar = 0.75 * self.rttvar + 0.25 * math.abs(self.srtt - sample)
-                self.srtt = 0.875 * self.srtt + 0.125 * sample
-            end
+        -- Something got through, so stop waiting longer and longer.
+        if self.srtt then
+            self.rto = math.max(MIN_RTO, math.min(MAX_RTO, self.srtt + 4 * self.rttvar))
+        else
+            -- Nothing has been measured (the other side doesn't say when our segments were sent). Come back down
+            -- gradually, or a connection which began badly would wait half a minute for every message lost later.
+            self.rto = math.max(INITIAL_RTO, self.rto / 2)
         end
-        if self.srtt then self.rto = math.max(MIN_RTO, math.min(MAX_RTO, self.srtt + 4 * self.rttvar)) end
 
         if self.recover and ack <= self.recover then
             -- Still recovering from a loss, and the next gap is now first: resend it straight away.
@@ -480,14 +497,25 @@ function Connection:on_segment(segment, flags)
             self:process_ack(segment, false)
             self:send_ack()
             self:established()
+        elseif flags.A and segment.ack ~= self.iss + 1 then
+            -- An acknowledgement of something we never sent: the other side still has a connection from these ports,
+            -- from before we restarted. It's reset like any other connection we don't know of, so our open gets
+            -- through when we next try.
+            return "stray"
         end
         return
     end
 
     if flags.S then
-        -- The other side didn't hear our answer to its open, so answer again.
         if self.rcv_nxt == segment.seq + 1 then
-            if self.state == "syn_received" then self:transmit(self.iss, true) else self:send_ack() end
+            -- The other side didn't hear our answer to its open, so answer again.
+            if self.state == "syn_received" then self:transmit(self.iss) else self:send_ack() end
+        elseif self.stack:may_report(self.remote_addr) then
+            -- An open which isn't the one this connection began with. The other side may have restarted, and be
+            -- using the same port again, so say where we think we're up to. If it has forgotten this connection, it
+            -- answers with a reset, and its next try gets through. (If it hasn't, someone else made the open up, and
+            -- our acknowledgement does no harm.)
+            self:send_ack()
         end
         return
     end
@@ -687,7 +715,14 @@ function receive(stack, packet, interface)
 
     local tcp = registry(stack)
     local connection = tcp.connections[key(packet.dst, segment.dp, packet.src, segment.sp)]
-    if connection then return connection:on_segment(segment, flags) end
+    if connection then
+        -- Whatever we send straight away in answer says when this segment was sent, to measure the round trip.
+        connection.echo = is_finite(segment.ts) and segment.ts or nil
+        local result = connection:on_segment(segment, flags)
+        connection.echo = nil
+        if result == "stray" then reset(stack, packet, segment, flags) end
+        return
+    end
 
     local listener = tcp.listeners[segment.dp]
     if flags.S and not flags.A and listener then return listener:incoming(packet, segment) end
@@ -710,8 +745,22 @@ end
 --- Someone wants to connect.
 function Listener:incoming(packet, segment)
     local tcp = registry(self.stack)
-    -- Too many waiting already: ignore it. The other side tries again, and by then there may be room.
-    if self.closed or self.pending + #self.queue >= BACKLOG or tcp.count >= MAX_CONNECTIONS then return end
+    if self.closed then return end
+    if self.pending + #self.queue >= BACKLOG or tcp.count >= MAX_CONNECTIONS then
+        -- Too many waiting already. A connection which is still opening, and whose other side didn't answer the first
+        -- time, makes way: whoever asked for it may not exist, and a few of those every minute would otherwise keep
+        -- everyone else out for good. Failing that, ignore this one. The other side tries again, and by then there
+        -- may be room.
+        local stale
+        for _, connection in pairs(tcp.connections) do
+            if connection.listener == self and connection.state == "syn_received" and connection.retries > 0
+                and (not stale or connection.id < stale.id) then
+                stale = connection
+            end
+        end
+        if not stale then return end
+        stale:remove()
+    end
 
     local connection = new_connection(self.stack, packet.dst, self.port, packet.src, segment.sp)
     connection.state, connection.listener = "syn_received", self
@@ -719,7 +768,9 @@ function Listener:incoming(packet, segment)
     connection.unacked[connection.iss] = { syn = true }
     connection.snd_nxt = connection.iss + 1
     self.pending = self.pending + 1
+    connection.echo = is_finite(segment.ts) and segment.ts or nil
     connection:transmit(connection.iss)
+    connection.echo = nil
 end
 
 --- Take the next connection waiting to be accepted.

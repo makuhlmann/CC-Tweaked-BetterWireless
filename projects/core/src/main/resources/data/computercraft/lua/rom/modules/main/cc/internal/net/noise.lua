@@ -124,29 +124,42 @@ end
 
 --[[- Write the next handshake message.
 
+Writing can fail, as it uses keys the other side sent: a key in a message which was read without complaint may still
+be one no secret can be agreed with. Our own key may refuse to work too, such as one in a locked enclave.
+
 @tparam[opt=""] string payload Data to send with it. It's encrypted unless it's the first message of an `XX` handshake.
-@treturn string The message.
+@treturn[1] string The message.
+@treturn[2] nil If the message couldn't be written. The handshake has failed.
+@treturn[2] string Why not.
 ]]
 function Handshake:write(payload)
     local pattern = self.pattern.messages[self.index]
-    local parts = {}
-    for _, token in ipairs(pattern) do
-        if token == "e" then
-            if not self.e then
-                local private = self.fixed_ephemeral or self.crypto.generateKeyPair("x25519")
-                self.e = { private = private, public = self.crypto.exchange(private, BASE_POINT) }
+    local ok, message = pcall(function()
+        local parts = {}
+        for _, token in ipairs(pattern) do
+            if token == "e" then
+                if not self.e then
+                    local private = self.fixed_ephemeral or self.crypto.generateKeyPair("x25519")
+                    self.e = { private = private, public = self.crypto.exchange(private, BASE_POINT) }
+                end
+                parts[#parts + 1] = self.e.public
+                self:mix_hash(self.e.public)
+            elseif token == "s" then
+                parts[#parts + 1] = self:encrypt_and_hash(self.s.public)
+            else
+                self:mix_key(self:token_dh(token))
             end
-            parts[#parts + 1] = self.e.public
-            self:mix_hash(self.e.public)
-        elseif token == "s" then
-            parts[#parts + 1] = self:encrypt_and_hash(self.s.public)
-        else
-            self:mix_key(self:token_dh(token))
         end
+        parts[#parts + 1] = self:encrypt_and_hash(payload or "")
+        return table.concat(parts)
+    end)
+    if not ok then
+        self.failed = true
+        -- Say why, without where in this file it happened.
+        return nil, (tostring(message):gsub("^[^:]*:%d+: ", ""))
     end
-    parts[#parts + 1] = self:encrypt_and_hash(payload or "")
     self.index = self.index + 1
-    return table.concat(parts)
+    return message
 end
 
 --[[- Read the next handshake message.

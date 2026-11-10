@@ -9,8 +9,9 @@ Each link is a modem shared by every computer on it, and the interface on it is 
 need one link, "top", which [`add`] puts computers on.
 
 Links can be slow (`latency[link]`, in seconds), vary in speed so frames arrive out of order (`jitter[link]`, up to
-that many seconds more), and lose frames (`loss[link]`, from 0 to 1). The network counts frames sent on each link
-(`frames[link]`) and events each computer queues (`wakes[stack][event]`), to measure floods.
+that many seconds more), lose frames (`loss[link]`, from 0 to 1) and deliver frames twice (`duplicate[link]`, from 0 to
+1). The network counts frames sent on each link (`frames[link]`) and events each computer queues
+(`wakes[stack][event]`), to measure floods.
 ]]
 
 local Stack = require "cc.internal.net.stack"
@@ -39,7 +40,7 @@ end
 return function()
     local self = {
         time = 0, queue = {}, stacks = {}, errors = {}, signals = {},
-        latency = {}, jitter = {}, loss = {}, frames = {}, wakes = {},
+        latency = {}, jitter = {}, loss = {}, duplicate = {}, frames = {}, wakes = {},
         -- How many frames run() delivers, and how many steps advance() takes, before deciding something is looping.
         frame_limit = 1000, step_limit = 20000,
     }
@@ -47,11 +48,14 @@ return function()
     -- The queue is kept in order of arrival time.
     local function send(sender, link, channel, frame)
         self.frames[link] = (self.frames[link] or 0) + 1
-        local delay = (self.latency[link] or 0) + (self.jitter[link] and math.random() * self.jitter[link] or 0)
-        local item = { sender = sender, link = link, channel = channel, frame = copy(frame), at = self.time + delay }
-        local queue, position = self.queue, #self.queue + 1
-        while position > 1 and queue[position - 1].at > item.at do position = position - 1 end
-        table.insert(queue, position, item)
+        local copies = self.duplicate[link] and math.random() < self.duplicate[link] and 2 or 1
+        for _ = 1, copies do
+            local delay = (self.latency[link] or 0) + (self.jitter[link] and math.random() * self.jitter[link] or 0)
+            local item = { sender = sender, link = link, channel = channel, frame = copy(frame), at = self.time + delay }
+            local queue, position = self.queue, #self.queue + 1
+            while position > 1 and queue[position - 1].at > item.at do position = position - 1 end
+            table.insert(queue, position, item)
+        end
     end
 
     local function yield()

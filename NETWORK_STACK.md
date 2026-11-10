@@ -377,6 +377,8 @@ body = {
     win = 12,         -- how many more messages, from ack on, the receiver will take
     sack = { 979 },   -- messages after ack which have already arrived, if any
     data = <any Lua value>,
+    ts = 1234.5,      -- when it was sent, by the sender's clock, if it uses up a sequence number
+    echo = 1230.25,   -- the ts of the segment this one answers, if it had one
 }
 ```
 
@@ -385,16 +387,24 @@ the connection, or carries a message. Plain acknowledgements don't. Lua's number
 connection could send, so sequence numbers never wrap.
 
 - **Opening:** a three-way handshake: S, then S+A, then A. A listening port queues up to eight connections waiting to
-  be accepted, counting ones still opening, and ignores more. Their senders try again. A computer has at most 128
-  connections. A segment for a connection which doesn't exist gets an R, rate-limited like ICMP errors.
+  be accepted, counting ones still opening, and ignores more. Their senders try again. When the queue is full, a
+  connection which is still opening and whose S+A went unanswered the first time makes way for a new one, so opens from
+  computers which don't exist can't keep everyone else out. A computer has at most 128 connections. A segment for a
+  connection which doesn't exist gets an R, rate-limited like ICMP errors.
+- **Restarts:** a computer which restarts forgets its connections, but the other sides don't know. Its ports start
+  from a random one each time, so a new connection rarely looks like an old one. If it does, the other side answers the
+  S with a plain acknowledgement of where the old connection was up to. That's an acknowledgement of something the
+  restarted computer never sent, so it answers with an R, which clears the old connection, and its next try gets
+  through.
 - **Acknowledgements:** every message is acknowledged as it arrives. Messages which arrive early, within the window,
   are held until the gap before them fills, and listed in `sack`, so the sender doesn't resend them. Duplicates are
   dropped and acknowledged again.
 - **Retransmission:** the timeout comes from measured round trips (RFC 6298: smoothed round trip plus four times its
   mean deviation). It starts at 1 second, is at least 0.25 seconds (five ticks) and at most 30, and doubles on each retry.
-  Only messages sent once, and acknowledged as they arrive, count as round-trip samples. Messages held for a gap have
-  been waiting, and would make the timeout far too long. After eight retries (about two minutes) the connection resets
-  and the program gets "Timed out". Opening gives up after five.
+  Round trips are measured with `ts` and `echo`, much like TCP's timestamps: the first segment sent straight away in
+  answer to one with a `ts` sends it back as `echo`. That's right even when a message was sent twice, or waited at the
+  other side for a gap to fill, which working it out from the acknowledgement numbers isn't. After eight retries (about
+  two minutes) the connection resets and the program gets "Timed out". Opening gives up after five.
 - **Faster recovery:** a lost message is found before its timeout by duplicate acknowledgements: three of them, or fewer
   when only a few messages are in flight and nothing new can be sent (RFC 5827). It's then resent at once. Until
   everything sent before the loss is acknowledged, each partial acknowledgement resends the next gap (NewReno). Radio
@@ -604,7 +614,8 @@ traffic. The implementation (`cc.internal.net.noise`) matches the cacophony test
 - **Anonymous clients:** `NK` clients don't say who they are, so servers refuse them unless they're listening with
   `anonymous = true`. A server which needs to know its clients, like `rshd`, can't forget to check.
 - **Handshakes in `accept`:** the server's half of the handshake runs inside `accept`, so a client which stalls holds up
-  others for up to 5 seconds. Handshakes which fail are logged and skipped.
+  others for up to 5 seconds at each step. Handshakes which fail are logged and skipped, including ones whose keys
+  are made so that no secret can be agreed with them.
 
 The handshake's steps that use a computer's long-term key call `enclave.exchange`, so that key never leaves the
 enclave. Ephemeral keys are made with `crypto.generateKeyPair` and thrown away after the handshake.
@@ -648,7 +659,8 @@ Secure connections offer the same methods as plain ones, so programs switch by c
     restarts, so a nonce is never reused. Every computer on a server shares that clock, so frames more than a minute
     from now are refused. Receivers only remember each sender's recent frames (the last two seconds' worth, so frames
     can arrive a little out of order) to refuse replays. A sender forgotten for lack of room can't have its old frames
-    replayed, as they're too old by then.
+    replayed, as they're too old by then. A receiver which has just started (or been given the passphrase) remembers
+    nothing, so it refuses every frame from before then.
   - **Failing closed:** an interface with a passphrase but no crypto API sends and accepts nothing, rather than sending
     in the clear.
   - **Limits:** like WPA, this keeps outsiders off a base's network, but has no forward secrecy, and everyone with the
@@ -1073,7 +1085,7 @@ The default fill fraction needs tuning in play.
   placed again.
 - **Protocol logic:** Lua specs in the test ROM (`test-rom/spec/modules/cc/internal/net/`). They connect many `Stack`
   objects with virtual links (`test-rom/spec/support/virtual_network.lua`) and a clock which only moves when told to.
-  Links can be slow and lose frames, computers can be removed, and anything can be put on a link. The network counts
+  Links can be slow, lose frames and deliver them twice, computers can be removed, and anything can be put on a link. The network counts
   frames and queued events, to measure floods. This covers routing convergence and DHCP races deterministically,
   without Minecraft. Each spec must finish within 10 seconds, which limits how big a network one can simulate.
 - **Noise:** the published test vectors.
@@ -1134,6 +1146,60 @@ After phase 3, the stack was tested against big networks, bad links and misbehav
   100 computers starting at once take about 50 seconds to all get addresses. Clients now find clashes themselves, so
   this probe could become optional.
 - **`netdump`.** It queues an event for every frame while capturing, as a debugging tool.
+
+### Robustness of connections and security
+
+After phases 4 and 5, connections, secure connections and encrypted links were tested the same way:
+
+- **Connections under stress** (`tcp_stress_spec.lua`):
+  - Links which lose a fifth of their frames, deliver half of them twice, and reorder them.
+  - 40 rounds of random programs on random bad links, sending, receiving, closing and aborting in any order. Each side
+    must receive the first so many messages the other sent, and all of them if nothing failed.
+  - 128 connections at once, a thousand one after another, and 30 computers connecting to one port in the same moment.
+    Afterwards no connection, port or timer may be left.
+  - Computers which restart, on either side of a connection.
+  - A flood of 20 opens a second from addresses which don't exist, and 400 made-up segments aimed at an open
+    connection.
+- **Fuzzing the security layer** (`secure_fuzz_spec.lua`):
+  - Every message of both handshakes replaced by each of the 12 bad values, cut to every length, lengthened, and with
+    each byte changed. Keys which give everyone the same secret. 300 opening messages of noise. About 1,300
+    handshakes in all.
+  - Encrypted messages which are anything but ciphertext, or decrypt to something which isn't a message.
+  - The codec, given 6,000 strings of noise and every one-bit change to some encoded values. Whatever it accepts must
+    encode again, and read back the same.
+  - Certificates with each field and each byte changed.
+  - Sealed frames with each field made bad, from computers with and without the passphrase. Frames from 2,000
+    computers. Frames replayed after the receiver restarts.
+  - Remote terminal drawing calls with every argument made bad.
+- **Fuzzing** covers the new `ts` and `echo` fields of segments too.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| One message crashed any secure server, `rshd` included. A client's first `XX` message carries a key the server can't check until it answers. A key chosen so that every secret agreed with it is zero made the answer throw an error, which went straight through `accept` and ended the program. | Writing a handshake message reports failure rather than throwing, as reading always did. The handshake fails, is logged, and `accept` carries on. |
+| Eight opens from addresses which don't exist closed a listening port for a minute, as each waited that long for an answer. Eight frames a minute kept it closed for good. | When the queue is full, a connection which is still opening and has already had to repeat its answer makes way. With 20 such opens a second, about half of real clients now get in within 5 seconds, where none did. |
+| A computer which restarted couldn't connect to a server it had an idle connection to for up to two minutes. Ports were handed out from 49152 each time, so the new connection looked like the old one, and the server ignored its S. | Ports start from a random one. A server answers an S it doesn't expect with where the old connection was up to, and the restarted computer resets that. The new connection opens on the next try, a second later. |
+| On a bad link, a connection could measure a round trip of half a minute, and from then on wait that long to resend every lost message. A message which arrived, but whose acknowledgement was lost, was timed from when it was sent until the message before it had been sent again. One connection took nine minutes to deliver 16 messages. | Round trips are measured with `ts` and `echo`, which is exact for every segment. A connection which has no measurement at all also comes back down from a long timeout once messages get through. |
+| A frame recorded on an encrypted link could be replayed for up to a minute to a computer which had restarted since, as it had forgotten which frames it had seen. | A computer refuses frames from before it started. |
+
+**Left as they are:**
+
+- **Messages which can't be sealed.** Encrypted links and secure connections encode with `cc.net.codec`, which refuses
+  tables which contain themselves, tables as keys, and nesting deeper than 64. A plain connection accepts such a
+  message, but an encrypted link on its way drops it without a word, so the connection times out a minute and a half
+  later, along with everything queued behind it. Connections could refuse what the codec can't encode, at the cost of
+  no longer carrying everything a modem can.
+- **Faster floods of opens.** A flood still keeps some real clients out: about half of them at 20 opens a second, and
+  more as it grows. Doing better needs the server to keep nothing until the client answers (as SYN cookies do).
+- **`rshd` and slow clients.** `rshd` serves one client at a time. A client which connects, and then doesn't answer
+  the password prompt, holds it for up to three minutes. A client which stalls in the handshake holds any secure
+  server for up to 10 seconds.
+- **Made-up segments and errors.** A segment with exactly the next sequence number is accepted, as with TCP, and an
+  ICMP error about a connection which is still opening ends it. Both need a guess at the ports, which are harder to
+  guess now they start at random. Only secure connections stop this properly.
+- **Computers with the passphrase.** Any of them can pretend to be any other on an encrypted link, or fill the list of
+  512 computers a receiver remembers, which keeps new ones out for a minute.
 
 ## 14. Implementation plan
 

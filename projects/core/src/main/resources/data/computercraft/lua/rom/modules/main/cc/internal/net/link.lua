@@ -14,7 +14,8 @@ or sent to anyone else.
 
 Counters come from real time: `os.epoch("utc")` in milliseconds, times 1024, so they keep growing even when a computer
 restarts. Every computer on a server shares that clock, so frames more than a minute from now are refused, and a
-receiver only needs to remember which recent frames it has seen to refuse replays.
+receiver only needs to remember which recent frames it has seen to refuse replays. A receiver which has just started
+remembers nothing, so it refuses every frame sent before it started.
 
 There's no forward secrecy: anyone who learns the passphrase can read everything sent with it, past and future. Use
 secure connections for anything sensitive.
@@ -52,7 +53,10 @@ end
 @treturn table The link.
 ]]
 local function new(crypto, key, epoch)
-    return { crypto = crypto, key = key, epoch = epoch, counter = 0, peers = {}, peer_count = 0 }
+    return {
+        crypto = crypto, key = key, epoch = epoch, counter = 0, peers = {}, peer_count = 0,
+        started = math.floor(epoch() * PER_MS),
+    }
 end
 
 local function nonce(id, counter)
@@ -111,6 +115,9 @@ local function open(link, src, dst, sealed)
 
     local now = link.epoch() * PER_MS
     if math.abs(counter - now) > MAX_AGE * PER_MS then return nil end
+    -- We don't know which frames from before we started (or were given the key) have been seen, so any could be a
+    -- replay.
+    if counter < link.started then return nil end
     local peer = link.peers[src]
     if peer and (counter <= peer.top - REORDER * PER_MS or peer.seen[counter]) then return nil end
 
