@@ -41,6 +41,18 @@ public interface PacketReceiver {
     double getRange();
 
     /**
+     * How much worse this device receives than a wireless modem on a placed computer, in dB. When radio propagation is
+     * simulated, this is added to the signal strength of everything it receives.
+     * <p>
+     * Pocket computers and turtles have weaker receivers than placed computers.
+     *
+     * @return The offset, which should be zero or negative. Positive values are treated as zero.
+     */
+    default double getReceiveOffset() {
+        return 0;
+    }
+
+    /**
      * Determine whether this receiver can receive packets from other dimensions.
      * <p>
      * A device will receive an inter-dimensional packet if either it or the sending device is inter-dimensional.

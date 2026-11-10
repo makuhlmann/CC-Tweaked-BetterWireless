@@ -12,6 +12,7 @@ import dan200.computercraft.api.turtle.*;
 import dan200.computercraft.api.upgrades.MutableUpgradeHandle;
 import dan200.computercraft.api.upgrades.UpgradeType;
 import dan200.computercraft.shared.ModRegistry;
+import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessModemPeripheral;
 import net.minecraft.core.component.DataComponentPatch;
@@ -52,6 +53,16 @@ public class TurtleModem extends AbstractTurtleUpgrade {
         @Override
         public Vec3 getAntennaPosition() {
             return Vec3.atCenterOf(turtle.getPosition());
+        }
+
+        @Override
+        public double getTransmitOffset() {
+            return Config.radioTurtleTransmitOffset;
+        }
+
+        @Override
+        public double getReceiveOffset() {
+            return Config.radioTurtleReceiveOffset;
         }
 
         @Override

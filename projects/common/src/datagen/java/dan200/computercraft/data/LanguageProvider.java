@@ -285,6 +285,10 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioVoxelRadius, "Block scan radius");
         addConfigEntry(ConfigSpec.radioProfileSamples, "Terrain profile samples");
         addConfigEntry(ConfigSpec.radioStormPenalty, "Thunderstorm noise (dB)");
+        addConfigEntry(ConfigSpec.radioPocketTransmitOffset, "Pocket computer transmit offset (dB)");
+        addConfigEntry(ConfigSpec.radioPocketReceiveOffset, "Pocket computer receive offset (dB)");
+        addConfigEntry(ConfigSpec.radioTurtleTransmitOffset, "Turtle transmit offset (dB)");
+        addConfigEntry(ConfigSpec.radioTurtleReceiveOffset, "Turtle receive offset (dB)");
         addConfigEntry(ConfigSpec.radioTickBudgetMicros, "Tick budget (microseconds)");
         addConfigEntry(ConfigSpec.radioCacheTicks, "Link cache duration (ticks)");
         addConfigEntry(ConfigSpec.radioLookupTimeoutTicks, "Terrain lookup timeout (ticks)");

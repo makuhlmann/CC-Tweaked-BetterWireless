@@ -275,7 +275,10 @@ public final class RadioPropagationService {
     }
 
     private void deliver(Delivery delivery, RadioBand band, LinkResult result) {
-        var signal = band.transmitPower() - result.loss();
+        var signal = RadioMath.receivedSignal(
+            band.transmitPower(), result.loss(),
+            delivery.packet().sender().getTransmitOffset(), delivery.receiver().getReceiveOffset()
+        );
         var threshold = RadioBand.SENSITIVITY + (delivery.thundering() ? settings.stormPenalty() : 0);
         if (signal < threshold) return;
 

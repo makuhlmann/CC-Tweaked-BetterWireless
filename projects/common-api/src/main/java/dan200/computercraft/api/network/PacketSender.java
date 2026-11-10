@@ -33,4 +33,16 @@ public interface PacketSender {
      * @return This device's id.
      */
     String getSenderID();
+
+    /**
+     * How much weaker this device transmits than a wireless modem on a placed computer, in dB. When radio propagation
+     * is simulated, this is added to the signal strength at every receiver.
+     * <p>
+     * Pocket computers and turtles transmit with less power than placed computers.
+     *
+     * @return The offset, which should be zero or negative. Positive values are treated as zero.
+     */
+    default double getTransmitOffset() {
+        return 0;
+    }
 }

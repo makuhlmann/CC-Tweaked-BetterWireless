@@ -127,4 +127,20 @@ public class RadioMathTest {
         PropagationModel.fillUnknown(unknown, 64);
         assertArrayEquals(new double[]{ 64, 64 }, unknown);
     }
+
+    @Test
+    public void weakerDevicesLoseSignal() {
+        assertEquals(-80, RadioMath.receivedSignal(20, 100, 0, 0), 1e-9);
+        // A pocket computer talking to a placed computer: 10 dB less on the way up, 7 dB less on the way down.
+        assertEquals(-90, RadioMath.receivedSignal(20, 100, -10, 0), 1e-9);
+        assertEquals(-87, RadioMath.receivedSignal(20, 100, 0, -7), 1e-9);
+        // Two pocket computers lose both.
+        assertEquals(-97, RadioMath.receivedSignal(20, 100, -10, -7), 1e-9);
+    }
+
+    @Test
+    public void deviceOffsetsNeverStrengthen() {
+        // Links are only evaluated as far as the strongest device reaches, so nothing may be stronger than that.
+        assertEquals(-80, RadioMath.receivedSignal(20, 100, 15, 3), 1e-9);
+    }
 }

@@ -7,6 +7,7 @@ package dan200.computercraft.shared.pocket.peripherals;
 import dan200.computercraft.api.peripheral.IPeripheral;
 import dan200.computercraft.api.pocket.IPocketAccess;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
+import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessModemPeripheral;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -34,6 +35,16 @@ public class PocketModemPeripheral extends WirelessModemPeripheral {
     public Vec3 getAntennaPosition() {
         // This is the holder's eyes, or the middle of a lectern, both of which are already a sensible place for it.
         return access.getPosition();
+    }
+
+    @Override
+    public double getTransmitOffset() {
+        return Config.radioPocketTransmitOffset;
+    }
+
+    @Override
+    public double getReceiveOffset() {
+        return Config.radioPocketReceiveOffset;
     }
 
     @Override

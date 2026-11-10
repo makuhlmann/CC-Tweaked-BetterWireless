@@ -81,6 +81,10 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Integer> radioVoxelRadius;
     public static final ConfigFile.Value<Integer> radioProfileSamples;
     public static final ConfigFile.Value<Double> radioStormPenalty;
+    public static final ConfigFile.Value<Double> radioPocketTransmitOffset;
+    public static final ConfigFile.Value<Double> radioPocketReceiveOffset;
+    public static final ConfigFile.Value<Double> radioTurtleTransmitOffset;
+    public static final ConfigFile.Value<Double> radioTurtleReceiveOffset;
     public static final ConfigFile.Value<Integer> radioTickBudgetMicros;
     public static final ConfigFile.Value<Integer> radioCacheTicks;
     public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
@@ -436,6 +440,22 @@ public final class ConfigSpec {
                 .comment("How much noise thunderstorms add, in dB. Every 6dB roughly halves the range.")
                 .defineInRange("storm_noise", Config.radioStormPenalty, 0, 100);
 
+            radioPocketTransmitOffset = builder
+                .comment("How much weaker pocket computers' modems transmit than placed computers', in dB.")
+                .defineInRange("pocket_transmit_offset", Config.radioPocketTransmitOffset, -100, 0);
+
+            radioPocketReceiveOffset = builder
+                .comment("How much worse pocket computers' modems receive than placed computers', in dB.")
+                .defineInRange("pocket_receive_offset", Config.radioPocketReceiveOffset, -100, 0);
+
+            radioTurtleTransmitOffset = builder
+                .comment("How much weaker turtles' modems transmit than placed computers', in dB.")
+                .defineInRange("turtle_transmit_offset", Config.radioTurtleTransmitOffset, -100, 0);
+
+            radioTurtleReceiveOffset = builder
+                .comment("How much worse turtles' modems receive than placed computers', in dB.")
+                .defineInRange("turtle_receive_offset", Config.radioTurtleReceiveOffset, -100, 0);
+
             radioTickBudgetMicros = builder
                 .comment("How long the server may spend evaluating radio links each tick, in microseconds.")
                 .defineInRange("tick_budget", Config.radioTickBudgetMicros, 100, 50_000);
@@ -604,6 +624,10 @@ public final class ConfigSpec {
         Config.radioVoxelRadius = radioVoxelRadius.get();
         Config.radioProfileSamples = radioProfileSamples.get();
         Config.radioStormPenalty = radioStormPenalty.get();
+        Config.radioPocketTransmitOffset = radioPocketTransmitOffset.get();
+        Config.radioPocketReceiveOffset = radioPocketReceiveOffset.get();
+        Config.radioTurtleTransmitOffset = radioTurtleTransmitOffset.get();
+        Config.radioTurtleReceiveOffset = radioTurtleReceiveOffset.get();
         Config.radioTickBudgetMicros = radioTickBudgetMicros.get();
         Config.radioCacheTicks = radioCacheTicks.get();
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();

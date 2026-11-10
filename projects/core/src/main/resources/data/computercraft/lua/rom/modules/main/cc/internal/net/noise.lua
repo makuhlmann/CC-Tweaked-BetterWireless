@@ -28,6 +28,8 @@ local BASE_POINT = "\9" .. ("\0"):rep(31)
 local PATTERNS = {
     XX = { pre_responder = false, messages = { { "e" }, { "e", "ee", "s", "es" }, { "s", "se" } } },
     NK = { pre_responder = true, messages = { { "e", "es" }, { "e", "ee" } } },
+    IK = { pre_responder = true, messages = { { "e", "es", "s", "ss" }, { "e", "ee", "se" } } },
+    XXpsk3 = { pre_responder = false, psk = true, messages = { { "e" }, { "e", "ee", "s", "es" }, { "s", "se", "psk" } } },
 }
 
 local function nonce(n)
@@ -71,12 +73,14 @@ end
 local Handshake = {}
 Handshake.__index = Handshake
 
--- HKDF with the chaining key as the salt and an empty info string, giving two 32-byte outputs.
-function Handshake:hkdf(ikm)
+-- HKDF with the chaining key as the salt and an empty info string, giving two (or three) 32-byte outputs.
+function Handshake:hkdf(ikm, three)
     local hmac = self.crypto.hmac
     local temp = hmac(self.ck, ikm)
     local first = hmac(temp, "\1")
-    return first, hmac(temp, first .. "\2")
+    local second = hmac(temp, first .. "\2")
+    if three then return first, second, hmac(temp, second .. "\3") end
+    return first, second
 end
 
 function Handshake:mix_hash(data)
@@ -86,6 +90,14 @@ end
 function Handshake:mix_key(ikm)
     local key
     self.ck, key = self:hkdf(ikm)
+    self.cipher = new_cipher(self.crypto, key)
+end
+
+-- Mix in the pre-shared key.
+function Handshake:mix_key_and_hash(ikm)
+    local temp_h, key
+    self.ck, temp_h, key = self:hkdf(ikm, true)
+    self:mix_hash(temp_h)
     self.cipher = new_cipher(self.crypto, key)
 end
 
@@ -119,6 +131,18 @@ function Handshake:token_dh(token)
         if initiator then return self:dh("e", self.rs) else return self:dh("s", self.re) end
     elseif token == "se" then
         if initiator then return self:dh("s", self.re) else return self:dh("e", self.rs) end
+    elseif token == "ss" then
+        return self:dh("s", self.rs)
+    end
+end
+
+-- Handle a token which isn't a key being sent: a DH, or the pre-shared key.
+function Handshake:token(token)
+    if token == "psk" then
+        if not self.psk then error("This handshake needs a pre-shared key", 0) end
+        self:mix_key_and_hash(self.psk)
+    else
+        self:mix_key(self:token_dh(token))
     end
 end
 
@@ -144,10 +168,12 @@ function Handshake:write(payload)
                 end
                 parts[#parts + 1] = self.e.public
                 self:mix_hash(self.e.public)
+                -- With a pre-shared key, ephemeral keys are mixed into the key too.
+                if self.pattern.psk then self:mix_key(self.e.public) end
             elseif token == "s" then
                 parts[#parts + 1] = self:encrypt_and_hash(self.s.public)
             else
-                self:mix_key(self:token_dh(token))
+                self:token(token)
             end
         end
         parts[#parts + 1] = self:encrypt_and_hash(payload or "")
@@ -184,10 +210,11 @@ function Handshake:read(message)
             if token == "e" then
                 self.re = take(KEY_LENGTH)
                 self:mix_hash(self.re)
+                if self.pattern.psk then self:mix_key(self.re) end
             elseif token == "s" then
                 self.rs = self:decrypt_and_hash(take(KEY_LENGTH + (self.cipher and TAG_LENGTH or 0)))
             else
-                self:mix_key(self:token_dh(token))
+                self:token(token)
             end
         end
         return self:decrypt_and_hash(message:sub(position))
@@ -235,10 +262,11 @@ end
     prologue? = string,
     static? = { public = string, exchange = function(public:string):string },
     remote_static? = string,
+    psk? = string,
     ephemeral? = string,
-} options The `crypto` API; the pattern (`"XX"` or `"NK"`); whether we start it; data both sides must agree on;
-our static key; the other side's static key, if we know it already (the initiator of `NK` must); and, for tests only, a
-fixed private ephemeral key.
+} options The `crypto` API; the pattern (`"XX"`, `"NK"`, `"IK"` or `"XXpsk3"`); whether we start it; data both sides
+must agree on; our static key; the other side's static key, if we know it already (the initiator of `NK` and `IK`
+must); the 32-byte pre-shared key, for `XXpsk3`; and, for tests only, a fixed private ephemeral key.
 @treturn table The handshake.
 ]]
 local function new(options)
@@ -251,6 +279,7 @@ local function new(options)
     local self = setmetatable({
         crypto = crypto, pattern = pattern, initiator = options.initiator, index = 1,
         h = h, ck = h, s = options.static, rs = options.remote_static, fixed_ephemeral = options.ephemeral,
+        psk = options.psk,
     }, Handshake)
 
     self:mix_hash(options.prologue or "")

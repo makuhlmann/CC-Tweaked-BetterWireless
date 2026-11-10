@@ -37,6 +37,10 @@ public final class Config {
     public static int radioVoxelRadius = 64;
     public static int radioProfileSamples = 512;
     public static double radioStormPenalty = 6;
+    public static double radioPocketTransmitOffset = -10;
+    public static double radioPocketReceiveOffset = -7;
+    public static double radioTurtleTransmitOffset = -10;
+    public static double radioTurtleReceiveOffset = -7;
     public static int radioTickBudgetMicros = 2000;
     public static int radioCacheTicks = 100;
     public static int radioLookupTimeoutTicks = 40;

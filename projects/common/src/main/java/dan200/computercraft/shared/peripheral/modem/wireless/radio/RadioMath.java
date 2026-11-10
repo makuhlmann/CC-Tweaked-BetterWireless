@@ -22,6 +22,23 @@ public final class RadioMath {
     }
 
     /**
+     * The strength of a signal at a receiver, in dBm.
+     * <p>
+     * Links are evaluated for the strongest transmitter and receiver, so their losses can be shared between devices.
+     * Weaker devices' offsets are then added. Offsets above zero are ignored, as nothing beyond what the strongest
+     * device reaches is evaluated.
+     *
+     * @param transmitPower  The power of a placed computer's modem, in dBm.
+     * @param loss           The path loss, in dB.
+     * @param transmitOffset How much weaker the sender transmits, in dB.
+     * @param receiveOffset  How much worse the receiver receives, in dB.
+     * @return The signal strength, in dBm.
+     */
+    public static double receivedSignal(double transmitPower, double loss, double transmitOffset, double receiveOffset) {
+        return transmitPower - loss + Math.min(0, transmitOffset) + Math.min(0, receiveOffset);
+    }
+
+    /**
      * The wavelength of a signal.
      *
      * @param frequencyMHz The frequency in MHz.

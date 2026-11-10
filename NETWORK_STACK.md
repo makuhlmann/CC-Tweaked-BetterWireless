@@ -968,7 +968,7 @@ Most of the stack is Lua. These changes to the mod are planned:
 | `enclave` API (§9) | Keys programs can use but not copy | Phase 0 |
 | `modem.isInterdimensional()` | Lets the stack recognise ender modems (§4) | Phase 1 |
 | Wireless message size limit | Stops anyone broadcasting huge messages to everything in range | Phase 1 |
-| Transmit and receive power by device | Phones are weaker than fixed computers, in both directions | Before phase 6 |
+| Transmit and receive power by device | Phones are weaker than fixed computers, in both directions | Phase 6 (done) |
 | Ender modem rework and cable recipe | Ender modems are too strong for their cost, and make cables pointless | Independent |
 
 ### Transmit and receive power by device
@@ -992,6 +992,12 @@ them about 38% of the range of two placed computers: closer to walkie-talkies th
 Path loss doesn't depend on transmit or receive offsets, so neither costs any extra propagation work. Links are evaluated with the
 strongest possible transmitter's budget, cached as now, and each sender's and receiver's offsets are subtracted from the
 signal strength when a message is delivered.
+
+**As built:** `PacketSender.getTransmitOffset()` and `PacketReceiver.getReceiveOffset()` default to 0 in the API, and
+pocket computers' and turtles' modems return the config's `pocket_transmit_offset`, `pocket_receive_offset`,
+`turtle_transmit_offset` and `turtle_receive_offset` (−10, −7, −10 and −7 dB, each from −100 to 0). Offsets above 0 are
+ignored, so the link evaluation's budget, for the strongest devices, stays an upper bound. The ender modem's offset
+comes with its rework.
 
 ### Wireless message size limit
 
