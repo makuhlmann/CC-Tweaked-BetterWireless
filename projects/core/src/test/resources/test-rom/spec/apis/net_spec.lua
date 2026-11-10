@@ -143,6 +143,83 @@ describe("The net library", function()
         end)
     end)
 
+    describe("net.cell", function()
+        local FILES = { "/.net/sim", "/.net/phone", "/.net/messages" }
+        local function write(path, value)
+            local file = fs.open(path, "w")
+            file.write(textutils.serialise(value))
+            file.close()
+        end
+        local function clean()
+            for _, path in ipairs(FILES) do fs.delete(path) end
+        end
+        before_each(clean)
+
+        it("validates its arguments", function()
+            expect.error(net.cell.setEnabled, "yes"):eq("bad argument #1 (boolean expected, got string)")
+            expect.error(net.cell.setNetwork, 5):eq("bad argument #1 (string expected, got number)")
+            expect.error(net.cell.markRead, "all"):eq("bad argument #1 (number expected, got string)")
+            expect.error(net.cell.deleteMessage):eq("bad argument #1 (number expected, got nil)")
+            expect.error(net.cell.send, "1"):eq("bad argument #2 (string expected, got nil)")
+        end)
+
+        it("keeps messages, numbered, with whether they've been read and how sending went", function()
+            -- An older version's messages have no numbers, and count as read.
+            write("/.net/messages", {
+                { from = "1", text = "old", time = 1000 },
+                { from = "2", text = "new", time = 2000, read = false, n = 7 },
+                { to = "3", text = "on its way", time = 3000, n = 8, id = 99, status = "sending" },
+                { to = "3", text = "there", time = 4000, n = 9, id = 98, status = "sent" },
+                "junk",
+            })
+            expect(net.cell.info().unread):eq(1)
+            expect(net.cell.messages()):same {
+                { n = 10, from = "1", text = "old", time = 1000, read = true },
+                { n = 7, from = "2", text = "new", time = 2000, read = false },
+                -- The computer restarted before the network took this one.
+                { n = 8, to = "3", text = "on its way", time = 3000, status = "failed", error = "Not sent" },
+                { n = 9, to = "3", text = "there", time = 4000, status = "sent" },
+            }
+
+            expect(net.cell.markRead(99)):eq(0)
+            expect(net.cell.markRead(7)):eq(1)
+            expect(net.cell.markRead()):eq(0)
+            expect(net.cell.info().unread):eq(0)
+            expect(net.cell.deleteMessage(8)):eq(true)
+            expect(net.cell.deleteMessage(8)):eq(false)
+            local left = {}
+            for i, message in ipairs(net.cell.messages()) do left[i] = message.text end
+            expect(left):same { "old", "new", "there" }
+            clean()
+            expect(net.cell.messages()):same {}
+        end)
+
+        it("can be turned off, and told which network to use", function()
+            expect(net.cell.info().state):eq("none")
+            expect(net.cell.info().enabled):eq(true)
+            expect({ net.cell.send("1", "hello") }):same { nil, "No SIM" }
+
+            write("/.net/sim", { network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1" })
+            expect(net.cell.setEnabled(false)):eq(true)
+            local info = net.cell.info()
+            expect({ info.state, info.enabled, info.network, info.selection, info.roaming }):same { "off", false, "ACME", "auto", false }
+            expect(info.subscriber):same { id = "ACME-1", number = "1" }
+            expect({ net.cell.send("1", "hello") }):same { nil, "Cell service is turned off" }
+
+            -- Its own network is always listed, in range or not.
+            expect(net.cell.networks()):same {
+                { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
+            }
+            expect({ net.cell.setNetwork("BETA") }):same { nil, "This SIM can't use BETA" }
+            expect(net.cell.setNetwork("ACME")):eq(true)
+            expect(net.cell.info().selection):eq("ACME")
+            expect(net.cell.networks()[1].selected):eq(true)
+            expect(net.cell.setNetwork("auto")):eq(true)
+            expect(net.cell.info().selection):eq("auto")
+            clean()
+        end)
+    end)
+
     describe("net.ping", function()
         it("validates its arguments", function()
             expect.error(net.ping, nil):eq("bad argument #1 (string expected, got nil)")

@@ -21,6 +21,7 @@ end
 
 local STATES = {
     none = "No SIM: activate one with 'cell activate'",
+    off = "Cell service is turned off",
     inactive = "Not activated",
     activating = "Activating",
     searching = "Searching for a cell",
@@ -50,7 +51,7 @@ local function monitor()
     end
 
     local SHORT_STATES = {
-        none = "No SIM", inactive = "Not activated", activating = "Activating", searching = "Searching",
+        none = "No SIM", off = "Turned off", inactive = "Not activated", activating = "Activating", searching = "Searching",
         attaching = "Attaching", attached = "Attached", rejected = "Rejected",
     }
     local STATE_COLOURS = {
@@ -290,8 +291,15 @@ elseif command == "messages" and #args == 1 then
     local messages = net.cell.messages()
     if #messages == 0 then print("No messages.") end
     for _, message in ipairs(messages) do
-        print(("%s  From %s: %s"):format(os.date("%Y-%m-%d %H:%M", message.time / 1000), message.from, message.text))
+        local time = os.date("%Y-%m-%d %H:%M", message.time / 1000)
+        if message.from then
+            print(("%s  From %s: %s"):format(time, message.from, message.text))
+        else
+            local status = message.status == "sent" and "" or (" (%s)"):format(message.error or message.status)
+            print(("%s  To %s: %s%s"):format(time, message.to, message.text, status))
+        end
     end
+    net.cell.markRead()
 else
     usage()
 end

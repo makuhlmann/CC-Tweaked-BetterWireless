@@ -1324,17 +1324,17 @@ After phase 6, the cellular layer was tested the same way (`cell_stress_spec.lua
 `cell_service_spec.lua` and `noise_spec.lua`):
 
 - **Pretending to be a phone's cell:** refusals, handshake answers which don't read, and competing requests "from" the
-  phone, sent between a phone's request and the real answer, while attaching and while activating. About 1,500 frames
+  phone, sent between a phone's request and the real answer, while attaching and while activating. About 3,000 frames
   with each field made bad, as from the phone's cell and as broadcasts from anyone.
 - **Cells and cores which send odd things:** sealed messages to phones and from them, and control messages both ways,
-  with each field made bad: about 3,000 in all. A phone doesn't choose its operator's software, so a cell may refuse
+  with each field made bad: about 5,000 in all. A phone doesn't choose its operator's software, so a cell may refuse
   to serve it, but mustn't be able to break it.
 - **Bad radio links:** attaching and walking past three cells with an open connection at 15% loss. Twelve trips back
   and forth between two cells at 25% loss. Thirty messages at 25% loss.
 - **Restarts:** a cell which restarts and is back before its phones notice, and a core which does.
 - **Scale and floods:** 60 phones through one cell. 800 messages to a phone which is never there and to numbers nobody
   has. 2,000 activations which never finish. 300 made-up cells.
-- **Management:** about 600 requests to a running core with each field made bad, and 200 computers which introduce
+- **Management:** about 600 requests to a running core with each field made bad, and 170 computers which introduce
   themselves oddly.
 - **Handshakes:** every byte of every message of all four Noise patterns changed, messages cut short and lengthened,
   and keys which give everyone the same secret.

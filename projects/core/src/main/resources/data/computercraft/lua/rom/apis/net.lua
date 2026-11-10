@@ -1398,8 +1398,52 @@ secure = {
 -- Cellular networks. A phone runs in the background, once the computer has a SIM.
 local SIM_FILE = "/.net/sim"
 local INBOX_FILE = "/.net/messages"
+-- What the user has chosen: `off` (cell service is turned off) and `network` (the only network to use).
+local PHONE_FILE = "/.net/phone"
 local MAX_INBOX = 100
 local phone_instance
+
+-- Messages received and sent, oldest first. Each has a number, `n`, which stays the same as others come and go.
+local function read_messages()
+    local list, last = {}, 0
+    for _, message in ipairs(read_table(INBOX_FILE)) do
+        if type(message) == "table" and type(message.text) == "string" then
+            list[#list + 1] = message
+            if type(message.n) == "number" and message.n > last then last = message.n end
+        end
+    end
+    -- Messages kept by older versions have no numbers.
+    for _, message in ipairs(list) do
+        if type(message.n) ~= "number" then
+            last = last + 1
+            message.n = last
+        end
+    end
+    return list, last
+end
+
+local function add_message(message)
+    local list, last = read_messages()
+    message.n = last + 1
+    list[#list + 1] = message
+    while #list > MAX_INBOX do table.remove(list, 1) end
+    write_table(INBOX_FILE, list)
+    return message.n
+end
+
+-- Change the stored messages a test picks. Returns how many there were.
+local function change_messages(test, change)
+    local list = read_messages()
+    local count = 0
+    for i = #list, 1, -1 do
+        if test(list[i]) then
+            count = count + 1
+            if change(list[i]) == false then table.remove(list, i) end
+        end
+    end
+    if count > 0 then write_table(INBOX_FILE, list) end
+    return count
+end
 
 local function sim_key()
     require_crypto()
@@ -1436,12 +1480,14 @@ local function new_phone(operator)
         -- With a cell on this computer, this phone may be its backhaul.
         relay = function() return background.cell ~= nil end,
         on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
-        on_sent = function(id, ok, reason) os.queueEvent("cell_sent", id, ok, reason) end,
+        on_sent = function(id, ok, reason)
+            change_messages(function(message) return message.id == id and message.status == "sending" end, function(message)
+                message.status, message.error = ok and "sent" or "failed", reason
+            end)
+            os.queueEvent("cell_sent", id, ok, reason)
+        end,
         on_message = function(from, text)
-            local inbox = read_table(INBOX_FILE)
-            inbox[#inbox + 1] = { from = from, text = text, time = os.epoch("utc") }
-            while #inbox > MAX_INBOX do table.remove(inbox, 1) end
-            write_table(INBOX_FILE, inbox)
+            add_message({ from = from, text = text, time = os.epoch("utc"), read = false })
             os.queueEvent("cell_message", from, text)
         end,
         on_activated = function(info)
@@ -1457,6 +1503,7 @@ end
 -- Start the phone, if this computer has been activated on a network.
 function start_phone()
     if phone_instance or not crypto or not enclave then return end
+    if read_table(PHONE_FILE).off then return end
     local sim = read_table(SIM_FILE)
     local key, signing = from_hex(sim.key), from_hex(sim.signing)
     if type(sim.network) ~= "string" or not key or not signing then return end
@@ -1585,10 +1632,17 @@ and why not) for each message sent.
 cell = {
     --[[- Get the phone's state.
 
-    @treturn table `state` (`"none"` with no SIM, `"inactive"`, `"activating"`, `"searching"`, `"attaching"`, `"attached"` or
-    `"rejected"`); `network`; `subscriber` (`id` and `number`); `cell`, the cell it's using; `address`; `cells`, the cells
-    of its network it hears, strongest first, each with `id` and `signal`; `networks`, the networks around; why it was
-    rejected or activation failed (`rejected`, `activation_error`);
+    @treturn table `state` (`"none"` with no SIM, `"off"` when cell service is turned off, `"inactive"`, `"activating"`,
+    `"searching"`, `"attaching"`, `"attached"` or `"rejected"`); `network`, the SIM's own; `subscriber` (`id` and
+    `number`); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
+    with `id` and `signal`; `networks`, the names of the networks around; why it was rejected or activation failed
+    (`rejected`, `activation_error`);
+
+     - `enabled`: whether cell service is turned on (see `net.cell.setEnabled`);
+     - `signal` and `serving_network`: the signal strength (dBm) and network of the cell it's using, when attached;
+     - `roaming`: whether that's another network than the SIM's own;
+     - `selection`: `"auto"`, or the only network it has been told to use (see `net.cell.setNetwork`);
+     - `unread`: how many messages haven't been read;
 
      - `heard`: every cell it has heard in the last 30 seconds, of any network, the ones heard in the last few seconds
        first, then strongest first. Each has `id`, `network`, `signal` (dBm), `area`, `load` (0 to 1), `age` (seconds
@@ -1603,15 +1657,27 @@ cell = {
     ]]
     info = function()
         load()
-        if not phone_instance then
-            local sim = read_table(SIM_FILE)
-            return { state = "none", network = sim.network }
+        local sim = read_table(SIM_FILE)
+        local chosen = read_table(PHONE_FILE)
+        local off = chosen.off == true and type(sim.network) == "string"
+        local info
+        if phone_instance then
+            info = phone_instance:info()
+            info.address = info.address and address.format(info.address)
+        else
+            info = { state = "none", network = sim.network }
         end
-        local info = phone_instance:info()
-        info.address = info.address and address.format(info.address)
-        if not info.subscriber then
-            local sim = read_table(SIM_FILE)
-            if sim.id then info.subscriber = { id = sim.id, number = sim.number } end
+        if off then info.state = "off" end
+        if not info.subscriber and sim.id then info.subscriber = { id = sim.id, number = sim.number } end
+        info.enabled = not off
+        info.selection = type(chosen.network) == "string" and chosen.network or "auto"
+        info.roaming = info.roaming == true
+        info.unread = 0
+        for _, message in ipairs(read_messages()) do
+            if message.from and message.read == false then info.unread = info.unread + 1 end
+        end
+        for _, cell in ipairs(info.heard or {}) do
+            if cell.serving then info.signal, info.serving_network = cell.signal, cell.network end
         end
         return info
     end,
@@ -1650,6 +1716,12 @@ cell = {
             phone_instance:stop()
             phone_instance = nil
         end
+        -- Activating turns cell service on.
+        local chosen = read_table(PHONE_FILE)
+        if chosen.off then
+            chosen.off = nil
+            write_table(PHONE_FILE, chosen)
+        end
         if not phone_instance then
             local ok, err = new_phone(nil)
             if not ok then return nil, err end
@@ -1665,7 +1737,7 @@ cell = {
 
     @tparam string number The number.
     @tparam string text The message, up to 1000 characters.
-    @treturn[1] true If it's being sent.
+    @treturn[1] true If it's being sent. It's listed by `net.cell.messages`, with how it's getting on.
     @treturn[1] number The message's ID, which the `cell_sent` event has.
     @treturn[2] nil If it couldn't be sent.
     @treturn[2] string Why not.
@@ -1674,16 +1746,174 @@ cell = {
         expect(1, number, "string")
         expect(2, text, "string")
         load()
-        if not phone_instance then return nil, "No SIM" end
-        return phone_instance:send_message(number, text)
+        if not phone_instance then return nil, read_table(PHONE_FILE).off and "Cell service is turned off" or "No SIM" end
+        local ok, id = phone_instance:send_message(number, text)
+        if not ok then return nil, id end
+        add_message({ to = number, text = text, time = os.epoch("utc"), id = id, status = "sending" })
+        return true, id
     end,
 
-    --[[- Get the messages this phone has received, oldest first (the last 100).
+    --[[- Get the messages this phone has received and sent, oldest first (the last 100).
 
-    @treturn { { from = string, text = string, time = number }... } The messages.
+    @treturn { { n = number, from? = string, to? = string, text = string, time = number, read? = boolean,
+    status? = string, error? = string }... } The messages. Each has `n`, a number which stays the same as other messages
+    come and go; `text`; and `time` (as `os.epoch("utc")` gives it). Received messages have `from`, the sender's number,
+    and `read`. Sent messages have `to`, and `status`: `"sending"`, `"sent"` (the network has it) or `"failed"`, with
+    `error` saying why.
     ]]
     messages = function()
-        return read_table(INBOX_FILE)
+        local waiting = {}
+        for _, message in ipairs(phone_instance and phone_instance.outbox or {}) do waiting[message.id] = true end
+        local list = read_messages()
+        for _, message in ipairs(list) do
+            if message.from then
+                message.read = message.read ~= false
+            elseif message.status == "sending" and not waiting[message.id] then
+                -- The computer restarted (or cell service was turned off) before the network took it.
+                message.status, message.error = "failed", "Not sent"
+            end
+            message.id = nil
+        end
+        return list
+    end,
+
+    --[[- Mark messages as read.
+
+    @tparam[opt] number n The message's number, as `net.cell.messages` gives it. Without one, every message is marked.
+    @treturn number How many messages were marked.
+    ]]
+    markRead = function(n)
+        expect(1, n, "number", "nil")
+        return change_messages(function(message) return message.from and message.read == false and (n == nil or message.n == n) end,
+            function(message) message.read = true end)
+    end,
+
+    --[[- Delete a message.
+
+    @tparam number n The message's number, as `net.cell.messages` gives it.
+    @treturn boolean Whether there was such a message.
+    ]]
+    deleteMessage = function(n)
+        expect(1, n, "number")
+        return change_messages(function(message) return message.n == n end, function() return false end) > 0
+    end,
+
+    --[[- Turn cell service off or on. While it's off, the phone doesn't listen or send, has no address, and isn't
+    started with the computer. The SIM and messages are kept.
+
+    @tparam boolean enabled Whether cell service should be on.
+    @treturn[1] true If it's now as asked.
+    @treturn[2] nil If it couldn't be turned on.
+    @treturn[2] string Why not.
+    ]]
+    setEnabled = function(enabled)
+        expect(1, enabled, "boolean")
+        load()
+        local chosen = read_table(PHONE_FILE)
+        if not enabled then
+            chosen.off = true
+            write_table(PHONE_FILE, chosen)
+            if phone_instance then
+                phone_instance:stop()
+                phone_instance = nil
+            end
+            os.queueEvent("cell_state", "off")
+            return true
+        end
+
+        require_crypto()
+        chosen.off = nil
+        write_table(PHONE_FILE, chosen)
+        -- A phone which was only listening (for the monitor) has no SIM to attach with.
+        if phone_instance and not phone_instance.operator then
+            phone_instance:stop()
+            phone_instance = nil
+        end
+        if not phone_instance then
+            local ok, err = pcall(start_phone)
+            if not ok then return nil, tostring(err) end
+        end
+        if not phone_instance then
+            local sim = read_table(SIM_FILE)
+            if type(sim.network) ~= "string" then return nil, "No SIM: activate one with 'cell activate'" end
+            return nil, "This needs a wireless modem"
+        end
+        os.queueEvent("cell_state", phone_instance.state)
+        return true
+    end,
+
+    --[[- List the networks around, and the SIM's own.
+
+    @treturn { { name = string, kind = string, allowed = boolean, signal? = number, serving = boolean,
+    selected = boolean }... } Each network's `name`; its `kind`: `"home"` (the SIM's own), `"partner"` (one the SIM's
+    network has a roaming agreement with) or `"other"`; whether the phone is `allowed` to use it; the `signal` of its
+    strongest cell in range (dBm), or `nil` if none is; whether the phone is using it now (`serving`); and whether it's
+    the network the phone has been told to use (`selected`). The SIM's own network comes first, then partners, then the
+    rest, strongest first.
+    ]]
+    networks = function()
+        local info = cell.info()
+        local found, list = {}, {}
+        local function entry(name)
+            if not found[name] then
+                found[name] = { name = name, kind = "other", allowed = false, serving = false, selected = info.selection == name }
+                list[#list + 1] = found[name]
+            end
+            return found[name]
+        end
+        if info.network then
+            local home = entry(info.network)
+            home.kind, home.allowed = "home", true
+        end
+        for name in pairs(info.partners or {}) do
+            local partner = entry(name)
+            partner.kind, partner.allowed = "partner", true
+        end
+        if info.selection ~= "auto" then entry(info.selection) end
+        for _, heard in ipairs(info.heard or {}) do
+            -- Cells which have gone quiet don't count, nor do ones which only claim to be a network's.
+            if heard.age <= 4 and heard.verified ~= false then
+                local network = entry(heard.network)
+                if not network.signal or heard.signal > network.signal then network.signal = heard.signal end
+                if heard.serving then network.serving = true end
+            end
+        end
+        local order = { home = 1, partner = 2, other = 3 }
+        table.sort(list, function(a, b)
+            if order[a.kind] ~= order[b.kind] then return order[a.kind] < order[b.kind] end
+            if (a.signal or -math.huge) ~= (b.signal or -math.huge) then return (a.signal or -math.huge) > (b.signal or -math.huge) end
+            return a.name < b.name
+        end)
+        return list
+    end,
+
+    --[[- Choose the network to use, or let the phone choose.
+
+    Left to itself, the phone uses its SIM's own network when it can hear it, and otherwise a partner's. Told to use
+    one network, it uses no other, and has no service where that network has no cells.
+
+    @tparam[opt] string name The network's name, or `nil` (or `"auto"`) to let the phone choose.
+    @treturn[1] true If the choice was made.
+    @treturn[2] nil If it couldn't be.
+    @treturn[2] string Why not.
+    ]]
+    setNetwork = function(name)
+        expect(1, name, "string", "nil")
+        load()
+        if name == "auto" then name = nil end
+        if name then
+            local allowed = false
+            for _, network in ipairs(cell.networks()) do
+                if network.name == name then allowed = network.allowed end
+            end
+            if not allowed then return nil, ("This SIM can't use %s"):format(name) end
+        end
+        local chosen = read_table(PHONE_FILE)
+        chosen.network = name
+        write_table(PHONE_FILE, chosen)
+        if phone_instance and phone_instance.select then phone_instance:select(name) end
+        os.queueEvent("cell_state", cell.info().state)
+        return true
     end,
 
     --[[- Run a cell of a cellular network on this computer, in the background, from now on (also when the computer
