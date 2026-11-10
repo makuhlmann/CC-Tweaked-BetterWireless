@@ -82,7 +82,8 @@ local function new(options)
     stack:add_virtual_interface("cellular", "gateway", function(packet, next_hop) self:downlink(packet, next_hop) end)
     stack:set_address("cellular", self.network_address + 1, prefix)
 
-    self.socket = assert(stack:udp_open(common.TUNNEL_PORT, function(data, from) self:uplink(data, from) end))
+    -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
+    self.socket = assert(stack:udp_open(common.TUNNEL_PORT, function(data, from) self:uplink(data, from) end, common.TUNNEL_LIMITS))
     self.retry_timer = stack:schedule(MESSAGE_RETRY, function() self:retry_messages() end)
     return self
 end
@@ -132,7 +133,8 @@ address is the phone's. Its backhaul goes through the cell its phone uses, which
 function Core:path_of(id)
     local path, seen = {}, { [id] = true }
     local tower = self.towers[id]
-    while tower and #path < common.MAX_PATH do
+    -- One more than a path may have, to tell a cell it's too far from us.
+    while tower and #path <= common.MAX_PATH do
         local session = self.by_address[tower.address]
         local upstream = session and session.teid and session.cell
         if not upstream or seen[upstream] then break end
@@ -151,6 +153,18 @@ function Core:would_loop(phone, tower_id)
         if relay == phone then return true end
     end
     return false
+end
+
+--[[- Find why a phone mayn't use a cell, if it mayn't: it would make a loop, or a chain of too many relays.
+
+@tparam number phone The phone's computer's ID.
+@tparam number tower_id The cell's ID.
+@treturn string|nil Why not, or `nil` if it may.
+]]
+function Core:refuse(phone, tower_id)
+    if self:would_loop(phone, tower_id) then return "That cell is behind this one" end
+    -- A relay (whose cell we know) can't go through a cell which is as far from us as a cell may be.
+    if self.towers[phone] and #self:path_of(tower_id) >= common.MAX_PATH then return "Too many relays" end
 end
 
 -- Tell cells whose path has changed: they advertise it, so relays' phones can avoid cells behind them.
@@ -365,10 +379,9 @@ function Core:retry_messages()
 end
 
 function Core:attach(tower, phone, message)
-    -- A relay's phone can't reach us through a cell which reaches us through the relay.
-    if self:would_loop(phone, tower.id) then
-        return self:send(tower.id, { op = "reject", phone = phone, reason = "That cell is behind this one" })
-    end
+    -- A relay's phone can't reach us through a cell which reaches us through the relay, or is too far away.
+    local refused = self:refuse(phone, tower.id)
+    if refused then return self:send(tower.id, { op = "reject", phone = phone, reason = refused }) end
     local handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = false, prologue = PROLOGUE .. self.network,
         static = self.operator,
@@ -437,7 +450,7 @@ function Core:handover(tower, teid, target_id)
     local session = self.by_teid[teid]
     local target = self.towers[target_id]
     if not session or session.cell ~= tower.id or not target or target_id == tower.id then return end
-    if self:would_loop(session.phone, target_id) then return end
+    if self:refuse(session.phone, target_id) then return end
 
     session.handover = target_id
     self:send(target_id, {
@@ -463,7 +476,10 @@ function Core:downlink(packet, next_hop)
     local tower = session and session.teid and self.towers[session.cell]
     if not tower then return end
     local sealed = tower.sealer:seal({ teid = session.teid, packet = codec.encode(packet) })
-    if sealed then self.stack:udp_send(self.socket, tower.address, common.CELL_TUNNEL_PORT, sealed) end
+    if sealed then
+        local ok, err = self.stack:udp_send(self.socket, tower.address, common.CELL_TUNNEL_PORT, sealed)
+        if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end
+    end
 end
 
 -- A packet from a phone, up a tunnel from its cell.

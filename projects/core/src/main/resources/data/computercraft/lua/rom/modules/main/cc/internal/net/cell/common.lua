@@ -12,6 +12,7 @@
 
 local codec = require "cc.net.codec"
 local certificate = require "cc.internal.net.certificate"
+local message = require "cc.internal.net.message"
 
 --- The frame type for everything between phones and cells.
 local FRAME = "cell"
@@ -53,16 +54,23 @@ local function cell_name(network, cell)
     return ("%s/cell/%d"):format(network, cell)
 end
 
---- The most relays a cell's backhaul may go through.
-local MAX_PATH = 16
+--- How big datagrams in tunnels between cells and the core may be: bigger than programs may send, as they carry
+-- programs' packets whole.
+local TUNNEL_LIMITS = message.TUNNEL
 
---[[- Check a cell's path: the relays its backhaul goes through, as a list of their IDs.
+--- The most relays a cell's backhaul may go through. Each relay wraps phones' packets in another tunnel, about 250
+-- bytes bigger, and the biggest message a program may send must still fit in the outermost one (see
+-- [`cc.internal.net.message`]'s `TUNNEL`): it would through 13, and this leaves some room.
+local MAX_PATH = 10
+
+--[[- Check a cell's path: the relays its backhaul goes through, as a list of their IDs. The core may send a cell one
+longer than [`MAX_PATH`], to say it's too far from the core to serve.
 
 @param path The path, which may be anything.
 @treturn boolean Whether it's a path.
 ]]
 local function is_path(path)
-    if type(path) ~= "table" or #path > MAX_PATH then return false end
+    if type(path) ~= "table" or #path > MAX_PATH + 1 then return false end
     for k, v in pairs(path) do
         if type(k) ~= "number" or k < 1 or k > #path or k % 1 ~= 0 or type(v) ~= "number" then return false end
     end
@@ -256,6 +264,7 @@ return {
     UPLINK = UPLINK,
     DOWNLINK = DOWNLINK,
     MAX_PATH = MAX_PATH,
+    TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
     is_path = is_path,
     make_code = make_code,

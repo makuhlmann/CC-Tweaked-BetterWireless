@@ -49,7 +49,8 @@ local function new(options)
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
         if interface.name == self.interface and dst == self.id then self:radio(src, body) end
     end, true)
-    self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end))
+    -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
+    self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end, common.TUNNEL_LIMITS))
     self:beacon()
     return self
 end
@@ -57,7 +58,8 @@ end
 -- Broadcast system information, every second, while we can serve phones.
 function Tower:beacon()
     self.beacon_timer = self.stack:schedule(common.SIB_INTERVAL, function() self:beacon() end)
-    if not self.can_serve() then return end
+    -- A relay too many relays from the core can't carry the biggest packets, so doesn't serve.
+    if #self.path > common.MAX_PATH or not self.can_serve() then return end
     local load = 0
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
@@ -90,7 +92,10 @@ function Tower:radio(phone, message)
         if type(value.p) == "string" then
             -- Up the tunnel to the gateway.
             local sealed = self.tunnel:seal({ teid = context.teid, packet = value.p })
-            if sealed then self.stack:udp_send(self.socket, self.core, common.TUNNEL_PORT, sealed) end
+            if sealed then
+                local ok, err = self.stack:udp_send(self.socket, self.core, common.TUNNEL_PORT, sealed)
+                if not ok then self.stack.log("Cell couldn't tunnel a phone's packet: " .. tostring(err)) end
+            end
         elseif type(value.sms) == "table" then
             self.control_send({ op = "sms", teid = context.teid, to = value.sms.to, text = value.sms.text })
         elseif value.sms_ack ~= nil then

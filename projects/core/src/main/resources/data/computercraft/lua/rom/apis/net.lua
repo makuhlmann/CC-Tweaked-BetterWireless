@@ -1433,6 +1433,8 @@ local function new_phone(operator)
     phone_instance = cell.new {
         stack = stack, crypto = crypto, interface = name, epoch = function() return os.epoch("utc") end,
         sim = sim_key(), operator = operator,
+        -- With a cell on this computer, this phone may be its backhaul.
+        relay = function() return background.cell ~= nil end,
         on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
         on_message = function(from, text)
             local inbox = read_table(INBOX_FILE)

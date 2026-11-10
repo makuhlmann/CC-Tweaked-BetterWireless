@@ -52,11 +52,12 @@ Phone.__index = Phone
     operator? = { network = string, key = string, signing = string },
     on_change? = function(phone:table),
     on_message? = function(from:string, text:string),
-    on_activated? = function(info:table),
+    on_activated? = function(info:table), relay? = function():boolean,
 } options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
 phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; what to call
-when its state changes; what to call with each message; and what to call when it's activated, with the operator's
-keys and its subscription, to save them.
+when its state changes; what to call with each message; what to call when it's activated, with the operator's keys and
+its subscription, to save them; and whether this computer is a relay, whose cell's backhaul is this phone (so it
+avoids cells already as many relays from the core as a chain may have).
 @treturn table The phone.
 ]]
 local function new(options)
@@ -65,6 +66,7 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
+        relay = options.relay or function() return false end,
         cells = {}, heard = {}, events = {}, state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {},
     }, Phone)
@@ -139,6 +141,7 @@ function Phone:best_cell(except)
     local now = self.stack.clock()
     for id, cell in pairs(self.cells) do
         if id ~= except and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and not self:behind_us(cell)
+            and not (self.relay() and #(cell.path or {}) >= common.MAX_PATH)
             and (not best_signal or cell.signal > best_signal) then
             best, best_signal = id, cell.signal
         end

@@ -975,6 +975,11 @@ the design above:
   are datagrams between ports 2152 (the gateway) and 2153 (cells, so a computer can be a cell and the core), sealed
   with a key per cell from a secret in the core's enclave, with a replay window. Packets travel inside them encoded as
   bytes. A cell takes tunnel datagrams from any address, as only the core can seal them.
+- **Tunnels need more room** than programs' datagrams, as they carry programs' packets whole, headers and all. A
+  program may send 60 KiB (61 KiB encoded), and the tunnel around it adds a few hundred bytes, so the stack's check
+  refused (and the cell silently dropped) phones' biggest messages. Datagram sockets now take their own limits, and
+  tunnels' allow 64 KiB less 512 bytes for their own packet and frame headers. Cells and the core log a datagram they
+  still can't tunnel, rather than dropping it unseen.
 - **Relays** (like LTE's relay nodes, or IAB) are cells whose backhaul is the cellular network itself: a computer which
   is both a phone of the network and a cell, so a tower needs no other link. Its phone gets an address and a default
   route as any phone does, and its cell reaches the core through them (`celld 10.64.0.1`, the gateway's address, always
@@ -988,6 +993,12 @@ the design above:
     going), and cells add it to their signed system information.
   - Loops: a relay's phone never uses a cell whose path includes its own computer, which would be behind it. The core
     refuses such attaches and handovers too.
+  - Each relay wraps a phone's packet in another tunnel, and its phone's radio frame: 249 bytes more each, measured
+    with the biggest message a program may send. The outermost tunnel, from the first cell to the core, has room for
+    13 relays' worth, so a chain may have at most 10 relays (`MAX_PATH`), leaving some to spare. A relay's phone
+    doesn't use a cell already 10 relays from the core, the core refuses such attaches and handovers for relays, and
+    a cell the core says is further away stops broadcasting. The cost which will limit chains in practice is airtime,
+    once it's modelled: every relay sends each packet over the low band again.
   - A relay only broadcasts while its phone has service (when its route to the core goes through the phone). Without
     it, the relay goes quiet, so its phones (and relays behind it) find another cell rather than sending packets
     nowhere.
@@ -1027,8 +1038,7 @@ the design above:
 - **Forwarding:** `cellcore` turns `net.forwarding` on and saves it, as phones' packets go through the core.
 - **Floods:** each attach request costs the core three X25519 operations, and nothing limits how often a cell relays
   them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
-- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN. Relays don't
-  limit how deep they chain, beyond 16 relays in a path; each adds a radio hop and a layer of tunnel.
+- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN.
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
 the virtual network, a phone walks past three cells with an open connection and keeps every message. A game test

@@ -12,6 +12,7 @@ describe("Cellular networks", function()
     local cell_core = require "cc.internal.net.cell.core"
     local cell_tower = require "cc.internal.net.cell.tower"
     local cell_phone = require "cc.internal.net.cell.phone"
+    local message = require "cc.internal.net.message"
     local network = require "support.virtual_network"
 
     local function ip(text) return (address.parse(text)) end
@@ -619,6 +620,98 @@ describe("Cellular networks", function()
             expect(setup.core:path_of(30)):same { 12 }
             expect(relay.tower.path):same { 12 }
             expect(setup.net.errors):same {}
+        end)
+
+        it("carry the biggest messages programs may send, through a chain of relays", function()
+            math.randomseed(5)
+            local setup = operator { 0 }
+            -- A chain: each relay only hears the one before it.
+            local relays = {}
+            for i = 1, 3 do
+                relays[i] = setup.add_relay(29 + i, i * 90)
+                wait_until(setup, function() return relays[i].tower ~= nil and #relays[i].tower.path == i end, 60)
+            end
+            local phone, stack = setup.add_phone(1, 300)
+            wait_until(setup, function()
+                local session = setup.core.sessions[hex(phone.sim.public)]
+                return phone.state == "attached" and session and session.cell == 32
+            end)
+
+            -- Record how big the core's tunnels to cells are: each layer wraps the one inside it.
+            local sizes, seen = {}, {}
+            local udp_send = setup.core_stack.udp_send
+            setup.core_stack.udp_send = function(self, socket, dst, port, data, name)
+                if port == common.CELL_TUNNEL_PORT then
+                    local size, encoded = message.measure(data)
+                    local biggest = math.max(size, encoded)
+                    if biggest > message.MAX_MESSAGE and not seen[biggest] then
+                        seen[biggest] = true
+                        sizes[#sizes + 1] = biggest
+                    end
+                end
+                return udp_send(self, socket, dst, port, data, name)
+            end
+
+            local listener = assert(tcp.listen(setup.server, 80))
+            local client = assert(tcp.connect(stack, ip("10.0.0.60"), 80))
+            setup.net.advance(2)
+            local server = assert(listener:accept())
+            local biggest = ("x"):rep(message.MAX_MESSAGE - 2)
+            assert(server:send(biggest))
+            assert(client:send(biggest))
+            local down, up
+            wait_until(setup, function()
+                local ok, value = client:take()
+                if ok then down = value end
+                ok, value = server:take()
+                if ok then up = value end
+                return down and up
+            end)
+            expect(down == biggest):eq(true)
+            expect(up == biggest):eq(true)
+            expect(setup.net.errors):same {}
+
+            -- Four tunnels, one in another: to the last relay, and on to each before it and the first cell. Each relay
+            -- adds the same, and the longest chain allowed still leaves room in the outermost tunnel.
+            table.sort(sizes)
+            expect(#sizes):eq(4)
+            local per_relay = sizes[2] - sizes[1]
+            expect(sizes[3] - sizes[2]):eq(per_relay)
+            expect(sizes[4] - sizes[3]):eq(per_relay)
+            expect(sizes[1] + common.MAX_PATH * per_relay <= message.TUNNEL.encoded):eq(true)
+        end)
+
+        it("limit how many relays a chain has", function()
+            local old = common.MAX_PATH
+            common.MAX_PATH = 1
+            local ok, err = pcall(function()
+                local setup = operator { 0 }
+                local first = setup.add_relay(30, 90)
+                wait_until(setup, function() return first.tower ~= nil and #first.tower.path == 1 end, 60)
+
+                -- A second relay only hears the first, which is as far from the core as a cell may be: its phone
+                -- doesn't use it. An ordinary phone does.
+                local second = setup.add_relay(31, 180)
+                second.phone.relay = function() return true end
+                local phone = setup.add_phone(1, 185)
+                wait_until(setup, function() return phone.state == "attached" and phone.cell == 30 end)
+                setup.net.advance(5)
+                expect(second.phone.state):eq("searching")
+                expect(second.tower):eq(nil)
+
+                -- Nor would the core let a relay's phone use it.
+                expect(setup.core:refuse(1, 30)):eq(nil)
+                setup.core.towers[31] = { id = 31, address = 0, send = function() end }
+                expect(setup.core:refuse(31, 30)):eq("Too many relays")
+                expect(setup.core:refuse(31, 11)):eq(nil)
+                setup.core.towers[31] = nil
+
+                -- A cell told it's too far from the core stops serving.
+                first.tower:control({ op = "path", path = { 11, 99 } })
+                wait_until(setup, function() return phone.state ~= "attached" end)
+            end)
+            common.MAX_PATH = old
+            if not ok then error(err, 0) end
         end)
 
         it("keep their phones off cells behind them, and stop serving without service", function()

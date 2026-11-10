@@ -1071,11 +1071,14 @@ straight away, which the stack's own services use.
 
 @tparam[opt] number port The port, or `nil` for any free port from 49152 up.
 @tparam[opt] function(data:any, from:number, port:number, interface:string|nil) handler Called for each datagram.
+@tparam[opt] { size = number, encoded = number } limits How big datagrams sent from the socket may be: as big as
+programs may send, by default. The stack's own tunnels carry programs' messages, so need more room
+([`cc.internal.net.message`]'s `TUNNEL`).
 @treturn[1] table The socket.
 @treturn[2] nil If the port is in use.
 @treturn[2] string An error message.
 ]]
-function Stack:udp_open(port, handler)
+function Stack:udp_open(port, handler, limits)
     if port then
         if self.udp[port] then return nil, "Port " .. port .. " is in use" end
     else
@@ -1090,7 +1093,7 @@ function Stack:udp_open(port, handler)
         if not port then return nil, "No free ports" end
     end
 
-    local socket = { port = port, queue = {}, handler = handler }
+    local socket = { port = port, queue = {}, handler = handler, limits = limits }
     self.udp[port] = socket
     return socket
 end
@@ -1117,7 +1120,7 @@ end
 function Stack:udp_send(socket, dst, port, data, name)
     -- A datagram some link on its way can't carry would be lost every time, and nobody told. Say so now instead.
     if data ~= nil then
-        local ok, err = sendable.check(data)
+        local ok, err = sendable.check(data, socket.limits)
         if not ok then return nil, err end
     end
 
