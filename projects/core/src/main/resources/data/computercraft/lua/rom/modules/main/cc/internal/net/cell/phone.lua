@@ -1,0 +1,254 @@
+-- SPDX-FileCopyrightText: 2026 The CC: Tweaked Developers
+--
+-- SPDX-License-Identifier: MPL-2.0
+
+--[[- A phone: picks a cell of its network, attaches, and keeps its address and connections while it moves.
+
+> [!DANGER]
+> This is an internal module and SHOULD NOT be used in your own code. Use the `cell` program instead.
+
+The phone listens for cells' system information, and only believes cells with a certificate from its operator. It
+attaches through the strongest, with a `Noise_IK` handshake with the operator's key (which it knows from its SIM), and
+gets an address. Packets go over a virtual interface named `cell`, sealed with the key it shares with its cell, with a
+default route through it.
+
+Every couple of seconds, it compares its cell with the others it hears. If another is 3 dB stronger for two seconds, it
+tells its cell, which hands it over. If its cell goes quiet, it attaches again through the best one, keeping its
+address.
+
+@local
+]]
+
+local codec = require "cc.net.codec"
+local noise = require "cc.internal.net.noise"
+local common = require "cc.internal.net.cell.common"
+local PROLOGUE = require "cc.internal.net.cell.core".PROLOGUE
+
+-- Signals below this, in dBm, are too weak to use.
+local NO_SERVICE = -100
+-- How much stronger, in dB, and for how long, in seconds, another cell must be to move to it.
+local HYSTERESIS, TIME_TO_TRIGGER = 3, 2
+-- How often to compare cells, and how long a cell may be silent before we give up on it.
+local MEASURE_INTERVAL, SILENCE = 1, 4
+-- How long to wait for an attach to finish, and the longest to wait before trying again.
+local ATTACH_TIMEOUT, MAX_RETRY = 5, 60
+-- How many system information broadcasts to average a cell's signal over.
+local SAMPLES = 3
+
+local Phone = {}
+Phone.__index = Phone
+
+--[[- Start a phone.
+
+@tparam {
+    stack = table, crypto = table, interface = string, epoch = function():number,
+    sim = { public = string, exchange = function(public:string):string },
+    operator = { network = string, key = string, signing = string },
+    on_change? = function(phone:table),
+} options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
+phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key; and what to call when its state
+changes.
+@treturn table The phone.
+]]
+local function new(options)
+    local stack = options.stack
+    local self = setmetatable({
+        stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
+        sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
+        cells = {}, state = "searching", retry = 2,
+    }, Phone)
+
+    stack:on_frame(common.FRAME, function(interface, src, body, signal)
+        if interface.name == self.interface then self:radio(src, body, signal) end
+    end, true)
+    self.timer = stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
+    return self
+end
+
+function Phone:set_state(state)
+    if self.state == state then return end
+    self.state = state
+    self.on_change(self)
+end
+
+function Phone:to_cell(cell, message)
+    self.stack:send_frame(self.interface, cell, common.FRAME, message)
+end
+
+-- The best cell we can hear, and its signal.
+function Phone:best_cell(except)
+    local best, best_signal
+    local now = self.stack.clock()
+    for id, cell in pairs(self.cells) do
+        if id ~= except and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and (not best_signal or cell.signal > best_signal) then
+            best, best_signal = id, cell.signal
+        end
+    end
+    return best, best_signal
+end
+
+function Phone:radio(src, message, signal)
+    if type(message) ~= "table" then return end
+    local op = message.op
+
+    if op == "sib" then
+        local ok = common.check_sib(self.crypto, message, {
+            network = self.operator.network, signing = self.operator.signing, now = self.epoch(), sender = src,
+        })
+        if not ok then return end
+        -- Average the last few broadcasts' signals, so one strong or weak one doesn't move us.
+        local cell = self.cells[src] or { samples = {} }
+        self.cells[src] = cell
+        table.insert(cell.samples, type(signal) == "number" and signal or -50)
+        if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
+        local total = 0
+        for _, sample in ipairs(cell.samples) do total = total + sample end
+        cell.signal, cell.heard, cell.area = total / #cell.samples, self.stack.clock(), message.area
+        if self.state == "searching" then self:attach() end
+        return
+    end
+
+    -- Everything else comes from the cell we're attaching through, or attached to.
+    if src ~= self.cell then return end
+    if op == "attach_reply" and self.state == "attaching" and self.handshake then
+        local payload = self.handshake:read(message.handshake)
+        local info = payload and codec.decode(payload)
+        if type(info) ~= "table" then return end
+        self.subscriber = { id = info.id, number = info.number }
+        local send = self.handshake:split()
+        self.secret = self.handshake.ck
+        self.handshake = nil
+        self:to_cell(self.cell, { op = "attach_complete", data = send:encrypt(codec.encode({ complete = true })) })
+    elseif op == "accept" and self.state == "attaching" and self.secret then
+        local sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, self.cell), common.UPLINK, common.DOWNLINK)
+        local value = sealer:open(message.sealed)
+        if type(value) ~= "table" or type(value.address) ~= "number" then return end
+        self.sealer = sealer
+        self:set_address(value.address)
+        self.retry = 2
+        self:set_state("attached")
+    elseif op == "data" and self.state == "attached" then
+        local value = self.sealer:open(message.sealed)
+        local packet = type(value) == "table" and type(value.p) == "string" and codec.decode(value.p)
+        if type(packet) == "table" then self.stack:inject("cell", packet) end
+    elseif op == "handover" and self.state == "attached" then
+        local value = self.sealer:open(message.sealed)
+        local target = type(value) == "table" and value.target
+        if type(target) ~= "number" or not self.cells[target] then return end
+        -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
+        self.cell, self.candidate = target, nil
+        self.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, target), common.UPLINK, common.DOWNLINK)
+        self:to_cell(target, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
+        self.on_change(self)
+    elseif op == "reject" and self.state == "attaching" then
+        self.rejected = type(message.reason) == "string" and message.reason or "Rejected"
+        self:give_up()
+    end
+end
+
+-- Start attaching through the best cell.
+function Phone:attach()
+    local best = self:best_cell()
+    if not best then return end
+    self.cell, self.secret, self.rejected = best, nil, nil
+    self.handshake = noise.new {
+        crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
+        static = self.sim, remote_static = self.operator.key,
+    }
+    local message = self.handshake:write(codec.encode({ v = 1 }))
+    if not message then return self:give_up() end
+    self:set_state("attaching")
+    self:to_cell(best, { op = "attach", network = self.operator.network, handshake = message })
+
+    local attempt = {}
+    self.attempt = attempt
+    self.stack:schedule(ATTACH_TIMEOUT, function()
+        if self.attempt == attempt and self.state == "attaching" then self:give_up() end
+    end)
+end
+
+-- Attaching didn't work: try again later, less often each time.
+function Phone:give_up()
+    self.handshake, self.attempt = nil, nil
+    self:set_state(self.rejected and "rejected" or "searching")
+    local delay = self.retry
+    self.retry = math.min(self.retry * 2, MAX_RETRY)
+    self.stack:schedule(delay, function()
+        if self.state == "searching" or self.state == "rejected" then
+            self:set_state("searching")
+            self:attach()
+        end
+    end)
+end
+
+-- Our address: a virtual interface to the cell, and a default route through it.
+function Phone:set_address(addr)
+    local stack = self.stack
+    if not stack.interfaces.cell then
+        stack:add_virtual_interface("cell", "cell", function(packet) self:uplink(packet) end)
+    end
+    if stack.interfaces.cell.address ~= addr then stack:set_address("cell", addr, 32) end
+    stack:remove_routes(function(route) return route.source == "cell" end)
+    stack:add_route { network = 0, prefix = 0, interface = "cell", metric = 5, source = "cell" }
+    self.address = addr
+end
+
+function Phone:uplink(packet)
+    if self.state ~= "attached" then return end
+    local sealed = self.sealer:seal({ p = codec.encode(packet) })
+    if sealed then self:to_cell(self.cell, { op = "data", sealed = sealed }) end
+end
+
+-- Compare our cell with the others, every second.
+function Phone:measure()
+    self.timer = self.stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
+    if self.state ~= "attached" then return end
+
+    local now = self.stack.clock()
+    local serving = self.cells[self.cell]
+    if not serving or now - serving.heard > SILENCE or serving.signal < NO_SERVICE then
+        -- Our cell has gone: attach again through another, keeping our address.
+        self:set_state("searching")
+        self.cells[self.cell] = nil
+        return self:attach()
+    end
+
+    local best, best_signal = self:best_cell(self.cell)
+    if best and best_signal >= serving.signal + HYSTERESIS then
+        if self.candidate ~= best then
+            self.candidate, self.candidate_since = best, now
+        elseif now - self.candidate_since >= TIME_TO_TRIGGER and not self.reported then
+            self.reported = best
+            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ target = best }) })
+            -- If the handover doesn't happen, ask again later.
+            self.stack:schedule(TIME_TO_TRIGGER * 2, function() self.reported = nil end)
+        end
+    else
+        self.candidate = nil
+    end
+end
+
+--- Describe the phone.
+--
+-- @treturn table Its state, cell, address, subscriber, and the cells it hears.
+function Phone:info()
+    local cells = {}
+    for id, cell in pairs(self.cells) do cells[#cells + 1] = { id = id, signal = cell.signal, area = cell.area } end
+    table.sort(cells, function(a, b) return a.signal > b.signal end)
+    return {
+        state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
+        rejected = self.rejected, cells = cells,
+    }
+end
+
+--- Stop the phone, giving up its address.
+function Phone:stop()
+    self.stack:cancel(self.timer)
+    self.stack:on_frame(common.FRAME, nil)
+    self.stack:remove_routes(function(route) return route.source == "cell" end)
+    self.stack:remove_interface("cell")
+end
+
+return {
+    new = new,
+}
