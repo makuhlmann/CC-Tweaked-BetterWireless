@@ -114,6 +114,47 @@ local function cell_key(crypto, secret, cell)
     return crypto.hmac(secret, CELL_KEY_PREFIX .. tostring(cell))
 end
 
+local CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+--- Make an activation code: five groups of four letters and digits, in Crockford's base 32 (so there are no
+-- ambiguous characters). The first group names the subscription; the other four, 80 random bits, are the secret.
+--
+-- @tparam table crypto The `crypto` API.
+-- @treturn string The code, such as `"7Q2M-K4XD-9PRB-T6WN-HJ3C"`.
+-- @treturn string The first group.
+-- @treturn string The secret.
+local function make_code(crypto)
+    local bytes, chars = crypto.random(20), {}
+    for i = 1, 20 do
+        local n = bytes:byte(i) % 32 + 1
+        chars[i] = CROCKFORD:sub(n, n)
+    end
+    local text = table.concat(chars)
+    local code = text:gsub("(....)", "%1-"):sub(1, -2)
+    return code, text:sub(1, 4), text:sub(5)
+end
+
+--- Read an activation code as typed: case, dashes and spaces don't matter, and O, I and L are taken as 0, 1 and 1.
+--
+-- @tparam string text The code.
+-- @treturn string|nil The first group, or `nil` if it isn't a code.
+-- @treturn string|nil The secret.
+local function parse_code(text)
+    if type(text) ~= "string" then return nil end
+    text = text:upper():gsub("[%s%-]", ""):gsub("O", "0"):gsub("[IL]", "1")
+    if #text ~= 20 or text:find("[^" .. CROCKFORD .. "]") then return nil end
+    return text:sub(1, 4), text:sub(5)
+end
+
+--- The pre-shared key for activating with a code's secret.
+--
+-- @tparam table crypto The `crypto` API.
+-- @tparam string secret The secret.
+-- @treturn string The 32-byte key.
+local function activation_key(crypto, secret)
+    return crypto.sha256("cc-net cell activation 1\0" .. secret)
+end
+
 --- The key a cell's tunnels to the gateway are sealed with.
 --
 -- @tparam table crypto The `crypto` API.
@@ -197,6 +238,9 @@ return {
     UPLINK = UPLINK,
     DOWNLINK = DOWNLINK,
     cell_name = cell_name,
+    make_code = make_code,
+    parse_code = parse_code,
+    activation_key = activation_key,
     make_sib = make_sib,
     check_sib = check_sib,
     cell_key = cell_key,

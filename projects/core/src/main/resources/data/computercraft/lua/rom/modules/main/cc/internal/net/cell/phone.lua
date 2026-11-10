@@ -22,7 +22,8 @@ address.
 local codec = require "cc.net.codec"
 local noise = require "cc.internal.net.noise"
 local common = require "cc.internal.net.cell.common"
-local PROLOGUE = require "cc.internal.net.cell.core".PROLOGUE
+local core = require "cc.internal.net.cell.core"
+local PROLOGUE, ACTIVATE_PROLOGUE = core.PROLOGUE, core.ACTIVATE_PROLOGUE
 
 -- Signals below this, in dBm, are too weak to use.
 local NO_SERVICE = -100
@@ -43,11 +44,14 @@ Phone.__index = Phone
 @tparam {
     stack = table, crypto = table, interface = string, epoch = function():number,
     sim = { public = string, exchange = function(public:string):string },
-    operator = { network = string, key = string, signing = string },
+    operator? = { network = string, key = string, signing = string },
     on_change? = function(phone:table),
+    on_message? = function(from:string, text:string),
+    on_activated? = function(info:table),
 } options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
-phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key; and what to call when its state
-changes.
+phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; what to call
+when its state changes; what to call with each message; and what to call when it's activated, with the operator's
+keys and its subscription, to save them.
 @treturn table The phone.
 ]]
 local function new(options)
@@ -55,7 +59,8 @@ local function new(options)
     local self = setmetatable({
         stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
-        cells = {}, state = "searching", retry = 2,
+        on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
+        cells = {}, networks = {}, state = options.operator and "searching" or "inactive", retry = 2, seen_messages = {},
     }, Phone)
 
     stack:on_frame(common.FRAME, function(interface, src, body, signal)
@@ -91,7 +96,15 @@ function Phone:radio(src, message, signal)
     if type(message) ~= "table" then return end
     local op = message.op
 
-    if op == "sib" then
+    if op == "sib" and not self.operator then
+        -- Not activated yet: we can't check cells, but can see which networks are around.
+        if type(message.network) == "string" and #message.network <= 64 then
+            local heard = self.networks[message.network] or {}
+            self.networks[message.network] = heard
+            heard[src] = { signal = type(signal) == "number" and signal or -50, heard = self.stack.clock() }
+        end
+        return
+    elseif op == "sib" then
         local ok = common.check_sib(self.crypto, message, {
             network = self.operator.network, signing = self.operator.signing, now = self.epoch(), sender = src,
         })
@@ -129,8 +142,39 @@ function Phone:radio(src, message, signal)
         self:set_state("attached")
     elseif op == "data" and self.state == "attached" then
         local value = self.sealer:open(message.sealed)
-        local packet = type(value) == "table" and type(value.p) == "string" and codec.decode(value.p)
-        if type(packet) == "table" then self.stack:inject("cell", packet) end
+        if type(value) ~= "table" then return end
+        local packet = type(value.p) == "string" and codec.decode(value.p)
+        if type(packet) == "table" then
+            self.stack:inject("cell", packet)
+        elseif type(value.sms) == "table" and type(value.sms.from) == "string" and type(value.sms.text) == "string" then
+            -- Say we have it, even if we've seen it before (our last acknowledgement may have been lost).
+            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms_ack = value.sms.id }) })
+            if not self.seen_messages[value.sms.id] then
+                self.seen_messages[value.sms.id] = true
+                self.on_message(value.sms.from, value.sms.text)
+            end
+        end
+    elseif op == "activate_reply" and self.state == "activating" and self.handshake then
+        if not self.handshake:read(message.handshake) then return self:activation_failed("The network refused") end
+        local finish = self.handshake:write(codec.encode({ v = 1 }))
+        if not finish then return self:activation_failed("The network refused") end
+        self:to_cell(self.cell, { op = "activate_finish", handshake = finish })
+    elseif op == "activate_accept" and self.state == "activating" and self.handshake then
+        local _, receive = self.handshake:split()
+        local plaintext = type(message.data) == "string" and receive:decrypt(message.data)
+        local info = plaintext and codec.decode(plaintext)
+        if type(info) ~= "table" or type(info.network) ~= "string" or type(info.key) ~= "string" or #info.key ~= 32
+            or type(info.signing) ~= "string" or #info.signing ~= 32 then
+            return self:activation_failed("The network's answer was garbled")
+        end
+        -- Only someone who knew the code could have sent this, so these keys are the operator's.
+        self.handshake = nil
+        self.operator = { network = info.network, key = info.key, signing = info.signing }
+        self.subscriber = { id = info.id, number = info.number }
+        self.on_activated(info)
+        self.retry = 2
+        self:set_state("searching")
+        self:attach()
     elseif op == "handover" and self.state == "attached" then
         local value = self.sealer:open(message.sealed)
         local target = type(value) == "table" and value.target
@@ -144,6 +188,63 @@ function Phone:radio(src, message, signal)
         self.rejected = type(message.reason) == "string" and message.reason or "Rejected"
         self:give_up()
     end
+end
+
+--[[- Activate with a code from the network's administrator, through the strongest cell of the network.
+
+@tparam string network The network's name.
+@tparam string code The activation code.
+@treturn[1] true If activation started. The phone's state becomes `"searching"` once it's done.
+@treturn[2] nil If it couldn't start.
+@treturn[2] string Why not.
+]]
+function Phone:activate(network, code)
+    local tag, secret = common.parse_code(code)
+    if not tag then return nil, "That isn't an activation code" end
+    local best, best_signal
+    for id, heard in pairs(self.networks[network] or {}) do
+        if self.stack.clock() - heard.heard <= SILENCE and (not best_signal or heard.signal > best_signal) then
+            best, best_signal = id, heard.signal
+        end
+    end
+    if not best then return nil, "No cell of " .. network .. " in range" end
+
+    self.cell = best
+    self.handshake = noise.new {
+        crypto = self.crypto, pattern = "XXpsk3", initiator = true, prologue = ACTIVATE_PROLOGUE .. network,
+        static = self.sim, psk = common.activation_key(self.crypto, secret),
+    }
+    local message = self.handshake:write("")
+    if not message then return nil, "The SIM can't be used" end
+    self:set_state("activating")
+    self:to_cell(best, { op = "activate", network = network, tag = tag, handshake = message })
+
+    local attempt = {}
+    self.attempt = attempt
+    self.stack:schedule(ATTACH_TIMEOUT * 2, function()
+        if self.attempt == attempt and self.state == "activating" then self:activation_failed("No answer: check the code") end
+    end)
+    return true
+end
+
+function Phone:activation_failed(reason)
+    self.handshake, self.attempt, self.activation_error = nil, nil, reason
+    self:set_state("inactive")
+end
+
+--[[- Send a message to another phone, by its number. It's kept by the network until that phone is reachable.
+
+@tparam string to The number.
+@tparam string text The message, up to 1000 characters.
+@treturn[1] true If it was sent.
+@treturn[2] nil If it wasn't.
+@treturn[2] string Why not.
+]]
+function Phone:send_message(to, text)
+    if self.state ~= "attached" then return nil, "No service" end
+    if #text > 1000 then return nil, "Messages can be at most 1000 characters" end
+    self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms = { to = to, text = text } }) })
+    return true
 end
 
 -- Start attaching through the best cell.
@@ -235,9 +336,13 @@ function Phone:info()
     local cells = {}
     for id, cell in pairs(self.cells) do cells[#cells + 1] = { id = id, signal = cell.signal, area = cell.area } end
     table.sort(cells, function(a, b) return a.signal > b.signal end)
+    local networks = {}
+    for name in pairs(self.networks) do networks[#networks + 1] = name end
+    table.sort(networks)
     return {
         state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
-        rejected = self.rejected, cells = cells,
+        rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
+        network = self.operator and self.operator.network,
     }
 end
 

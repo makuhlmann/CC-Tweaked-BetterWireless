@@ -70,6 +70,11 @@ function Tower:radio(phone, message)
     local op = message.op
     if op == "attach" and message.network == self.network and type(message.handshake) == "string" then
         self.control_send({ op = "attach", phone = phone, handshake = message.handshake })
+    elseif op == "activate" and message.network == self.network and type(message.tag) == "string"
+        and type(message.handshake) == "string" then
+        self.control_send({ op = "activate", phone = phone, tag = message.tag, handshake = message.handshake })
+    elseif op == "activate_finish" and type(message.handshake) == "string" then
+        self.control_send({ op = "activate_finish", phone = phone, handshake = message.handshake })
     elseif op == "attach_complete" and type(message.data) == "string" then
         self.control_send({ op = "attach_complete", phone = phone, data = message.data })
     elseif op == "data" then
@@ -80,6 +85,10 @@ function Tower:radio(phone, message)
             -- Up the tunnel to the gateway.
             local sealed = self.tunnel:seal({ teid = context.teid, packet = value.p })
             if sealed then self.stack:udp_send(self.socket, self.core, common.TUNNEL_PORT, sealed) end
+        elseif type(value.sms) == "table" then
+            self.control_send({ op = "sms", teid = context.teid, to = value.sms.to, text = value.sms.text })
+        elseif value.sms_ack ~= nil then
+            self.control_send({ op = "sms_ack", teid = context.teid, id = value.sms_ack })
         elseif type(value.target) == "number" and value.target ~= self.id
             and (not context.handing_over or self.stack.clock() - context.handing_over > 5) then
             -- The phone hears another cell better. If the handover doesn't happen, it may ask again later.
@@ -109,6 +118,14 @@ function Tower:control(message)
         self:to_phone(message.phone, { op = "attach_reply", handshake = message.handshake })
     elseif op == "reject" and type(message.phone) == "number" then
         self:to_phone(message.phone, { op = "reject", reason = message.reason })
+    elseif (op == "activate_reply" or op == "activate_accept") and type(message.phone) == "number" then
+        self:to_phone(message.phone, { op = op, handshake = message.handshake, data = message.data })
+    elseif op == "sms" and type(message.teid) == "number" then
+        local context = self.by_teid[message.teid]
+        if context and context.active then
+            local sms = { id = message.id, from = message.from, text = message.text }
+            self:to_phone(context.phone, { op = "data", sealed = context.sealer:seal({ sms = sms }) })
+        end
     elseif op == "context" and type(message.phone) == "number" and type(message.teid) == "number"
         and type(message.key) == "string" then
         local old = self.phones[message.phone]

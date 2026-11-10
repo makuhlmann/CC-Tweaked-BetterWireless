@@ -50,7 +50,8 @@ describe("Cellular networks", function()
         local subscribers = {}
         local events = {}
         local core = cell_core.new {
-            stack = core_stack, crypto = crypto, network = "ACME", operator = operator_key, prefix = "10.64.0.0/16",
+            stack = core_stack, crypto = crypto, network = "ACME", operator = operator_key, signing = signing_public,
+            prefix = "10.64.0.0/16",
             subscribers = subscribers, secret = crypto.random(32),
             on_event = function(...) events[#events + 1] = { ... } end,
         }
@@ -89,7 +90,8 @@ describe("Cellular networks", function()
             towers[i] = { id = id, stack = stack, tower = tower }
         end
 
-        local function add_phone(id, position, subscribed)
+        local function add_phone(id, position, subscribed, phone_options)
+            phone_options = phone_options or {}
             local stack = net.stack(id)
             net.connect(stack, "air", nil, "wireless")
             positions[id] = position
@@ -97,7 +99,8 @@ describe("Cellular networks", function()
             if subscribed ~= false then subscribers[hex(sim.public)] = { id = "ACME-" .. id, number = tostring(id) } end
             local phone = cell_phone.new {
                 stack = stack, crypto = crypto, interface = "air", epoch = now, sim = sim,
-                operator = { network = "ACME", key = operator_key.public, signing = signing_public },
+                operator = phone_options.activated ~= false and { network = "ACME", key = operator_key.public, signing = signing_public } or nil,
+                on_message = phone_options.on_message, on_activated = phone_options.on_activated,
             }
             return phone, stack
         end
@@ -105,6 +108,7 @@ describe("Cellular networks", function()
         return {
             net = net, core = core, core_stack = core_stack, server = server, towers = towers, positions = positions,
             events = events, add_phone = add_phone, signing_public = signing_public, now = now,
+            operator_key = operator_key, subscribers = subscribers,
         }
     end
 
@@ -249,6 +253,79 @@ describe("Cellular networks", function()
         setup.net.advance(1)
         expect(setup.core_stack.forwarded):eq(forwarded)
         expect(phone.state):eq("attached")
+    end)
+
+    it("activates a phone over the air with a code", function()
+        local setup = operator { 0 }
+        local code = setup.core:add_code("ACME-0007", "0007")
+        expect(code:match("^%w%w%w%w%-%w%w%w%w%-%w%w%w%w%-%w%w%w%w%-%w%w%w%w$") ~= nil):eq(true)
+
+        local activated
+        local phone = setup.add_phone(1, 10, false, { activated = false, on_activated = function(info) activated = info end })
+        setup.net.advance(3)
+        expect(phone.state):eq("inactive")
+        expect(phone:info().networks):same { "ACME" }
+
+        -- Typed sloppily: lower case, spaces instead of dashes.
+        assert(phone:activate("ACME", code:lower():gsub("%-", " ")))
+        setup.net.advance(5)
+        expect(activated.id):eq("ACME-0007")
+        expect(activated.key):eq(setup.operator_key.public)
+        expect(activated.signing):eq(setup.signing_public)
+        expect(phone.state):eq("attached")
+        expect(phone.subscriber):same { id = "ACME-0007", number = "0007" }
+
+        -- A code works once.
+        local second = setup.add_phone(2, 10, false, { activated = false })
+        setup.net.advance(2)
+        assert(second:activate("ACME", code))
+        setup.net.advance(12)
+        expect(second.state):eq("inactive")
+    end)
+
+    it("refuses wrong codes, and cancels a code after three", function()
+        local setup = operator { 0 }
+        local code = setup.core:add_code("ACME-0008", "0008")
+        local tag = code:sub(1, 4)
+        local phone = setup.add_phone(1, 10, false, { activated = false })
+        setup.net.advance(2)
+
+        for _ = 1, 3 do
+            assert(phone:activate("ACME", tag .. "-0000-0000-0000-0000"))
+            setup.net.advance(12)
+            expect(phone.state):eq("inactive")
+        end
+        -- Now even the right code doesn't work.
+        assert(phone:activate("ACME", code))
+        setup.net.advance(12)
+        expect(phone.state):eq("inactive")
+        expect({ phone:activate("ACME", "not a code") }):same { nil, "That isn't an activation code" }
+    end)
+
+    it("delivers messages, keeping them until the phone is reachable", function()
+        local setup = operator { 0 }
+        local inbox_a, inbox_b = {}, {}
+        local a = setup.add_phone(1, 10, true, { on_message = function(from, text) inbox_a[#inbox_a + 1] = { from, text } end })
+        local b, b_stack = setup.add_phone(2, 20, true, { on_message = function(from, text) inbox_b[#inbox_b + 1] = { from, text } end })
+        setup.net.advance(5)
+
+        assert(a:send_message("2", "Hello, B"))
+        setup.net.advance(2)
+        expect(inbox_b):same { { "1", "Hello, B" } }
+
+        -- B goes out of range. The message waits.
+        setup.net.remove(b_stack)
+        setup.net.advance(1)
+        assert(a:send_message("2", "Are you there?"))
+        setup.net.advance(15)
+        expect(#inbox_b):eq(1)
+
+        table.insert(setup.net.stacks, b_stack)
+        setup.net.advance(30)
+        expect(inbox_b):same { { "1", "Hello, B" }, { "1", "Are you there?" } }
+        expect(b.state):eq("attached")
+        expect(#setup.core.messages):eq(0)
+        expect(#inbox_a):eq(0)
     end)
 
     it("works with the core on one of the cells", function()
