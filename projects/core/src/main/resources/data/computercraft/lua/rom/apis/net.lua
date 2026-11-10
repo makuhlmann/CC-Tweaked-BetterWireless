@@ -1436,6 +1436,7 @@ local function new_phone(operator)
         -- With a cell on this computer, this phone may be its backhaul.
         relay = function() return background.cell ~= nil end,
         on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
+        on_sent = function(id, ok, reason) os.queueEvent("cell_sent", id, ok, reason) end,
         on_message = function(from, text)
             local inbox = read_table(INBOX_FILE)
             inbox[#inbox + 1] = { from = from, text = text, time = os.epoch("utc") }
@@ -1577,8 +1578,9 @@ they're for is reachable.
 Cells run `celld`, and the network's core runs `cellcore`. Both run in the stack's background process, so the computer
 can be used for other things, and start again when it does.
 
-The stack queues `cell_state` (with the phone's state) when it attaches or loses service, and `cell_message` (with the
-sender's number and the text) when a message arrives.
+The stack queues `cell_state` (with the phone's state) when it attaches or loses service, `cell_message` (with the
+sender's number and the text) when a message arrives, and `cell_sent` (with a message's ID, whether the network took it,
+and why not) for each message sent.
 ]]
 cell = {
     --[[- Get the phone's state.
@@ -1657,9 +1659,14 @@ cell = {
 
     --[[- Send a message to another phone by its number.
 
+    The phone sends it until the network says it has it, so a lost radio frame doesn't lose the message. A `cell_sent`
+    event says how that went: the message's ID and `true`, or `false` and why not (nobody has that number, say). The
+    network then keeps it until the phone it's for is reachable.
+
     @tparam string number The number.
     @tparam string text The message, up to 1000 characters.
-    @treturn[1] true If it was sent. The network keeps it until the phone it's for is reachable.
+    @treturn[1] true If it's being sent.
+    @treturn[1] number The message's ID, which the `cell_sent` event has.
     @treturn[2] nil If it couldn't be sent.
     @treturn[2] string Why not.
     ]]

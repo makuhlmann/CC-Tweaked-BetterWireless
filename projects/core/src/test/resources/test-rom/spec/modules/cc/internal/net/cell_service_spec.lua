@@ -488,6 +488,95 @@ describe("Cellular services", function()
             end, })
         end)
 
+        local recursive = {}
+        recursive.self = recursive
+        local NIL = {}
+        local BAD = {
+            NIL, 0 / 0, math.huge, -math.huge, 1e18, -1, 0.5, 2 ^ 32, "x", {}, true, ("y"):rep(5000), { 1, { 2 } },
+        }
+        local function with(template, key, value)
+            local result = {}
+            for k, v in pairs(template) do result[k] = v end
+            if value == NIL then result[key] = nil else result[key] = value end
+            return result
+        end
+        local function errors_logged(env)
+            local found = {}
+            for _, line in ipairs(env.service.lines) do
+                if line.text:find("^Error") then found[#found + 1] = line.text end
+            end
+            return found
+        end
+
+        it("answers requests with something unexpected in them, and carries on", function()
+            local env = setup()
+            run(env.net, { env.service }, { function()
+                local admin = env.admin()
+                local template = {
+                    key = new_key(), label = "label", role = "admin", id = "ACME-1", number = "1", subscriber = "ACME-1", after = 0,
+                }
+                local asked = 0
+                for _, op in ipairs { "status", "allow", "deny", "add", "remove", "log", "nonsense" } do
+                    for field in pairs(template) do
+                        for _, bad in ipairs(BAD) do
+                            local request = with(template, field, bad)
+                            request.op = op
+                            expect(type(ask(admin, request))):describe(op .. " with a bad " .. field):eq("table")
+                            asked = asked + 1
+                        end
+                    end
+                end
+                for _, bad in ipairs(BAD) do
+                    if bad ~= NIL and type(bad) ~= "table" then
+                        expect(ask(admin, { op = bad }).error):describe("A bad request"):ne(nil)
+                    end
+                end
+                expect(asked > 500):eq(true)
+
+                -- It still works, and nothing went wrong inside.
+                expect(ask(admin, { op = "status" }).network):eq("ACME")
+                expect(ask(admin, { op = "add", id = "ACME-2", number = "2" }).code):type("string")
+                expect(errors_logged(env)):same {}
+                admin:close()
+            end, }, 600)
+        end)
+
+        it("turns away computers which introduce themselves oddly", function()
+            local env = setup()
+            local cell_key, admin_key = new_key(), new_key()
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            env.service.allowed[cell_key] = { label = "tower", role = "cell" }
+            env.service.allowed[admin_key] = { label = "boss", role = "admin" }
+            run(env.net, { env.service }, { function()
+                local template = { role = "cell", id = 11, signing = hex(tower_public), area = 1 }
+                for field in pairs(template) do
+                    for _, bad in ipairs(BAD) do
+                        for _, key in ipairs { cell_key, admin_key, new_key() } do
+                            local connection = env.connect(key, "10.0.0.11")
+                            assert(connection:send(with(template, field, bad)))
+                            connection:receive(2)
+                            connection:abort()
+                        end
+                    end
+                end
+                -- And computers which say something else entirely, or nothing.
+                for _, bad in ipairs(BAD) do
+                    local connection = env.connect(cell_key, "10.0.0.11")
+                    if bad ~= NIL then assert(connection:send(bad)) end
+                    coroutine.yield()
+                    connection:abort()
+                end
+
+                expect(errors_logged(env)):same {}
+                -- Only cells with whole numbers for IDs got in, and none is left.
+                wait_until(function() return next(env.service.cells) == nil end)
+                expect(next(env.service.core.towers)):eq(nil)
+                local admin = env.admin()
+                expect(#ask(admin, { op = "status" }).cells):eq(0)
+                admin:close()
+            end, }, 900)
+        end)
+
         it("needs setting up first", function()
             local env = setup()
             fs.delete(fs.combine(DIR, "config"))

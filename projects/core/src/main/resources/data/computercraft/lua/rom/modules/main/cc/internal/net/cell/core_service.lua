@@ -249,7 +249,8 @@ function Service:serve(connection)
     local key = connection:getPeerKey()
     local role = type(hello) == "table" and hello.role
     if not key or not ROLES[role] then return connection:abort() end
-    local id = type(hello.id) == "number" and hello.id >= 0 and hello.id == math.floor(hello.id) and hello.id or nil
+    -- Computers' IDs are whole numbers, and small enough to write out.
+    local id = common.is_id(hello.id) and hello.id < 2 ^ 31 and hello.id or nil
 
     if not self:allows(key, role) then
         local entry = self.allowed[key]
@@ -337,7 +338,8 @@ function Service:serve_cell(connection, key, hello, id)
         return connection:abort()
     end
 
-    local entry = { id = id, key = key, address = peer, area = hello.area, since = self.options.epoch(), connection = connection }
+    local area = common.is_id(hello.area) and hello.area or 0
+    local entry = { id = id, key = key, address = peer, area = area, since = self.options.epoch(), connection = connection }
     self.cells[id] = entry
     local known = self.allowed[key]
     if known and known.id ~= id then

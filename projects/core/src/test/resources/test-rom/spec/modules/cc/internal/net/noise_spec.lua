@@ -142,6 +142,90 @@ describe("cc.internal.net.noise", function()
             return initiator, responder, i_static, r_static
         end
 
+        -- Both sides of a handshake of any pattern.
+        local function parties(pattern)
+            local function key()
+                local private = crypto.generateKeyPair("x25519")
+                return { public = noise.public_key(crypto, private), exchange = function(p) return crypto.exchange(private, p) end }
+            end
+            local i_static, r_static = key(), key()
+            local psk = pattern == "XXpsk3" and crypto.random(32) or nil
+            return noise.new {
+                crypto = crypto, pattern = pattern, initiator = true, static = i_static, psk = psk,
+                remote_static = (pattern == "NK" or pattern == "IK") and r_static.public or nil,
+            }, noise.new { crypto = crypto, pattern = pattern, initiator = false, static = r_static, psk = psk }
+        end
+
+        -- Run a handshake, changing one of its messages on the way. Returns whether both sides finished it, agreeing,
+        -- and how long each message was.
+        local function handshake(pattern, index, change)
+            local initiator, responder = parties(pattern)
+            local lengths = {}
+            while not initiator:done() do
+                local i = #lengths + 1
+                local writer, reader = initiator, responder
+                if i % 2 == 0 then writer, reader = responder, initiator end
+                local message = writer:write("payload " .. i)
+                if not message then return false, lengths end
+                lengths[i] = #message
+                if i == index then message = change(message) end
+                if reader:read(message) == nil then return false, lengths end
+            end
+            return responder:done() and initiator.h == responder.h, lengths
+        end
+
+        local LOW_ORDER = {
+            ("\0"):rep(32), "\1" .. ("\0"):rep(31), "\236" .. ("\255"):rep(30) .. "\127", "\237" .. ("\255"):rep(30) .. "\127",
+        }
+
+        for _, pattern in ipairs { "XX", "NK", "IK", "XXpsk3" } do
+            it("of " .. pattern .. " fail, without errors, however a message is changed", function()
+                math.randomseed(53)
+                local worked, lengths = handshake(pattern)
+                expect(worked):eq(true)
+                for index, length in ipairs(lengths) do
+                    for position = 1, length do
+                        local flipped = handshake(pattern, index, function(message)
+                            return message:sub(1, position - 1) .. string.char(bit32.bxor(message:byte(position), 2 ^ math.random(0, 7)))
+                                .. message:sub(position + 1)
+                        end)
+                        expect(flipped):describe(("Message %d with byte %d changed"):format(index, position)):eq(false)
+                        if position % 8 == 0 then
+                            expect((handshake(pattern, index, function(message) return message:sub(1, position - 1) end)))
+                                :describe(("Message %d cut to %d bytes"):format(index, position - 1)):eq(false)
+                        end
+                    end
+                    expect((handshake(pattern, index, function(message) return message .. "x" end)))
+                        :describe(("Message %d with a byte more"):format(index)):eq(false)
+                    for i, point in ipairs(LOW_ORDER) do
+                        expect((handshake(pattern, index, function(message) return point .. message:sub(33) end)))
+                            :describe(("Message %d with bad key %d"):format(index, i)):eq(false)
+                    end
+                    for _, odd in ipairs { false, 5, {}, "" } do
+                        expect((handshake(pattern, index, function() return odd end))):eq(false)
+                    end
+                end
+            end)
+        end
+
+        it("can be copied, to read a message which may not be meant for them", function()
+            local initiator, responder = parties("IK")
+            expect(responder:read(initiator:write("hello"))):eq("hello")
+            local reply = responder:write("welcome")
+
+            -- Something which only looks like the answer spoils the copy, not the handshake.
+            local attempt = initiator:clone()
+            expect(attempt:read(("x"):rep(#reply))):eq(nil)
+            attempt = initiator:clone()
+            expect(attempt:read(reply:sub(1, -2) .. "x")):eq(nil)
+            expect(initiator:done()):eq(false)
+
+            attempt = initiator:clone()
+            expect(attempt:read(reply)):eq("welcome")
+            expect(attempt:done()):eq(true)
+            expect(attempt.h):eq(responder.h)
+        end)
+
         it("tell each side the other's key", function()
             local initiator, responder, i_static, r_static = pair("XX")
             responder:read(initiator:write())

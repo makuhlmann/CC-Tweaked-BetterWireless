@@ -1015,8 +1015,28 @@ the design above:
   rejected). `cell monitor` shows all of this on one screen, sized for a pocket computer, and works before activation
   too (`net.cell.listen`).
 - **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
-  connection to the core. The core keeps them until the phone they're for is attached and acknowledges them, trying again
-  every 10 seconds. They're only kept in memory, so restarting the core loses undelivered ones.
+  connection to the core. Both halves of the journey are acknowledged, as radio frames get lost:
+  - A phone numbers each message, and sends it every 5 seconds until the core says it has it (or won't take it, and
+    why), giving up after a minute. The core remembers the last 64 numbers from each phone, so a message which comes
+    twice is only kept once. Up to 20 messages may be on their way from a phone.
+  - The core keeps messages until the phone they're for is attached and acknowledges them, trying again every 10
+    seconds. It refuses messages for numbers nobody has, keeps at most 50 for a number and 1,000 in all, and forgets
+    them after a week. Phones remember the last 128 messages they've had, to drop repeats. The core numbers messages
+    from a random place each time it starts, so a new message is never taken for an old one.
+  - They're only kept in memory, so restarting the core loses undelivered ones.
+- **Keeping in touch:** a cell which restarts, or whose core does, forgets its phones, though it may be broadcasting
+  again before they notice. So a phone which has heard nothing from its cell for 5 seconds asks whether it's still
+  known (a sealed `ping`, answered with a sealed `pong`). After four unanswered, it attaches again, keeping its
+  address. A cell which gets a sealed frame from a phone it doesn't know says so (`unknown`, at most once a second), and
+  the phone then asks every second, and attaches again after three unanswered. Anyone can send `unknown`, so it only
+  ever makes the phone ask.
+- **Handover's last step** is the phone telling its new cell it has arrived. It repeats that every second until the
+  cell acknowledges it, and attaches again after five tries.
+- **What can't be checked can't interrupt.** Until a phone and its cell share a key, a frame which says it's from the
+  cell may be from anyone in range. A refusal only counts if no real answer follows within a second. A handshake
+  message is read with a copy of the handshake (`Handshake:clone`), as one which doesn't read would spoil it. The
+  core keeps up to four attaches and activations under way for each phone at each cell, so a request which only says
+  it's from a phone doesn't replace the phone's own, and at most 64 activations in all, for 30 seconds each.
 - **Addresses** are kept for the core's lifetime: a phone which attaches again gets the same one. Restarting the core
   gives phones new addresses, which ends their connections.
 - **The core and cells run in the background process,** as the phone does, so the computer stays free, and they start
@@ -1297,6 +1317,56 @@ After phases 4 and 5, connections, secure connections and encrypted links were t
   guess now they start at random. Only secure connections stop this properly.
 - **Computers with the passphrase.** Any of them can pretend to be any other on an encrypted link, or fill the list of
   512 computers a receiver remembers, which keeps new ones out for a minute.
+
+### Robustness of cellular networks
+
+After phase 6, the cellular layer was tested the same way (`cell_stress_spec.lua`, and additions to
+`cell_service_spec.lua` and `noise_spec.lua`):
+
+- **Pretending to be a phone's cell:** refusals, handshake answers which don't read, and competing requests "from" the
+  phone, sent between a phone's request and the real answer, while attaching and while activating. About 1,500 frames
+  with each field made bad, as from the phone's cell and as broadcasts from anyone.
+- **Cells and cores which send odd things:** sealed messages to phones and from them, and control messages both ways,
+  with each field made bad: about 3,000 in all. A phone doesn't choose its operator's software, so a cell may refuse
+  to serve it, but mustn't be able to break it.
+- **Bad radio links:** attaching and walking past three cells with an open connection at 15% loss. Twelve trips back
+  and forth between two cells at 25% loss. Thirty messages at 25% loss.
+- **Restarts:** a cell which restarts and is back before its phones notice, and a core which does.
+- **Scale and floods:** 60 phones through one cell. 800 messages to a phone which is never there and to numbers nobody
+  has. 2,000 activations which never finish. 300 made-up cells.
+- **Management:** about 600 requests to a running core with each field made bad, and 200 computers which introduce
+  themselves oddly.
+- **Handshakes:** every byte of every message of all four Noise patterns changed, messages cut short and lengthened,
+  and keys which give everyone the same secret.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| A phone whose cell restarted, or whose core did, stayed "attached" for good with nothing getting through, if the cell was broadcasting again within 4 seconds. Nothing told it the cell had forgotten it. | Phones ask a quiet cell whether it still knows them, and cells tell computers they don't know (see "Keeping in touch", §11). Service is back within a few seconds. |
+| One lost frame at the end of a handover left a phone on a cell which wasn't serving it. At 25% loss, a phone walking between two cells was stranded within a dozen trips. | The phone says it has arrived until the cell acknowledges it. |
+| Messages were sent over the air once. At 25% loss, 30 messages never all arrived. | Phones send each message until the core has it, and the core drops repeats. Programs are told what became of each (`cell_sent`). |
+| The core numbered messages from 1 each time it started, and phones remembered every number they'd had for good, so after a restart new messages would be dropped as repeats. | Numbers start from a random place, and phones remember the last 128. |
+| The core kept every message for a number nobody has, for good, and looked for a phone for each of them every 10 seconds, taking time proportional to messages × subscribers. | Unknown numbers are refused, mailboxes are limited, old messages are forgotten, and looking is one pass. |
+| A frame which said it was from a phone's cell could stop it attaching: a refusal made it give up (waiting up to a minute before trying again), and a handshake answer which didn't read spoiled the handshake. A request "from" the phone replaced the phone's own at the core. The same went for activating. | See "What can't be checked can't interrupt", §11. |
+| A sealed message from a cell with an odd number in it (NaN as a message's ID, say) raised an error in the phone, as did a control message at a cell or a frame from a sender which isn't an ID. A cell claiming the ID 10^18 raised one in the core each time it connected. | IDs are checked wherever they arrive (`common.is_id`), and the stack drops frames whose sender isn't one. |
+| Activations which never finished were kept for good: 2,000 requests, 2,000 handshakes in memory. | At most 64, the newest, for 30 seconds each. |
+| Any cell could send a message, or acknowledge one, for any phone, knowing its tunnel's ID. | Only the phone's own cell speaks for it. |
+| Two phones could be given the same tunnel ID, picked at random from 2^31. | IDs in use aren't picked. |
+| A phone remembered the first 32 cells it heard. With 300 made-up cells about, it never listed the real one, so couldn't be activated. | It remembers the 32 strongest. |
+| Phones took any string of up to 64 bytes as a network's name, and show names to people. | Names are letters, digits and dashes, up to 32, as `cellcore setup` allows. |
+| Timers due at the same moment ran in no particular order, so control messages queued together could swap. | They run in the order they were set. |
+
+**Left as they are:**
+
+- **Using up a code.** A code's first group is sent in the clear. Someone in range who hears it, or answers a phone's
+  activation before the cell does, can make the three wrong tries which cancel the code. The administrator makes
+  another.
+- **False alarms.** At 25% loss a phone sometimes loses four checks in a row, and attaches again though its cell knew
+  it. That costs a second or so, and its address stays.
+- **Floods of attaches.** Each still costs the core three X25519 operations (§11).
+- **Pretending to be a cell which is out of the phone's hearing.** A frame which says a cell doesn't know a phone
+  makes the phone ask, once a second at most. Nothing else which can't be checked makes a phone do anything.
 
 ## 14. Implementation plan
 

@@ -16,6 +16,13 @@ Every couple of seconds, it compares its cell with the others it hears. If anoth
 tells its cell, which hands it over. If its cell goes quiet, it attaches again through the best one, keeping its
 address.
 
+Radio frames get lost, and cells and cores restart and forget their phones. So the phone checks its cell still knows
+it, every few seconds when nothing else has come from it, and attaches again if it doesn't. It says it has arrived at a
+new cell until the cell answers. And it sends each message until the network says it has it.
+
+Anyone in range can send a frame which says it's from the phone's cell. Whatever can't be checked (a refusal, or a
+handshake message which doesn't read) never stops the phone waiting for the real answer.
+
 @local
 ]]
 
@@ -40,6 +47,19 @@ local SAMPLES = 3
 local MAX_HEARD, FORGET = 32, 30
 -- How many events (attaching, moving between cells, losing service) to remember.
 local MAX_EVENTS = 20
+-- How often to ask a quiet cell whether it still knows us, in seconds, and how many times in a row it may not answer.
+local CHECK_INTERVAL, CHECK_MISSES = 5, 4
+-- The same, once there's reason to think it has forgotten us.
+local FAST_INTERVAL, FAST_MISSES = 1, 3
+-- How many times to tell a new cell we've arrived, a second apart, before giving up on it.
+local CONFIRM_TRIES = 5
+-- How long a refusal has to be followed by the real answer, in seconds: anyone can send a refusal.
+local REJECT_GRACE = 1
+-- Messages: how many may wait to be sent, how often they're sent again, in seconds, how many times, and how many
+-- received messages to remember, to tell when one comes twice.
+local MAX_OUTBOX, MESSAGE_RETRY, MESSAGE_TRIES, MAX_SEEN = 20, 5, 12, 128
+-- How long a network's name may be: letters, digits and dashes.
+local MAX_NAME = 32
 
 local Phone = {}
 Phone.__index = Phone
@@ -52,12 +72,14 @@ Phone.__index = Phone
     operator? = { network = string, key = string, signing = string },
     on_change? = function(phone:table),
     on_message? = function(from:string, text:string),
+    on_sent? = function(id:number, ok:boolean, reason:string|nil),
     on_activated? = function(info:table), relay? = function():boolean,
 } options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
 phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; what to call
-when its state changes; what to call with each message; what to call when it's activated, with the operator's keys and
-its subscription, to save them; and whether this computer is a relay, whose cell's backhaul is this phone (so it
-avoids cells already as many relays from the core as a chain may have).
+when its state changes; what to call with each message; what to call when the network has taken a message we sent (or
+refused it, or it couldn't be sent); what to call when it's activated, with the operator's keys and its subscription,
+to save them; and whether this computer is a relay, whose cell's backhaul is this phone (so it avoids cells already as
+many relays from the core as a chain may have).
 @treturn table The phone.
 ]]
 local function new(options)
@@ -66,9 +88,11 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
+        on_sent = options.on_sent or function() end,
         relay = options.relay or function() return false end,
         cells = {}, heard = {}, events = {}, state = options.operator and "searching" or "inactive", retry = 2,
-        seen_messages = {},
+        seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
+        unanswered = 0, last_heard = 0, last_check = 0,
     }, Phone)
 
     -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
@@ -105,11 +129,22 @@ function Phone:hear(src, message, signal, verified)
     local now = self.stack.clock()
     local cell = self.heard[src]
     if not cell then
-        local count = 0
+        -- Anyone can send system information, as from as many cells as they like. When there's no room, the weakest
+        -- cell makes way for a stronger one, so the cells remembered are the ones most worth using.
+        local count, weakest, weakest_signal = 0, nil, nil
         for id, other in pairs(self.heard) do
-            if now - other.heard > FORGET then self.heard[id] = nil else count = count + 1 end
+            if now - other.heard > FORGET then
+                self.heard[id] = nil
+            else
+                count = count + 1
+                local strength = now - other.heard > SILENCE and -math.huge or other.signal
+                if id ~= self.cell and (not weakest_signal or strength < weakest_signal) then weakest, weakest_signal = id, strength end
+            end
         end
-        if count >= MAX_HEARD then return end
+        if count >= MAX_HEARD then
+            if not weakest or (type(signal) == "number" and signal or -50) <= weakest_signal then return end
+            self.heard[weakest] = nil
+        end
         cell = { samples = {} }
         self.heard[src] = cell
     end
@@ -154,7 +189,8 @@ function Phone:radio(src, message, signal)
     local op = message.op
 
     if op == "sib" then
-        if type(message.network) ~= "string" or #message.network > 64 then return end
+        -- Names are shown to people, so only take ones a network could have.
+        if type(message.network) ~= "string" or #message.network > MAX_NAME or not message.network:find("^[%w%-]+$") then return end
         -- Cells of other networks (or of any network, before we're activated) can't be checked, but we can see what's
         -- around. A cell which claims to be ours, but isn't, may be a fake.
         if not self.operator or message.network ~= self.operator.network then
@@ -178,54 +214,81 @@ function Phone:radio(src, message, signal)
         return
     end
 
-    -- Everything else comes from the cell we're attaching through, or attached to.
+    -- Everything else comes from the cell we're attaching through, or attached to: or says it does. Until a message
+    -- has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
     if src ~= self.cell then return end
     if op == "attach_reply" and self.state == "attaching" and self.handshake then
-        local payload = self.handshake:read(message.handshake)
+        local handshake = self.handshake:clone()
+        local payload = handshake:read(message.handshake)
         local info = payload and codec.decode(payload)
         if type(info) ~= "table" then return end
         self.subscriber = { id = info.id, number = info.number }
-        local send = self.handshake:split()
-        self.secret = self.handshake.ck
+        local send = handshake:split()
+        self.secret = handshake.ck
         self.handshake = nil
         self:to_cell(self.cell, { op = "attach_complete", data = send:encrypt(codec.encode({ complete = true })) })
     elseif op == "accept" and self.state == "attaching" and self.secret then
         local sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, self.cell), common.UPLINK, common.DOWNLINK)
         local value = sealer:open(message.sealed)
-        if type(value) ~= "table" or type(value.address) ~= "number" then return end
+        if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
+            or value.address < 1 or value.address >= 0xFFFFFFFF then
+            return
+        end
         self.sealer = sealer
         self:set_address(value.address)
         self.retry = 2
+        self:heard_from_cell()
+        self.confirming = nil
         self:set_state("attached")
+        self:send_waiting()
     elseif op == "data" and self.state == "attached" then
         local value = self.sealer:open(message.sealed)
         if type(value) ~= "table" then return end
+        self:heard_from_cell()
         local packet = type(value.p) == "string" and codec.decode(value.p)
         if type(packet) == "table" then
             self.stack:inject("cell", packet)
-        elseif type(value.sms) == "table" and type(value.sms.from) == "string" and type(value.sms.text) == "string" then
+        elseif type(value.sms) == "table" and common.is_id(value.sms.id) and type(value.sms.from) == "string"
+            and type(value.sms.text) == "string" then
             -- Say we have it, even if we've seen it before (our last acknowledgement may have been lost).
-            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms_ack = value.sms.id }) })
-            if not self.seen_messages[value.sms.id] then
-                self.seen_messages[value.sms.id] = true
-                self.on_message(value.sms.from, value.sms.text)
+            local id = value.sms.id
+            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms_ack = id }) })
+            if not self.seen_messages[id] then
+                self.seen_messages[id] = true
+                self.seen_order[#self.seen_order + 1] = id
+                if #self.seen_order > MAX_SEEN then self.seen_messages[table.remove(self.seen_order, 1)] = nil end
+                self.on_message(value.sms.from:sub(1, 32), value.sms.text:sub(1, 1000))
+            end
+        elseif type(value.sms_sent) == "table" then
+            -- The network has one of our messages (or won't take it).
+            local reply = value.sms_sent
+            for i, waiting in ipairs(self.outbox) do
+                if waiting.id == reply.id then
+                    table.remove(self.outbox, i)
+                    local ok = reply.ok == true
+                    self.on_sent(waiting.id, ok, not ok and (type(reply.error) == "string" and reply.error:sub(1, 100) or "Not sent") or nil)
+                    break
+                end
             end
         end
     elseif op == "activate_reply" and self.state == "activating" and self.handshake then
-        if not self.handshake:read(message.handshake) then return self:activation_failed("The network refused") end
-        local finish = self.handshake:write(codec.encode({ v = 1 }))
-        if not finish then return self:activation_failed("The network refused") end
+        local handshake = self.handshake:clone()
+        if not handshake:read(message.handshake) then return end
+        local finish = handshake:write(codec.encode({ v = 1 }))
+        if not finish then return end
+        self.handshake, self.finished = handshake, true
         self:to_cell(self.cell, { op = "activate_finish", handshake = finish })
-    elseif op == "activate_accept" and self.state == "activating" and self.handshake then
+    elseif op == "activate_accept" and self.state == "activating" and self.handshake and self.finished then
         local _, receive = self.handshake:split()
         local plaintext = type(message.data) == "string" and receive:decrypt(message.data)
         local info = plaintext and codec.decode(plaintext)
-        if type(info) ~= "table" or type(info.network) ~= "string" or type(info.key) ~= "string" or #info.key ~= 32
+        -- Only someone who knew the code could have sent something which decrypts, so these keys are the operator's.
+        if type(info) ~= "table" then return end
+        if type(info.network) ~= "string" or type(info.key) ~= "string" or #info.key ~= 32
             or type(info.signing) ~= "string" or #info.signing ~= 32 then
             return self:activation_failed("The network's answer was garbled")
         end
-        -- Only someone who knew the code could have sent this, so these keys are the operator's.
-        self.handshake = nil
+        self.handshake, self.finished = nil, nil
         self.operator = { network = info.network, key = info.key, signing = info.signing }
         self.subscriber = { id = info.id, number = info.number }
         self:event("activated", { network = info.network })
@@ -236,17 +299,36 @@ function Phone:radio(src, message, signal)
     elseif op == "handover" and self.state == "attached" then
         local value = self.sealer:open(message.sealed)
         local target = type(value) == "table" and value.target
-        if type(target) ~= "number" or not self.cells[target] then return end
+        if not common.is_id(target) or not self.cells[target] or target == self.cell then return end
         -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
         self:event("handover", { from = self.cell, to = target })
         self.cell, self.candidate = target, nil
         self.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, target), common.UPLINK, common.DOWNLINK)
+        -- The new cell may not hear us the first time, so we say so until it answers.
+        self:heard_from_cell()
+        self.confirming = { tries = 0, last = self.stack.clock() }
         self:to_cell(target, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
         self.on_change(self)
-    elseif op == "reject" and self.state == "attaching" then
-        self.rejected = type(message.reason) == "string" and message.reason or "Rejected"
-        self:give_up()
+    elseif op == "reject" and self.state == "attaching" and not self.secret and not self.refusal then
+        -- Anyone can send this, so the real answer still counts if it comes soon.
+        self.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
+        local attempt = self.attempt
+        self.stack:schedule(REJECT_GRACE, function()
+            if self.attempt == attempt and self.state == "attaching" and not self.secret then
+                self.rejected = self.refusal
+                self:give_up()
+            end
+        end)
+    elseif op == "unknown" and self.state == "attached" and not self.fast_check then
+        -- The cell says it doesn't know us (or someone says so for it): find out.
+        self.fast_check, self.unanswered, self.last_check = true, 0, -math.huge
     end
+end
+
+-- Something came from our cell which only it could have sent: it knows us.
+function Phone:heard_from_cell()
+    self.last_heard, self.unanswered, self.fast_check = self.stack.clock(), 0, false
+    self.confirming = nil
 end
 
 --[[- Activate with a code from the network's administrator, through the strongest cell of the network.
@@ -276,6 +358,7 @@ function Phone:activate(network, code)
     }
     local message = self.handshake:write("")
     if not message then return nil, "The SIM can't be used" end
+    self.finished, self.activation_error = nil, nil
     self:set_state("activating")
     self:to_cell(best, { op = "activate", network = network, tag = tag, handshake = message })
 
@@ -288,31 +371,62 @@ function Phone:activate(network, code)
 end
 
 function Phone:activation_failed(reason)
-    self.handshake, self.attempt, self.activation_error = nil, nil, reason
+    self.handshake, self.attempt, self.activation_error, self.finished = nil, nil, reason, nil
     self:event("activation_failed", { reason = reason })
     self:set_state("inactive")
 end
 
---[[- Send a message to another phone, by its number. It's kept by the network until that phone is reachable.
+--[[- Send a message to another phone, by its number. It's sent until the network says it has it, which then keeps
+it until that phone is reachable.
 
 @tparam string to The number.
 @tparam string text The message, up to 1000 characters.
-@treturn[1] true If it was sent.
-@treturn[2] nil If it wasn't.
+@treturn[1] true If it's being sent. `on_sent` is called once the network has it, or if it won't take it.
+@treturn[1] number The message's ID, which `on_sent` is called with.
+@treturn[2] nil If it can't be sent.
 @treturn[2] string Why not.
 ]]
 function Phone:send_message(to, text)
     if self.state ~= "attached" then return nil, "No service" end
-    if #text > 1000 then return nil, "Messages can be at most 1000 characters" end
-    self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms = { to = to, text = text } }) })
-    return true
+    if type(to) ~= "string" or #to < 1 or #to > 32 then return nil, "Numbers are up to 32 characters" end
+    if type(text) ~= "string" or #text > 1000 then return nil, "Messages can be at most 1000 characters" end
+    if #self.outbox >= MAX_OUTBOX then return nil, "Too many messages are waiting to be sent" end
+
+    self.next_message = self.next_message + 1
+    local waiting = { id = self.next_message, to = to, text = text, tries = 0 }
+    self.outbox[#self.outbox + 1] = waiting
+    self:send_one(waiting)
+    return true, waiting.id
+end
+
+function Phone:send_one(waiting)
+    waiting.tries, waiting.sent = waiting.tries + 1, self.stack.clock()
+    self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms = { id = waiting.id, to = waiting.to, text = waiting.text } }) })
+end
+
+-- Send the messages the network hasn't said it has, again: all of them once we have service back, or those which
+-- have waited a while. After enough tries, give up on one.
+function Phone:send_waiting(only_old)
+    local now = self.stack.clock()
+    for i = #self.outbox, 1, -1 do
+        local waiting = self.outbox[i]
+        if not only_old or now - waiting.sent >= MESSAGE_RETRY then
+            if waiting.tries >= MESSAGE_TRIES then
+                table.remove(self.outbox, i)
+                self.on_sent(waiting.id, false, "The network didn't answer")
+            end
+        end
+    end
+    for _, waiting in ipairs(self.outbox) do
+        if not only_old or now - waiting.sent >= MESSAGE_RETRY then self:send_one(waiting) end
+    end
 end
 
 -- Start attaching through the best cell.
 function Phone:attach()
     local best = self:best_cell()
     if not best then return end
-    self.cell, self.secret, self.rejected = best, nil, nil
+    self.cell, self.secret, self.rejected, self.refusal = best, nil, nil, nil
     self.handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
         static = self.sim, remote_static = self.operator.key,
@@ -325,7 +439,11 @@ function Phone:attach()
     local attempt = {}
     self.attempt = attempt
     self.stack:schedule(ATTACH_TIMEOUT, function()
-        if self.attempt == attempt and self.state == "attaching" then self:give_up() end
+        if self.attempt == attempt and self.state == "attaching" then
+            -- A refusal which nothing else followed was the answer.
+            if not self.secret then self.rejected = self.refusal end
+            self:give_up()
+        end
     end)
 end
 
@@ -376,6 +494,26 @@ function Phone:measure()
         return self:attach()
     end
 
+    -- A cell we've moved to may not have heard that we arrived: say so again, until it answers.
+    local confirming = self.confirming
+    if confirming and now - confirming.last >= 1 then
+        if confirming.tries >= CONFIRM_TRIES then return self:forgotten() end
+        confirming.tries, confirming.last = confirming.tries + 1, now
+        self:to_cell(self.cell, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
+    end
+
+    -- The cell may have forgotten us without going quiet (it restarted, or the core did). When nothing has come from
+    -- it for a while, ask. If it doesn't answer several times running, attach again.
+    local interval, misses = CHECK_INTERVAL, CHECK_MISSES
+    if self.fast_check then interval, misses = FAST_INTERVAL, FAST_MISSES end
+    if not confirming and now - self.last_heard >= interval and now - self.last_check >= interval then
+        if self.unanswered >= misses then return self:forgotten() end
+        self.unanswered, self.last_check = self.unanswered + 1, now
+        self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ ping = self.unanswered }) })
+    end
+
+    self:send_waiting(true)
+
     local best, best_signal = self:best_cell(self.cell)
     if best and best_signal >= serving.signal + HYSTERESIS then
         if self.candidate ~= best then
@@ -389,6 +527,15 @@ function Phone:measure()
     else
         self.candidate = nil
     end
+end
+
+-- Our cell is there, but doesn't answer as a cell which knows us would: attach again, to it or another, keeping our
+-- address.
+function Phone:forgotten()
+    self:event("lost", { cell = self.cell })
+    self.confirming, self.fast_check, self.unanswered = nil, false, 0
+    self:set_state("searching")
+    return self:attach()
 end
 
 --- Describe the phone.

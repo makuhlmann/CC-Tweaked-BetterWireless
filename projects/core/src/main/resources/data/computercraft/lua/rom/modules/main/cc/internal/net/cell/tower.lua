@@ -19,6 +19,11 @@ local common = require "cc.internal.net.cell.common"
 -- How long to keep a handed-over phone's confirmation which came before the core's word, in seconds, and how many.
 local EARLY_CONFIRM_TIME, MAX_EARLY_CONFIRMS = 5, 16
 
+-- How often to tell a computer that we don't know it as a phone, in seconds, and how many computers to keep track of.
+local UNKNOWN_INTERVAL, MAX_UNKNOWN = 1, 64
+
+local is_id = common.is_id
+
 local Tower = {}
 Tower.__index = Tower
 
@@ -43,7 +48,7 @@ local function new(options)
         core = options.core, control_send = options.control, id = stack.id,
         can_serve = options.can_serve or function() return true end,
         tunnel = common.new_sealer(options.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
-        phones = {}, by_teid = {}, path = {}, early_confirms = {},
+        phones = {}, by_teid = {}, path = {}, early_confirms = {}, unknown = {}, unknown_count = 0,
     }, Tower)
 
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
@@ -87,7 +92,10 @@ function Tower:radio(phone, message)
         self.control_send({ op = "attach_complete", phone = phone, data = message.data })
     elseif op == "data" then
         local context = self.phones[phone]
-        local value = context and context.active and context.sealer:open(message.sealed)
+        -- A phone we've forgotten (we restarted, or the core did) would wait a long time for an answer. Tell it, so
+        -- it can check, and attach again. Anyone can send such a frame, so not too often.
+        if not context then return self:say_unknown(phone) end
+        local value = context.active and context.sealer:open(message.sealed)
         if type(value) ~= "table" then return end
         if type(value.p) == "string" then
             -- Up the tunnel to the gateway.
@@ -97,10 +105,13 @@ function Tower:radio(phone, message)
                 if not ok then self.stack.log("Cell couldn't tunnel a phone's packet: " .. tostring(err)) end
             end
         elseif type(value.sms) == "table" then
-            self.control_send({ op = "sms", teid = context.teid, to = value.sms.to, text = value.sms.text })
+            self.control_send({ op = "sms", teid = context.teid, id = value.sms.id, to = value.sms.to, text = value.sms.text })
         elseif value.sms_ack ~= nil then
             self.control_send({ op = "sms_ack", teid = context.teid, id = value.sms_ack })
-        elseif type(value.target) == "number" and value.target ~= self.id
+        elseif value.ping ~= nil then
+            -- The phone is checking we still know it.
+            self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ pong = true }) })
+        elseif is_id(value.target) and value.target ~= self.id
             and (not context.handing_over or self.stack.clock() - context.handing_over > 5) then
             -- The phone hears another cell better. If the handover doesn't happen, it may ask again later.
             context.handing_over = self.stack.clock()
@@ -120,15 +131,31 @@ function Tower:radio(phone, message)
     end
 end
 
--- A phone handed over to us says it's here: tell the core to send its packets our way.
+-- Tell a computer which thinks it's one of our phones that we don't know it.
+function Tower:say_unknown(phone)
+    local now = self.stack.clock()
+    local last = self.unknown[phone]
+    if last and now - last < UNKNOWN_INTERVAL then return end
+    if not last then
+        if self.unknown_count >= MAX_UNKNOWN then self.unknown, self.unknown_count = {}, 0 end
+        self.unknown_count = self.unknown_count + 1
+    end
+    self.unknown[phone] = now
+    self:to_phone(phone, { op = "unknown" })
+end
+
+-- A phone handed over to us says it's here: tell the core to send its packets our way, and tell the phone we heard.
+-- It says so until we answer, as either frame may be lost.
 function Tower:confirm(phone, sealed)
     local context = self.phones[phone]
-    if not context or context.active then return end
+    if not context then return end
     local value = context.sealer:open(sealed)
-    if type(value) == "table" and value.confirm == true then
+    if type(value) ~= "table" or value.confirm ~= true then return end
+    if not context.active then
         context.active = true
         self.control_send({ op = "path_switch", teid = context.teid })
     end
+    self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ confirmed = true }) })
 end
 
 --[[- Handle a control message from the core.
@@ -138,20 +165,28 @@ end
 function Tower:control(message)
     if type(message) ~= "table" then return end
     local op = message.op
-    if op == "attach_reply" and type(message.phone) == "number" then
+    if op == "attach_reply" and is_id(message.phone) then
         self:to_phone(message.phone, { op = "attach_reply", handshake = message.handshake })
-    elseif op == "reject" and type(message.phone) == "number" then
+    elseif op == "reject" and is_id(message.phone) then
         self:to_phone(message.phone, { op = "reject", reason = message.reason })
-    elseif (op == "activate_reply" or op == "activate_accept") and type(message.phone) == "number" then
+    elseif (op == "activate_reply" or op == "activate_accept") and is_id(message.phone) then
         self:to_phone(message.phone, { op = op, handshake = message.handshake, data = message.data })
-    elseif op == "sms" and type(message.teid) == "number" then
+    elseif op == "sms" and is_id(message.teid) then
         local context = self.by_teid[message.teid]
         if context and context.active then
             local sms = { id = message.id, from = message.from, text = message.text }
-            self:to_phone(context.phone, { op = "data", sealed = context.sealer:seal({ sms = sms }) })
+            local sealed = context.sealer:seal({ sms = sms })
+            if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
         end
-    elseif op == "context" and type(message.phone) == "number" and type(message.teid) == "number"
-        and type(message.key) == "string" then
+    elseif op == "sms_sent" and is_id(message.teid) then
+        -- The core has a message the phone sent (or won't take it).
+        local context = self.by_teid[message.teid]
+        if context and context.active then
+            local sealed = context.sealer:seal({ sms_sent = { id = message.id, ok = message.ok, error = message.error } })
+            if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
+        end
+    elseif op == "context" and is_id(message.phone) and is_id(message.teid)
+        and type(message.key) == "string" and #message.key == 32 then
         local old = self.phones[message.phone]
         if old then self.by_teid[old.teid] = nil end
         local context = {
@@ -161,7 +196,8 @@ function Tower:control(message)
         self.phones[message.phone] = context
         self.by_teid[message.teid] = context
         if context.active then
-            self:to_phone(message.phone, { op = "accept", sealed = context.sealer:seal({ address = message.address }) })
+            local sealed = context.sealer:seal({ address = message.address })
+            if sealed then self:to_phone(message.phone, { op = "accept", sealed = sealed }) end
         end
         -- The phone may have arrived already.
         local early = self.early_confirms[message.phone]
@@ -169,7 +205,7 @@ function Tower:control(message)
         if early and not context.active and self.stack.clock() - early.time <= EARLY_CONFIRM_TIME then
             self:confirm(message.phone, early.sealed)
         end
-    elseif op == "handover_go" and type(message.teid) == "number" then
+    elseif op == "handover_go" and is_id(message.teid) and is_id(message.target) then
         local context = self.by_teid[message.teid]
         if context then
             self:to_phone(context.phone, { op = "handover", sealed = context.sealer:seal({ target = message.target }) })
@@ -177,7 +213,7 @@ function Tower:control(message)
     elseif op == "path" and common.is_path(message.path) then
         -- The relays our backhaul goes through, which phones on them mustn't use us.
         self.path = message.path
-    elseif op == "release" and type(message.teid) == "number" then
+    elseif op == "release" and is_id(message.teid) then
         local context = self.by_teid[message.teid]
         if context then
             self.by_teid[message.teid] = nil

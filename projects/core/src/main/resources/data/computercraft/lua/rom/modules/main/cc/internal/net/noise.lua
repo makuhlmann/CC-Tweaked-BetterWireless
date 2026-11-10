@@ -227,6 +227,18 @@ function Handshake:read(message)
     return payload
 end
 
+--[[- Copy the handshake as it stands. Reading a message which wasn't meant for this handshake spoils it, so when
+anyone can send something which looks like the next message, read it with a copy, and keep the copy if it worked.
+
+@treturn table The copy.
+]]
+function Handshake:clone()
+    local copy = setmetatable({}, Handshake)
+    for k, v in pairs(self) do copy[k] = v end
+    if self.cipher then copy.cipher = setmetatable({ crypto = self.cipher.crypto, key = self.cipher.key, n = self.cipher.n }, Cipher) end
+    return copy
+end
+
 --- Whether it's our turn to write.
 --
 -- @treturn boolean Whether to call `write` next (rather than `read`).

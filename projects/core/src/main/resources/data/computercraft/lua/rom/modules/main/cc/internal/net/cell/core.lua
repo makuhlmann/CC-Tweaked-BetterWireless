@@ -37,8 +37,21 @@ local CODE_TRIES = 3
 -- How often to try delivering messages again, in seconds.
 local MESSAGE_RETRY = 10
 
--- How long a phone has to confirm its attach.
+-- How long a phone has to confirm its attach, or finish activating, in seconds.
 local ATTACH_TIMEOUT = 10
+local ACTIVATE_TIMEOUT = 30
+
+-- How many attaches (or activations) may be under way for one phone at one cell, and how many activations in all.
+-- Anyone can send a request which says it's from a phone, and it mustn't take the place of the phone's own.
+local MAX_ATTEMPTS, MAX_ACTIVATING = 4, 64
+
+-- Messages waiting for phones: how many in all, how many for one number, and how long they're kept, in milliseconds.
+local MAX_MESSAGES, MAX_MAILBOX, MESSAGE_LIFETIME = 1000, 50, 7 * 24 * 60 * 60 * 1000
+
+-- How many of the messages each phone sent to remember, to tell when one comes twice.
+local MAX_SENT = 64
+
+local is_id = common.is_id
 
 local Core = {}
 Core.__index = Core
@@ -68,7 +81,11 @@ local function new(options)
 
     local self = setmetatable({
         stack = options.stack, crypto = options.crypto, network = options.network, operator = options.operator,
-        signing = options.signing, codes = options.codes or {}, activating = {}, messages = {}, next_message = 0,
+        signing = options.signing, codes = options.codes or {}, messages = {},
+        activating = {}, activating_count = 0, activating_order = {},
+        -- Messages are numbered from a different place each time the core starts, so a phone which remembers the
+        -- ones it has had doesn't take a new one for an old one.
+        next_message = math.random(1, 0x7FFFFFFF) * 0x100000,
         epoch = options.epoch,
         make_tunnel_key = options.tunnel_key or function(cell) return common.tunnel_key(options.crypto, options.secret, cell) end,
         subscribers = options.subscribers, secret = options.secret, on_event = options.on_event or function() end,
@@ -227,6 +244,7 @@ function Core:stop()
     self.stack:udp_close(self.socket)
     self.stack:remove_interface("cellular")
     self.towers, self.sessions, self.by_teid, self.by_address, self.pending = {}, {}, {}, {}, {}
+    self.activating, self.activating_count, self.activating_order = {}, 0, {}
 end
 
 -- Find or make a phone's session, keeping its address when it attaches again.
@@ -264,24 +282,51 @@ function Core:control(tower_id, message)
     if not tower or type(message) ~= "table" then return end
     local op = message.op
 
-    if op == "attach" and type(message.phone) == "number" and type(message.handshake) == "string" then
+    if op == "attach" and is_id(message.phone) and type(message.handshake) == "string" then
         self:attach(tower, message.phone, message.handshake)
-    elseif op == "attach_complete" and type(message.phone) == "number" then
+    elseif op == "attach_complete" and is_id(message.phone) then
         self:attach_complete(tower, message.phone, message.data)
-    elseif op == "handover" and type(message.teid) == "number" and type(message.target) == "number" then
+    elseif op == "handover" and is_id(message.teid) and is_id(message.target) then
         self:handover(tower, message.teid, message.target)
-    elseif op == "path_switch" and type(message.teid) == "number" then
+    elseif op == "path_switch" and is_id(message.teid) then
         self:path_switch(tower, message.teid)
-    elseif op == "activate" and type(message.phone) == "number" and type(message.tag) == "string"
+    elseif op == "activate" and is_id(message.phone) and type(message.tag) == "string"
         and type(message.handshake) == "string" then
         self:activate(tower, message.phone, message.tag, message.handshake)
-    elseif op == "activate_finish" and type(message.phone) == "number" and type(message.handshake) == "string" then
+    elseif op == "activate_finish" and is_id(message.phone) and type(message.handshake) == "string" then
         self:activate_finish(tower, message.phone, message.handshake)
-    elseif op == "sms" and type(message.teid) == "number" then
-        self:sms(message.teid, message.to, message.text)
-    elseif op == "sms_ack" and type(message.teid) == "number" then
-        self:sms_ack(message.teid, message.id)
+    elseif op == "sms" and is_id(message.teid) then
+        self:sms(tower, message.teid, message.id, message.to, message.text)
+    elseif op == "sms_ack" and is_id(message.teid) then
+        self:sms_ack(tower, message.teid, message.id)
     end
+end
+
+-- Attaches and activations under way are kept by cell and phone, a few for each: the phone's own request, and any
+-- which only say they're the phone's.
+local function add_attempt(attempts, key, attempt)
+    local list = attempts[key]
+    if not list then
+        list = {}
+        attempts[key] = list
+    end
+    list[#list + 1] = attempt
+    local dropped
+    if #list > MAX_ATTEMPTS then dropped = table.remove(list, 1) end
+    return dropped
+end
+
+local function remove_attempt(attempts, key, attempt)
+    local list = attempts[key]
+    if not list then return false end
+    for i, other in ipairs(list) do
+        if other == attempt then
+            table.remove(list, i)
+            if #list == 0 then attempts[key] = nil end
+            return true
+        end
+    end
+    return false
 end
 
 -- A phone wants to activate with a code. Nothing is sent which helps anyone without the code.
@@ -295,24 +340,64 @@ function Core:activate(tower, phone, tag, message)
     if not handshake:read(message) then return end
     local reply = handshake:write(codec.encode({ v = 1 }))
     if not reply then return end
-    self.activating[tower.id .. ":" .. phone] = { tag = tag, handshake = handshake }
+
+    local key = tower.id .. ":" .. phone
+    local activating = { tag = tag, handshake = handshake, key = key }
+    self:forget_activation(add_attempt(self.activating, key, activating), true)
+    self.activating_count = self.activating_count + 1
+    -- Anyone who has heard a code's first group can start as many of these as they like. Only so many are kept: the
+    -- oldest goes, as a phone which means it finishes in a moment.
+    local order = self.activating_order
+    order[#order + 1] = activating
+    while self.activating_count > MAX_ACTIVATING and order[1] do self:forget_activation(table.remove(order, 1)) end
+    self.stack:schedule(ACTIVATE_TIMEOUT, function() self:forget_activation(activating) end)
     self:send(tower.id, { op = "activate_reply", phone = phone, handshake = reply })
+end
+
+-- Forget an activation which is over, or has taken too long.
+function Core:forget_activation(activating, removed)
+    if not activating or activating.gone then return end
+    if not removed then remove_attempt(self.activating, activating.key, activating) end
+    activating.gone = true
+    self.activating_count = self.activating_count - 1
+    local order = self.activating_order
+    -- Usually the oldest, at the front.
+    for i, other in ipairs(order) do
+        if other == activating then
+            table.remove(order, i)
+            break
+        end
+    end
 end
 
 function Core:activate_finish(tower, phone, message)
     local key = tower.id .. ":" .. phone
-    local activating = self.activating[key]
-    self.activating[key] = nil
-    local code = activating and self.codes[activating.tag]
-    if not code then return end
-
-    -- The last message only reads if the phone knew the code.
-    if not activating.handshake:read(message) then
+    -- The last message only reads if the phone knew the code. It's for one of the activations under way: the others
+    -- can't read it, and are left as they were.
+    local activating
+    for _, candidate in ipairs(self.activating[key] or {}) do
+        local handshake = candidate.handshake:clone()
+        if handshake:read(message) then
+            activating, candidate.handshake = candidate, handshake
+            break
+        end
+    end
+    if not activating then
+        -- A wrong code. Count it against the code of the newest activation, and forget that one.
+        local list = self.activating[key]
+        local failed = list and list[#list]
+        if not failed then return end
+        self:forget_activation(failed)
+        local code = self.codes[failed.tag]
+        if not code then return end
         code.tries = code.tries + 1
-        if code.tries >= CODE_TRIES then self.codes[activating.tag] = nil end
-        self.on_event("activation_failed", activating.tag)
+        if code.tries >= CODE_TRIES then self.codes[failed.tag] = nil end
+        self.on_event("activation_failed", failed.tag)
         return
     end
+    self:forget_activation(activating)
+    local code = self.codes[activating.tag]
+    if not code then return end
     self.codes[activating.tag] = nil
     self.on_event("code_used", activating.tag)
 
@@ -331,39 +416,81 @@ function Core:activate_finish(tower, phone, message)
     self:send(tower.id, { op = "activate_accept", phone = phone, data = send:encrypt(info) })
 end
 
+-- Tell a phone what became of a message it sent.
+function Core:sms_sent(session, id, ok, reason)
+    self:send(session.cell, { op = "sms_sent", teid = session.teid, id = id, ok = ok, error = reason })
+end
+
 -- Messages: kept until the phone they're for is attached, and says it has them.
-function Core:sms(teid, to, text)
+function Core:sms(tower, teid, id, to, text)
     local session = self.by_teid[teid]
-    local sender = session and self.subscribers[session.sim]
-    if not sender or type(to) ~= "string" or type(text) ~= "string" or #text > 1000 or #to > 32 then return end
+    -- Only a phone's own cell speaks for it.
+    if not session or session.cell ~= tower.id then return end
+    local sender = self.subscribers[session.sim]
+    if not sender or not is_id(id) or type(to) ~= "string" or type(text) ~= "string" then return end
+    if #text > 1000 or #to > 32 or #to < 1 then return self:sms_sent(session, id, false, "That message can't be sent") end
+
+    -- The phone sends a message until we say we have it, so it may come more than once.
+    session.sent = session.sent or { order = {} }
+    local sent = session.sent
+    if sent[id] ~= nil then return self:sms_sent(session, id, sent[id] == true, sent[id] ~= true and sent[id] or nil) end
+    local function done(ok, reason)
+        sent[id] = ok or reason
+        sent.order[#sent.order + 1] = id
+        if #sent.order > MAX_SENT then sent[table.remove(sent.order, 1)] = nil end
+        self:sms_sent(session, id, ok, reason)
+    end
+
+    local known, waiting = false, 0
+    for _, subscriber in pairs(self.subscribers) do
+        if subscriber.number == to then known = true end
+    end
+    if not known then return done(false, "Nobody has the number " .. to) end
+    self:expire_messages()
+    for _, message in ipairs(self.messages) do
+        if message.to == to then waiting = waiting + 1 end
+    end
+    if waiting >= MAX_MAILBOX or #self.messages >= MAX_MESSAGES then
+        return done(false, "Too many messages are waiting for " .. to)
+    end
 
     self.next_message = self.next_message + 1
-    local message = { id = self.next_message, from = sender.number, to = to, text = text }
+    local message = { id = self.next_message, from = sender.number, to = to, text = text, expires = self.epoch() + MESSAGE_LIFETIME }
     self.messages[#self.messages + 1] = message
     self.on_event("message", sender.number, to)
+    done(true)
     self:deliver(message)
 end
 
--- Find where a phone with a number is, if it's attached.
-function Core:session_with_number(number)
-    for sim, subscriber in pairs(self.subscribers) do
-        if subscriber.number == number then
-            local session = self.sessions[sim]
-            if session and session.teid then return session end
-        end
+-- Forget messages nobody collected in time.
+function Core:expire_messages()
+    local now, kept = self.epoch(), {}
+    for _, message in ipairs(self.messages) do
+        if message.expires > now then kept[#kept + 1] = message end
     end
+    self.messages = kept
 end
 
-function Core:deliver(message)
-    local session = self:session_with_number(message.to)
+-- Find where the phones with numbers are, if they're attached.
+function Core:sessions_by_number()
+    local result = {}
+    for sim, subscriber in pairs(self.subscribers) do
+        local session = self.sessions[sim]
+        if session and session.teid and type(subscriber.number) == "string" then result[subscriber.number] = session end
+    end
+    return result
+end
+
+function Core:deliver(message, sessions)
+    local session = (sessions or self:sessions_by_number())[message.to]
     if session then
         self:send(session.cell, { op = "sms", teid = session.teid, id = message.id, from = message.from, text = message.text })
     end
 end
 
-function Core:sms_ack(teid, id)
+function Core:sms_ack(tower, teid, id)
     local session = self.by_teid[teid]
-    local subscriber = session and self.subscribers[session.sim]
+    local subscriber = session and session.cell == tower.id and self.subscribers[session.sim]
     if not subscriber then return end
     for i, message in ipairs(self.messages) do
         if message.id == id and message.to == subscriber.number then
@@ -375,7 +502,10 @@ end
 
 function Core:retry_messages()
     self.retry_timer = self.stack:schedule(MESSAGE_RETRY, function() self:retry_messages() end)
-    for _, message in ipairs(self.messages) do self:deliver(message) end
+    if not self.messages[1] then return end
+    self:expire_messages()
+    local sessions = self:sessions_by_number()
+    for _, message in ipairs(self.messages) do self:deliver(message, sessions) end
 end
 
 function Core:attach(tower, phone, message)
@@ -402,20 +532,25 @@ function Core:attach(tower, phone, message)
     -- Nothing is given out until the phone confirms, as the first message alone could be a recording.
     local key = tower.id .. ":" .. phone
     local pending = { sim = sim, receive = receive, secret = handshake.ck, phone = phone }
-    self.pending[key] = pending
-    self.stack:schedule(ATTACH_TIMEOUT, function()
-        if self.pending[key] == pending then self.pending[key] = nil end
-    end)
+    add_attempt(self.pending, key, pending)
+    self.stack:schedule(ATTACH_TIMEOUT, function() remove_attempt(self.pending, key, pending) end)
     self:send(tower.id, { op = "attach_reply", phone = phone, handshake = reply })
 end
 
 function Core:attach_complete(tower, phone, data)
     local key = tower.id .. ":" .. phone
-    local pending = self.pending[key]
-    if not pending or type(data) ~= "string" then return end
-    local plaintext = pending.receive:decrypt(data)
-    local confirm = plaintext and codec.decode(plaintext)
-    if type(confirm) ~= "table" or confirm.complete ~= true then return end
+    if type(data) ~= "string" then return end
+    -- The confirmation is for one of the attaches under way: the phone's own, if others only said they were its.
+    local pending
+    for _, candidate in ipairs(self.pending[key] or {}) do
+        local plaintext = candidate.receive:decrypt(data)
+        local confirm = plaintext and codec.decode(plaintext)
+        if type(confirm) == "table" and confirm.complete == true then
+            pending = candidate
+            break
+        end
+    end
+    if not pending then return end
     self.pending[key] = nil
 
     local session = self:session_for(pending.sim)
@@ -428,7 +563,8 @@ function Core:attach_complete(tower, phone, data)
         self.by_teid[session.teid] = nil
         if session.cell and session.cell ~= tower.id then self:send(session.cell, { op = "release", teid = session.teid }) end
     end
-    session.teid = math.random(1, 0x7FFFFFFF)
+    -- Tunnels' IDs are picked at random, and no two phones share one.
+    repeat session.teid = math.random(1, 0x7FFFFFFF) until not self.by_teid[session.teid]
     session.secret, session.phone, session.cell = pending.secret, phone, tower.id
     self.by_teid[session.teid] = session
 
@@ -442,7 +578,7 @@ function Core:attach_complete(tower, phone, data)
     -- Anything waiting for this phone can go now.
     local subscriber = self.subscribers[pending.sim]
     for _, message in ipairs(self.messages) do
-        if subscriber and message.to == subscriber.number then self:deliver(message) end
+        if subscriber and message.to == subscriber.number then self:deliver(message, { [message.to] = session }) end
     end
 end
 

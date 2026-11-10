@@ -45,6 +45,15 @@ local TUNNEL_KEY_PREFIX = "cc-net tunnel key 1\0"
 -- How many sealed messages arriving out of order are accepted: the counters within this many of the newest.
 local REPLAY_WINDOW = 64
 
+--- Whether a value is an ID: of a computer, a tunnel or a message. They're whole numbers, and are used as tables' keys,
+-- which NaN can't be.
+--
+-- @param value The value.
+-- @treturn boolean Whether it's an ID.
+local function is_id(value)
+    return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 2 ^ 53
+end
+
 --- The name a cell's certificate is for: its network and its ID.
 --
 -- @tparam string network The network's name.
@@ -72,7 +81,7 @@ longer than [`MAX_PATH`], to say it's too far from the core to serve.
 local function is_path(path)
     if type(path) ~= "table" or #path > MAX_PATH + 1 then return false end
     for k, v in pairs(path) do
-        if type(k) ~= "number" or k < 1 or k > #path or k % 1 ~= 0 or type(v) ~= "number" then return false end
+        if type(k) ~= "number" or k < 1 or k > #path or k % 1 ~= 0 or not is_id(v) then return false end
     end
     return true
 end
@@ -266,6 +275,7 @@ return {
     MAX_PATH = MAX_PATH,
     TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
+    is_id = is_id,
     is_path = is_path,
     make_code = make_code,
     parse_code = parse_code,

@@ -411,8 +411,12 @@ function Stack:receive(modem, channel, frame, signal)
     local interface = bands and bands[band_of(channel)]
     if not interface or (channel ~= interface.unicast and channel ~= interface.broadcast) then return end
 
+    -- Senders are computers' IDs: whole numbers. Anything else (NaN, say) would trip up whatever keeps track of them.
     local src, dst = frame.src, frame.dst
-    if type(src) ~= "number" or src == self.id or (dst ~= self.id and dst ~= BROADCAST_ID) then return end
+    if type(src) ~= "number" or src % 1 ~= 0 or src < 0 or src > 2 ^ 53 or src == self.id
+        or (dst ~= self.id and dst ~= BROADCAST_ID) then
+        return
+    end
 
     local kind, body, forwarded = frame.type, frame.body, frame.fwd == true
     if self.unsealed[kind] then
@@ -907,7 +911,8 @@ function Stack:tick()
     for timer in pairs(self.timers) do
         if timer.time <= now then due[#due + 1] = timer end
     end
-    table.sort(due, function(a, b) return a.time < b.time end)
+    -- Timers due at the same time run in the order they were set, so things which were queued stay in order.
+    table.sort(due, function(a, b) return a.time < b.time or (a.time == b.time and a.order < b.order) end)
     for _, timer in ipairs(due) do
         -- A timer may have been cancelled by an earlier one.
         if self.timers[timer] then
@@ -1030,7 +1035,8 @@ function Stack:schedule(delay, fn)
     if type(delay) ~= "number" or delay ~= delay or delay == math.huge or delay == -math.huge then
         error("Invalid delay " .. tostring(delay), 2)
     end
-    local timer = { time = self.clock() + math.max(0, delay), fn = fn }
+    self.timer_count = (self.timer_count or 0) + 1
+    local timer = { time = self.clock() + math.max(0, delay), fn = fn, order = self.timer_count }
     self.timers[timer] = true
     self:request_wakeup()
     return timer

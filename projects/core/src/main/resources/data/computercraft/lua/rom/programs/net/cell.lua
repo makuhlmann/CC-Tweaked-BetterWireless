@@ -269,8 +269,23 @@ elseif command == "activate" and #args >= 3 then
     info = net.cell.info()
     if info.state == "attached" then print("Attached, with the address " .. info.address .. ".") end
 elseif command == "send" and #args >= 3 then
-    local ok, err = net.cell.send(args[2], table.concat(args, " ", 3))
-    if ok then print("Sent.") else printError(err) end
+    local id, err = select(2, net.cell.send(args[2], table.concat(args, " ", 3)))
+    if not id then
+        printError(err)
+        return
+    end
+    -- Wait for the network to say it has it.
+    local timer = os.startTimer(20)
+    while true do
+        local event, a, b, c = os.pullEvent()
+        if event == "cell_sent" and a == id then
+            if b then print("Sent.") else printError(c or "Not sent") end
+            break
+        elseif event == "timer" and a == timer then
+            print("Sending. The network hasn't answered yet.")
+            break
+        end
+    end
 elseif command == "messages" and #args == 1 then
     local messages = net.cell.messages()
     if #messages == 0 then print("No messages.") end
