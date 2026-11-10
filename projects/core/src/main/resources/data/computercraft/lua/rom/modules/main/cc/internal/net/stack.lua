@@ -135,6 +135,8 @@ local function new(options)
         protocols = {},
         error_handlers = {},
         address_lost = {},
+        frame_handlers = {},
+        unsealed = {},
 
         next_packet = 0,
         next_echo = 0,
@@ -182,6 +184,82 @@ function Stack:add_interface(name, modem, kind, band)
     self.by_modem[modem] = self.by_modem[modem] or {}
     self.by_modem[modem][band] = interface
     return interface
+end
+
+--[[- Add a virtual interface: one with no modem. Packets it sends go to a function, and packets it receives are given
+to [`Stack:inject`]. Point-to-point links which aren't modems, such as a phone's link to its cell, or a gateway's link
+to every phone through tunnels, are virtual interfaces.
+
+They don't do neighbour discovery or broadcasts, and routers don't exchange routes over them, though the networks on
+them are still advertised elsewhere.
+
+@tparam string name The interface's name.
+@tparam string kind What sort of link it is, such as `"cell"`.
+@tparam function(packet:table, next_hop:number) send Sends a packet, to the computer with the address `next_hop`.
+@treturn table The interface.
+]]
+function Stack:add_virtual_interface(name, kind, send)
+    if self.interfaces[name] then error("There's already an interface named '" .. name .. "'", 2) end
+    local interface = {
+        name = name, kind = kind, virtual = true, send_packet = send, no_rip = true,
+        neighbours = {}, waiting = {}, neighbour_count = 0, waiting_count = 0,
+        stats = { frames_in = 0, frames_out = 0, dropped = 0 },
+    }
+    self.interfaces[name] = interface
+    return interface
+end
+
+--- Remove an interface by name, such as a virtual one. Its address is no longer ours.
+--
+-- @tparam string name The interface's name.
+function Stack:remove_interface(name)
+    local interface = self.interfaces[name]
+    if not interface then return end
+    self.interfaces[name] = nil
+    if interface.modem and self.by_modem[interface.modem] then self.by_modem[interface.modem][interface.band] = nil end
+    if interface.address then self:lose_address(interface.address) end
+end
+
+--[[- A packet arrived on a virtual interface.
+
+@tparam string name The interface's name.
+@param packet The packet.
+]]
+function Stack:inject(name, packet)
+    local interface = self.interfaces[name]
+    if not interface then return end
+    interface.stats.frames_in = interface.stats.frames_in + 1
+    -- There's no neighbour on a virtual link to learn about, so treat it as forwarded.
+    self:receive_packet(interface, nil, packet, nil, true)
+end
+
+--[[- Handle frames of a new type, such as `"cell"`.
+
+@tparam string kind The frame type.
+@tparam function(interface:table, src:number, body:any, signal:number|nil, dst:number) handler Called with each frame of
+this type: the interface it arrived on, the sending computer's ID, the frame's body, the signal strength, and who it was
+sent to (our ID, or `-1` for everyone).
+@tparam[opt] boolean unsealed Whether these frames are sent and accepted unencrypted, even on an encrypted link. Only for
+frames which protect themselves.
+]]
+function Stack:on_frame(kind, handler, unsealed)
+    self.frame_handlers[kind] = handler
+    self.unsealed[kind] = unsealed and true or nil
+end
+
+--[[- Send a frame of a type handled by [`Stack:on_frame`].
+
+@tparam string name The interface to send on.
+@tparam number id The computer to send it to, or `-1` for everyone on the link.
+@tparam string kind The frame type.
+@param body The frame's body.
+@treturn boolean Whether there is such an interface.
+]]
+function Stack:send_frame(name, id, kind, body)
+    local interface = self.interfaces[name]
+    if not interface then return false end
+    self:transmit(interface, id, kind, body)
+    return true
 end
 
 --- Remove every interface using a modem.
@@ -241,13 +319,15 @@ end
 -- @param body The frame's body.
 -- @tparam[opt] boolean forwarded Whether this is a packet from another computer, which we're forwarding.
 function Stack:transmit(interface, id, kind, body, forwarded)
+    -- Virtual interfaces have no frames: their packets go through send_on.
+    if interface.virtual then return end
     local channel = interface.broadcast
     if id ~= BROADCAST_ID then channel = channels(id, interface.band) end
     local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body, fwd = forwarded or nil }
     if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
 
-    -- On an encrypted link, everything but who it's from and to is sealed.
-    if interface.link then
+    -- On an encrypted link, everything but who it's from and to is sealed, except frames which protect themselves.
+    if interface.link and not self.unsealed[kind] then
         local sealed = link.seal(interface.link, self.id, id, kind, body, forwarded)
         if not sealed then
             interface.stats.dropped = interface.stats.dropped + 1
@@ -309,7 +389,10 @@ function Stack:receive(modem, channel, frame, signal)
     if type(src) ~= "number" or src == self.id or (dst ~= self.id and dst ~= BROADCAST_ID) then return end
 
     local kind, body, forwarded = frame.type, frame.body, frame.fwd == true
-    if interface.link or kind == "sealed" then
+    if self.unsealed[kind] then
+        -- Frames which protect themselves are taken as they are, on any link.
+        forwarded = false
+    elseif interface.link or kind == "sealed" then
         -- On an encrypted link, only frames sealed with our key count. Elsewhere, sealed frames mean nothing.
         if interface.link and kind == "sealed" then kind, body, forwarded = link.open(interface.link, src, dst, body) else kind = nil end
         if not kind then
@@ -329,6 +412,12 @@ function Stack:receive(modem, channel, frame, signal)
         self:receive_nd(interface, src, body, signal)
     elseif kind == "ip" then
         self:receive_packet(interface, src, body, signal, forwarded)
+    else
+        local handler = self.frame_handlers[kind]
+        if handler then
+            local ok, err = pcall(handler, interface, src, body, signal, dst)
+            if not ok then self.log(err) end
+        end
     end
 end
 
@@ -716,6 +805,14 @@ end
 -- @tparam table packet The packet.
 -- @tparam[opt] boolean forwarded Whether the packet is from another computer, which we're forwarding.
 function Stack:send_on(interface, next_hop, packet, forwarded)
+    if interface.virtual then
+        if is_broadcast(interface, next_hop) then return end
+        interface.stats.frames_out = interface.stats.frames_out + 1
+        local ok, err = pcall(interface.send_packet, packet, next_hop)
+        if not ok then self.log(err) end
+        return
+    end
+
     if is_broadcast(interface, next_hop) then
         return self:transmit(interface, BROADCAST_ID, "ip", packet, forwarded)
     end

@@ -12,6 +12,10 @@ Links can be slow (`latency[link]`, in seconds), vary in speed so frames arrive 
 that many seconds more), lose frames (`loss[link]`, from 0 to 1) and deliver frames twice (`duplicate[link]`, from 0 to
 1). The network counts frames sent on each link (`frames[link]`) and events each computer queues
 (`wakes[stack][event]`), to measure floods.
+
+Who hears a frame can depend on where computers are: `reach(link, sender, receiver)`, if set, gives the signal strength
+a receiver hears a sender with, or `false` if it can't hear it at all. [`virtual_link`] joins two computers with
+virtual interfaces instead of a modem.
 ]]
 
 local Stack = require "cc.internal.net.stack"
@@ -119,6 +123,33 @@ return function()
         return stack
     end
 
+    --[[- Join two computers with virtual interfaces (see `Stack:add_virtual_interface`), each named `name`. Packets
+    sent on one are delivered to the other, through the same queue as frames.
+
+    @tparam table a One computer's network stack.
+    @tparam table b The other's.
+    @tparam string name The interfaces' name.
+    @tparam[opt] string a_address `a`'s address and prefix length.
+    @tparam[opt] string b_address `b`'s.
+    ]]
+    function self.virtual_link(a, b, name, a_address, b_address)
+        for _, pair in ipairs { { a, b, a_address }, { b, a, b_address } } do
+            local from, to, addr = pair[1], pair[2], pair[3]
+            from:add_virtual_interface(name, "virtual", function(packet)
+                self.frames[name] = (self.frames[name] or 0) + 1
+                local delay = self.latency[name] or 0
+                local item = { sender = from, inject = to, name = name, frame = copy(packet), at = self.time + delay }
+                local position = #self.queue + 1
+                while position > 1 and self.queue[position - 1].at > item.at do position = position - 1 end
+                table.insert(self.queue, position, item)
+            end)
+            if addr then
+                local parsed, prefix = address.parse(addr)
+                from:set_address(name, parsed, prefix)
+            end
+        end
+    end
+
     --- Put a frame on a link from outside the network stack, as a misbehaving computer might.
     --
     -- @tparam string link The link.
@@ -134,15 +165,29 @@ return function()
         while self.queue[1] and self.queue[1].at <= self.time do
             local item = table.remove(self.queue, 1)
 
-            if not (self.loss[item.link] and math.random() < self.loss[item.link]) then
-                local receivers = {}
+            if item.inject then
+                -- A packet on a virtual link, unless the computer on the other end has gone.
                 for _, stack in ipairs(self.stacks) do
-                    if stack ~= item.sender and stack.by_modem[item.link] then receivers[#receivers + 1] = stack end
+                    if stack == item.inject then stack:inject(item.name, item.frame) end
+                end
+            elseif not (self.loss[item.link] and math.random() < self.loss[item.link]) then
+                local receivers = {}
+                local signals = {}
+                for _, stack in ipairs(self.stacks) do
+                    if stack ~= item.sender and stack.by_modem[item.link] then
+                        -- Who hears what may depend on where they are.
+                        local signal = self.signals[item.link]
+                        if self.reach then signal = self.reach(item.link, item.sender, stack) end
+                        if signal ~= false then
+                            receivers[#receivers + 1] = stack
+                            signals[#receivers] = signal
+                        end
+                    end
                 end
                 -- Each receiver gets its own copy, but a lone receiver can have the one made when it was sent.
-                for _, stack in ipairs(receivers) do
+                for i, stack in ipairs(receivers) do
                     local frame = #receivers == 1 and item.frame or copy(item.frame)
-                    stack:receive(item.link, item.channel, frame, self.signals[item.link])
+                    stack:receive(item.link, item.channel, frame, signals[i])
                 end
             end
 

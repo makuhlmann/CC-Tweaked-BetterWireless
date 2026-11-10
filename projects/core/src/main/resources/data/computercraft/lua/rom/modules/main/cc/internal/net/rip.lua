@@ -142,7 +142,8 @@ end
 --- Tell every neighbour our routes.
 function Rip:advertise()
     for name, interface in pairs(self.stack.interfaces) do
-        if usable(interface) then
+        -- Routers don't talk over virtual links, such as to phones.
+        if usable(interface) and not interface.no_rip then
             local routes = self:routes_for(interface)
             local message = { version = 1, routes = routes }
             if self.options.key then message.mac = self.options.hmac(self.options.key, canonical(routes)) end
@@ -213,7 +214,7 @@ end
 function Rip:receive(message, from, name)
     local stack = self.stack
     local interface = name and stack.interfaces[name]
-    if not usable(interface) or type(message) ~= "table" or type(message.routes) ~= "table" then return end
+    if not usable(interface) or interface.no_rip or type(message) ~= "table" or type(message.routes) ~= "table" then return end
     -- Only listen to routers on this link.
     if from == interface.address or not address.contains(interface.network, interface.prefix, from) then return end
 
