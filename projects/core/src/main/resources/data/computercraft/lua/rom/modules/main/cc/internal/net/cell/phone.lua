@@ -35,6 +35,11 @@ local MEASURE_INTERVAL, SILENCE = 1, 4
 local ATTACH_TIMEOUT, MAX_RETRY = 5, 60
 -- How many system information broadcasts to average a cell's signal over.
 local SAMPLES = 3
+-- How many cells (of any network) to remember, and for how long after they go quiet, in seconds. Anyone can send
+-- system information, so there's a limit.
+local MAX_HEARD, FORGET = 32, 30
+-- How many events (attaching, moving between cells, losing service) to remember.
+local MAX_EVENTS = 20
 
 local Phone = {}
 Phone.__index = Phone
@@ -60,7 +65,8 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
-        cells = {}, networks = {}, state = options.operator and "searching" or "inactive", retry = 2, seen_messages = {},
+        cells = {}, heard = {}, events = {}, state = options.operator and "searching" or "inactive", retry = 2,
+        seen_messages = {},
     }, Phone)
 
     stack:on_frame(common.FRAME, function(interface, src, body, signal)
@@ -73,7 +79,43 @@ end
 function Phone:set_state(state)
     if self.state == state then return end
     self.state = state
+    if state == "attached" then
+        self:event("attached", { cell = self.cell })
+    elseif state == "rejected" then
+        self:event("rejected", { reason = self.rejected })
+    end
     self.on_change(self)
+end
+
+-- Remember something which happened, for the cell program's monitor.
+function Phone:event(kind, details)
+    local event = { kind = kind, time = self.epoch() }
+    for k, v in pairs(details) do event[k] = v end
+    self.events[#self.events + 1] = event
+    if #self.events > MAX_EVENTS then table.remove(self.events, 1) end
+end
+
+-- Remember a cell we heard, of any network, and average its signal. Whether its system information checked out is
+-- only known for our own network.
+function Phone:hear(src, message, signal, verified)
+    local now = self.stack.clock()
+    local cell = self.heard[src]
+    if not cell then
+        local count = 0
+        for id, other in pairs(self.heard) do
+            if now - other.heard > FORGET then self.heard[id] = nil else count = count + 1 end
+        end
+        if count >= MAX_HEARD then return end
+        cell = { samples = {} }
+        self.heard[src] = cell
+    end
+    table.insert(cell.samples, type(signal) == "number" and signal or -50)
+    if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
+    local total = 0
+    for _, sample in ipairs(cell.samples) do total = total + sample end
+    cell.signal, cell.heard, cell.network, cell.verified = total / #cell.samples, now, message.network, verified
+    cell.area = type(message.area) == "number" and message.area or nil
+    cell.load = type(message.load) == "number" and message.load or nil
 end
 
 function Phone:to_cell(cell, message)
@@ -96,30 +138,17 @@ function Phone:radio(src, message, signal)
     if type(message) ~= "table" then return end
     local op = message.op
 
-    if op == "sib" and not self.operator then
-        -- Not activated yet: we can't check cells, but can see which networks are around.
-        if type(message.network) == "string" and #message.network <= 64 then
-            -- Anyone can send these, so only remember a few networks.
-            if not self.networks[message.network] then
-                local count = 0
-                for name, cells in pairs(self.networks) do
-                    local recent = false
-                    for _, cell in pairs(cells) do
-                        if self.stack.clock() - cell.heard <= SILENCE then recent = true end
-                    end
-                    if recent then count = count + 1 else self.networks[name] = nil end
-                end
-                if count >= 32 then return end
-            end
-            local heard = self.networks[message.network] or {}
-            self.networks[message.network] = heard
-            heard[src] = { signal = type(signal) == "number" and signal or -50, heard = self.stack.clock() }
+    if op == "sib" then
+        if type(message.network) ~= "string" or #message.network > 64 then return end
+        -- Cells of other networks (or of any network, before we're activated) can't be checked, but we can see what's
+        -- around. A cell which claims to be ours, but isn't, may be a fake.
+        if not self.operator or message.network ~= self.operator.network then
+            return self:hear(src, message, signal, nil)
         end
-        return
-    elseif op == "sib" then
         local ok = common.check_sib(self.crypto, message, {
             network = self.operator.network, signing = self.operator.signing, now = self.epoch(), sender = src,
         })
+        self:hear(src, message, signal, ok == true)
         if not ok then return end
         -- Average the last few broadcasts' signals, so one strong or weak one doesn't move us.
         local cell = self.cells[src] or { samples = {} }
@@ -183,6 +212,7 @@ function Phone:radio(src, message, signal)
         self.handshake = nil
         self.operator = { network = info.network, key = info.key, signing = info.signing }
         self.subscriber = { id = info.id, number = info.number }
+        self:event("activated", { network = info.network })
         self.on_activated(info)
         self.retry = 2
         self:set_state("searching")
@@ -192,6 +222,7 @@ function Phone:radio(src, message, signal)
         local target = type(value) == "table" and value.target
         if type(target) ~= "number" or not self.cells[target] then return end
         -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
+        self:event("handover", { from = self.cell, to = target })
         self.cell, self.candidate = target, nil
         self.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, target), common.UPLINK, common.DOWNLINK)
         self:to_cell(target, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
@@ -214,8 +245,9 @@ function Phone:activate(network, code)
     local tag, secret = common.parse_code(code)
     if not tag then return nil, "That isn't an activation code" end
     local best, best_signal
-    for id, heard in pairs(self.networks[network] or {}) do
-        if self.stack.clock() - heard.heard <= SILENCE and (not best_signal or heard.signal > best_signal) then
+    for id, heard in pairs(self.heard) do
+        if heard.network == network and self.stack.clock() - heard.heard <= SILENCE
+            and (not best_signal or heard.signal > best_signal) then
             best, best_signal = id, heard.signal
         end
     end
@@ -241,6 +273,7 @@ end
 
 function Phone:activation_failed(reason)
     self.handshake, self.attempt, self.activation_error = nil, nil, reason
+    self:event("activation_failed", { reason = reason })
     self:set_state("inactive")
 end
 
@@ -321,6 +354,7 @@ function Phone:measure()
     local serving = self.cells[self.cell]
     if not serving or now - serving.heard > SILENCE or serving.signal < NO_SERVICE then
         -- Our cell has gone: attach again through another, keeping our address.
+        self:event("lost", { cell = self.cell })
         self:set_state("searching")
         self.cells[self.cell] = nil
         return self:attach()
@@ -343,18 +377,45 @@ end
 
 --- Describe the phone.
 --
--- @treturn table Its state, cell, address, subscriber, and the cells it hears.
+-- @treturn table Its state, cell, address and subscriber; the cells of its network it hears (`cells`); every cell it
+-- has heard lately, of any network (`heard`); the networks around; and what has happened lately (`events`).
 function Phone:info()
+    local now = self.stack.clock()
     local cells = {}
     for id, cell in pairs(self.cells) do cells[#cells + 1] = { id = id, signal = cell.signal, area = cell.area } end
     table.sort(cells, function(a, b) return a.signal > b.signal end)
-    local networks = {}
-    for name in pairs(self.networks) do networks[#networks + 1] = name end
+
+    local heard, names, networks = {}, {}, {}
+    for id, cell in pairs(self.heard) do
+        local age = now - cell.heard
+        if age <= FORGET then
+            heard[#heard + 1] = {
+                id = id, network = cell.network, signal = cell.signal, area = cell.area, load = cell.load, age = age,
+                verified = cell.verified, serving = id == self.cell and self.state == "attached",
+            }
+            if age <= SILENCE and not names[cell.network] then
+                names[cell.network] = true
+                networks[#networks + 1] = cell.network
+            end
+        end
+    end
+    table.sort(heard, function(a, b)
+        if (a.age <= SILENCE) ~= (b.age <= SILENCE) then return a.age <= SILENCE end
+        if a.signal ~= b.signal then return a.signal > b.signal end
+        return a.id < b.id
+    end)
     table.sort(networks)
+
+    local events = {}
+    for i, event in ipairs(self.events) do
+        events[i] = {}
+        for k, v in pairs(event) do events[i][k] = v end
+    end
+
     return {
         state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
-        network = self.operator and self.operator.network,
+        heard = heard, events = events, network = self.operator and self.operator.network,
     }
 end
 

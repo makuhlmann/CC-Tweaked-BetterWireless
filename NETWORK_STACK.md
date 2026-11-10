@@ -978,6 +978,13 @@ the design above:
 - **Handover goes through the core** (like LTE's S1 handover) rather than between cells, so cells needn't reach each
   other. Packets on their way to the old cell during a handover are lost, not forwarded; the connection layer resends
   them. A phone reports a stronger cell after it has been 3 dB stronger for two seconds, measured every second.
+- **What phones hear:** system information isn't encrypted, so every phone hears each cell's network name, ID, area
+  and load, whatever its network. Phones remember the last 32 cells they've heard (of any network) for 30 seconds,
+  noting for their own network's whether the system information checked out, so a cell claiming the name without the
+  operator's certificate shows as a fake. They also remember their last 20 events (activated, attached, moved, lost,
+  rejected). `cell monitor` shows all of this on one screen, sized for a pocket computer, and works before activation
+  too (`net.cell.listen`). A computer can't be a phone and a cell at once, as both take the stack's `cell` frames:
+  starting a cell stops the phone, and a cell's computer can't become a phone.
 - **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
   connection to the core. The core keeps them until the phone they're for is attached and acknowledges them, trying again
   every 10 seconds. They're only kept in memory, so restarting the core loses undelivered ones.

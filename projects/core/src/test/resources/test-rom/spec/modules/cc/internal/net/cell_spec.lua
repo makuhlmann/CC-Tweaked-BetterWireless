@@ -15,6 +15,15 @@ describe("Cellular networks", function()
     local network = require "support.virtual_network"
 
     local function ip(text) return (address.parse(text)) end
+    -- A phone's events, without their times.
+    local function event_kinds(phone)
+        local result = {}
+        for i, event in ipairs(phone:info().events) do
+            event.time = nil
+            result[i] = event
+        end
+        return result
+    end
     local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
     local function copy(value) return codec.decode(codec.encode(value)) end
 
@@ -158,11 +167,44 @@ describe("Cellular networks", function()
             end)
         end
 
+        -- And a cell of another network.
+        local other = setup.net.stack(77)
+        setup.net.connect(other, "air", nil, "wireless")
+        setup.positions[77] = 40
+        local other_private, other_public = crypto.generateKeyPair("ed25519")
+        local other_certificate = certificate.encode(certificate.issue {
+            name = common.cell_name("BETA", 77), key = other_public, expires = setup.now() + 1e9, issuer = other_public,
+            sign = function(data) return crypto.sign(other_private, data) end,
+        })
+        for t = 0, 4 do
+            other:schedule(t, function()
+                other:send_frame("air", -1, common.FRAME, common.make_sib {
+                    network = "BETA", cell = 77, area = 2, load = 0.5, time = setup.now(), certificate = other_certificate,
+                    sign = function(data) return crypto.sign(other_private, data) end,
+                })
+            end)
+        end
+
         local phone = setup.add_phone(1, 0)
         setup.net.advance(5)
         expect(phone.cells[66]):eq(nil)
         expect(phone.state):eq("attached")
         expect(phone.cell):eq(11)
+
+        -- The phone still lists them all: the rogue as a fake, and the other network's cell as unchecked.
+        local info = phone:info()
+        local heard = {}
+        for _, cell in ipairs(info.heard) do
+            heard[cell.id] = { network = cell.network, verified = cell.verified, serving = cell.serving, area = cell.area }
+        end
+        expect(heard):same {
+            [11] = { network = "ACME", verified = true, serving = true, area = 1 },
+            [66] = { network = "ACME", verified = false, serving = false, area = 1 },
+            [77] = { network = "BETA", serving = false, area = 2 },
+        }
+        expect(info.networks):same { "ACME", "BETA" }
+        -- Strongest first: the rogue is next to the phone, and our cell furthest away.
+        expect({ info.heard[1].id, info.heard[2].id, info.heard[3].id }):same { 66, 77, 11 }
     end)
 
     it("keeps a connection open while the phone moves from cell to cell", function()
@@ -212,6 +254,12 @@ describe("Cellular networks", function()
             if event[1] == "handover" then handovers[#handovers + 1] = { event[3], event[4] } end
         end
         expect(handovers):same { { 11, 12 }, { 12, 13 } }
+        -- The phone remembers it too.
+        expect(event_kinds(phone)):same {
+            { kind = "attached", cell = 11 },
+            { kind = "handover", from = 11, to = 12 },
+            { kind = "handover", from = 12, to = 13 },
+        }
     end)
 
     it("attaches again through another cell when its cell fails, keeping its address", function()
@@ -228,6 +276,17 @@ describe("Cellular networks", function()
         expect(phone.cell):eq(12)
         expect(stack.interfaces.cell.address):eq(first_address)
         expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+        expect(event_kinds(phone)):same {
+            { kind = "attached", cell = 11 }, { kind = "lost", cell = 11 }, { kind = "attached", cell = 12 },
+        }
+        -- The failed cell is listed after the ones still heard, until it's forgotten.
+        local heard = phone:info().heard
+        expect({ heard[1].id, heard[1].serving, heard[2].id, heard[2].serving }):same { 12, true, 11, false }
+        expect(heard[2].age > 4):eq(true)
+        setup.net.advance(20)
+        heard = phone:info().heard
+        expect(#heard):eq(1)
+        expect(heard[1].id):eq(12)
     end)
 
     it("refuses data which was changed or replayed", function()

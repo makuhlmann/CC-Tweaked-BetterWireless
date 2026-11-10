@@ -147,6 +147,9 @@ shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, ind
     end
 end)
 shell.setCompletionFunction("rom/programs/net/celld.lua", completion.build({ completion.choice, { "stop" } }))
+shell.setCompletionFunction("rom/programs/net/cell.lua", completion.build(
+    { completion.choice, { "activate ", "send ", "messages", "monitor" } }
+))
 shell.setCompletionFunction("rom/programs/command/exec.lua", completion.build(completion.command))
 shell.setCompletionFunction("rom/programs/http/wget.lua", completion.build({ completion.choice, { "run " } }))
 

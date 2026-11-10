@@ -20,6 +20,19 @@ local info = net.cell.info()
 if info.state ~= "attached" then error("Not attached: " .. tostring(info.state) .. " " .. tostring(info.activation_error), 0) end
 if info.subscriber.number ~= "100" then error("Wrong number " .. tostring(info.subscriber.number), 0) end
 
+-- What the monitor shows: the cell in use, checked, and the attach.
+local serving
+for _, cell in ipairs(info.heard) do
+    if cell.serving then serving = cell end
+end
+if not serving or serving.network ~= "TEST" or serving.verified ~= true then
+    error("Wrong cells heard: " .. textutils.serialise(info.heard), 0)
+end
+local last = info.events[#info.events]
+if not last or last.kind ~= "attached" or last.cell ~= serving.id then
+    error("Wrong events: " .. textutils.serialise(info.events), 0)
+end
+
 -- Nothing has gone wrong in the background, and ifconfig copes with the phone's virtual interface.
 local errors = net.getErrors()
 if #errors > 0 then error("Network errors: " .. table.concat(errors, "; "), 0) end

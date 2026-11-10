@@ -1426,6 +1426,8 @@ local function cell_interface()
 end
 
 local function new_phone(operator)
+    -- A cell hears phones' frames, and a phone cells': one computer can't be both.
+    if background.cell then return nil, "This computer is a cell. Stop it first, with 'celld stop'." end
     local name = cell_interface()
     if not name then return nil, "This needs a wireless modem" end
     local cell = env_require("cc.internal.net.cell.phone")
@@ -1519,6 +1521,11 @@ local function start_cell_service(config)
     load()
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not cell_interface() then return nil, "A cell needs a wireless modem" end
+    -- A computer can't be a phone and a cell: the cell takes over.
+    if phone_instance then
+        phone_instance:stop()
+        phone_instance = nil
+    end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
     background.cell = env_require("cc.internal.net.cell.cell_service").new {
         core = config.core, area = config.area, id = os.getComputerID(), identity = getIdentity(),
@@ -1574,8 +1581,19 @@ cell = {
 
     @treturn table `state` (`"none"` with no SIM, `"inactive"`, `"activating"`, `"searching"`, `"attaching"`, `"attached"` or
     `"rejected"`); `network`; `subscriber` (`id` and `number`); `cell`, the cell it's using; `address`; `cells`, the cells
-    it hears, strongest first, each with `id` and `signal`; `networks`, the networks it can hear before it's activated;
-    and why it was rejected or activation failed.
+    of its network it hears, strongest first, each with `id` and `signal`; `networks`, the networks around; why it was
+    rejected or activation failed (`rejected`, `activation_error`);
+
+     - `heard`: every cell it has heard in the last 30 seconds, of any network, the ones heard in the last few seconds
+       first, then strongest first. Each has `id`, `network`, `signal` (dBm), `area`, `load` (0 to 1), `age` (seconds
+       since it was last heard), `serving` (whether the phone uses it), and `verified`: for cells of the phone's own
+       network, whether their system information came from the operator (`false` may mean a fake cell), or `nil` for
+       other networks;
+     - `events`: the last 20 things which happened, oldest first. Each has `kind` and `time` (as `os.epoch("utc")`
+       gives it): `"activated"` (with `network`), `"activation_failed"` (`reason`), `"attached"` (`cell`),
+       `"handover"` (`from` and `to`), `"lost"` (`cell`) or `"rejected"` (`reason`).
+
+    A computer without a SIM only hears cells once it listens, with `net.cell.listen` (or tries to activate).
     ]]
     info = function()
         load()
@@ -1590,6 +1608,22 @@ cell = {
             if sim.id then info.subscriber = { id = sim.id, number = sim.number } end
         end
         return info
+    end,
+
+    --[[- Listen for cells, so `net.cell.info` lists them (`heard`) and the networks around, on a computer which isn't
+    activated yet. A phone which is activated listens already. This is for the `cell` program's monitor.
+
+    @treturn[1] true If it's listening.
+    @treturn[2] nil If it can't.
+    @treturn[2] string Why not.
+    ]]
+    listen = function()
+        require_crypto()
+        load()
+        if phone_instance then return true end
+        local phone, err = new_phone(nil)
+        if not phone then return nil, err end
+        return true
     end,
 
     --[[- Activate this computer's SIM on a network, with a code from the network's administrator. Activating again, with
