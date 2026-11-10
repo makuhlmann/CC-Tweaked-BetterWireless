@@ -728,11 +728,11 @@ not in something which must not wait.
 @tparam string target The name or address to send to. The broadcast address (`255.255.255.255`) reaches every
 computer on the local network.
 @tparam number port The port to send to.
-@param data The data: any value which can be sent through a modem.
+@param data The data: the same values a connection's messages may be (see [`net.tcp`]'s `send`), or nothing.
 @tparam[opt] string interface For broadcasts, the only interface to send on.
 @treturn[1] true If it was sent. Datagrams may still be lost.
 @treturn[2] nil If it couldn't be sent.
-@treturn[2] string Why not.
+@treturn[2] string Why not, such as `"Network unreachable"` or `"Can't send a function"`.
 ]]
 function Socket:send(target, port, data, interface)
     expect(1, target, "string")
@@ -819,9 +819,10 @@ Connection.__index = Connection
 --[[- Send a message. Waits while the other side is behind, so a fast sender can't swamp a slow receiver.
 
 Any value [`cc.net.codec`] can encode works, up to about 60 KiB: strings, numbers, booleans, and tables of them up to 60
-deep. Modems quietly drop functions from what they send. Connections don't: a message which can't be sent whole is
-refused, and the connection carries on. That goes for functions, tables which contain themselves, and tables used as
-keys, which encrypted links couldn't carry. Use [`net.stream`] to send more data than fits in one message.
+deep. Modems quietly drop functions from what they send. Connections and datagrams don't: a message which can't be
+sent whole is refused, and the connection carries on. That goes for functions, tables which contain themselves, and
+tables used as keys, which encrypted links couldn't carry. Use [`net.stream`] to send more data than fits in one
+message.
 
 @param value The message.
 @treturn[1] true If it was queued. It's delivered unless the connection fails.

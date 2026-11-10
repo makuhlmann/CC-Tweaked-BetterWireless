@@ -323,7 +323,8 @@ describe("The network stack, given bad messages,", function()
                         reply.client = message.client
                         reply.op = message.op == "discover" and "offer" or "ack"
                         if reply.op == op then reply = with(reply, field, bad[2]) end
-                        server:udp_send(socket, address.BROADCAST, dhcp.CLIENT_PORT, reply, "top")
+                        -- Not with udp_send, which refuses some of what a misbehaving computer could send.
+                        server:send_broadcast("top", "udp", { sp = socket.port, dp = dhcp.CLIENT_PORT, data = reply })
                     end)
 
                     local ok, err = pcall(function()
@@ -388,10 +389,10 @@ describe("The network stack, given bad messages,", function()
             local net = network()
             local client = net.add(1, "10.0.0.1/24")
             local server = net.add(2, "10.0.0.2/24")
-            local socket
-            socket = server:udp_open(53, function(question, from, port)
+            server:udp_open(53, function(question, from, port)
                 local reply = with(case.value, "id", question.id)
-                server:udp_send(socket, from, port, reply)
+                -- Not with udp_send, which refuses some of what a misbehaving computer could send.
+                server:send(from, "udp", { sp = 53, dp = port, data = reply })
             end)
             local cache = {}
             local ok, err = pcall(function()

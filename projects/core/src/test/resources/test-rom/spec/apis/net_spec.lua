@@ -43,6 +43,26 @@ describe("The net library", function()
         end)
     end)
 
+    describe("net.udp", function()
+        it("sends datagrams to this computer, and refuses ones which couldn't cross every link", function()
+            local server, client = assert(net.udp.open(4323)), assert(net.udp.open())
+            local recursive = {}
+            recursive.self = recursive
+            expect({ client:send("127.0.0.1", 4323, { reply = print }) }):same { nil, "Can't send a function" }
+            expect({ client:send("127.0.0.1", 4323, recursive) }):same { nil, "Can't send a table which contains itself" }
+
+            expect({ client:send("127.0.0.1", 4323, { hello = "world" }) }):same { true }
+            local data, from, port = server:receive(2)
+            expect(data):same { hello = "world" }
+            expect(from):eq("127.0.0.1")
+            expect(port):eq(client:getPort())
+            -- Nothing else was sent.
+            expect(server:receive(0.1)):eq(nil)
+            server:close()
+            client:close()
+        end)
+    end)
+
     describe("net.secure", function()
         -- The enclave is part of the mod, not the computer, so pretend to have one.
         local function with_enclave(fn)

@@ -144,6 +144,42 @@ describe("cc.internal.net.stack", function()
             expect(server.queue[1]):same { data = { hello = "world" }, from = ip("10.0.0.1"), port = client.port, interface = "top" }
         end)
 
+        it("refuse data which some links couldn't carry, and say why", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            local b = net.add(2, "10.0.0.2/24")
+            net.run()
+            local server = b:udp_open(7000)
+            local client = a:udp_open()
+            local frames = net.total_frames()
+
+            local recursive = {}
+            recursive.self = recursive
+            local deep = {}
+            for _ = 1, 60 do deep = { deep } end
+            local dst = ip("10.0.0.2")
+            expect({ a:udp_send(client, dst, 7000, print) }):same { nil, "Can't send a function" }
+            expect({ a:udp_send(client, dst, 7000, { ok = true, callback = print }) }):same { nil, "Can't send a function" }
+            expect({ a:udp_send(client, dst, 7000, recursive) }):same { nil, "Can't send a table which contains itself" }
+            expect({ a:udp_send(client, dst, 7000, { [{}] = 1 }) }):same { nil, "Can't send a table with a table as a key" }
+            expect({ a:udp_send(client, dst, 7000, deep) }):same { nil, "Can't send tables nested more than 60 deep" }
+            expect({ a:udp_send(client, dst, 7000, ("x"):rep(64 * 1024)) }):same { nil, "Message too large" }
+            expect({ a:udp_send(client, 0xFFFFFFFF, 7000, recursive, "top") }):same { nil, "Can't send a table which contains itself" }
+            net.run()
+            expect(net.total_frames()):eq(frames)
+            expect(#server.queue):eq(0)
+
+            -- The socket still works, and a datagram may hold nothing at all.
+            expect(a:udp_send(client, dst, 7000, nil)):eq(true)
+            expect(a:udp_send(client, dst, 7000, false)):eq(true)
+            expect(a:udp_send(client, dst, 7000, { 1, { two = 2 } })):eq(true)
+            net.run()
+            expect(#server.queue):eq(3)
+            expect(server.queue[1].data):eq(nil)
+            expect(server.queue[2].data):eq(false)
+            expect(server.queue[3].data):same { 1, { two = 2 } }
+        end)
+
         it("call handlers instead of queueing", function()
             local net = network()
             local a = net.add(1, "10.0.0.1/24")

@@ -16,6 +16,7 @@ to [`new`], so tests can connect several stacks together without any modems.
 local expect = require "cc.expect".expect
 local address = require "cc.net.address"
 local link = require "cc.internal.net.link"
+local sendable = require "cc.internal.net.message"
 
 --- The version of the frame and packet formats. Frames from other versions are ignored.
 local VERSION = 1
@@ -981,13 +982,19 @@ end
 @tparam table socket The socket to send from.
 @tparam number dst Where to send it. The broadcast address reaches everyone on every interface, or with `name`, on one.
 @tparam number port The port to send it to.
-@param data The data.
+@param data The data: nothing, or a value which crosses every kind of link (see [`cc.internal.net.message`]).
 @tparam[opt] string name For broadcasts, the interface to send on.
 @treturn[1] true If it was sent.
 @treturn[2] nil If it couldn't be.
 @treturn[2] string Why not.
 ]]
 function Stack:udp_send(socket, dst, port, data, name)
+    -- A datagram some link on its way can't carry would be lost every time, and nobody told. Say so now instead.
+    if data ~= nil then
+        local ok, err = sendable.check(data)
+        if not ok then return nil, err end
+    end
+
     local body = { sp = socket.port, dp = port, data = data }
     if dst == address.BROADCAST and name then
         if not self:send_broadcast(name, "udp", body) then return nil, "No interface named '" .. name .. "'" end

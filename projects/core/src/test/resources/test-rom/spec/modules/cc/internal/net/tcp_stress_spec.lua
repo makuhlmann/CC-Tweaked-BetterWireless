@@ -492,7 +492,7 @@ describe("Connections, under stress,", function()
             for i = 1, 3413 do numbers[i] = i / 3 end
             for i = 1, 4400 do strings[i] = "" end
             for i = 1, 1400 do mixed["key " .. i] = { i % 2 == 0, "" } end
-            local messages = { nested(60), ("x"):rep(tcp.MAX_MESSAGE - 2), numbers, strings, mixed, { nested(59), nested(59) } }
+            local messages = { nested(60), ("x"):rep(60 * 1024 - 2), numbers, strings, mixed, { nested(59), nested(59) } }
 
             local largest = 0
             for i, message in ipairs(messages) do

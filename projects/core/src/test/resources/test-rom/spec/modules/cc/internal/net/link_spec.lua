@@ -112,6 +112,46 @@ describe("cc.internal.net.link", function()
         expect(replies):eq(20)
     end)
 
+    it("carries every datagram a socket takes", function()
+        -- Frames are encoded before they're sealed, which not every value a modem can send survives, and radio
+        -- messages have a size limit. Sockets refuse what wouldn't get through, so nothing is dropped here.
+        local net, stacks = setup { KEY, KEY }
+        local a, b = stacks[1], stacks[2]
+        local server, client = b:udp_open(7000), a:udp_open()
+        net.latency.top = 0.05
+
+        local deepest = {}
+        for _ = 2, 60 do deepest = { deepest } end
+        local strings, numbers = {}, {}
+        for i = 1, 4400 do strings[i] = "" end
+        for i = 1, 3413 do numbers[i] = i / 3 end
+        local values = { "text", 0 / 0, -math.huge, { [true] = 1, [0.5] = { "half" } }, deepest, strings, numbers, ("x"):rep(60 * 1024 - 2) }
+
+        local largest = 0
+        for i, value in ipairs(values) do
+            expect({ a:udp_send(client, ip("10.0.0.2"), 7000, value) }):describe("Datagram " .. i):same { true }
+            for _, item in ipairs(sealed_frames(net)) do largest = math.max(largest, #item.frame.body.data) end
+            net.advance(1)
+            local received = table.remove(server.queue, 1)
+            expect(received):describe("Datagram " .. i):ne(nil)
+            if value ~= value then
+                expect(received.data ~= received.data):eq(true)
+            elseif type(value) == "string" then
+                expect(received.data == value):describe("Datagram " .. i):eq(true)
+            else
+                expect(received.data):describe("Datagram " .. i):same(value)
+            end
+        end
+        expect(a.interfaces.top.stats.dropped):eq(0)
+        -- Radio messages may be 64 KiB, as modems reckon it: the sealed bytes, and a little for the rest of the frame.
+        expect(largest > 60 * 1024 and largest + 256 <= 64 * 1024):describe("The largest frame, " .. largest .. " bytes"):eq(true)
+
+        local recursive = {}
+        recursive.self = recursive
+        expect({ a:udp_send(client, ip("10.0.0.2"), 7000, recursive) }):same { nil, "Can't send a table which contains itself" }
+        expect({ a:udp_send(client, ip("10.0.0.2"), 7000, { { deepest } }) }):same { nil, "Can't send tables nested more than 60 deep" }
+    end)
+
     it("sends and accepts nothing when it should be encrypted but can't be", function()
         local net, stacks = setup { false, KEY }
         expect(answered(net, stacks[1], "10.0.0.2")):eq(false)

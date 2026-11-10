@@ -7,8 +7,8 @@
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use `net.tcp` instead.
 
-A connection carries messages, not bytes: any Lua value [`cc.net.codec`] can encode, which is what encrypted links and
-secure connections can carry. Each segment is a packet with `proto = "tcp"` and a body of:
+A connection carries messages, not bytes: any Lua value which crosses every kind of link (see
+[`cc.internal.net.message`]). Each segment is a packet with `proto = "tcp"` and a body of:
 
 ```lua
 {
@@ -44,20 +44,7 @@ ID, reason) when it's gone.
 
 local address = require "cc.net.address"
 local describe_error = require "cc.internal.net.stack".describe_error
-
---- How big one message may be, as the modem estimates it. Radio messages are limited to 64 KiB, and the headers need a
--- little room.
-local MAX_MESSAGE = 60 * 1024
-
--- How big one message may be once `cc.net.codec` has encoded it, as an encrypted link does. That's a little bigger than
--- the modem's estimate for some values (a string takes 3 bytes more), and must still fit in a radio message.
-local MAX_ENCODED = 61 * 1024
-
---- How deeply tables in a message may nest. `cc.net.codec` takes tables 64 deep, and on an encrypted link a message is
--- encoded inside a segment, a packet and a frame.
-local MAX_DEPTH = 60
-
-local KEY_KINDS = { number = true, string = true, boolean = true }
+local sendable = require "cc.internal.net.message"
 
 --- How many messages a receiver holds (waiting to be received, or arrived early).
 local WINDOW = 16
@@ -95,58 +82,6 @@ local function is_port(value) return is_integer(value, 1, 65535) end
 
 local function key(local_addr, local_port, remote_addr, remote_port)
     return ("%d:%d>%d:%d"):format(local_addr, local_port, remote_addr, remote_port)
-end
-
---[[- Check a message can be sent: it isn't `nil`, isn't too big, and is something [`cc.net.codec`] can encode.
-
-A modem can send more than that (tables which contain themselves, and tables as keys), but an encrypted link can't, and
-a connection can't tell whether there's one on its way. A message one link carries and another drops would end the
-connection long after it was sent, so such messages are refused here, where the program can be told why.
-
-Sizes are estimated the same way modems do, and worked out as the codec would encode them.
-
-@param value The message.
-@treturn[1] true If it can be sent.
-@treturn[2] nil If it can't.
-@treturn[2] string Why not.
-]]
-local function check_message(value)
-    if value == nil then return nil, "Can't send nil" end
-
-    -- The tables we're inside. A table may appear twice, but not inside itself.
-    local open, size, encoded = {}, 0, 0
-    local function add(v, depth)
-        local kind = type(v)
-        if kind == "string" then
-            size, encoded = size + #v + 2, encoded + #v + 5
-        elseif kind == "number" then
-            size, encoded = size + 8, encoded + 9
-        elseif kind == "boolean" then
-            size, encoded = size + 1, encoded + 1
-        elseif kind == "table" then
-            if open[v] then error("Can't send a table which contains itself", 0) end
-            if depth >= MAX_DEPTH then error("Can't send tables nested more than " .. MAX_DEPTH .. " deep", 0) end
-            open[v] = true
-            size, encoded = size + 2, encoded + 5
-            for k, x in pairs(v) do
-                if not KEY_KINDS[type(k)] then error("Can't send a table with a " .. type(k) .. " as a key", 0) end
-                size = size + 2
-                add(k, depth + 1)
-                add(x, depth + 1)
-            end
-            open[v] = nil
-        else
-            error("Can't send a " .. kind, 0)
-        end
-        if size > MAX_MESSAGE or encoded > MAX_ENCODED then error("Message too large", 0) end
-    end
-
-    local ok, err = pcall(add, value, 0)
-    if not ok then
-        if type(err) ~= "string" or not (err:find("^Can't send") or err == "Message too large") then err = "Message too complex to send" end
-        return nil, err
-    end
-    return true
 end
 
 local Connection = {}
@@ -585,7 +520,7 @@ function Connection:send(value)
         self.waiting_to_send = true
         return nil, "Full"
     end
-    local ok, err = check_message(value)
+    local ok, err = sendable.check(value)
     if not ok then return nil, err end
 
     self.queue[#self.queue + 1] = { data = value }
@@ -898,9 +833,6 @@ return {
     listen = listen,
     get = get,
     info = info,
-    check_message = check_message,
     attach = registry,
     WINDOW = WINDOW,
-    MAX_MESSAGE = MAX_MESSAGE,
-    MAX_DEPTH = MAX_DEPTH,
 }

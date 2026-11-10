@@ -256,9 +256,9 @@ So a wireless interface works in one of three modes:
 }
 ```
 
-There is no checksum, since modems never corrupt messages; integrity is the security layer's job. There is no size
-limit or fragmentation either, as modem messages can be any size. That changes if the mod gains a wireless message size
-limit (§12).
+There is no checksum, since modems never corrupt messages; integrity is the security layer's job. There is no
+fragmentation either. Radio messages are limited to 64 KiB (§12), so what programs send is limited to a little less
+(§7), and fits in one frame on any link.
 
 ### Forwarding
 
@@ -361,7 +361,9 @@ body = { sp = 49210, dp = 53, data = <any Lua value> }
 ```
 
 There's no acknowledgement and no ordering. A datagram to an unbound port gets ICMP "port unreachable". Datagrams can
-be sent to a broadcast address. Each socket buffers up to 32 datagrams and drops new ones beyond that.
+be sent to a broadcast address. Each socket buffers up to 32 datagrams and drops new ones beyond that. A datagram may
+hold nothing, or anything a connection's message may (see **Messages** below). `send` refuses anything else, and says
+why.
 
 ### Connections (TCP)
 
@@ -426,8 +428,9 @@ connection could send, so sequence numbers never wrap.
   with tables nested up to 60 deep. That's less than a modem can send: no tables which contain themselves, and no
   tables as keys. Encrypted links can only carry what the codec encodes, and a connection can't tell whether one is
   on its way, so it takes the same values everywhere. A message which can't be sent whole is refused when the program
-  sends it, and the connection carries on. Datagrams aren't checked: modems send them with functions quietly dropped,
-  and an encrypted link drops one it can't encode, like any lost datagram. `net.stream` sends bytes in 16 KiB messages.
+  sends it, and the connection carries on. Datagrams follow the same rules, so nothing a program is allowed to send is
+  lost on every try. Modems quietly leave functions out of what they send, but the stack never does: a value arrives
+  whole or is refused. `net.stream` sends bytes in 16 KiB messages.
 - **Interfaces:** a connection fails with "Address lost" if its computer loses the address it uses.
 
 A connection is identified by local address and port plus remote address and port, so it survives as long as both
@@ -1186,13 +1189,10 @@ After phases 4 and 5, connections, secure connections and encrypted links were t
 | On a bad link, a connection could measure a round trip of half a minute, and from then on wait that long to resend every lost message. A message which arrived, but whose acknowledgement was lost, was timed from when it was sent until the message before it had been sent again. One connection took nine minutes to deliver 16 messages. | Round trips are measured with `ts` and `echo`, which is exact for every segment. A connection which has no measurement at all also comes back down from a long timeout once messages get through. |
 | A frame recorded on an encrypted link could be replayed for up to a minute to a computer which had restarted since, as it had forgotten which frames it had seen. | A computer refuses frames from before it started. |
 | A connection took any message a modem can send, but an encrypted link on its way dropped those `cc.net.codec` can't encode without a word: tables which contain themselves, tables as keys, and tables nested too deeply. The connection sent the message again and again, and failed a minute and a half later, along with everything queued behind it. A few messages were also bigger encoded than a radio can send, though small enough as modems estimate sizes. | Connections only take what the codec can encode, with tables up to 60 deep and 61 KiB once encoded. Anything else is refused when it's sent, with the reason, and the connection carries on. |
+| Datagrams had the same trouble, and one more. A datagram holding a function arrived on a plain link with the function left out, but was dropped whole by an encrypted link, while `send` said it had been sent. | Datagrams take the same values as connections, and `send` refuses the rest. (`cc.internal.net.message` holds the rules for both.) |
 
 **Left as they are:**
 
-- **Datagrams which can't be sealed.** A datagram holding something the codec can't encode (a function included) is
-  dropped by an encrypted link, where a plain link would deliver it, with any functions left out. Nothing tells the
-  sender, as with any lost datagram, but this one is lost every time. `send` could refuse such datagrams, as
-  connections now do.
 - **Faster floods of opens.** A flood still keeps some real clients out: about half of them at 20 opens a second, and
   more as it grows. Doing better needs the server to keep nothing until the client answers (as SYN cookies do).
 - **`rshd` and slow clients.** `rshd` serves one client at a time. A client which connects, and then doesn't answer
