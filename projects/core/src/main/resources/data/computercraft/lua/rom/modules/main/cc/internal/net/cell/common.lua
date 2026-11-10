@@ -53,18 +53,36 @@ local function cell_name(network, cell)
     return ("%s/cell/%d"):format(network, cell)
 end
 
+--- The most relays a cell's backhaul may go through.
+local MAX_PATH = 16
+
+--[[- Check a cell's path: the relays its backhaul goes through, as a list of their IDs.
+
+@param path The path, which may be anything.
+@treturn boolean Whether it's a path.
+]]
+local function is_path(path)
+    if type(path) ~= "table" or #path > MAX_PATH then return false end
+    for k, v in pairs(path) do
+        if type(k) ~= "number" or k < 1 or k > #path or k % 1 ~= 0 or type(v) ~= "number" then return false end
+    end
+    return true
+end
+
 --[[- Make the signed system information a cell broadcasts.
 
 @tparam {
-    network = string, cell = number, area = number, load = number, time = number,
+    network = string, cell = number, area = number, load = number, time = number, path? = { number... },
     certificate = string, sign = function(data:string):string,
 } options The network; the cell's ID, tracking area and how busy it is (from 0 to 1); the time, as `os.epoch("utc")`
-gives; the cell's certificate, from the operator; and a way to sign with the cell's key.
+gives; the relays the cell's backhaul goes through, nearest first, if it's a relay; the cell's certificate, from the
+operator; and a way to sign with the cell's key.
 @treturn table The system information.
 ]]
 local function make_sib(options)
     local fields = {
         network = options.network, cell = options.cell, area = options.area, load = options.load, time = options.time,
+        path = options.path and #options.path > 0 and options.path or nil,
     }
     local sib = { op = "sib", cert = options.certificate, sig = options.sign(SIB_PREFIX .. codec.encode(fields)) }
     for k, v in pairs(fields) do sib[k] = v end
@@ -85,7 +103,7 @@ end
 local function check_sib(crypto, sib, options)
     if type(sib) ~= "table" or sib.network ~= options.network or sib.cell ~= options.sender then return nil, "not ours" end
     if type(sib.area) ~= "number" or type(sib.load) ~= "number" or type(sib.time) ~= "number"
-        or type(sib.sig) ~= "string" or #sib.sig ~= 64 then
+        or type(sib.sig) ~= "string" or #sib.sig ~= 64 or (sib.path ~= nil and not is_path(sib.path)) then
         return nil, "malformed"
     end
     if math.abs(sib.time - options.now) > SIB_MAX_AGE then return nil, "too old" end
@@ -98,7 +116,7 @@ local function check_sib(crypto, sib, options)
     })
     if not ok then return nil, "certificate " .. reason end
 
-    local fields = { network = sib.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time }
+    local fields = { network = sib.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time, path = sib.path }
     if not crypto.verify(cert.key, SIB_PREFIX .. codec.encode(fields), sib.sig) then return nil, "bad signature" end
     return true
 end
@@ -237,7 +255,9 @@ return {
     SIB_INTERVAL = SIB_INTERVAL,
     UPLINK = UPLINK,
     DOWNLINK = DOWNLINK,
+    MAX_PATH = MAX_PATH,
     cell_name = cell_name,
+    is_path = is_path,
     make_code = make_code,
     parse_code = parse_code,
     activation_key = activation_key,

@@ -974,7 +974,26 @@ the design above:
 - **Backhaul:** cells reach the core by any route, with a secure connection to port 2123 for control messages. Tunnels
   are datagrams between ports 2152 (the gateway) and 2153 (cells, so a computer can be a cell and the core), sealed
   with a key per cell from a secret in the core's enclave, with a replay window. Packets travel inside them encoded as
-  bytes.
+  bytes. A cell takes tunnel datagrams from any address, as only the core can seal them.
+- **Relays** (like LTE's relay nodes, or IAB) are cells whose backhaul is the cellular network itself: a computer which
+  is both a phone of the network and a cell, so a tower needs no other link. Its phone gets an address and a default
+  route as any phone does, and its cell reaches the core through them (`celld 10.64.0.1`, the gateway's address, always
+  works). Relays can chain.
+  - The stack lets several handlers share a frame type (`on_frame` and `off_frame`), so the phone and the cell both hear
+    `cell` frames. Each ignores the other's: the phone only takes frames from its own cell, and the cell only
+    phones' requests.
+  - A relay's cell reaches the core from its phone's address, which is how the core knows it's a relay. The core
+    works out each cell's path, the relays its backhaul goes through, by following cells' addresses to the sessions
+    of their phones. It tells cells their path whenever it changes (on attaches, handovers, and cells coming and
+    going), and cells add it to their signed system information.
+  - Loops: a relay's phone never uses a cell whose path includes its own computer, which would be behind it. The core
+    refuses such attaches and handovers too.
+  - A relay only broadcasts while its phone has service (when its route to the core goes through the phone). Without
+    it, the relay goes quiet, so its phones (and relays behind it) find another cell rather than sending packets
+    nowhere.
+  - Handovers through a relay are slower to set up, as the core's word reaches the relay through its phone, often
+    after the phone handed over has arrived. A cell keeps a handed-over phone's confirmation for up to five seconds
+    until the core's word comes.
 - **Handover goes through the core** (like LTE's S1 handover) rather than between cells, so cells needn't reach each
   other. Packets on their way to the old cell during a handover are lost, not forwarded; the connection layer resends
   them. A phone reports a stronger cell after it has been 3 dB stronger for two seconds, measured every second.
@@ -983,8 +1002,7 @@ the design above:
   noting for their own network's whether the system information checked out, so a cell claiming the name without the
   operator's certificate shows as a fake. They also remember their last 20 events (activated, attached, moved, lost,
   rejected). `cell monitor` shows all of this on one screen, sized for a pocket computer, and works before activation
-  too (`net.cell.listen`). A computer can't be a phone and a cell at once, as both take the stack's `cell` frames:
-  starting a cell stops the phone, and a cell's computer can't become a phone.
+  too (`net.cell.listen`).
 - **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
   connection to the core. The core keeps them until the phone they're for is attached and acknowledges them, trying again
   every 10 seconds. They're only kept in memory, so restarting the core loses undelivered ones.
@@ -1009,7 +1027,8 @@ the design above:
 - **Forwarding:** `cellcore` turns `net.forwarding` on and saves it, as phones' packets go through the core.
 - **Floods:** each attach request costs the core three X25519 operations, and nothing limits how often a cell relays
   them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
-- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN.
+- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN. Relays don't
+  limit how deep they chain, beyond 16 relays in a path; each adds a radio hop and a layer of tunnel.
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
 the virtual network, a phone walks past three cells with an open connection and keeps every message. A game test
@@ -1290,7 +1309,7 @@ Each phase is usable on its own.
   stack, and the cellular network (§11, as built): system information, activation, attach, tunnels, handover and
   messages, with the `cell`, `celld` and `cellcore` programs and the `net.cell` API. The core and cells run in the
   background, and the core is managed while it runs, from its own computer or another, with cells and administrators
-  allowed by their ID once their fingerprint is checked.
+  allowed by their ID once their fingerprint is checked. Relay cells use the cellular network itself as their backhaul.
 - **Phase 5 is done:** the codec (`cc.net.codec`), Noise `XX` and `NK` handshakes (`cc.internal.net.noise`, checked
   against the cacophony test vectors), secure connections (`net.secure`, `cc.internal.net.secure`) with enclave keys,
   known hosts and pinned keys, certificates (`cc.internal.net.certificate`), encrypted links (`cc.internal.net.link`),

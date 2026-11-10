@@ -1426,8 +1426,7 @@ local function cell_interface()
 end
 
 local function new_phone(operator)
-    -- A cell hears phones' frames, and a phone cells': one computer can't be both.
-    if background.cell then return nil, "This computer is a cell. Stop it first, with 'celld stop'." end
+    -- A computer may be a phone and a cell at once: a relay, whose cell reaches the core through its phone.
     local name = cell_interface()
     if not name then return nil, "This needs a wireless modem" end
     local cell = env_require("cc.internal.net.cell.phone")
@@ -1521,11 +1520,6 @@ local function start_cell_service(config)
     load()
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not cell_interface() then return nil, "A cell needs a wireless modem" end
-    -- A computer can't be a phone and a cell: the cell takes over.
-    if phone_instance then
-        phone_instance:stop()
-        phone_instance = nil
-    end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
     background.cell = env_require("cc.internal.net.cell.cell_service").new {
         core = config.core, area = config.area, id = os.getComputerID(), identity = getIdentity(),
@@ -1534,11 +1528,19 @@ local function start_cell_service(config)
         start_tower = function(welcome, control)
             local name = cell_interface()
             if not name then error("A cell needs a wireless modem", 0) end
+            local core = address.parse(welcome.core)
             return env_require("cc.internal.net.cell.tower").new {
                 stack = stack, crypto = crypto, interface = name, network = welcome.network, area = welcome.area,
                 certificate = welcome.certificate, sign = function(data) return enclave.sign("cell.tower", data) end,
-                epoch = function() return os.epoch("utc") end, core = address.parse(welcome.core),
+                epoch = function() return os.epoch("utc") end, core = core,
                 tunnel_key = welcome.tunnel_key, control = control,
+                -- A relay reaches the core through this computer's phone, so it can only serve while the phone has
+                -- service. Otherwise its phones would stay, with nowhere for their packets to go.
+                can_serve = function()
+                    if not phone_instance or phone_instance.state == "attached" then return true end
+                    local interface = stack:route(core)
+                    return not (interface and interface.name == "cell")
+                end,
             }
         end,
         sleep = sleep, wake = cell_wake,

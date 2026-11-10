@@ -27,6 +27,8 @@ describe("Cellular networks", function()
     local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
     local function copy(value) return codec.decode(codec.encode(value)) end
 
+
+
     local function x25519()
         local private = crypto.generateKeyPair("x25519")
         return { public = noise.public_key(crypto, private), exchange = function(public) return crypto.exchange(private, public) end }
@@ -114,9 +116,95 @@ describe("Cellular networks", function()
             return phone, stack
         end
 
+        -- The core's end of relays' control connections. Like cellcore, it learns a cell's address from its connection,
+        -- and only sends a cell anything else once it has had its key for the tunnel.
+        local relay_connections
+        local function listen_for_relays()
+            if relay_connections then return end
+            relay_connections = {}
+            local listener = assert(tcp.listen(core_stack, 2123))
+            local function poll()
+                core_stack:schedule(0.05, poll)
+                while true do
+                    local connection = listener:accept()
+                    if not connection then break end
+                    relay_connections[#relay_connections + 1] = { connection = connection, outbox = {} }
+                end
+                for _, entry in ipairs(relay_connections) do
+                    while true do
+                        local ok, message = entry.connection:take()
+                        if not ok then break end
+                        if not entry.id then
+                            entry.id = message.id
+                            local key = core:add_tower(message.id, entry.connection.remote_addr, function(reply)
+                                entry.outbox[#entry.outbox + 1] = copy(reply)
+                            end)
+                            entry.connection:send({ tunnel_key = key })
+                        else
+                            core:control(entry.id, message)
+                        end
+                    end
+                    if entry.id then
+                        while entry.outbox[1] do entry.connection:send(table.remove(entry.outbox, 1)) end
+                    end
+                end
+            end
+            poll()
+        end
+
+        --[[ A relay: a computer only on the air, which is a phone of the network and a cell. Once its phone is attached,
+        its cell connects to the core over TCP, through its phone, and its tunnel goes the same way. ]]
+        local function add_relay(id, position)
+            listen_for_relays()
+            local phone, stack = add_phone(id, position)
+            local relay = { id = id, stack = stack, phone = phone, cells = {} }
+            local cell_private, cell_public = crypto.generateKeyPair("ed25519")
+            local cert = certificate.encode(certificate.issue {
+                name = common.cell_name("ACME", id), key = cell_public, expires = now() + 86400000, issuer = signing_public,
+                sign = function(data) return crypto.sign(signing_private, data) end,
+            })
+
+            local connection
+            local function poll()
+                stack:schedule(0.05, poll)
+                -- Which cells the relay's phone has used.
+                if phone.cell and relay.cells[#relay.cells] ~= phone.cell then relay.cells[#relay.cells + 1] = phone.cell end
+                if not connection then
+                    if phone.state == "attached" then connection = assert(tcp.connect(stack, ip("10.0.0.1"), 2123)) end
+                    return
+                end
+                if connection.state == "established" and not relay.hello then
+                    relay.hello = true
+                    connection:send({ id = id })
+                end
+                while true do
+                    local ok, message = connection:take()
+                    if not ok then break end
+                    if not relay.tower then
+                        relay.tower = cell_tower.new {
+                            stack = stack, crypto = crypto, interface = "air", network = "ACME", area = 1, certificate = cert,
+                            sign = function(data) return crypto.sign(cell_private, data) end, epoch = now,
+                            core = ip("10.0.0.1"), tunnel_key = message.tunnel_key,
+                            control = function(control) connection:send(copy(control)) end,
+                            -- As the net API's: only serve while the phone, our way to the core, has service.
+                            can_serve = function()
+                                if phone.state == "attached" then return true end
+                                local interface = stack:route(ip("10.0.0.1"))
+                                return not (interface and interface.name == "cell")
+                            end,
+                        }
+                    else
+                        relay.tower:control(message)
+                    end
+                end
+            end
+            poll()
+            return relay
+        end
+
         return {
             net = net, core = core, core_stack = core_stack, server = server, towers = towers, positions = positions,
-            events = events, add_phone = add_phone, signing_public = signing_public, now = now,
+            events = events, add_phone = add_phone, add_relay = add_relay, signing_public = signing_public, now = now,
             operator_key = operator_key, subscribers = subscribers,
         }
     end
@@ -439,5 +527,142 @@ describe("Cellular networks", function()
         expect(phone.state):eq("attached")
         expect(phone.cell):eq(50)
         expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+    end)
+
+    it("keeps a handed-over phone's confirmation which comes before the core's word", function()
+        local setup = operator { 0 }
+        local tower = setup.towers[1].tower
+        local sent = {}
+        tower.control_send = function(message) sent[#sent + 1] = message end
+        local function confirm(phone, key)
+            local sealer = common.new_sealer(crypto, key, common.UPLINK, common.DOWNLINK)
+            tower:radio(phone, { op = "confirm", sealed = sealer:seal({ confirm = true }) })
+        end
+
+        -- The phone gets here first, then the core says it's coming: the cell takes it at once.
+        local key = crypto.random(32)
+        confirm(5, key)
+        expect(sent):same {}
+        tower:control({ op = "context", phone = 5, teid = 77, key = key, handover = true })
+        expect(sent):same { { op = "path_switch", teid = 77 } }
+
+        -- A confirmation kept too long is forgotten, and so is one which doesn't open.
+        local late = crypto.random(32)
+        confirm(6, late)
+        setup.net.advance(6)
+        tower:control({ op = "context", phone = 6, teid = 78, key = late, handover = true })
+        confirm(7, crypto.random(32))
+        tower:control({ op = "context", phone = 7, teid = 79, key = crypto.random(32), handover = true })
+        expect(#sent):eq(1)
+        expect(tower.phones[6].active):eq(false)
+        expect(tower.phones[7].active):eq(false)
+    end)
+
+    describe("relays", function()
+        -- Let time pass until something is true.
+        local function wait_until(setup, test, limit)
+            for _ = 1, (limit or 30) * 10 do
+                if test() then return end
+                setup.net.advance(0.1)
+            end
+            error("Timed out", 2)
+        end
+
+        it("carry phones, with the relay's own phone as backhaul, while the relay moves between cells", function()
+            math.randomseed(3)
+            local setup = operator { 0, 100 }
+            local relay = setup.add_relay(30, 30)
+            wait_until(setup, function() return relay.tower ~= nil end)
+            expect(relay.phone.cell):eq(11)
+
+            -- A phone next to the relay uses it, and reaches the network through it. It may attach to the other cell first,
+            -- then move: wait until the core has moved it too.
+            local phone, stack = setup.add_phone(1, 35)
+            wait_until(setup, function()
+                local session = setup.core.sessions[hex(phone.sim.public)]
+                return phone.state == "attached" and phone.cell == 30 and session and session.cell == 30
+            end)
+            expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+            expect(setup.core:path_of(30)):same { 11 }
+            expect(relay.tower.path):same { 11 }
+
+            local listener = assert(tcp.listen(setup.server, 80))
+            local client = assert(tcp.connect(stack, ip("10.0.0.60"), 80))
+            setup.net.advance(1)
+            local server = assert(listener:accept())
+
+            -- The relay, and the phone with it, move until the relay's phone hands over to the other cell.
+            local sent, got = 0, {}
+            local function drain()
+                while true do
+                    local ok, value = server:take()
+                    if not ok then break end
+                    got[#got + 1] = value
+                end
+            end
+            for step = 1, 60 do
+                setup.positions[30], setup.positions[1] = 30 + step, 35 + step
+                sent = sent + 1
+                assert(client:send(sent))
+                setup.net.advance(0.5)
+                drain()
+            end
+            setup.net.advance(10)
+            drain()
+
+            expect(relay.cells):same { 11, 12 }
+            expect(phone.cell):eq(30)
+            expect(client.state):eq("established")
+            expect(#got):eq(sent)
+            for i = 1, sent do expect(got[i]):eq(i) end
+            -- The relay now goes through the other cell, and says so.
+            expect(setup.core:path_of(30)):same { 12 }
+            expect(relay.tower.path):same { 12 }
+            expect(setup.net.errors):same {}
+        end)
+
+        it("keep their phones off cells behind them, and stop serving without service", function()
+            math.randomseed(4)
+            local setup = operator { 0 }
+            local first = setup.add_relay(30, 60)
+            wait_until(setup, function() return first.tower ~= nil end)
+            -- A second relay, out of the cell's range, goes through the first.
+            local second = setup.add_relay(31, 150)
+            wait_until(setup, function() return second.tower ~= nil and #second.tower.path == 2 end)
+            expect(second.phone.cell):eq(30)
+            expect(second.tower.path):same { 30, 11 }
+
+            -- The second relay comes right next to the first. The first's phone hears it far better than its own cell,
+            -- but never uses it: that would be a loop.
+            setup.positions[31] = 65
+            setup.net.advance(10)
+            expect(first.phone.cell):eq(11)
+            expect(first.phone.candidate):eq(nil)
+            expect(second.phone.cell):eq(30)
+            -- Nor would the core allow it.
+            expect(setup.core:would_loop(30, 31)):eq(true)
+            expect(setup.core:would_loop(31, 30)):eq(false)
+            local session = setup.core.sessions[hex(first.phone.sim.public)]
+            setup.core:control(11, { op = "handover", teid = session.teid, target = 31 })
+            expect(session.handover):eq(nil)
+
+            -- The first relay moves out of its cell's range, still next to the second. It stops serving, so the second
+            -- loses service too, rather than sending packets nowhere. Neither uses the other.
+            setup.positions[31] = 150
+            setup.net.advance(2)
+            setup.positions[30] = 130
+            wait_until(setup, function() return first.phone.state ~= "attached" and second.phone.state ~= "attached" end)
+            setup.net.advance(5)
+            expect(first.tower.can_serve()):eq(false)
+            expect(second.tower.can_serve()):eq(false)
+            expect(first.cells):same { 11 }
+
+            -- Back in range, the first attaches again, and the second through it.
+            setup.positions[30] = 60
+            wait_until(setup, function() return second.phone.state == "attached" end, 60)
+            expect(first.phone.cell):eq(11)
+            expect(second.phone.cell):eq(30)
+            expect(setup.net.ping(second.stack, ip("10.0.0.60")).error):eq(nil)
+        end)
     end)
 end)

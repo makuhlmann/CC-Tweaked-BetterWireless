@@ -201,6 +201,12 @@ function commands.cells()
         print("Connected:")
         for _, cell in ipairs(status.cells) do
             print(("  #%d from %s, area %s, since %s"):format(cell.id, cell.address, tostring(cell.area or 0), since(cell.since)))
+            -- A relay: its backhaul goes through other cells.
+            if cell.path and #cell.path > 0 then
+                local through = {}
+                for i, relay in ipairs(cell.path) do through[i] = "#" .. relay end
+                print("    a relay, through cell " .. table.concat(through, ", "))
+            end
         end
     end
     local groups = { cell = {}, admin = {}, denied = {} }

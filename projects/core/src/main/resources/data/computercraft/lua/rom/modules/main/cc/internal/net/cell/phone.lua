@@ -69,7 +69,9 @@ local function new(options)
         seen_messages = {},
     }, Phone)
 
-    stack:on_frame(common.FRAME, function(interface, src, body, signal)
+    -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
+    -- come from our cell.
+    self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, signal)
         if interface.name == self.interface then self:radio(src, body, signal) end
     end, true)
     self.timer = stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
@@ -122,12 +124,22 @@ function Phone:to_cell(cell, message)
     self.stack:send_frame(self.interface, cell, common.FRAME, message)
 end
 
+-- Whether a cell's backhaul goes through this computer: it's a relay, and this phone is its way to the core. Using it
+-- would be a loop.
+function Phone:behind_us(cell)
+    for _, relay in ipairs(cell.path or {}) do
+        if relay == self.stack.id then return true end
+    end
+    return false
+end
+
 -- The best cell we can hear, and its signal.
 function Phone:best_cell(except)
     local best, best_signal
     local now = self.stack.clock()
     for id, cell in pairs(self.cells) do
-        if id ~= except and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and (not best_signal or cell.signal > best_signal) then
+        if id ~= except and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and not self:behind_us(cell)
+            and (not best_signal or cell.signal > best_signal) then
             best, best_signal = id, cell.signal
         end
     end
@@ -158,6 +170,7 @@ function Phone:radio(src, message, signal)
         local total = 0
         for _, sample in ipairs(cell.samples) do total = total + sample end
         cell.signal, cell.heard, cell.area = total / #cell.samples, self.stack.clock(), message.area
+        cell.path = message.path
         if self.state == "searching" then self:attach() end
         return
     end
@@ -422,7 +435,7 @@ end
 --- Stop the phone, giving up its address.
 function Phone:stop()
     self.stack:cancel(self.timer)
-    self.stack:on_frame(common.FRAME, nil)
+    self.stack:off_frame(common.FRAME, self.frame_handler)
     self.stack:remove_routes(function(route) return route.source == "cell" end)
     self.stack:remove_interface("cell")
 end

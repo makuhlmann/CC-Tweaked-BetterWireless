@@ -117,7 +117,52 @@ function Core:add_tower(id, cell_address, send)
         id = id, address = cell_address, send = send,
         sealer = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK),
     }
+    self:update_paths()
     return key
+end
+
+--[[- Find the relays a cell's backhaul goes through, nearest first.
+
+A relay is a computer which is both a phone of this network and a cell: its cell reaches us through its phone, so its
+address is the phone's. Its backhaul goes through the cell its phone uses, which may be a relay too.
+
+@tparam number id The cell's ID.
+@treturn { number... } The IDs of the cells its backhaul goes through, which are also the relays' computers.
+]]
+function Core:path_of(id)
+    local path, seen = {}, { [id] = true }
+    local tower = self.towers[id]
+    while tower and #path < common.MAX_PATH do
+        local session = self.by_address[tower.address]
+        local upstream = session and session.teid and session.cell
+        if not upstream or seen[upstream] then break end
+        seen[upstream] = true
+        path[#path + 1] = upstream
+        tower = self.towers[upstream]
+    end
+    return path
+end
+
+-- Whether a phone using a cell would make a loop: the phone's computer is the cell, or a relay its backhaul goes
+-- through. (A relay's phone and cell share its computer's ID.)
+function Core:would_loop(phone, tower_id)
+    if phone == tower_id then return true end
+    for _, relay in ipairs(self:path_of(tower_id)) do
+        if relay == phone then return true end
+    end
+    return false
+end
+
+-- Tell cells whose path has changed: they advertise it, so relays' phones can avoid cells behind them.
+function Core:update_paths()
+    for id, tower in pairs(self.towers) do
+        local path = self:path_of(id)
+        local key = table.concat(path, ",")
+        if tower.path ~= key then
+            tower.path = key
+            tower.send({ op = "path", path = path })
+        end
+    end
 end
 
 --[[- Forget a cell, once it has gone. Its phones lose service until they find another cell.
@@ -128,7 +173,10 @@ another, the new one is kept.
 ]]
 function Core:remove_tower(id, send)
     local tower = self.towers[id]
-    if tower and (send == nil or tower.send == send) then self.towers[id] = nil end
+    if tower and (send == nil or tower.send == send) then
+        self.towers[id] = nil
+        self:update_paths()
+    end
 end
 
 function Core:send(tower_id, message)
@@ -151,6 +199,7 @@ function Core:remove_subscriber(sim)
     end
     self.by_address[session.address] = nil
     self.sessions[sim] = nil
+    self:update_paths()
 end
 
 --- Stop the core: phones lose service, and the gateway's interface and port are freed, so it can be started again.
@@ -316,6 +365,10 @@ function Core:retry_messages()
 end
 
 function Core:attach(tower, phone, message)
+    -- A relay's phone can't reach us through a cell which reaches us through the relay.
+    if self:would_loop(phone, tower.id) then
+        return self:send(tower.id, { op = "reject", phone = phone, reason = "That cell is behind this one" })
+    end
     local handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = false, prologue = PROLOGUE .. self.network,
         static = self.operator,
@@ -370,6 +423,7 @@ function Core:attach_complete(tower, phone, data)
         op = "context", phone = phone, teid = session.teid, address = session.address,
         key = common.cell_key(self.crypto, session.secret, tower.id),
     })
+    self:update_paths()
     self.on_event("attached", pending.sim, address.format(session.address), tower.id)
 
     -- Anything waiting for this phone can go now.
@@ -383,6 +437,7 @@ function Core:handover(tower, teid, target_id)
     local session = self.by_teid[teid]
     local target = self.towers[target_id]
     if not session or session.cell ~= tower.id or not target or target_id == tower.id then return end
+    if self:would_loop(session.phone, target_id) then return end
 
     session.handover = target_id
     self:send(target_id, {
@@ -398,6 +453,7 @@ function Core:path_switch(tower, teid)
     local old = session.cell
     session.cell, session.handover = tower.id, nil
     self:send(old, { op = "release", teid = teid })
+    self:update_paths()
     self.on_event("handover", session.sim, old, tower.id)
 end
 

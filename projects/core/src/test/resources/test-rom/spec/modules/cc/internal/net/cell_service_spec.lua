@@ -288,6 +288,8 @@ describe("Cellular services", function()
                 local cell = env.connect(cell_key, "10.0.0.11")
                 local welcome = hello(cell, "cell", 11, { signing = hex(tower_public) })
                 expect(welcome.network):eq("ACME")
+                -- The cell learns the relays its backhaul goes through: none.
+                expect(cell:receive(5)):same { op = "path", path = {} }
                 -- The core's messages come down the connection, and the cell's go up it.
                 env.service.core:send(11, { op = "release", teid = 5 })
                 expect(cell:receive(5)):same { op = "release", teid = 5 }

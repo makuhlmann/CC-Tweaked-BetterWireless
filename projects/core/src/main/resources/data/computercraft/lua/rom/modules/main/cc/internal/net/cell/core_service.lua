@@ -407,7 +407,10 @@ function requests.status(self)
         cells = {}, allowed = {}, waiting = {}, subscribers = {},
     }
     for id, cell in pairs(self.cells) do
-        result.cells[#result.cells + 1] = { id = id, key = cell.key, address = cell.address, area = cell.area, since = cell.since }
+        result.cells[#result.cells + 1] = {
+            id = id, key = cell.key, address = cell.address, area = cell.area, since = cell.since,
+            path = self.core:path_of(id),
+        }
     end
     table.sort(result.cells, by_id)
     for key, entry in pairs(self.allowed) do

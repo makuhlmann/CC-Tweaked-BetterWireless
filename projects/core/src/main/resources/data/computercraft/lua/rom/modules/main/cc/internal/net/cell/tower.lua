@@ -16,6 +16,9 @@ it. When a phone reports a stronger cell, it asks the core to hand the phone ove
 
 local common = require "cc.internal.net.cell.common"
 
+-- How long to keep a handed-over phone's confirmation which came before the core's word, in seconds, and how many.
+local EARLY_CONFIRM_TIME, MAX_EARLY_CONFIRMS = 5, 16
+
 local Tower = {}
 Tower.__index = Tower
 
@@ -24,11 +27,12 @@ Tower.__index = Tower
 @tparam {
     stack = table, crypto = table, interface = string, network = string, area? = number,
     certificate = string, sign = function(data:string):string, epoch = function():number,
-    core = number, tunnel_key = string, control = function(message:table),
+    core = number, tunnel_key = string, control = function(message:table), can_serve? = function():boolean,
 } options The stack; the `crypto` API; the interface phones are on (a low band wireless one); the network's name and
 this cell's tracking area; the cell's certificate from the operator, and a way to sign with its key; the time, as
-`os.epoch("utc")` gives; the core's address, and the key for the tunnel to it; and a way to send the core control
-messages.
+`os.epoch("utc")` gives; the core's address, and the key for the tunnel to it; a way to send the core control
+messages; and whether the cell can serve phones now. A relay can't while its own phone has no service, and stops
+broadcasting, so its phones move to another cell.
 @treturn table The cell.
 ]]
 local function new(options)
@@ -37,27 +41,29 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, network = options.network,
         area = options.area or 0, certificate = options.certificate, sign = options.sign, epoch = options.epoch,
         core = options.core, control_send = options.control, id = stack.id,
+        can_serve = options.can_serve or function() return true end,
         tunnel = common.new_sealer(options.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
-        phones = {}, by_teid = {},
+        phones = {}, by_teid = {}, path = {}, early_confirms = {},
     }, Tower)
 
-    stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
+    self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
         if interface.name == self.interface and dst == self.id then self:radio(src, body) end
     end, true)
-    self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data, from) self:downlink(data, from) end))
+    self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end))
     self:beacon()
     return self
 end
 
--- Broadcast system information, every second.
+-- Broadcast system information, every second, while we can serve phones.
 function Tower:beacon()
+    self.beacon_timer = self.stack:schedule(common.SIB_INTERVAL, function() self:beacon() end)
+    if not self.can_serve() then return end
     local load = 0
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
         network = self.network, cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(),
-        certificate = self.certificate, sign = self.sign,
+        path = self.path, certificate = self.certificate, sign = self.sign,
     })
-    self.beacon_timer = self.stack:schedule(common.SIB_INTERVAL, function() self:beacon() end)
 end
 
 function Tower:to_phone(phone, message)
@@ -95,15 +101,28 @@ function Tower:radio(phone, message)
             context.handing_over = self.stack.clock()
             self.control_send({ op = "handover", teid = context.teid, target = value.target })
         end
-    elseif op == "confirm" then
-        -- A phone handed over to us.
-        local context = self.phones[phone]
-        if not context or context.active then return end
-        local value = context.sealer:open(message.sealed)
-        if type(value) == "table" and value.confirm == true then
-            context.active = true
-            self.control_send({ op = "path_switch", teid = context.teid })
+    elseif op == "confirm" and type(message.sealed) == "table" then
+        -- A phone handed over to us. The core's word about it comes over the backhaul, which may be slower than the
+        -- phone over the air (through a relay's own phone, say), so keep the phone's confirmation until it does.
+        if self.phones[phone] then return self:confirm(phone, message.sealed) end
+        local count = 0
+        for id, early in pairs(self.early_confirms) do
+            if self.stack.clock() - early.time > EARLY_CONFIRM_TIME then self.early_confirms[id] = nil else count = count + 1 end
         end
+        if self.early_confirms[phone] or count < MAX_EARLY_CONFIRMS then
+            self.early_confirms[phone] = { sealed = message.sealed, time = self.stack.clock() }
+        end
+    end
+end
+
+-- A phone handed over to us says it's here: tell the core to send its packets our way.
+function Tower:confirm(phone, sealed)
+    local context = self.phones[phone]
+    if not context or context.active then return end
+    local value = context.sealer:open(sealed)
+    if type(value) == "table" and value.confirm == true then
+        context.active = true
+        self.control_send({ op = "path_switch", teid = context.teid })
     end
 end
 
@@ -139,11 +158,20 @@ function Tower:control(message)
         if context.active then
             self:to_phone(message.phone, { op = "accept", sealed = context.sealer:seal({ address = message.address }) })
         end
+        -- The phone may have arrived already.
+        local early = self.early_confirms[message.phone]
+        self.early_confirms[message.phone] = nil
+        if early and not context.active and self.stack.clock() - early.time <= EARLY_CONFIRM_TIME then
+            self:confirm(message.phone, early.sealed)
+        end
     elseif op == "handover_go" and type(message.teid) == "number" then
         local context = self.by_teid[message.teid]
         if context then
             self:to_phone(context.phone, { op = "handover", sealed = context.sealer:seal({ target = message.target }) })
         end
+    elseif op == "path" and common.is_path(message.path) then
+        -- The relays our backhaul goes through, which phones on them mustn't use us.
+        self.path = message.path
     elseif op == "release" and type(message.teid) == "number" then
         local context = self.by_teid[message.teid]
         if context then
@@ -154,8 +182,9 @@ function Tower:control(message)
 end
 
 -- A packet for a phone, down the tunnel from the gateway.
-function Tower:downlink(data, from)
-    if from ~= self.core then return end
+function Tower:downlink(data)
+    -- Only the core has the tunnel's key, and the sealer refuses replays, so where it came from doesn't matter. (It
+    -- isn't always the address we reached the core at: a relay's tunnel comes from the core's gateway address.)
     local inner = self.tunnel:open(data)
     local context = type(inner) == "table" and self.by_teid[inner.teid]
     if not context or not context.active or type(inner.packet) ~= "string" then return end
@@ -167,7 +196,7 @@ end
 function Tower:stop()
     self.stack:cancel(self.beacon_timer)
     self.stack:udp_close(self.socket)
-    self.stack:on_frame(common.FRAME, nil)
+    self.stack:off_frame(common.FRAME, self.frame_handler)
 end
 
 return {

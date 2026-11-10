@@ -233,18 +233,44 @@ function Stack:inject(name, packet)
     self:receive_packet(interface, nil, packet, nil, true)
 end
 
---[[- Handle frames of a new type, such as `"cell"`.
+--[[- Handle frames of a new type, such as `"cell"`. Several handlers may share a type (a computer may be a phone and a
+cell, say): each is called with every frame, and ignores those which aren't for it.
 
 @tparam string kind The frame type.
 @tparam function(interface:table, src:number, body:any, signal:number|nil, dst:number) handler Called with each frame of
 this type: the interface it arrived on, the sending computer's ID, the frame's body, the signal strength, and who it was
 sent to (our ID, or `-1` for everyone).
-@tparam[opt] boolean unsealed Whether these frames are sent and accepted unencrypted, even on an encrypted link. Only for
-frames which protect themselves.
+@tparam[opt] boolean unsealed Whether frames of this type are sent and accepted unencrypted, even on an encrypted link.
+Only for frames which protect themselves.
+@treturn function The handler, to stop it with [`Stack:off_frame`].
 ]]
 function Stack:on_frame(kind, handler, unsealed)
-    self.frame_handlers[kind] = handler
-    self.unsealed[kind] = unsealed and true or nil
+    if type(handler) ~= "function" then error("bad argument #2 (function expected)", 2) end
+    local handlers = self.frame_handlers[kind]
+    if not handlers then
+        handlers = {}
+        self.frame_handlers[kind] = handlers
+    end
+    handlers[#handlers + 1] = handler
+    if unsealed then self.unsealed[kind] = true end
+    return handler
+end
+
+--[[- Stop handling frames with a handler given to [`Stack:on_frame`].
+
+@tparam string kind The frame type.
+@tparam function handler The handler.
+]]
+function Stack:off_frame(kind, handler)
+    local handlers = self.frame_handlers[kind]
+    if not handlers then return end
+    for i = #handlers, 1, -1 do
+        if handlers[i] == handler then table.remove(handlers, i) end
+    end
+    if #handlers == 0 then
+        self.frame_handlers[kind] = nil
+        self.unsealed[kind] = nil
+    end
 end
 
 --[[- Send a frame of a type handled by [`Stack:on_frame`].
@@ -413,10 +439,13 @@ function Stack:receive(modem, channel, frame, signal)
     elseif kind == "ip" then
         self:receive_packet(interface, src, body, signal, forwarded)
     else
-        local handler = self.frame_handlers[kind]
-        if handler then
-            local ok, err = pcall(handler, interface, src, body, signal, dst)
-            if not ok then self.log(err) end
+        local handlers = self.frame_handlers[kind]
+        if handlers then
+            -- A handler may start or stop others, so go through a copy.
+            for _, handler in ipairs({ table.unpack(handlers) }) do
+                local ok, err = pcall(handler, interface, src, body, signal, dst)
+                if not ok then self.log(err) end
+            end
         end
     end
 end

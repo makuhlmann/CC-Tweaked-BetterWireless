@@ -2,8 +2,11 @@ celld runs a cell of a cellular network: a tower which phones attach through. It
 
 The first time, the core must allow the cell: celld shows the command to run on the core, and the fingerprint to check there.
 
+A cell can be a relay, with no link of its own to the core: activate the computer as a phone of the network first (with "cell activate"), then run "celld 10.64.0.1" (the core's gateway address, or any of the core's addresses), and the cell reaches the core through its own phone. A relay's phone never uses a cell behind it, and the relay only serves phones while its own phone has service.
+
 ex:
 "celld core.acme" runs a cell of the network whose core is core.acme.
+"celld 10.64.0.1" runs a relay, through this computer's own phone.
 "celld 10.0.0.1 3" runs a cell in tracking area 3.
 "celld" shows how the cell is doing.
 "celld stop" stops the cell.
