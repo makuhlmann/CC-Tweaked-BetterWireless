@@ -52,7 +52,7 @@ describe("Cellular networks", function()
         local core = cell_core.new {
             stack = core_stack, crypto = crypto, network = "ACME", operator = operator_key, signing = signing_public,
             prefix = "10.64.0.0/16",
-            subscribers = subscribers, secret = crypto.random(32),
+            subscribers = subscribers, secret = crypto.random(32), epoch = function() return 1.7e12 + net.time * 1000 end,
             on_event = function(...) events[#events + 1] = { ... } end,
         }
 

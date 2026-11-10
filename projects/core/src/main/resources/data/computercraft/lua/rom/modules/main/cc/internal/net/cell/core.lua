@@ -30,8 +30,8 @@ local PROLOGUE = "cc-net cell attach 1\0"
 --- What both sides of an activation agree on, followed by the network's name.
 local ACTIVATE_PROLOGUE = "cc-net cell activate 1\0"
 
--- How long an activation code lasts, in seconds of the core's clock, and how many wrong tries it takes.
-local CODE_LIFETIME = 24 * 60 * 60
+-- How long an activation code lasts, in milliseconds, and how many wrong tries it takes.
+local CODE_LIFETIME = 24 * 60 * 60 * 1000
 local CODE_TRIES = 3
 
 -- How often to try delivering messages again, in seconds.
@@ -50,13 +50,16 @@ local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x")
 @tparam {
     stack = table, crypto = table, network = string,
     operator = { public = string, exchange = function(public:string):string }, signing = string,
-    prefix = string, subscribers = table, secret = string,
+    prefix = string, subscribers = table, secret? = string, tunnel_key? = function(cell:number):string,
+    codes? = table, epoch = function():number,
     on_event? = function(event:string, ...:any),
 } options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name;
 the operator's X25519 key, and its Ed25519 signing key's public half (which phones check cells' certificates with); the
 operator's network for phones' addresses (such as `"10.64.0.0/16"`), whose first address the gateway takes; the
-subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys; and a
-function told about attaches, handovers and so on, for logging and saving.
+subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys (or a
+function giving a cell's tunnel key, so the secret can stay in the enclave); activation codes, by their first group, as
+`add_code` makes them; the time, as `os.epoch("utc")` gives; and a function told about attaches, handovers and so
+on, for logging and saving.
 @treturn table The core.
 ]]
 local function new(options)
@@ -65,7 +68,9 @@ local function new(options)
 
     local self = setmetatable({
         stack = options.stack, crypto = options.crypto, network = options.network, operator = options.operator,
-        signing = options.signing, codes = {}, activating = {}, messages = {}, next_message = 0,
+        signing = options.signing, codes = options.codes or {}, activating = {}, messages = {}, next_message = 0,
+        epoch = options.epoch,
+        make_tunnel_key = options.tunnel_key or function(cell) return common.tunnel_key(options.crypto, options.secret, cell) end,
         subscribers = options.subscribers, secret = options.secret, on_event = options.on_event or function() end,
         network_address = address.network(network_address, prefix), prefix = prefix,
         next_host = 2,
@@ -88,14 +93,15 @@ any SIM it had before.
 @tparam string id The subscriber's ID, such as `"ACME-0042"`.
 @tparam string number Their phone number.
 @treturn string The code, such as `"7Q2M-K4XD-9PRB-T6WN-HJ3C"`.
+@treturn string Its first group, which [`Core:control`] looks it up by in `codes`.
 ]]
 function Core:add_code(id, number)
     local code, tag, secret = common.make_code(self.crypto)
     self.codes[tag] = {
         id = id, number = number, key = common.activation_key(self.crypto, secret), tries = 0,
-        expires = self.stack.clock() + CODE_LIFETIME,
+        expires = self.epoch() + CODE_LIFETIME,
     }
-    return code
+    return code, tag
 end
 
 --[[- Add a cell. Its control messages come to [`Core:control`], and its tunnel is sealed with the key returned.
@@ -106,7 +112,7 @@ end
 @treturn string The key for the cell's tunnel.
 ]]
 function Core:add_tower(id, cell_address, send)
-    local key = common.tunnel_key(self.crypto, self.secret, id)
+    local key = self.make_tunnel_key(id)
     self.towers[id] = {
         id = id, address = cell_address, send = send,
         sealer = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK),
@@ -177,7 +183,7 @@ end
 -- A phone wants to activate with a code. Nothing is sent which helps anyone without the code.
 function Core:activate(tower, phone, tag, message)
     local code = self.codes[tag]
-    if not code or code.expires < self.stack.clock() then return end
+    if type(code) ~= "table" or type(code.key) ~= "string" or code.expires < self.epoch() then return end
     local handshake = noise.new {
         crypto = self.crypto, pattern = "XXpsk3", initiator = false, prologue = ACTIVATE_PROLOGUE .. self.network,
         static = self.operator, psk = code.key,
@@ -204,6 +210,7 @@ function Core:activate_finish(tower, phone, message)
         return
     end
     self.codes[activating.tag] = nil
+    self.on_event("code_used", activating.tag)
 
     -- The subscription moves to this SIM, and any old one stops working.
     local sim = to_hex(activating.handshake.rs)

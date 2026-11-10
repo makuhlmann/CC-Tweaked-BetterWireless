@@ -64,7 +64,7 @@ local CERTIFICATE = "/.net/certificate"
 
 local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, running
 local rip_instance, rip_config
-local add_modem, apply_routing
+local add_modem, apply_routing, start_phone, env_require
 local errors = {}
 local services = {}
 local cache = {}
@@ -87,6 +87,7 @@ local function load()
     -- APIs can't use require, so make our own, much as the shell does for programs.
     local env = setmetatable({}, { __index = _ENV })
     env.require, env.package = dofile("rom/modules/main/cc/require.lua").make(env, "/")
+    env_require = env.require
     address = env.require("cc.net.address")
     dhcp = env.require("cc.internal.net.dhcp")
     dns = env.require("cc.internal.net.dns")
@@ -168,6 +169,7 @@ local function load()
     apply_routing()
 
     for _, name in ipairs(peripheral.getNames()) do add_modem(name) end
+    pcall(start_phone)
     return stack
 end
 
@@ -364,6 +366,11 @@ function add_modem(name)
     if not ok then
         log_error(("Cannot use modem %s: %s"):format(name, tostring(err)))
         stack:remove_modem(name)
+    end
+    -- A phone whose modem was missing can start now.
+    if start_phone then
+        ok, err = pcall(start_phone)
+        if not ok then log_error(err) end
     end
 end
 
@@ -1365,6 +1372,205 @@ secure = {
         return setmetatable({
             listener = listener, identity = own, certificate = certificate, anonymous = options and options.anonymous,
         }, SecureListener)
+    end,
+}
+
+-- Cellular networks. A phone runs in the background, once the computer has a SIM.
+local SIM_FILE = "/.net/sim"
+local INBOX_FILE = "/.net/messages"
+local MAX_INBOX = 100
+local phone_instance
+
+local function sim_key()
+    require_crypto()
+    local public = enclave.publicKey("sim") or enclave.generate("sim", "x25519")
+    return { public = public, exchange = function(peer) return enclave.exchange("sim", peer) end }
+end
+
+-- Cellular radio uses a wireless modem's low band, for range: find (or make) an interface on it.
+local function cell_interface()
+    local names = {}
+    for name in pairs(stack.interfaces) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local interface = stack.interfaces[name]
+        if interface.kind == "wireless" and interface.band == "low" then return name end
+    end
+    for _, name in ipairs(names) do
+        local interface = stack.interfaces[name]
+        if interface.kind == "wireless" and interface.band == "high" and not stack.interfaces[interface.modem .. ":low"] then
+            add_interface(interface.modem .. ":low", interface.modem, "wireless", "low")
+            return interface.modem .. ":low"
+        end
+    end
+end
+
+local function new_phone(operator)
+    local name = cell_interface()
+    if not name then return nil, "This needs a wireless modem" end
+    local cell = env_require("cc.internal.net.cell.phone")
+    phone_instance = cell.new {
+        stack = stack, crypto = crypto, interface = name, epoch = function() return os.epoch("utc") end,
+        sim = sim_key(), operator = operator,
+        on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
+        on_message = function(from, text)
+            local inbox = read_table(INBOX_FILE)
+            inbox[#inbox + 1] = { from = from, text = text, time = os.epoch("utc") }
+            while #inbox > MAX_INBOX do table.remove(inbox, 1) end
+            write_table(INBOX_FILE, inbox)
+            os.queueEvent("cell_message", from, text)
+        end,
+        on_activated = function(info)
+            write_table(SIM_FILE, {
+                network = info.network, key = to_hex(info.key), signing = to_hex(info.signing), id = info.id,
+                number = info.number,
+            })
+        end,
+    }
+    return phone_instance
+end
+
+-- Start the phone, if this computer has been activated on a network.
+function start_phone()
+    if phone_instance or not crypto or not enclave then return end
+    local sim = read_table(SIM_FILE)
+    local key, signing = from_hex(sim.key), from_hex(sim.signing)
+    if type(sim.network) ~= "string" or not key or not signing then return end
+    new_phone({ network = sim.network, key = key, signing = signing })
+end
+
+--[[- Cellular networks: pocket computers as phones, which keep their address and connections while moving between cells.
+
+A phone needs a SIM, activated on a network with a code from its administrator (`cell activate`, or
+`net.cell.activate`). Then it finds the strongest cell of its network, attaches, and gets an address, with a default route through the cell.
+It moves between cells by itself. Phones can send each other messages by number, which the network keeps until the phone
+they're for is reachable.
+
+Cells run `celld`, and the network's core runs `cellcore`.
+
+The stack queues `cell_state` (with the phone's state) when it attaches or loses service, and `cell_message` (with the
+sender's number and the text) when a message arrives.
+]]
+cell = {
+    --[[- Get the phone's state.
+
+    @treturn table `state` (`"none"` with no SIM, `"inactive"`, `"activating"`, `"searching"`, `"attaching"`, `"attached"` or
+    `"rejected"`); `network`; `subscriber` (`id` and `number`); `cell`, the cell it's using; `address`; `cells`, the cells
+    it hears, strongest first, each with `id` and `signal`; `networks`, the networks it can hear before it's activated;
+    and why it was rejected or activation failed.
+    ]]
+    info = function()
+        load()
+        if not phone_instance then
+            local sim = read_table(SIM_FILE)
+            return { state = "none", network = sim.network }
+        end
+        local info = phone_instance:info()
+        info.address = info.address and address.format(info.address)
+        if not info.subscriber then
+            local sim = read_table(SIM_FILE)
+            if sim.id then info.subscriber = { id = sim.id, number = sim.number } end
+        end
+        return info
+    end,
+
+    --[[- Activate this computer's SIM on a network, with a code from the network's administrator. Activating again, with
+    a new code, moves a subscription to this computer.
+
+    @tparam string network The network's name, as `net.cell.info().networks` lists them.
+    @tparam string code The activation code, such as `"7Q2M-K4XD-9PRB-T6WN-HJ3C"`.
+    @treturn[1] true If activation started. `cell_state` events say how it goes: `"searching"` once it worked.
+    @treturn[2] nil If it couldn't start.
+    @treturn[2] string Why not.
+    ]]
+    activate = function(network, code)
+        expect(1, network, "string")
+        expect(2, code, "string")
+        require_crypto()
+        load()
+        if phone_instance and phone_instance.state ~= "inactive" and phone_instance.state ~= "rejected" then
+            phone_instance:stop()
+            phone_instance = nil
+        end
+        if not phone_instance then
+            local ok, err = new_phone(nil)
+            if not ok then return nil, err end
+        end
+        return phone_instance:activate(network, code)
+    end,
+
+    --[[- Send a message to another phone by its number.
+
+    @tparam string number The number.
+    @tparam string text The message, up to 1000 characters.
+    @treturn[1] true If it was sent. The network keeps it until the phone it's for is reachable.
+    @treturn[2] nil If it couldn't be sent.
+    @treturn[2] string Why not.
+    ]]
+    send = function(number, text)
+        expect(1, number, "string")
+        expect(2, text, "string")
+        load()
+        if not phone_instance then return nil, "No SIM" end
+        return phone_instance:send_message(number, text)
+    end,
+
+    --[[- Get the messages this phone has received, oldest first (the last 100).
+
+    @treturn { { from = string, text = string, time = number }... } The messages.
+    ]]
+    messages = function()
+        return read_table(INBOX_FILE)
+    end,
+
+    --[[- Start a cell on this computer. This is for the `celld` program.
+
+    @tparam {
+        network = string, area? = number, certificate = string, sign = function(data:string):string,
+        core = string, tunnel_key = string, control = function(message:table),
+    } options The network; the cell's tracking area; its certificate and a way to sign with its key; the core's address
+    and the key for the tunnel to it; and a way to send the core control messages.
+    @treturn table The cell, with `control(message)` and `stop()`.
+    ]]
+    startCell = function(options)
+        expect(1, options, "table")
+        require_crypto()
+        load()
+        local name = cell_interface()
+        if not name then error("A cell needs a wireless modem", 2) end
+        return env_require("cc.internal.net.cell.tower").new {
+            stack = stack, crypto = crypto, interface = name, network = options.network, area = options.area,
+            certificate = options.certificate, sign = options.sign, epoch = function() return os.epoch("utc") end,
+            core = address.parse(options.core), tunnel_key = options.tunnel_key, control = options.control,
+        }
+    end,
+
+    --[[- Start a network's core on this computer: its controller, subscriber database and gateway. This is for the
+    `cellcore` program. The operator's keys live in the enclave: `cell.operator` (X25519), `cell.signing` (Ed25519) and
+    `cell.secret`. This computer forwards packets, as phones' packets go through it.
+
+    @tparam {
+        network = string, prefix = string, subscribers = table, codes = table,
+        on_event? = function(event:string, ...:any),
+    } options The network's name; its network for phones' addresses; the subscribers and activation codes; and what to
+    call with events.
+    @treturn table The core.
+    ]]
+    startCore = function(options)
+        expect(1, options, "table")
+        require_crypto()
+        load()
+        local public = enclave.publicKey("cell.operator") or enclave.generate("cell.operator", "x25519")
+        local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
+        if not enclave.list()["cell.secret"] then enclave.generate("cell.secret", "secret") end
+        stack.forwarding = true
+        return env_require("cc.internal.net.cell.core").new {
+            stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
+            operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
+            signing = signing, subscribers = options.subscribers, codes = options.codes,
+            tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
+            epoch = function() return os.epoch("utc") end, on_event = options.on_event,
+        }
     end,
 }
 
