@@ -23,6 +23,10 @@ net.knownHosts()
 net.forgetHost( name )
 net.trusted()
 net.setPassphrase( interface, passphrase )
+net.cell.info()
+net.cell.activate( network, code )
+net.cell.send( number, text )
+net.cell.messages()
 net.capture( enabled )
 net.getErrors()
 
@@ -32,4 +36,4 @@ Connections deliver messages in order and exactly once. They have the methods se
 
 Secure connections from net.secure are encrypted, and both sides know who they're talking to. They have the same methods, and getPeerKey(), getPeerName() and getTrust(). A changed, replayed or cut short message ends the connection. Datagrams and plain connections aren't encrypted.
 
-The network stack runs in the background on every computer. Every modem is a network interface. Interfaces get addresses from a DHCP server, or give themselves link-local ones, and computers answer to <hostname>.local. Routers forward packets between networks. See also the programs "ifconfig", "ping", "traceroute", "route", "firewall", "nslookup", "netdump", "nc", "ncp", "rsh", "rshd", "netkeys", "dhcpd" and "dnsd".
+The network stack runs in the background on every computer. Every modem is a network interface. Interfaces get addresses from a DHCP server, or give themselves link-local ones, and computers answer to <hostname>.local. Routers forward packets between networks. See also the programs "ifconfig", "ping", "traceroute", "route", "firewall", "nslookup", "netdump", "nc", "ncp", "rsh", "rshd", "netkeys", "cell", "celld", "cellcore", "dhcpd" and "dnsd".

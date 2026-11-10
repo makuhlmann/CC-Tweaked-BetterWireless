@@ -1,0 +1,8 @@
+cellcore runs a cellular network's core: it lets phones attach, gives them addresses, carries their packets between cells and the rest of the network, and keeps their messages. The operator's keys stay in this computer's enclave.
+
+ex:
+"cellcore setup ACME 10.64.0.0/16" sets up the network ACME, giving phones addresses in 10.64.0.0/16.
+"cellcore" runs the core, until Ctrl+T is pressed.
+"cellcore add ACME-0042 0042" makes an activation code for a subscriber with the number 0042, for a day.
+"cellcore allow <key> tower-3" lets the cell with that key join the network.
+"cellcore subscribers" lists the subscribers.

@@ -1,0 +1,5 @@
+celld runs a cell of a cellular network: a tower which phones attach through. Run it from startup.lua on each tower, in place of beacon.lua. It keeps the computer running when nobody is nearby, reaches the network's core over any route (a cable, a radio link, or the cell's own computer), and tries again if it loses the core. The core must allow the cell first, by the key celld shows.
+
+ex:
+"celld core.acme" runs a cell of the network whose core is core.acme.
+"celld 10.0.0.1 3" runs a cell in tracking area 3.

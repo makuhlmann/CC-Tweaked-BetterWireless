@@ -958,6 +958,38 @@ Backhaul traffic uses secure connections or an encrypted link, because it may cr
 - **Rogue towers** can't complete the handshake without the operator's private key, and phones ignore beacons without a
   valid certificate. Jamming isn't possible in the radio model.
 
+### As built (phase 6)
+
+The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and the programs `cell` (phones), `celld`
+(cells, in place of `beacon.lua`) and `cellcore` (the core). Where they differ from the design above:
+
+- **System information** goes out as a link-layer `cell` frame on the low band's broadcast channel (1000), rather than
+  on channel 1001: the stack only hears channels it has opened. A cell's certificate is issued by the core when the cell
+  connects, for the cell's own Ed25519 key (`cell.tower` in its enclave), signed by the operator's (`cell.signing`).
+- **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
+  signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
+- **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
+  know. Messages between a phone and its cell carry a counter, and the receiver keeps a 64-message replay window.
+- **Backhaul:** cells reach the core by any route, with a secure connection to port 2123 for control messages. The core
+  only accepts cells whose key it allows (`cellcore allow`), or its own. Tunnels are datagrams between ports 2152 (the
+  gateway) and 2153 (cells, so a computer can be a cell and the core), sealed with a key per cell from a secret in the
+  core's enclave, with a replay window. Packets travel inside them encoded as bytes.
+- **Handover goes through the core** (like LTE's S1 handover) rather than between cells, so cells needn't reach each
+  other. Packets on their way to the old cell during a handover are lost, not forwarded; the connection layer resends
+  them. A phone reports a stronger cell after it has been 3 dB stronger for two seconds, measured every second.
+- **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
+  connection to the core. The core keeps them until the phone they're for is attached and acknowledges them, trying again
+  every 10 seconds. They're only kept in memory, so restarting the core loses undelivered ones.
+- **Addresses** are kept for the core's lifetime: a phone which attaches again gets the same one. Restarting the core
+  gives phones new addresses, which ends their connections.
+- **Codes** live in `/.cell/codes` on the core, so `cellcore add` works while the core runs; subscribers are in
+  `/.cell/subscribers`.
+- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN.
+
+The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
+the virtual network, a phone walks past three cells with an open connection and keeps every message. A game test
+activates a phone over the air, attaches, reaches the network, and sends itself a message, through one cell.
+
 ## 12. Changes to the mod
 
 Most of the stack is Lua. These changes to the mod are planned:
@@ -1226,6 +1258,10 @@ Each phase is usable on its own.
   `net.host` and `net.lookup`, the `dnsd` server) and `nslookup`. The logic is in `cc.internal.net.dhcp` and
   `cc.internal.net.dns`, tested on virtual networks, and two game tests show computers finding each other with no setup,
   and through DHCP and DNS servers.
+- **Phase 6 is built, and waiting for the walk across the test cells:** transmit and receive power by device (in the
+  mod), Noise `IK` and `XXpsk3` (checked against the cacophony vectors), virtual interfaces and frame handlers in the
+  stack, and the cellular network (§11, as built): system information, activation, attach, tunnels, handover and
+  messages, with the `cell`, `celld` and `cellcore` programs and the `net.cell` API.
 - **Phase 5 is done:** the codec (`cc.net.codec`), Noise `XX` and `NK` handshakes (`cc.internal.net.noise`, checked
   against the cacophony test vectors), secure connections (`net.secure`, `cc.internal.net.secure`) with enclave keys,
   known hosts and pinned keys, certificates (`cc.internal.net.certificate`), encrypted links (`cc.internal.net.link`),

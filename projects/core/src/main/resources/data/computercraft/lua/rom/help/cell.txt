@@ -1,0 +1,7 @@
+cell shows a phone's cellular service, activates it on a network, and sends and reads messages. A phone is a computer (usually a pocket computer) with a wireless modem. Once activated, it attaches to the strongest cell of its network by itself, and keeps its address and connections while moving between cells.
+
+ex:
+"cell" shows the network, the phone's number and address, and the cells it can hear.
+"cell activate ACME 7Q2M-K4XD-9PRB-T6WN-HJ3C" activates the phone on the network ACME, with a code from its administrator.
+"cell send 0042 Meet at the station" sends a message to the phone with the number 0042.
+"cell messages" lists the messages this phone has received.

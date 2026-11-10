@@ -328,6 +328,51 @@ describe("Cellular networks", function()
         expect(#inbox_a):eq(0)
     end)
 
+    it("survives bad frames, at cells and phones", function()
+        local setup = operator { 0 }
+        local phone, stack = setup.add_phone(1, 10)
+        setup.net.advance(5)
+        expect(phone.state):eq("attached")
+
+        local recursive = {}
+        recursive.self = recursive
+        local bad = { false, 0 / 0, math.huge, -1, 0.5, 2 ^ 53 + 2, "x", {}, true, recursive, ("y"):rep(5000) }
+        local template = {
+            network = "ACME", handshake = "h", data = "d", tag = "TAG1", cell = 11, area = 1, load = 0, time = setup.now(),
+            sealed = { ctr = 1, ct = "c" }, cert = "c", sig = ("s"):rep(64), reason = "r",
+        }
+        local ops = {
+            "sib", "attach", "attach_complete", "attach_reply", "accept", "data", "confirm", "handover", "reject",
+            "activate", "activate_finish", "activate_reply", "activate_accept", "nonsense",
+        }
+        local count = 0
+        for _, op in ipairs(ops) do
+            for field in pairs(template) do
+                for _, value in ipairs(bad) do
+                    local message = { op = op }
+                    for k, v in pairs(template) do message[k] = v end
+                    message[field] = value
+                    for _, target in ipairs { setup.towers[1].stack, stack } do
+                        setup.net.inject("air", target.interfaces.air.unicast, {
+                            net = 1, src = 9, dst = target.id, type = common.FRAME, body = message,
+                        })
+                        count = count + 1
+                    end
+                end
+            end
+            setup.net.advance(0.2)
+        end
+        for _, value in ipairs(bad) do
+            setup.net.inject("air", stack.interfaces.air.unicast, { net = 1, src = 11, dst = 1, type = common.FRAME, body = value })
+        end
+        setup.net.advance(2)
+
+        expect(count > 600):eq(true)
+        expect(setup.net.errors):same {}
+        expect(phone.state):eq("attached")
+        expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+    end)
+
     it("works with the core on one of the cells", function()
         local setup = operator({ 0, 100 }, { core_is_cell = true })
         local phone, stack = setup.add_phone(1, 5)
