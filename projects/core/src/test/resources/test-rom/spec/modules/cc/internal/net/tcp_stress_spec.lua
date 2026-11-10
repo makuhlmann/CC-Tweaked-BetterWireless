@@ -435,6 +435,87 @@ describe("Connections, under stress,", function()
         end)
     end)
 
+    describe("on encrypted links,", function()
+        local link = require "cc.internal.net.link"
+        local KEY = link.derive(crypto, "correct horse battery staple")
+
+        -- Two computers on one link, which seals every frame.
+        local function sealed_pair()
+            local net = network()
+            local stacks = {}
+            for i = 1, 2 do
+                local stack = net.stack(i)
+                net.connect(stack, "top")
+                stack:set_link_key("top", KEY)
+                stack:set_address("top", ip("10.0.0." .. i), 24)
+                stacks[i] = stack
+            end
+            net.run()
+            return net, stacks[1], stacks[2]
+        end
+
+        local function nested(depth)
+            local value = {}
+            for _ = 2, depth do value = { value } end
+            return value
+        end
+
+        it("refuse messages the link couldn't carry, and carry on", function()
+            -- A modem can send these, but they can't be sealed. A connection which took one would send it again and
+            -- again, and then fail, along with everything waiting behind it.
+            local net, a, b = sealed_pair()
+            local listener = assert(tcp.listen(b, 80))
+            local client, server = open(net, a, b, listener)
+            local dropped = a.interfaces.top.stats.dropped
+
+            local loop = {}
+            loop.self = loop
+            expect({ client:send(loop) }):same { nil, "Can't send a table which contains itself" }
+            expect({ client:send({ [{}] = "a key" }) }):same { nil, "Can't send a table with a table as a key" }
+            expect({ client:send(nested(61)) }):same { nil, "Can't send tables nested more than 60 deep" }
+
+            assert(client:send("fine"))
+            net.advance(120)
+            expect({ server:take() }):same { true, "fine" }
+            expect(client.state):eq("established")
+            expect(a.interfaces.top.stats.dropped):eq(dropped)
+        end)
+
+        it("deliver everything a connection accepts, in frames a radio can send", function()
+            local net, a, b = sealed_pair()
+            net.latency.top = 0.05
+            local listener = assert(tcp.listen(b, 80))
+            local client, server = open(net, a, b, listener)
+
+            -- Messages as deep and as big as a connection takes: big as modems reckon it, and big once encoded.
+            local numbers, strings, mixed = {}, {}, {}
+            for i = 1, 3413 do numbers[i] = i / 3 end
+            for i = 1, 4400 do strings[i] = "" end
+            for i = 1, 1400 do mixed["key " .. i] = { i % 2 == 0, "" } end
+            local messages = { nested(60), ("x"):rep(tcp.MAX_MESSAGE - 2), numbers, strings, mixed, { nested(59), nested(59) } }
+
+            local largest = 0
+            for i, message in ipairs(messages) do
+                expect({ client:send(message) }):describe("Message " .. i):same { true }
+                for _, item in ipairs(net.queue) do
+                    expect(item.frame.type):eq("sealed")
+                    largest = math.max(largest, #item.frame.body.data)
+                end
+                net.advance(1)
+                local ok, value = server:take()
+                expect(ok):describe("Message " .. i):eq(true)
+                if type(message) == "string" then
+                    expect(value == message):describe("Message " .. i):eq(true)
+                else
+                    expect(value):describe("Message " .. i):same(message)
+                end
+            end
+            expect(a.interfaces.top.stats.dropped):eq(0)
+            -- Radio messages may be 64 KiB, as modems reckon it: the sealed bytes, and a little for the rest of the frame.
+            expect(largest > 60 * 1024 and largest + 256 <= 64 * 1024):describe("The largest frame, " .. largest .. " bytes"):eq(true)
+        end)
+    end)
+
     describe("with computers which misbehave,", function()
         -- Opens from computer 9, pretending to be many computers which don't exist.
         local function flood(net, b, first, last)

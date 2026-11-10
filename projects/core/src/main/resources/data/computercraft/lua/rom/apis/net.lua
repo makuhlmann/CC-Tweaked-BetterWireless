@@ -818,13 +818,16 @@ Connection.__index = Connection
 
 --[[- Send a message. Waits while the other side is behind, so a fast sender can't swamp a slow receiver.
 
-Any value a modem can send works, up to about 60 KiB. Unlike datagrams and modems, which quietly drop functions,
-connections refuse messages containing them. Use [`net.stream`] to send more data than fits in one message.
+Any value [`cc.net.codec`] can encode works, up to about 60 KiB: strings, numbers, booleans, and tables of them up to 60
+deep. Modems quietly drop functions from what they send. Connections don't: a message which can't be sent whole is
+refused, and the connection carries on. That goes for functions, tables which contain themselves, and tables used as
+keys, which encrypted links couldn't carry. Use [`net.stream`] to send more data than fits in one message.
 
 @param value The message.
 @treturn[1] true If it was queued. It's delivered unless the connection fails.
 @treturn[2] nil If it couldn't be sent.
-@treturn[2] string Why not, such as `"Connection closed"`, `"Connection reset"` or `"Message too large"`.
+@treturn[2] string Why not, such as `"Connection closed"`, `"Connection reset"`, `"Message too large"` or
+`"Can't send a table which contains itself"`.
 ]]
 function Connection:send(value)
     while true do
@@ -1240,7 +1243,7 @@ it should be, in this order:
 The server learns the client's key too, which it can check against a list of keys it allows.
 
 Messages are encrypted and authenticated: anything changed, replayed or cut short on the way is noticed, and ends the
-connection. Messages are encoded with [`cc.net.codec`], so tables which contain themselves can't be sent.
+connection. They may hold the same values as any connection's.
 
 @usage Connect to a server, and print its key's fingerprint.
 

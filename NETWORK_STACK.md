@@ -422,9 +422,12 @@ connection could send, so sequence numbers never wrap.
   while opening, if it acknowledges the open exactly).
 - **Keepalive:** after 60 seconds with no traffic, a K probes the peer every 10 seconds. Five unanswered probes reset
   the connection.
-- **Messages:** any value a modem can send, up to 60 KiB as modems estimate sizes. Unlike datagrams, which modems send
-  with functions quietly dropped, connections refuse messages containing anything they can't send. `net.stream` sends
-  bytes in 16 KiB messages.
+- **Messages:** any value `cc.net.codec` (§9) can encode, up to 60 KiB as modems estimate sizes (and 61 KiB encoded),
+  with tables nested up to 60 deep. That's less than a modem can send: no tables which contain themselves, and no
+  tables as keys. Encrypted links can only carry what the codec encodes, and a connection can't tell whether one is
+  on its way, so it takes the same values everywhere. A message which can't be sent whole is refused when the program
+  sends it, and the connection carries on. Datagrams aren't checked: modems send them with functions quietly dropped,
+  and an encrypted link drops one it can't encode, like any lost datagram. `net.stream` sends bytes in 16 KiB messages.
 - **Interfaces:** a connection fails with "Address lost" if its computer loses the address it uses.
 
 A connection is identified by local address and port plus remote address and port, so it survives as long as both
@@ -580,8 +583,8 @@ Encryption works on bytes, but packets carry Lua values. The stack includes a bi
 `cc.net.codec`. Values are type-tagged and written with `string.pack`. Tables have their keys sorted (numbers, then
 strings, then `false` and `true`), so the same value always encodes the same way, which signatures need. `-0` is
 written as `0`. It refuses functions, tables as keys, tables which contain themselves, and nesting deeper than 64.
-Decoding checks everything, including the depth, so bytes from someone else can't crash or overflow it. Plain
-connections can carry tables which contain themselves; secure ones can't. If it proves too slow, it can move into
+Decoding checks everything, including the depth, so bytes from someone else can't crash or overflow it. Connections,
+plain and secure, carry exactly the values it can encode (§7). If it proves too slow, it can move into
 Java (§12).
 
 ### Secure connections
@@ -1182,14 +1185,14 @@ After phases 4 and 5, connections, secure connections and encrypted links were t
 | A computer which restarted couldn't connect to a server it had an idle connection to for up to two minutes. Ports were handed out from 49152 each time, so the new connection looked like the old one, and the server ignored its S. | Ports start from a random one. A server answers an S it doesn't expect with where the old connection was up to, and the restarted computer resets that. The new connection opens on the next try, a second later. |
 | On a bad link, a connection could measure a round trip of half a minute, and from then on wait that long to resend every lost message. A message which arrived, but whose acknowledgement was lost, was timed from when it was sent until the message before it had been sent again. One connection took nine minutes to deliver 16 messages. | Round trips are measured with `ts` and `echo`, which is exact for every segment. A connection which has no measurement at all also comes back down from a long timeout once messages get through. |
 | A frame recorded on an encrypted link could be replayed for up to a minute to a computer which had restarted since, as it had forgotten which frames it had seen. | A computer refuses frames from before it started. |
+| A connection took any message a modem can send, but an encrypted link on its way dropped those `cc.net.codec` can't encode without a word: tables which contain themselves, tables as keys, and tables nested too deeply. The connection sent the message again and again, and failed a minute and a half later, along with everything queued behind it. A few messages were also bigger encoded than a radio can send, though small enough as modems estimate sizes. | Connections only take what the codec can encode, with tables up to 60 deep and 61 KiB once encoded. Anything else is refused when it's sent, with the reason, and the connection carries on. |
 
 **Left as they are:**
 
-- **Messages which can't be sealed.** Encrypted links and secure connections encode with `cc.net.codec`, which refuses
-  tables which contain themselves, tables as keys, and nesting deeper than 64. A plain connection accepts such a
-  message, but an encrypted link on its way drops it without a word, so the connection times out a minute and a half
-  later, along with everything queued behind it. Connections could refuse what the codec can't encode, at the cost of
-  no longer carrying everything a modem can.
+- **Datagrams which can't be sealed.** A datagram holding something the codec can't encode (a function included) is
+  dropped by an encrypted link, where a plain link would deliver it, with any functions left out. Nothing tells the
+  sender, as with any lost datagram, but this one is lost every time. `send` could refuse such datagrams, as
+  connections now do.
 - **Faster floods of opens.** A flood still keeps some real clients out: about half of them at 20 opens a second, and
   more as it grows. Doing better needs the server to keep nothing until the client answers (as SYN cookies do).
 - **`rshd` and slow clients.** `rshd` serves one client at a time. A client which connects, and then doesn't answer

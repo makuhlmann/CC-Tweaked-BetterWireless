@@ -429,14 +429,52 @@ describe("cc.internal.net.tcp", function()
         expect({ tcp.check_message(print) }):same { nil, "Can't send a function" }
         expect({ tcp.check_message({ fn = print }) }):same { nil, "Can't send a function" }
         expect({ tcp.check_message(("x"):rep(tcp.MAX_MESSAGE)) }):same { nil, "Message too large" }
-        expect(tcp.check_message(recursive)):eq(true)
         expect(tcp.check_message(("x"):rep(stream.CHUNK))):eq(true)
 
-        local deep = {}
-        for _ = 1, 100000 do deep = { deep } end
-        local ok, err = tcp.check_message(deep)
-        expect(ok):eq(nil)
-        expect(err == "Message too complex to send" or err == "Message too large"):eq(true)
+        -- Modems can send these, but encrypted links can't, so a connection which took them might never deliver them.
+        expect({ tcp.check_message(recursive) }):same { nil, "Can't send a table which contains itself" }
+        expect({ tcp.check_message({ { { recursive } } }) }):same { nil, "Can't send a table which contains itself" }
+        expect({ tcp.check_message({ [{}] = true }) }):same { nil, "Can't send a table with a table as a key" }
+        expect({ tcp.check_message({ [print] = true }) }):same { nil, "Can't send a table with a function as a key" }
+
+        -- A table may appear more than once, as long as it isn't inside itself.
+        local shared = { "shared" }
+        expect(tcp.check_message({ shared, shared, { shared } })):eq(true)
+        -- But appearing often enough is too large, however it was built: this would be a thousand million tables.
+        local doubling = {}
+        for _ = 1, 30 do doubling = { doubling, doubling } end
+        expect({ tcp.check_message(doubling) }):same { nil, "Message too large" }
+
+        local function nested(depth)
+            local value = {}
+            for _ = 2, depth do value = { value } end
+            return value
+        end
+        expect(tcp.check_message(nested(tcp.MAX_DEPTH))):eq(true)
+        expect({ tcp.check_message(nested(tcp.MAX_DEPTH + 1)) }):same { nil, "Can't send tables nested more than 60 deep" }
+        expect({ tcp.check_message(nested(100000)) }):same { nil, "Can't send tables nested more than 60 deep" }
+
+        -- Some values take more room encoded than modems reckon, such as empty strings.
+        local strings = {}
+        for i = 1, 4400 do strings[i] = "" end
+        expect(tcp.check_message(strings)):eq(true)
+        for i = 4401, 4500 do strings[i] = "" end
+        expect({ tcp.check_message(strings) }):same { nil, "Message too large" }
+    end)
+
+    it("accepts exactly the kinds of value the codec can encode", function()
+        local codec = require "cc.net.codec"
+        local recursive, shared = {}, {}
+        recursive[1] = { { recursive } }
+        local values = {
+            true, false, 0, -1.5, 0 / 0, math.huge, "", "text", {}, { 1, 2, 3 }, { a = { b = { c = {} } } },
+            { [true] = 1, [false] = 2, [1.5] = 3, [""] = 4 }, { shared, shared },
+            print, { print }, { [print] = 1 }, { [{}] = 1 }, { { [{}] = 1 } }, recursive, { recursive },
+            coroutine.create(print), { x = coroutine.create(print) },
+        }
+        for i, value in ipairs(values) do
+            expect(tcp.check_message(value) == true):describe("Value " .. i):eq((pcall(codec.encode, value)))
+        end
     end)
 
     describe("streams", function()
