@@ -99,6 +99,18 @@ function Phone:radio(src, message, signal)
     if op == "sib" and not self.operator then
         -- Not activated yet: we can't check cells, but can see which networks are around.
         if type(message.network) == "string" and #message.network <= 64 then
+            -- Anyone can send these, so only remember a few networks.
+            if not self.networks[message.network] then
+                local count = 0
+                for name, cells in pairs(self.networks) do
+                    local recent = false
+                    for _, cell in pairs(cells) do
+                        if self.stack.clock() - cell.heard <= SILENCE then recent = true end
+                    end
+                    if recent then count = count + 1 else self.networks[name] = nil end
+                end
+                if count >= 32 then return end
+            end
             local heard = self.networks[message.network] or {}
             self.networks[message.network] = heard
             heard[src] = { signal = type(signal) == "number" and signal or -50, heard = self.stack.clock() }

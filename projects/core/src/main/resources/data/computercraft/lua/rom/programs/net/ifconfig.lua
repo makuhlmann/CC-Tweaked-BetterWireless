@@ -65,7 +65,11 @@ if #args == 0 then
         local kind = interface.kind == "wireless" and ("wireless, " .. interface.band .. " band") or interface.kind
         heading(("%s (%s)"):format(interface.name, kind))
         print("  " .. describe(interface))
-        print(("  ID %d, channels %d and %d"):format(interface.id, interface.unicast, interface.broadcast))
+        if interface.unicast then
+            print(("  ID %d, channels %d and %d"):format(interface.id, interface.unicast, interface.broadcast))
+        else
+            print("  A virtual link, with no modem of its own")
+        end
         print(("  %d neighbours, %d frames in, %d out"):format(interface.neighbours, interface.frames_in, interface.frames_out))
     end
 

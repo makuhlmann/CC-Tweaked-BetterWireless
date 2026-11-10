@@ -20,6 +20,11 @@ local info = net.cell.info()
 if info.state ~= "attached" then error("Not attached: " .. tostring(info.state) .. " " .. tostring(info.activation_error), 0) end
 if info.subscriber.number ~= "100" then error("Wrong number " .. tostring(info.subscriber.number), 0) end
 
+-- Nothing has gone wrong in the background, and ifconfig copes with the phone's virtual interface.
+local errors = net.getErrors()
+if #errors > 0 then error("Network errors: " .. table.concat(errors, "; "), 0) end
+if not shell.run("ifconfig") then error("ifconfig failed", 0) end
+
 -- The gateway answers, through the cell.
 local time, ping_err = net.ping("10.64.0.1", 2)
 if not time then error("No answer from the gateway: " .. tostring(ping_err), 0) end

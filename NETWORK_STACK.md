@@ -984,6 +984,9 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower` and `core`, and 
   gives phones new addresses, which ends their connections.
 - **Codes** live in `/.cell/codes` on the core, so `cellcore add` works while the core runs; subscribers are in
   `/.cell/subscribers`.
+- **Forwarding:** `cellcore` turns `net.forwarding` on and saves it, as phones' packets go through the core.
+- **Floods:** each attach request costs the core three X25519 operations, and nothing limits how often a cell relays
+  them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
 - **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN.
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In

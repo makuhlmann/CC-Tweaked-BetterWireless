@@ -440,7 +440,8 @@ function run()
             elseif a == channel_check then
                 -- Other programs may close our channels (for instance with closeAll), so reopen them.
                 for _, interface in pairs(s.interfaces) do
-                    if peripheral.isPresent(interface.modem) then open_channels(interface) end
+                    -- Virtual interfaces have no modem.
+                    if interface.modem and peripheral.isPresent(interface.modem) then open_channels(interface) end
                 end
                 channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), os.clock() + CHANNEL_CHECK_INTERVAL
             end
@@ -1563,6 +1564,12 @@ cell = {
         local public = enclave.publicKey("cell.operator") or enclave.generate("cell.operator", "x25519")
         local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
         if not enclave.list()["cell.secret"] then enclave.generate("cell.secret", "secret") end
+        -- Phones' packets go through this computer. Keep the setting on too, or reloading the network settings (such as
+        -- with the route program) would turn forwarding off again.
+        if not settings.get("net.forwarding") then
+            settings.set("net.forwarding", true)
+            settings.save()
+        end
         stack.forwarding = true
         return env_require("cc.internal.net.cell.core").new {
             stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
