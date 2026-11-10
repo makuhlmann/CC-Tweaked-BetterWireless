@@ -53,6 +53,8 @@ class OtrTestReporter(name: String, destination: File) : TestReporter {
             .add("java", Namespace.REPORTING_JAVA)
             .build()
 
+        // The directory doesn't exist on a fresh checkout, unless something else has written test results first.
+        destination.absoluteFile.parentFile?.mkdirs()
         writer = Events.createDocumentWriter(namespaceRegistry, destination.toPath())
 
         writer.append(RootFactory.started(SUITE_ID, Instant.now(), name))
