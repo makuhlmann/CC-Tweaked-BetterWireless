@@ -16,7 +16,7 @@ ID, after checking its fingerprint, so nobody needs to type a key in.
 Every connection starts with a hello, `{ role = "cell", "admin" or "roam", id = <computer ID> }`, which the core
 answers: `{ waiting = true, fingerprint = ... }` while the computer waits, then the cell's details (for a cell) or
 `{ ok = true }` (for an administrator), or `{ error = ... }`. Administrators then send requests, each with an `op`, and
-get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `log`, `carry` and `uncarry`.
+get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `set`, `log`, `carry`, `uncarry`, `stop` and `restart`.
 
 Roaming: the core of another network which carries this network's phones connects with the role `roam`, giving its
 network's name and signing key. Once it's allowed, it's to this core what a cell is (see [`cc.internal.net.cell.core`]),
@@ -99,12 +99,14 @@ end
     signing = string, sign = function(data:string):string,
     clock = function():number, epoch = function():number, wake = function(),
     id? = number, connect? = function(core:string):table, sleep? = function(seconds:number),
+    stop? = function(), restart? = function(),
 } options Where the core's files are, with its `config` (the network's name and prefix, from `cellcore setup`); this
 computer's key, as hexadecimal digits, and a way to get a key's fingerprint; a way to listen for secure connections on
 the control port; a way to start the core itself (given the network, prefix, subscribers, activation codes, and a
 function told about events); the operator's Ed25519 key and a way to sign with it, for cells' certificates; the time,
 as `os.clock` and `os.epoch("utc")` give it; a way to wake tasks waiting for something to change; and, to carry other
-networks' phones, this computer's ID, a way to connect securely to another core's control port, and a way to wait.
+networks' phones, this computer's ID, a way to connect securely to another core's control port, and a way to wait;
+and ways to stop the whole service for good, and to start it afresh, when an administrator asks.
 @treturn[1] table The service. Pass it every event with `resume`.
 @treturn[2] nil If it couldn't start.
 @treturn[2] string Why not.
@@ -598,6 +600,14 @@ function Service:serve_admin(connection, key)
                 reply = { error = "Unknown request " .. tostring(request.op) }
             end
             if not connection:send(reply) then break end
+            -- Asked to stop, or start afresh: once the answer has gone.
+            if self.ending then
+                local ending = self.ending
+                self.ending = nil
+                connection:close()
+                if self.options.sleep then self.options.sleep(1) end
+                return self.options[ending]()
+            end
         end
     end
     self.admins[connection] = nil
@@ -802,6 +812,59 @@ function requests.remove(self, request, by)
     self:save_codes()
     self:log(("Removed %s%s"):format(who, self:by(by)))
     return { removed = removed, codes = codes }
+end
+
+--- Change a subscriber, found by ID or number: whether they're barred, and whether they may roam.
+function requests.set(self, request, by)
+    local who = request.subscriber
+    if type(who) ~= "string" then return { error = "Expected a subscriber's ID or number" } end
+    if request.barred ~= nil and type(request.barred) ~= "boolean" then return { error = "Expected barred to be true or false" } end
+    if request.roaming ~= nil and type(request.roaming) ~= "boolean" then return { error = "Expected roaming to be true or false" } end
+
+    local found
+    for sim, subscriber in pairs(self.subscribers) do
+        if subscriber.id == who or subscriber.number == who then
+            found = subscriber
+            if request.barred ~= nil then
+                subscriber.barred = request.barred or nil
+                -- A barred subscriber's phone is cut off, and refused when it tries again.
+                if request.barred then self.core:detach(sim) end
+            end
+            if request.roaming ~= nil then
+                -- Only "no" is kept, as roaming is allowed unless it's forbidden. A phone which is roaming now
+                -- is cut off, and refused when it tries again from there.
+                if request.roaming then subscriber.roaming = nil else subscriber.roaming = false end
+                if not request.roaming then
+                    for _, session in ipairs(self.core:info()) do
+                        if session.sim == sim and session.roaming then self.core:detach(sim) end
+                    end
+                end
+            end
+        end
+    end
+    if not found then return { error = "There's no subscriber " .. who } end
+    self:save_subscribers()
+    local changes = {}
+    if request.barred ~= nil then changes[#changes + 1] = request.barred and "barred" or "no longer barred" end
+    if request.roaming ~= nil then changes[#changes + 1] = request.roaming and "may roam" or "may not roam" end
+    if #changes > 0 then self:log(("%s: %s%s"):format(who, table.concat(changes, ", "), self:by(by))) end
+    return { id = found.id, number = found.number, barred = found.barred == true, roaming = found.roaming ~= false }
+end
+
+--- Stop the core, until it's started again on its own computer.
+function requests.stop(self, _, by)
+    if not self.options.stop then return { error = "This core can't be stopped from here" } end
+    self:log("Stopping" .. self:by(by))
+    self.ending = "stop"
+    return { stopping = true }
+end
+
+--- Start the core afresh: cells and phones lose it for a moment, and phones get new addresses.
+function requests.restart(self, _, by)
+    if not self.options.restart then return { error = "This core can't be started again from here" } end
+    self:log("Starting afresh" .. self:by(by))
+    self.ending = "restart"
+    return { restarting = true }
 end
 
 --- The log, after the line numbered `after`.

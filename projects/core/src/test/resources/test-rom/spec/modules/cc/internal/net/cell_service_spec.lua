@@ -447,6 +447,58 @@ describe("Cellular services", function()
             expect(read_table(fs.combine(DIR, "codes"))):same {}
         end)
 
+        it("bars subscribers, and keeps them from roaming", function()
+            local sim = new_key()
+            local env = setup({ subscribers = { [sim] = { id = "ACME-1", number = "1" } } })
+            local detached = {}
+            env.service.core.detach = function(_, which) detached[#detached + 1] = which end
+            run(env.net, { env.service }, { function()
+                local admin = env.admin()
+                expect(ask(admin, { op = "set", subscriber = "ACME-1", barred = true })):same {
+                    id = "ACME-1", number = "1", barred = true, roaming = true,
+                }
+                expect(detached):same { sim }
+                expect(read_table(fs.combine(DIR, "subscribers"))[sim]):same { id = "ACME-1", number = "1", barred = true }
+                local listed = ask(admin, { op = "status" }).subscribers[1]
+                expect({ listed.barred, listed.may_roam }):same { true, true }
+
+                -- By number too. Roaming is allowed unless it's forbidden.
+                expect(ask(admin, { op = "set", subscriber = "1", barred = false, roaming = false })):same {
+                    id = "ACME-1", number = "1", barred = false, roaming = false,
+                }
+                expect(read_table(fs.combine(DIR, "subscribers"))[sim]):same { id = "ACME-1", number = "1", roaming = false }
+                expect(ask(admin, { op = "status" }).subscribers[1].may_roam):eq(false)
+                expect(ask(admin, { op = "set", subscriber = "1", roaming = true }).roaming):eq(true)
+                expect(read_table(fs.combine(DIR, "subscribers"))[sim]):same { id = "ACME-1", number = "1" }
+
+                expect(ask(admin, { op = "set", subscriber = "ACME-9", barred = true })):same { error = "There's no subscriber ACME-9" }
+                expect(ask(admin, { op = "set", subscriber = "1", barred = "yes" }).error):ne(nil)
+                admin:close()
+            end, })
+            -- The core refuses a barred subscriber's phone.
+            expect(env.service.core.subscribers[sim].barred):eq(nil)
+        end)
+
+        it("stops, or starts afresh, when an administrator asks, after answering", function()
+            local env = setup()
+            local asked = {}
+            run(env.net, { env.service }, { function()
+                local admin = env.admin()
+                -- Not every core can be: only one whose computer says how.
+                expect(ask(admin, { op = "stop" })):same { error = "This core can't be stopped from here" }
+                expect(ask(admin, { op = "restart" })):same { error = "This core can't be started again from here" }
+
+                env.options.stop = function() asked[#asked + 1] = "stop" end
+                env.options.restart = function() asked[#asked + 1] = "restart" end
+                expect(ask(admin, { op = "restart" })):same { restarting = true }
+                wait_until(function() return #asked == 1 end)
+                admin = env.admin()
+                expect(ask(admin, { op = "stop" })):same { stopping = true }
+                wait_until(function() return #asked == 2 end)
+            end, })
+            expect(asked):same { "restart", "stop" }
+        end)
+
         it("keeps a log", function()
             local env = setup()
             for i = 1, core_service.LOG_SIZE + 10 do env.service:log("Line " .. i) end

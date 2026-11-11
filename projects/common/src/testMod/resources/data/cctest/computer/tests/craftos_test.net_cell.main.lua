@@ -69,3 +69,29 @@ if #status.subscribers ~= 1 or subscriber.id ~= "TEST-1" or not subscriber.cell 
     error("Wrong subscribers: " .. textutils.serialise(status.subscribers), 0)
 end
 if #status.cells ~= 1 then error("Wrong cells: " .. textutils.serialise(status.cells), 0) end
+
+-- Programs manage a core with net.cell.manage. Barring ourselves cuts us off, and we're refused until it's undone.
+local manager = assert(net.cell.manage("10.64.0.1"))
+if manager.network ~= "TEST" then error("Managing the wrong network: " .. tostring(manager.network), 0) end
+local changed = assert(manager:set("TEST-1", { roaming = false }))
+if changed.roaming ~= false or changed.barred ~= false then error("Wrong subscriber: " .. textutils.serialise(changed), 0) end
+if not assert(manager:status()).subscribers[1].cell then error("Lost service by being kept from roaming", 0) end
+manager:close()
+if not shell.run("cellcore", "remote", "10.64.0.1", "set", "100", "roaming", "yes") then error("Couldn't change a subscriber", 0) end
+if not shell.run("cellcore", "remote", "10.64.0.1", "roaming") then error("Couldn't list roaming", 0) end
+
+-- Start the core afresh, from here. It forgets us, as its cell does: we find out, and attach again by ourselves.
+if not shell.run("cellcore", "remote", "10.64.0.1", "restart") then error("Couldn't start the core afresh", 0) end
+sleep(3)
+local deadline = os.clock() + 40
+while true do
+    if net.cell.info().state == "attached" and net.ping("10.64.0.1", 1) then break end
+    if os.clock() > deadline then error("No service after the core started afresh: " .. textutils.serialise(net.cell.info().events), 0) end
+    sleep(0.5)
+end
+manager = assert(net.cell.manage("10.64.0.1"))
+status = assert(manager:status())
+manager:close()
+if #status.cells ~= 1 or not status.subscribers[1].cell then error("Wrong status afterwards: " .. textutils.serialise(status), 0) end
+errors = net.getErrors()
+if #errors > 0 then error("Network errors: " .. table.concat(errors, "; "), 0) end

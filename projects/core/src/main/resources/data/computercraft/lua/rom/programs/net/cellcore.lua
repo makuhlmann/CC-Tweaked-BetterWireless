@@ -6,7 +6,6 @@
 -- over the control port, on this computer or (with "remote") on another.
 
 local CONFIG = "/.cell/config"
-local CONTROL_PORT = 2123
 
 local args = { ... }
 local name = arg[0] or fs.getName(shell.getRunningProgram())
@@ -15,11 +14,12 @@ local function usage()
     print("Usages:")
     print(name .. " setup <network> <prefix>")
     print(name .. " [status]")
-    print(name .. " start|stop")
+    print(name .. " start|stop|restart")
     print(name .. " log")
     print(name .. " add <id> <number> [file]")
     print(name .. " subscribers")
     print(name .. " remove <id|number>")
+    print(name .. " set <id|number> barred|roaming yes|no")
     print(name .. " cells")
     print(name .. " allow <computer> [label]")
     print(name .. " deny <computer>")
@@ -92,62 +92,52 @@ elseif command == "stop" then
 end
 
 -- Everything else is a request to a core: this computer's, or another's.
-local target, remote = "127.0.0.1", false
+local target, remote = nil, false
 if command == "remote" then
     if #args < 2 then return usage() end
     target, remote = args[2], true
     table.remove(args, 1)
     table.remove(args, 1)
     command = args[1] or "status"
-    if command == "setup" or command == "start" or command == "stop" then
+    if command == "setup" or command == "start" then
         printError(("'%s' only works on the core itself."):format(command))
         return
     end
 end
 
 local known = {
-    status = 1, log = 1, add = 1, subscribers = 1, remove = 1, cells = 1, allow = 1, deny = 1,
-    roaming = 1, carry = 1, uncarry = 1,
+    status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1,
+    roaming = 1, carry = 1, uncarry = 1, stop = 1, restart = 1,
 }
 if not known[command] then return usage() end
 
-local connection
+local manager
 
 -- Send a request, and wait for the reply.
 local function request(message)
-    local sent, err = connection:send(message)
-    if not sent then error("Lost the core: " .. tostring(err), 0) end
-    local reply, receive_err = connection:receive(15)
-    if type(reply) ~= "table" then error("The core didn't answer: " .. tostring(receive_err or "it hung up"), 0) end
-    if reply.error then error(reply.error, 0) end
+    local reply, err = manager:request(message)
+    if not reply then error(err, 0) end
     return reply
 end
 
 local function connect()
     local err
-    connection, err = net.secure.connect(target, CONTROL_PORT)
-    if not connection then
-        if not remote then
-            if not fs.exists(CONFIG) then
-                error("This computer isn't a network's core. Set one up with 'cellcore setup', or manage another with 'cellcore remote'.", 0)
-            end
-            error("The core isn't running. Start it with 'cellcore start'.", 0)
-        end
-        error(("Cannot reach the core %s: %s"):format(target, err), 0)
-    end
-
-    connection:send({ role = "admin", id = os.getComputerID() })
-    local reply, receive_err = connection:receive(15)
-    if type(reply) == "table" and reply.waiting then
+    manager, err = net.cell.manage(target, function(fingerprint)
         print("The core hasn't allowed this computer to manage it yet. On the core, run:")
         print(("  cellcore allow %d"):format(os.getComputerID()))
         print("and check it shows this fingerprint:")
-        print("  " .. tostring(reply.fingerprint))
+        print("  " .. fingerprint)
         print("Waiting... Press Ctrl+T to give up.")
-        reply, receive_err = connection:receive()
+    end)
+    if manager then return end
+    if not remote then
+        if not fs.exists(CONFIG) then
+            error("This computer isn't a network's core. Set one up with 'cellcore setup', or manage another with 'cellcore remote'.", 0)
+        end
+        if err == "Connection refused" then error("The core isn't running. Start it with 'cellcore start'.", 0) end
+        error("Cannot manage the core: " .. tostring(err), 0)
     end
-    if type(reply) ~= "table" then error("The core didn't answer: " .. tostring(receive_err or "it hung up"), 0) end
-    if reply.error then error(reply.error, 0) end
+    error(("Cannot manage the core %s: %s"):format(target, tostring(err)), 0)
 end
 
 -- Find computers by what someone typed: an ID, the start of a fingerprint, a full key or a label.
@@ -337,7 +327,13 @@ function commands.subscribers()
     end
     local rows = { { "ID", "Number", "Phone" } }
     for _, subscriber in ipairs(status.subscribers) do
-        local where = subscriber.cell and ("cell #%d, %s"):format(subscriber.cell, subscriber.address) or "-"
+        local where = "-"
+        if subscriber.barred then
+            where = "barred"
+        elseif subscriber.cell then
+            where = ("cell #%d%s, %s"):format(subscriber.cell, subscriber.roaming and " of " .. subscriber.roaming or "", subscriber.address)
+        end
+        if subscriber.may_roam == false then where = where .. " (no roaming)" end
         rows[#rows + 1] = { tostring(subscriber.id), tostring(subscriber.number), where }
     end
     textutils.tabulate(table.unpack(rows))
@@ -348,6 +344,29 @@ function commands.remove(who)
     local reply = request({ op = "remove", subscriber = who })
     if reply.removed > 0 then print(("Removed %s. Their phone can't attach any more."):format(who)) end
     if reply.codes > 0 then print(("Cancelled %d activation code(s) for %s."):format(reply.codes, who)) end
+end
+
+function commands.set(who, what, value)
+    local values = { yes = true, on = true, ["true"] = true, no = false, off = false, ["false"] = false }
+    if not who or (what ~= "barred" and what ~= "roaming") or values[value or ""] == nil then return usage() end
+    local reply = request({ op = "set", subscriber = who, [what] = values[value] })
+    if what == "barred" then
+        print(reply.barred and ("%s is barred: their phone is cut off, and refused."):format(reply.id)
+            or ("%s is no longer barred."):format(reply.id))
+    else
+        print(reply.roaming and ("%s may use other networks' cells."):format(reply.id)
+            or ("%s may only use this network's cells."):format(reply.id))
+    end
+end
+
+function commands.stop()
+    request({ op = "stop" })
+    print("Stopping the core. It starts again with 'cellcore start', on its own computer.")
+end
+
+function commands.restart()
+    request({ op = "restart" })
+    print("Starting the core afresh. Cells join again by themselves, and phones attach again, with new addresses.")
 end
 
 function commands.roaming()
@@ -414,5 +433,5 @@ local ok, err = pcall(function()
     connect()
     commands[command](table.unpack(args, 2))
 end)
-if connection then connection:close() end
+if manager then manager:close() end
 if not ok and err ~= "Terminated" then error(err, 0) end

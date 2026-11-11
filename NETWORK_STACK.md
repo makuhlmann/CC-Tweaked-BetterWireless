@@ -1047,7 +1047,14 @@ the design above:
 - **Managing the core** happens while it runs, over the same port: a connection's hello says whether it's a cell or an
   administrator. The core's own computer is always allowed, so `cellcore` on it is just a client over the loopback
   address, and `cellcore remote <core>` works the same from anywhere, even a phone through the core's gateway address.
-  Requests are `status`, `allow`, `deny`, `add`, `remove` and `log` (the last 100 lines, kept in memory).
+  - **Requests** are `status`, `allow`, `deny`, `add`, `remove`, `set` (bar a subscriber, or keep them from roaming),
+    `log` (the last 100 lines, kept in memory), `carry` and `uncarry` (roaming), and `stop` and `restart`. Only
+    `setup` and `start` need the core's own computer: a core which isn't running has nothing to connect to.
+  - **Stopping and restarting** from afar: the core answers, closes that connection, and a second later stops, or
+    starts afresh as if its computer had restarted. Cells connect again by themselves, and phones find out they've
+    been forgotten and attach again.
+  - **Programs** manage a core with `net.cell.manage(core)`, which gives an object with a method for each request.
+    `cellcore` is built on it. A computer the core doesn't know yet can wait to be allowed, as `cellcore remote` does.
 - **Allowing computers:** a computer the core doesn't know yet waits, with its connection open, and the core lists it
   with its claimed ID and its key's fingerprint. `cellcore allow <ID>` shows the fingerprint and asks whether it
   matches the one the computer shows, then saves the full key (never the ID alone) with its role in `/.cell/cells`.
@@ -1101,7 +1108,7 @@ it.
 Roaming is tested in the virtual network with two operators side by side (`cell_roaming_spec.lua`): a phone walks out
 of one's coverage, across the other's two cells and back, with an open connection, and keeps every message. Others
 cover going home, being told which network to use, agreements which are missing or ended, cells which only claim to be
-a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 6,500 control
+a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 10,000 control
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone
 which activates at home, hears of the other network, is told to use it, reaches its home gateway and sends itself a

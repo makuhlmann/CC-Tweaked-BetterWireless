@@ -194,6 +194,15 @@ describe("The net library", function()
             expect(net.cell.messages()):same {}
         end)
 
+        it("manages a core, if there's one to manage", function()
+            expect.error(net.cell.manage, 5):eq("bad argument #1 (string expected, got number)")
+            expect.error(net.cell.manage, "10.0.0.1", "wait"):eq("bad argument #2 (function expected, got string)")
+            if crypto and enclave then
+                -- This computer isn't a core.
+                expect({ net.cell.manage() }):same { nil, "Connection refused" }
+            end
+        end)
+
         it("can be turned off, and told which network to use", function()
             expect(net.cell.info().state):eq("none")
             expect(net.cell.info().enabled):eq(true)

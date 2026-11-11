@@ -5,15 +5,16 @@ Cells (and computers which manage the core from elsewhere) wait until they're al
 ex:
 "cellcore setup ACME 10.64.0.0/16" sets up the network ACME, giving phones addresses in 10.64.0.0/16, and starts it.
 "cellcore" shows how the core is doing, and who is waiting to be allowed.
-"cellcore stop" stops the core, and "cellcore start" starts it again.
+"cellcore stop" stops the core, and "cellcore start" starts it again. "cellcore restart" starts it afresh: cells and phones lose it for a moment, and phones get new addresses.
 "cellcore log" shows what the core has done lately, and keeps showing new lines until Ctrl+T is pressed.
 "cellcore add ACME-0042 0042" makes an activation code for a subscriber with the number 0042, for a day.
 "cellcore subscribers" lists the subscribers, and where their phones are.
 "cellcore remove ACME-0042" removes a subscriber.
+"cellcore set ACME-0042 barred yes" cuts a subscriber's phone off, and refuses it, without removing them. "cellcore set ACME-0042 roaming no" keeps them to this network's own cells.
 "cellcore cells" lists the cells, and the computers allowed in or refused.
 "cellcore allow 7" allows computer 7, which is waiting, after checking its fingerprint.
 "cellcore deny 7" refuses computer 7 from now on.
 "cellcore carry ACME 10.0.0.1" has this network carry the phones of the network ACME at its cells (roaming), by connecting to ACME's core at 10.0.0.1. ACME's core must allow this one, with "cellcore allow", as it would a cell. ACME's phones then use this network's cells where they can't hear their own, keeping their addresses.
 "cellcore uncarry ACME" stops carrying ACME's phones.
 "cellcore roaming" lists the networks which carry this network's phones, and those whose phones it carries.
-"cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time.
+"cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time. Everything but "setup" and "start" works this way, over a secure connection. Programs can manage a core too, with net.cell.manage.

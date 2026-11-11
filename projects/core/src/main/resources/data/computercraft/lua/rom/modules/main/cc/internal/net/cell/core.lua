@@ -250,6 +250,15 @@ end
 ]]
 function Core:remove_subscriber(sim)
     self.subscribers[sim] = nil
+    self:detach(sim)
+end
+
+--[[- Forget a phone's session: its cell forgets it, and it attaches again if it may. A subscriber who has been barred
+is refused when their phone tries.
+
+@tparam string sim The subscriber's SIM key, as hexadecimal digits.
+]]
+function Core:detach(sim)
     local session = self.sessions[sim]
     if not session then return end
     if session.teid then

@@ -469,8 +469,10 @@ function run()
         local ok, err = pcall(function()
             handle(table.unpack(event, 1, event.n))
 
-            -- Then the services, which may use the network as programs do.
-            for _, service in pairs(background) do
+            -- Then the services, which may use the network as programs do. One may stop itself, or start another.
+            local services = {}
+            for _, service in pairs(background) do services[#services + 1] = service end
+            for _, service in ipairs(services) do
                 local service_ok, service_err = pcall(service.resume, service, table.unpack(event, 1, event.n))
                 if not service_ok then log_error(service_err) end
             end
@@ -1572,6 +1574,16 @@ local function start_core_service()
         clock = os.clock, epoch = function() return os.epoch("utc") end, wake = cell_wake,
         -- To carry other networks' phones (roaming), the core connects to their cores.
         id = os.getComputerID(), connect = function(core) return secure.connect(core, CONTROL_PORT) end, sleep = sleep,
+        -- An administrator may stop the core, or start it afresh, from anywhere.
+        stop = function() cell.stopCore() end,
+        restart = function()
+            if background.core then
+                background.core:stop()
+                background.core = nil
+            end
+            local ok, restart_err = start_core_service()
+            if not ok then log_error("Cannot start the cellular core again: " .. tostring(restart_err)) end
+        end,
     }
     if not service then return nil, err end
     -- The core must keep running when nobody is nearby.
@@ -1630,6 +1642,168 @@ function start_cellular()
         local ok, err = start_cell_service(cell)
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
+end
+
+local Manager = {}
+Manager.__index = Manager
+
+--[[- Send the core a request, and wait for its answer.
+
+@tparam table request The request: `op`, and whatever else that operation takes.
+@tparam[opt=15] number timeout How long to wait for the answer, in seconds.
+@treturn[1] table The core's answer.
+@treturn[2] nil If the core refused, didn't answer, or was lost.
+@treturn[2] string Why.
+]]
+function Manager:request(request, timeout)
+    expect(1, request, "table")
+    expect(2, timeout, "number", "nil")
+    if self.closed then return nil, "Closed" end
+    local sent, err = self.connection:send(request)
+    if not sent then return nil, "Lost the core: " .. tostring(err) end
+    local reply, receive_err = self.connection:receive(timeout or 15)
+    if type(reply) ~= "table" then return nil, "The core didn't answer: " .. tostring(receive_err or "it hung up") end
+    if reply.error ~= nil then return nil, tostring(reply.error) end
+    return reply
+end
+
+--- Get everything about the network: its cells, the computers allowed in and waiting, its subscribers, and roaming.
+--
+-- @treturn[1] table `network`, `prefix`, `cells`, `allowed`, `waiting`, `subscribers`, `partners`, `carrying`, and how
+-- many `messages` and activation `codes` are waiting.
+-- @treturn[2] nil If it couldn't be had.
+-- @treturn[2] string Why not.
+function Manager:status() return self:request({ op = "status" }) end
+
+--- Get the core's log.
+--
+-- @tparam[opt] number after Only lines after the one with this number.
+-- @treturn[1] table `lines` (each with `n`, `time` and `text`), and `last`, the number of the last line.
+-- @treturn[2] nil If it couldn't be had.
+-- @treturn[2] string Why not.
+function Manager:log(after)
+    expect(1, after, "number", "nil")
+    return self:request({ op = "log", after = after })
+end
+
+--- Make an activation code for a subscriber.
+--
+-- @tparam string id The subscriber's ID, such as `"ACME-0042"`.
+-- @tparam string number Their phone number.
+-- @treturn[1] string The code, which works once, for a day.
+-- @treturn[2] nil If it couldn't be made.
+-- @treturn[2] string Why not.
+function Manager:add(id, number)
+    expect(1, id, "string")
+    expect(2, number, "string")
+    local reply, err = self:request({ op = "add", id = id, number = number })
+    if not reply then return nil, err end
+    return reply.code
+end
+
+--- Remove a subscriber, and any codes for them which haven't been used.
+--
+-- @tparam string subscriber Their ID or number.
+-- @treturn[1] table How many subscribers were `removed`, and how many `codes`.
+-- @treturn[2] nil If there's nobody to remove.
+-- @treturn[2] string Why not.
+function Manager:remove(subscriber)
+    expect(1, subscriber, "string")
+    return self:request({ op = "remove", subscriber = subscriber })
+end
+
+--- Change a subscriber: bar them (their phone is cut off, and refused), or say whether they may roam.
+--
+-- @tparam string subscriber Their ID or number.
+-- @tparam { barred? = boolean, roaming? = boolean } changes What to change.
+-- @treturn[1] table The subscriber's `id` and `number`, and whether they're `barred` and may use `roaming`.
+-- @treturn[2] nil If it couldn't be done.
+-- @treturn[2] string Why not.
+function Manager:set(subscriber, changes)
+    expect(1, subscriber, "string")
+    expect(2, changes, "table")
+    return self:request({ op = "set", subscriber = subscriber, barred = changes.barred, roaming = changes.roaming })
+end
+
+--- Allow a computer in: a cell, another network's core, or a computer to manage this one. Check its fingerprint
+-- (in `status().waiting`) against the one the computer shows first.
+--
+-- @tparam string key The computer's key, as 64 hexadecimal digits.
+-- @tparam[opt] string label What to call it.
+-- @treturn[1] table Its `role`, `id`, `label` and `fingerprint`.
+-- @treturn[2] nil If it couldn't be allowed.
+-- @treturn[2] string Why not.
+function Manager:allow(key, label)
+    expect(1, key, "string")
+    expect(2, label, "string", "nil")
+    return self:request({ op = "allow", key = key, label = label })
+end
+
+--- Refuse a computer from now on, dropping any connections it has.
+--
+-- @tparam string key The computer's key, as 64 hexadecimal digits.
+-- @treturn[1] table Its `id`, if that's known.
+-- @treturn[2] nil If it couldn't be refused.
+-- @treturn[2] string Why not.
+function Manager:deny(key)
+    expect(1, key, "string")
+    return self:request({ op = "deny", key = key })
+end
+
+--- Carry another network's phones at this network's cells, by connecting to that network's core, which must allow it.
+--
+-- @tparam string network The other network's name.
+-- @tparam string core Its core's name or address.
+-- @treturn[1] table The `id` and `fingerprint` of this core's computer, for the other core's administrator.
+-- @treturn[2] nil If it couldn't be set up.
+-- @treturn[2] string Why not.
+function Manager:carry(network, core)
+    expect(1, network, "string")
+    expect(2, core, "string")
+    return self:request({ op = "carry", network = network, core = core })
+end
+
+--- Stop carrying another network's phones.
+--
+-- @tparam string network The other network's name.
+-- @treturn[1] table If it was stopped.
+-- @treturn[2] nil If it wasn't.
+-- @treturn[2] string Why not.
+function Manager:uncarry(network)
+    expect(1, network, "string")
+    return self:request({ op = "uncarry", network = network })
+end
+
+--- Stop the core. It can only be started again on its own computer. This closes the manager.
+--
+-- @treturn[1] true If it's stopping.
+-- @treturn[2] nil If it isn't.
+-- @treturn[2] string Why not.
+function Manager:stop()
+    local reply, err = self:request({ op = "stop" })
+    if not reply then return nil, err end
+    self:close()
+    return true
+end
+
+--- Start the core afresh, as if its computer had restarted: cells and phones lose it for a moment, and phones get
+-- new addresses. This closes the manager.
+--
+-- @treturn[1] true If it's starting again.
+-- @treturn[2] nil If it isn't.
+-- @treturn[2] string Why not.
+function Manager:restart()
+    local reply, err = self:request({ op = "restart" })
+    if not reply then return nil, err end
+    self:close()
+    return true
+end
+
+--- Hang up. Do this once done, so the core isn't left waiting.
+function Manager:close()
+    if self.closed then return end
+    self.closed = true
+    self.connection:close()
 end
 
 --[[- Cellular networks: pocket computers as phones, which keep their address and connections while moving between cells.
@@ -2010,6 +2184,57 @@ cell = {
             write_table(CORE_CONFIG, config)
         end
         return start_core_service()
+    end,
+
+    --[[- Manage a cellular network's core: this computer's, or (over the network) another's.
+
+    The core must know the computer managing it. Its own computer always may. Any other waits the first time, until
+    someone allows its key on the core (`cellcore allow <ID>`, after checking the fingerprint is this computer's), and
+    is let straight in from then on. The connection is a secure one (see [`net.secure`]), to port 2123.
+
+    @tparam[opt] string core The core's name or address. Without one, this computer's own core.
+    @tparam[opt] function(fingerprint:string):boolean|nil waiting Called if the core hasn't allowed this computer yet,
+    with this computer's fingerprint, to show whoever can allow it. Unless it returns `false`, this function then waits
+    until the core allows this computer, refuses it, or gives up (after ten minutes). Without it, there's no waiting.
+    @treturn[1] table The manager, with a method for each thing a core can be asked (`status`, `log`, `add`, `remove`,
+    `set`, `allow`, `deny`, `carry`, `uncarry`, `stop`, `restart`), `request` for anything else, and `close`. Its
+    `network` field is the network's name.
+    @treturn[2] nil If the core can't be managed from here.
+    @treturn[2] string Why not.
+    @treturn[2] string|nil This computer's fingerprint, if it's because the core hasn't allowed it.
+    @usage List a network's subscribers from another computer.
+
+    ```lua
+    local core = assert(net.cell.manage("10.64.0.1"))
+    for _, subscriber in ipairs(assert(core:status()).subscribers) do print(subscriber.id, subscriber.number) end
+    core:close()
+    ```
+    ]]
+    manage = function(core, waiting)
+        expect(1, core, "string", "nil")
+        expect(2, waiting, "function", "nil")
+        require_crypto()
+        local connection, err = secure.connect(core or "127.0.0.1", CONTROL_PORT)
+        if not connection then return nil, err end
+        connection:send({ role = "admin", id = os.getComputerID() })
+        local reply, receive_err = connection:receive(15)
+        if type(reply) == "table" and reply.waiting then
+            local shown = tostring(reply.fingerprint)
+            if not waiting or waiting(shown) == false then
+                connection:close()
+                return nil, "The core hasn't allowed this computer to manage it", shown
+            end
+            reply, receive_err = connection:receive()
+        end
+        if type(reply) ~= "table" then
+            connection:close()
+            return nil, "The core didn't answer: " .. tostring(receive_err or "it hung up")
+        end
+        if reply.error ~= nil then
+            connection:close()
+            return nil, tostring(reply.error)
+        end
+        return setmetatable({ connection = connection, network = reply.network }, Manager)
     end,
 
     --- Stop this computer's cellular core, and don't start it when the computer starts.
