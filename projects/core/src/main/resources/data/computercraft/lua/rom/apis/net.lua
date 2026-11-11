@@ -2090,8 +2090,10 @@ cell = {
 
     --[[- Choose the network to use, or let the phone choose.
 
-    Left to itself, the phone uses its SIM's own network when it can hear it, and otherwise a partner's. Told to use
-    one network, it uses no other, and has no service where that network has no cells.
+    Left to itself, the phone uses its SIM's own network when it can hear it, and otherwise a partner's: it stays on
+    its own network until it loses it, and goes back once its own network is stronger than the one it roams on. Where
+    it hears neither, it tries other networks too, which may have an agreement with its own it hasn't heard of yet.
+    Told to use one network, it uses no other, and has no service where that network has no cells.
 
     @tparam[opt] string name The network's name, or `nil` (or `"auto"`) to let the phone choose.
     @treturn[1] true If the choice was made.

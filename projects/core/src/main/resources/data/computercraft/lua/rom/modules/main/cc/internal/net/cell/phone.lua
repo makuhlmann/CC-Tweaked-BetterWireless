@@ -18,9 +18,16 @@ address.
 
 Roaming: where it can't hear its own network, the phone uses a cell of a network its operator has an agreement with (a
 partner). Its operator tells it which those are, and the keys their cells are certified with, each time it attaches. It
-still attaches to its own network's core, through the partner's cell and core, and keeps its address. It goes back to
-its own network once it has heard it steadily for a while. Moving between networks, it attaches again rather than being
-handed over. It can also be told to use one network only.
+still attaches to its own network's core, through the partner's cell and core, and keeps its address. It stays on its
+own network until it loses it, and goes back to it once its own network's best cell has been stronger than the one it
+roams on for a few seconds. Moving between networks, it attaches again rather than being handed over. It can also be
+told to use one network only.
+
+Agreements change, and the phone only hears of them when it attaches. So where it can hear neither its own network nor
+a partner's, it tries the cells of other networks too, strongest first, as real phones do: the other network's core
+passes the attach on to its own if they have an agreement, and turns it away if not. A network which turned it away is
+left alone for a minute. Its cells can't be checked until the phone learns its key, but nothing depends on them: the
+handshake is with the phone's own operator, end to end.
 
 Radio frames get lost, and cells and cores restart and forget their phones. So the phone checks its cell still knows
 it, every few seconds when nothing else has come from it, and attaches again if it doesn't. It says it has arrived at a
@@ -66,8 +73,11 @@ local REJECT_GRACE = 1
 local MAX_OUTBOX, MESSAGE_RETRY, MESSAGE_TRIES, MAX_SEEN = 20, 5, 12, 128
 -- How many roaming partners a phone takes from its operator.
 local MAX_PARTNERS = 16
--- How long a roaming phone must hear its own network, in seconds, and how well (in dBm), before going back to it.
-local HOME_TIME, HOME_SIGNAL = 5, -95
+-- How long a roaming phone's own network must be stronger than the network it's on (by HYSTERESIS), in seconds, before
+-- it goes back.
+local HOME_TIME = 5
+-- How long to leave a network alone after it turned the phone away (or didn't answer), in seconds.
+local FORBIDDEN_TIME = 60
 
 local Phone = {}
 Phone.__index = Phone
@@ -102,7 +112,8 @@ local function new(options)
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
         partners = options.partners or {}, selection = options.selection,
         relay = options.relay or function() return false end,
-        cells = {}, heard = {}, events = {}, state = options.operator and "searching" or "inactive", retry = 2,
+        cells = {}, heard = {}, events = {}, forbidden = {},
+        state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
         unanswered = 0, last_heard = 0, last_check = 0,
     }, Phone)
@@ -167,6 +178,7 @@ function Phone:hear(src, message, signal, verified)
     cell.signal, cell.heard, cell.network, cell.verified = total / #cell.samples, now, message.network, verified
     cell.area = type(message.area) == "number" and message.area or nil
     cell.load = type(message.load) == "number" and message.load or nil
+    cell.path = type(message.path) == "table" and message.path or nil
 end
 
 function Phone:to_cell(cell, message)
@@ -211,6 +223,36 @@ function Phone:best_cell(except, network)
     return best, best_signal
 end
 
+--[[ The strongest cell of a network we don't know to carry us (neither ours nor a partner's), to try when there's
+nothing else. Networks which turned us away lately are left alone.
+]]
+function Phone:other_cell()
+    if self.selection then return nil end
+    local now = self.stack.clock()
+    local best, best_signal
+    for id, cell in pairs(self.heard) do
+        local refused = self.forbidden[cell.network]
+        if cell.network ~= self.operator.network and not self.partners[cell.network]
+            and not (refused and now - refused < FORBIDDEN_TIME)
+            and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and not self:behind_us(cell)
+            and not (self.relay() and #(cell.path or {}) >= common.MAX_PATH) and id ~= self.stack.id
+            and (not best_signal or cell.signal > best_signal) then
+            best, best_signal = id, cell.signal
+        end
+    end
+    return best
+end
+
+-- Average a cell's last few signals, so one strong or weak broadcast doesn't move us.
+local function sample(cell, message, signal, now)
+    table.insert(cell.samples, type(signal) == "number" and signal or -50)
+    if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
+    local total = 0
+    for _, value in ipairs(cell.samples) do total = total + value end
+    cell.signal, cell.heard, cell.area = total / #cell.samples, now, message.area
+    cell.path, cell.network = message.path, message.network
+end
+
 --- Whether the cell we're attached to is another network's.
 --
 -- @treturn boolean Whether we're roaming.
@@ -252,21 +294,23 @@ function Phone:radio(src, message, signal)
         -- around. A cell which claims to be ours, or a partner's, but isn't, may be a fake.
         local signing = self.operator and (message.network == self.operator.network and self.operator.signing
             or self.partners[message.network])
-        if not signing then return self:hear(src, message, signal, nil) end
+        if not signing then
+            self:hear(src, message, signal, nil)
+            -- A cell of another network, which we're trying (or using) before we can check it.
+            local cell = self.cells[src]
+            if cell and cell.unverified and cell.network == message.network then sample(cell, message, signal, self.stack.clock()) end
+            if self.state == "searching" then self:attach() end
+            return
+        end
         local ok = common.check_sib(self.crypto, message, {
             network = message.network, signing = signing, now = self.epoch(), sender = src,
         })
         self:hear(src, message, signal, ok == true)
         if not ok then return end
-        -- Average the last few broadcasts' signals, so one strong or weak one doesn't move us.
         local cell = self.cells[src] or { samples = {} }
         self.cells[src] = cell
-        table.insert(cell.samples, type(signal) == "number" and signal or -50)
-        if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
-        local total = 0
-        for _, sample in ipairs(cell.samples) do total = total + sample end
-        cell.signal, cell.heard, cell.area = total / #cell.samples, self.stack.clock(), message.area
-        cell.path, cell.network = message.path, message.network
+        cell.unverified = nil
+        sample(cell, message, signal, self.stack.clock())
         if self.state == "searching" then self:attach() end
         return
     end
@@ -406,9 +450,11 @@ function Phone:set_partners(list)
     if not changed then return end
     self.partners = partners
     -- Cells of networks which are no longer partners can't be used. (Ones of new partners are heard within a second.)
+    -- A cell we're trying before we can check it stays: our operator has just answered through it.
     for id, cell in pairs(self.cells) do
-        if cell.network ~= self.operator.network and not partners[cell.network] then self.cells[id] = nil end
+        if cell.network ~= self.operator.network and not partners[cell.network] and not cell.unverified then self.cells[id] = nil end
     end
+    for network in pairs(partners) do self.forbidden[network] = nil end
     self.on_partners(partners)
 end
 
@@ -509,10 +555,20 @@ function Phone:send_waiting(only_old)
     end
 end
 
--- Start attaching through the best cell.
+-- Start attaching through the best cell: of our own network, else a partner's, else one of another network, which
+-- may have an agreement with ours we don't know of yet.
 function Phone:attach()
     local best = self:best_cell()
-    if not best then return end
+    if not best then
+        best = self:other_cell()
+        if not best then return end
+        -- We can't check its cell until (and unless) our operator gives us its network's key, so go by what we heard.
+        local heard = self.heard[best]
+        self.cells[best] = {
+            samples = { table.unpack(heard.samples) }, signal = heard.signal, heard = heard.heard, network = heard.network,
+            area = heard.area, path = heard.path, unverified = true,
+        }
+    end
     self.cell, self.secret, self.rejected, self.refusal, self.home_since = best, nil, nil, nil, nil
     self.handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
@@ -534,9 +590,15 @@ function Phone:attach()
     end)
 end
 
--- Attaching didn't work: try again later, less often each time.
+-- Attaching didn't work: try again later, less often each time. A network we tried without knowing whether it would
+-- carry us is left alone for a while, so we try the others (or it again, once its agreement may have changed).
 function Phone:give_up()
     self.handshake, self.attempt = nil, nil
+    local cell = self.cells[self.cell]
+    if cell and cell.unverified then
+        self.forbidden[cell.network] = self.stack.clock()
+        self.cells[self.cell] = nil
+    end
     self:set_state(self.rejected and "rejected" or "searching")
     local delay = self.retry
     self.retry = math.min(self.retry * 2, MAX_RETRY)
@@ -601,11 +663,11 @@ function Phone:measure()
 
     self:send_waiting(true)
 
-    -- Roaming, and left to choose: go back to our own network once we've heard it well enough for a while. We
-    -- attach again, through its cell, rather than being handed over, and keep our address.
+    -- Roaming, and left to choose: go back to our own network once its best cell has been stronger than ours for a
+    -- while. We attach again, through its cell, rather than being handed over, and keep our address.
     if serving.network ~= self.operator.network and not self.selection and not confirming then
         local home, home_signal = self:best_cell(nil, self.operator.network)
-        if home and home_signal >= HOME_SIGNAL then
+        if home and home_signal >= serving.signal + HYSTERESIS then
             self.home_since = self.home_since or now
             if now - self.home_since >= HOME_TIME then
                 self:event("home", { from = self.cell })

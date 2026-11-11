@@ -1085,9 +1085,17 @@ the design above:
     networks it may use and the keys their cells are certified with. The phone remembers them (in `/.net/sim`), so it
     can roam straight after starting far from home. It hears of a new partner the next time it attaches.
   - **Choosing a network.** Left to itself, a phone uses its home network wherever it can hear it, and a partner's
-    only where it can't. While roaming, once it has heard a home cell at −95 dBm or better for 5 seconds, it goes
-    home. Between networks it attaches again rather than being handed over, which takes a moment, and its address
-    stays the same. `net.cell.setNetwork` tells it to use one network only, and `net.cell.networks` lists those around.
+    only where it can't. It stays on its home network until it loses it. While roaming, once its home network's best
+    cell has been 3 dB stronger than the cell it's on for 5 seconds, it goes home. Between networks it attaches again
+    rather than being handed over, which takes a moment, and its address stays the same. `net.cell.setNetwork` tells
+    it to use one network only, and `net.cell.networks` lists those around.
+  - **Networks it doesn't know.** A phone only hears of new agreements when it attaches, so one which made its way
+    out of its home network's coverage before an agreement was made wouldn't know it may roam. Where it can hear
+    neither its home network nor a partner's, a phone left to choose tries other networks' cells too, strongest
+    first, as real phones do. The visited core passes the attach on if it carries the phone's network, and the home
+    core's answer brings the new partner list, so the phone can check that network's cells from then on. Until then
+    it uses what it heard of the cell, which is safe, as the handshake is with its own operator. A network which turns
+    it away (or doesn't answer) is left alone for a minute, like a real phone's forbidden networks.
   - **Agreements** are made by the two cores' administrators. On the visited core, `cellcore carry <network> <core>`
     connects to the home core, and keeps connecting. On the home core, `cellcore allow` lets it in, after showing its
     fingerprint and the network it says it is. It's remembered as that network, and can't come back as another.
@@ -1128,7 +1136,8 @@ it.
 
 Roaming is tested in the virtual network with two operators side by side (`cell_roaming_spec.lua`): a phone walks out
 of one's coverage, across the other's two cells and back, with an open connection, and keeps every message. Others
-cover going home, being told which network to use, agreements which are missing or ended, cells which only claim to be
+cover going home (only once home is stronger), trying a network the phone hasn't heard is a partner, being told which
+network to use, agreements which are missing or ended, cells which only claim to be
 a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 10,000 control
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone

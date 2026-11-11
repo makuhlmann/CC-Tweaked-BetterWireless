@@ -105,6 +105,7 @@ describe("Roaming", function()
             acme.positions[1] = position
             if client:send(sent + 1) then sent = sent + 1 end
             net.advance(0.5)
+            yield()
             while true do
                 local ok, value = server:take()
                 if not ok then break end
@@ -134,7 +135,7 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
-    it("prefers the phone's own network, and goes back to it", function()
+    it("prefers the phone's own network, and goes back to it once it's stronger", function()
         math.randomseed(3)
         -- Both networks cover the same place, BETA better.
         local acme, beta, net = operators({ 0 }, { 30 })
@@ -145,14 +146,77 @@ describe("Roaming", function()
         expect(phone.cell):eq(11)
         expect(event_kinds(phone)):same { "attached" }
 
-        -- Its own network's cell fails: it roams. When the cell is back, so is the phone, after a few seconds.
+        -- Its own network's cell fails: it roams. When the cell is back, the phone stays, as BETA's cell is stronger.
         net.remove(acme.towers[1].stack)
         wait_until(net, function() return phone.state == "attached" and phone.cell == 21 end, 30, "Roaming")
         table.insert(net.stacks, acme.towers[1].stack)
+        net.advance(30)
+        expect(phone.cell):eq(21)
+
+        -- Where ACME's cell is only a little stronger, it still stays.
+        acme.positions[1] = 16
+        net.advance(30)
+        expect(phone.cell):eq(21)
+
+        -- Once ACME's cell is clearly stronger, it goes home after a few seconds.
+        acme.positions[1] = 10
         net.advance(3)
         expect(phone.cell):eq(21)
         wait_until(net, function() return phone.state == "attached" and phone.cell == 11 end, 30, "Going home")
         expect(event_kinds(phone)):same { "attached", "lost", "attached roaming", "home", "attached" }
+    end)
+
+    it("tries a network it hasn't heard is a partner, and learns that it is", function()
+        math.randomseed(31)
+        -- The agreement was made after the phone last attached, so it doesn't know BETA carries it.
+        local acme, beta, net = operators()
+        local partners
+        local phone, stack = acme.add_phone(1, 310, true, { on_partners = function(list) partners = list end })
+        net.advance(10)
+
+        expect(phone.state):eq("attached")
+        expect(phone.cell):eq(21)
+        expect(phone:roaming()):eq(true)
+        expect(partners):same { BETA = beta.signing_public }
+        expect(event_kinds(phone)):same { "attached roaming" }
+        expect(reaches_server(net, stack)):eq(true)
+
+        -- Now it knows BETA's key, it checks its cells, and moves between them.
+        net.advance(2)
+        local heard = phone:info().heard[1]
+        expect({ heard.id, heard.verified }):same { 21, true }
+        expect(phone.cells[21].unverified):eq(nil)
+        for position = 310, 400, 2 do
+            acme.positions[1] = position
+            net.advance(0.5)
+            yield()
+        end
+        net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 22 }
+        expect(net.errors):same {}
+    end)
+
+    it("leaves a network which turned it away alone for a while, then tries again", function()
+        math.randomseed(32)
+        local acme, beta, net = operators(nil, nil, false)
+        local phone, stack = acme.add_phone(1, 310)
+        net.advance(10)
+        expect(phone.rejected):eq("BETA doesn't carry phones of that network")
+        expect(phone.state):eq("searching")
+        expect(phone.forbidden.BETA ~= nil):eq(true)
+
+        -- It doesn't ask again for a minute, though it hears BETA all the while.
+        net.advance(40)
+        expect(event_kinds(phone)):same { "rejected" }
+
+        -- Meanwhile the networks agree, and the next time the phone tries, it's carried.
+        acme.roam_on(beta)
+        wait_until(net, function() return phone.state == "attached" end, 30, "Trying BETA again")
+        expect(phone.cell):eq(21)
+        expect(phone.partners.BETA):eq(beta.signing_public)
+        expect(phone.forbidden.BETA):eq(nil)
+        expect(reaches_server(net, stack)):eq(true)
+        expect(event_kinds(phone)):same { "rejected", "attached roaming" }
     end)
 
     it("uses the one network the phone is told to", function()
@@ -189,12 +253,12 @@ describe("Roaming", function()
     it("needs both networks to agree", function()
         math.randomseed(5)
         local acme, beta, net = operators(nil, nil, false)
-        -- A phone which hasn't been told about BETA doesn't try its cells.
+        -- A phone which hasn't been told about BETA tries its cells, in case, and is turned away by BETA's core.
         local unaware = acme.add_phone(1, 310)
-        -- One which has been (by an agreement since ended, say) is turned away by BETA's core.
+        -- So is one which has been told (of an agreement since ended, say).
         local stale = acme.add_phone(2, 320, true, { partners = { BETA = beta.signing_public } })
         net.advance(10)
-        expect(unaware.state):eq("searching")
+        expect(unaware.rejected):eq("BETA doesn't carry phones of that network")
         expect(unaware:info().heard[1].verified):eq(nil)
         expect(stale.state):eq("rejected")
         expect(stale.rejected):eq("BETA doesn't carry phones of that network")
@@ -203,6 +267,9 @@ describe("Roaming", function()
         local other = beta.add_phone(3, 50)
         net.advance(10)
         expect(other.state):eq("searching")
+        expect(other.rejected):eq("ACME doesn't carry phones of that network")
+        expect(beta.core:info()):same {}
+        expect(acme.core:visitor_info()):same {}
         expect(net.errors):same {}
     end)
 
