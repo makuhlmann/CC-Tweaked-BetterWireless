@@ -890,8 +890,21 @@ function Core:partner_control(network, message)
             if old.cell == tower.id then old.cell = nil end
             self:forget_visitor(old)
         end
-        if self.visitor_count >= MAX_VISITORS then return end
-        local visitor = { network = network, home_teid = message.teid, phone = message.phone, cell = tower.id, address = message.address }
+        if self.visitor_count >= MAX_VISITORS then
+            -- Nothing says when a visitor has left for good (it may just have walked out of range), so when there's
+            -- no room, the one which attached longest ago makes way. If it's still here, it finds out, and attaches
+            -- again.
+            local oldest
+            for _, other in pairs(self.visitors) do
+                if not oldest or other.order < oldest.order then oldest = other end
+            end
+            self:forget_visitor(oldest)
+        end
+        self.visitor_order = (self.visitor_order or 0) + 1
+        local visitor = {
+            network = network, home_teid = message.teid, phone = message.phone, cell = tower.id, address = message.address,
+            order = self.visitor_order,
+        }
         repeat visitor.teid = math.random(1, 0x7FFFFFFF) until not self.by_teid[visitor.teid] and not self.visitors[visitor.teid]
         self.visitors[visitor.teid] = visitor
         self.visitor_count = self.visitor_count + 1

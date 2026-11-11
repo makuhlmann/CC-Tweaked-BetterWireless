@@ -372,6 +372,93 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
+    it("works through a relay of the network carrying the phone", function()
+        math.randomseed(14)
+        local acme, beta, net = operators()
+        -- A relay of BETA's, further out: a computer which is a phone of BETA and a cell of BETA.
+        local relay = beta.add_relay(30, 480)
+        wait_until(net, function() return relay.tower ~= nil and #relay.tower.path == 1 end, 60, "The relay joining")
+
+        -- A phone of ACME's which only hears the relay.
+        local phone, stack = acme.add_phone(1, 560, true, { partners = { BETA = beta.signing_public } })
+        wait_until(net, function() return phone.state == "attached" end, 30, "Attaching")
+        expect(phone.cell):eq(30)
+        expect(address.format(stack.interfaces.cell.address)):eq("10.64.0.2")
+        expect(reaches_server(net, stack)):eq(true)
+        expect(beta.core:visitor_info()):same { { network = "ACME", cell = 30, address = "10.64.0.2" } }
+        expect(net.errors):same {}
+    end)
+
+    it("keeps a roaming phone's connection open between the visited network's cells, on a bad radio link", function()
+        math.randomseed(15)
+        local acme, beta, net = operators()
+        net.loss.air = 0.15
+        local phone, stack = acme.add_phone(1, 300, true, { partners = { BETA = beta.signing_public } })
+        wait_until(net, function() return phone.state == "attached" end, 60, "Attaching")
+
+        local listener = assert(tcp.listen(acme.server, 80))
+        local client = assert(tcp.connect(stack, ip("10.0.0.60"), 80))
+        local server
+        wait_until(net, function()
+            server = server or listener:accept()
+            return server ~= nil and client.state == "established"
+        end, 60, "Connecting")
+
+        local sent, got = 0, {}
+        local function drain()
+            while true do
+                local ok, value = server:take()
+                if not ok then break end
+                got[#got + 1] = value
+            end
+        end
+        -- Back and forth between BETA's two cells, three times.
+        for trip = 1, 6 do
+            for step = 1, 50 do
+                acme.positions[1] = trip % 2 == 1 and 300 + step * 2 or 400 - step * 2
+                if client:send(sent + 1) then sent = sent + 1 end
+                net.advance(0.5)
+                drain()
+            end
+        end
+        wait_until(net, function()
+            drain()
+            return phone.state == "attached" and #got >= sent
+        end, 120, "Delivering everything")
+        expect(client.error):eq(nil)
+        for i, value in ipairs(got) do expect(value):eq(i) end
+        expect(phone:roaming()):eq(true)
+        expect(net.errors):same {}
+    end)
+
+    it("keeps room for new visitors when old ones never said goodbye", function()
+        math.randomseed(13)
+        local acme, beta, net = operators()
+        local phone, stack = acme.add_phone(1, 310, true, { partners = { BETA = beta.signing_public } })
+        net.advance(5)
+        expect(reaches_server(net, stack)):eq(true)
+
+        -- 300 more phones of ACME's attach at BETA's cell, as far as BETA's core can tell, and are never heard of again.
+        for id = 1000, 1299 do
+            assert(beta.core:remember_roamer("ACME", id, 21))
+            beta.core:partner_control("ACME", {
+                op = "context", phone = id, teid = id, cell = 21, key = ("k"):rep(32), address = ip("10.64.1.0") + id - 1000,
+            })
+            -- One every tenth of a second: only so many may be attaching at once.
+            net.advance(0.1)
+        end
+        net.advance(1)
+        expect(#beta.core:visitor_info()):eq(256)
+        local count = 0
+        for _ in pairs(beta.core.visitors_by_phone) do count = count + 1 end
+        expect(count):eq(256)
+
+        -- The real phone was the oldest, so it was forgotten. It finds out, and attaches again.
+        wait_until(net, function() return phone.state == "attached" and reaches_server(net, stack) end, 30, "Service")
+        expect(#beta.core:visitor_info()):eq(256)
+        expect(net.errors):same {}
+    end)
+
     it("survives control messages with something unexpected in them, between the cores", function()
         math.randomseed(12)
         local acme, beta, net = operators()
