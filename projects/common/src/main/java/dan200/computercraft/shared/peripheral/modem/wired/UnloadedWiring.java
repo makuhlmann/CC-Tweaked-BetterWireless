@@ -8,19 +8,24 @@ import dan200.computercraft.api.network.wired.WiredNode;
 import dan200.computercraft.impl.network.wired.DormantWiring;
 import dan200.computercraft.shared.computer.core.ServerContext;
 import dan200.computercraft.shared.util.DirectionUtil;
+import dan200.computercraft.core.util.Nullability;
+import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.function.LongPredicate;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -41,6 +47,14 @@ import java.util.zip.GZIPOutputStream;
  * When a chunk unloads, its cables and wired modems leave their networks. Instead, we remember the chunk's wiring (see
  * {@link DormantWiring}), which keeps the networks it joined connected, and lets cables next to it connect to it. When
  * the chunk loads again, its blocks join their networks, and we forget its wiring.
+ * <p>
+ * A chunk which stops being fully loaded (as one does when nothing nearby needs it any more) often stays in memory a
+ * while before it unloads, or for good, beside a chunk kept loaded. Blocks next to it see it as unloaded from the start,
+ * so we remember its wiring then, as if it had unloaded; and when it's fully loaded again, its blocks join their networks
+ * as for a chunk which has loaded.
+ * <p>
+ * Chunks which cables lead into, but which have never been loaded since, aren't known at all. {@link #startTrace} loads
+ * them one at a time, following the cables, so they are.
  * <p>
  * The wiring is saved to a file of its own, every minute or so when it has changed, and when the server stops. That
  * includes the wiring of loaded chunks, so networks come back after a restart before any chunk loads, and after a crash
@@ -53,6 +67,9 @@ public final class UnloadedWiring {
 
     /** How often to save the wiring when it has changed, in ticks. */
     private static final int SAVE_INTERVAL = 20 * 60;
+
+    /** The most chunks one trace looks at. */
+    private static final int MAX_TRACE = 4096;
 
     private static final class LevelWiring {
         final ServerLevel level;
@@ -70,11 +87,41 @@ public final class UnloadedWiring {
         }
     }
 
+    /**
+     * A search for wiring in chunks which cables lead into, but which we know nothing of: see {@link #startTrace}.
+     */
+    private static final class Trace {
+        final LevelWiring state;
+        final Consumer<Component> report;
+        final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+        final LongSet seen = new LongOpenHashSet();
+        int looked;
+        int wired;
+
+        Trace(LevelWiring state, Consumer<Component> report) {
+            this.state = state;
+            this.report = report;
+        }
+    }
+
+    /**
+     * What we know of a level's wiring.
+     *
+     * @param remembered How many chunks' wiring we remember.
+     * @param unknown    How many chunks cables lead into which we know nothing of.
+     * @param looked     How many chunks the trace running has looked at, if one is.
+     * @param toLook     How many chunks it has yet to look at.
+     * @param tracing    Whether a trace is running.
+     */
+    public record Status(int remembered, int unknown, int looked, int toLook, boolean tracing) {
+    }
+
     private final Path file;
     private final Map<String, List<DormantWiring.Ports>> saved;
     private final IdentityHashMap<ServerLevel, LevelWiring> levels = new IdentityHashMap<>();
     private boolean dirty;
     private int sinceSave;
+    private @Nullable Trace trace;
 
     public UnloadedWiring(Path file) {
         this.file = file;
@@ -154,7 +201,8 @@ public final class UnloadedWiring {
     }
 
     /**
-     * A chunk is unloading. This is called while its block entities are still in their networks.
+     * A chunk is unloading, or is no longer fully loaded. This is called while its block entities are still in their
+     * networks.
      *
      * @param level The chunk's level.
      * @param chunk The chunk.
@@ -188,9 +236,37 @@ public final class UnloadedWiring {
         get(level).loading.add(chunk.getPos().pack());
     }
 
+    /**
+     * A chunk's ticket level has changed. One which is no longer fully loaded stays in memory a while (or for good,
+     * beside a chunk kept loaded), but blocks next to it see it as unloaded, and we're not told when it does unload: so
+     * remember its wiring now, as if it had unloaded. One which is fully loaded again joins its networks again.
+     *
+     * @param level    The chunk's level.
+     * @param pos      The chunk, as {@link ChunkPos#pack()}.
+     * @param oldLevel Its old ticket level.
+     * @param newLevel Its new ticket level.
+     * @param chunk    The chunk, if it's in memory, and has been fully loaded.
+     */
+    public void onChunkLevelChanged(ServerLevel level, long pos, int oldLevel, int newLevel, @Nullable LevelChunk chunk) {
+        var full = ChunkLevel.byStatus(ChunkStatus.FULL);
+        boolean wasLoaded = oldLevel <= full, isLoaded = newLevel <= full;
+        if (wasLoaded && !isLoaded) {
+            if (chunk != null) {
+                onChunkUnload(level, chunk);
+            } else {
+                var state = levels.get(level);
+                if (state != null) state.loading.remove(pos);
+            }
+        } else if (!wasLoaded && isLoaded) {
+            // It may not be loaded yet: it joins its networks once it is.
+            get(level).loading.add(pos);
+        }
+    }
+
     public void tick() {
         // Joining a chunk may load others (and so add to the chunks loading, possibly in another level): see drain.
         for (var state : List.copyOf(levels.values())) drain(state.loading, pos -> join(state, pos));
+        tickTrace();
 
         sinceSave++;
         if (dirty && sinceSave >= SAVE_INTERVAL) save();
@@ -258,9 +334,14 @@ public final class UnloadedWiring {
             if (blockEntity.isRemoved()) continue;
             var sides = 0;
             if (blockEntity instanceof CableBlockEntity) {
+                // Where the cable connects: where it may, and shows that it does. That's kept in its block state, so
+                // it's still known while the block next to it is unloaded. (A cable placed next to one in a chunk which
+                // isn't loaded is only joined to it once that chunk loads, as the other cable doesn't show it yet.)
                 var state = blockEntity.getBlockState();
                 for (var direction : DirectionUtil.FACINGS) {
-                    if (CableBlock.canConnectIn(state, direction)) sides |= 1 << direction.get3DDataValue();
+                    if (CableBlock.canConnectIn(state, direction) && state.getValue(Nullability.assertNonNull(CableBlock.CONNECTIONS.get(direction)))) {
+                        sides |= 1 << direction.get3DDataValue();
+                    }
                 }
             } else if (blockEntity instanceof WiredModemFullBlockEntity) {
                 sides = DirectionUtil.ALL_SIDES;
@@ -333,6 +414,113 @@ public final class UnloadedWiring {
         write(file, result);
         dirty = false;
         sinceSave = 0;
+    }
+
+    /**
+     * Start looking for wiring in the chunks which cables lead into, but which we know nothing of: neither loaded nor
+     * remembered (they haven't been loaded since the wiring was first remembered). Each tick, one such chunk is loaded,
+     * for a moment, which is enough for its wiring to be remembered, and cables are followed on through it. Once done,
+     * networks crossing those chunks are whole, without anyone going there.
+     *
+     * @param level  The level.
+     * @param report What to call with how it went, once it's done.
+     * @return How many chunks there are to look at, to start with, or {@code -1} if a trace is running already.
+     */
+    public int startTrace(ServerLevel level, Consumer<Component> report) {
+        if (trace != null) return -1;
+        var state = get(level);
+        var trace = new Trace(state, report);
+        enqueue(trace, knownPorts(state));
+        if (trace.queue.isEmpty()) return 0;
+        this.trace = trace;
+        return trace.queue.size();
+    }
+
+    /**
+     * Stop looking for wiring in chunks we know nothing of.
+     *
+     * @return How many chunks the trace had looked at, or {@code -1} if none was running.
+     */
+    public int stopTrace() {
+        var trace = this.trace;
+        if (trace == null) return -1;
+        this.trace = null;
+        return trace.looked;
+    }
+
+    /**
+     * Describe what we know of a level's wiring.
+     *
+     * @param level The level.
+     * @return What we know.
+     */
+    public Status status(ServerLevel level) {
+        var state = get(level);
+        var unknown = DormantWiring.frontier(knownPorts(state), pos -> known(state, pos)).size();
+        var trace = this.trace;
+        return new Status(
+            state.wiring.chunkCount(), unknown, trace == null ? 0 : trace.looked, trace == null ? 0 : trace.queue.size(), trace != null
+        );
+    }
+
+    // The ports of every piece of wiring we know of: those we remember, and those of chunks which are loaded.
+    private static List<DormantWiring.Ports> knownPorts(LevelWiring state) {
+        var ports = new ArrayList<>(state.wiring.ports());
+        var loaded = new LongOpenHashSet(state.live);
+        loaded.addAll(state.loading);
+        for (var it = loaded.iterator(); it.hasNext(); ) {
+            var pos = it.nextLong();
+            if (state.wiring.has(pos)) continue;
+            var chunk = state.level.getChunkSource().getChunkNow(ChunkPos.getX(pos), ChunkPos.getZ(pos));
+            if (chunk != null) ports.addAll(DormantWiring.findPieces(pos, wiredBlocks(chunk)));
+        }
+        return ports;
+    }
+
+    // Whether we know a chunk: it's loaded, or we remember its wiring.
+    private static boolean known(LevelWiring state, long pos) {
+        return state.wiring.has(pos) || state.level.hasChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos));
+    }
+
+    private static void enqueue(Trace trace, Collection<DormantWiring.Ports> ports) {
+        var frontier = DormantWiring.frontier(ports, pos -> trace.seen.contains(pos) || known(trace.state, pos));
+        for (var it = frontier.iterator(); it.hasNext(); ) {
+            var pos = it.nextLong();
+            trace.seen.add(pos);
+            trace.queue.enqueue(pos);
+        }
+    }
+
+    // Look at the next chunk of the trace, if one is running.
+    private void tickTrace() {
+        var trace = this.trace;
+        if (trace == null) return;
+        var state = trace.state;
+        var level = state.level;
+        while (!trace.queue.isEmpty() && trace.looked < MAX_TRACE) {
+            var pos = trace.queue.dequeueLong();
+            // It may have loaded, or been remembered, since.
+            if (known(state, pos)) continue;
+
+            // This loads it for a moment only (the ticket lasts a tick), after which its wiring would be remembered.
+            // Remember it now, so the cables can be followed on through it.
+            trace.looked++;
+            var chunk = level.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos));
+            var blocks = wiredBlocks(chunk);
+            if (!blocks.isEmpty()) {
+                trace.wired++;
+                state.wiring.unload(pos, blocks, (other, side) -> liveNode(level, other, side));
+                dirty = true;
+                enqueue(trace, DormantWiring.findPieces(pos, blocks));
+            }
+            return;
+        }
+
+        this.trace = null;
+        trace.report.accept(Component.translatable(
+            trace.queue.isEmpty() ? "commands.computercraft.wiring.trace.done" : "commands.computercraft.wiring.trace.limit",
+            trace.looked, trace.wired, trace.queue.size()
+        ));
     }
 
     /**

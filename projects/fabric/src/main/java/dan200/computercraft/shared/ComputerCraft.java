@@ -120,7 +120,7 @@ public class ComputerCraft {
         ServerChunkEvents.CHUNK_UNLOAD.register((l, c) -> CommonHooks.onServerChunkUnload(c));
         ServerChunkEvents.CHUNK_LOAD.register((l, c, generated) -> CommonHooks.onServerChunkLoad(c));
         ServerChunkEvents.FULL_CHUNK_STATUS_CHANGE.register((level, chunk, oldStatus, newStatus) ->
-            CommonHooks.onChunkTicketLevelChanged(level, chunk.getPos().pack(), ChunkLevel.byStatus(oldStatus), ChunkLevel.byStatus(newStatus)));
+            CommonHooks.onChunkTicketLevelChanged(level, chunk.getPos().pack(), ChunkLevel.byStatus(oldStatus), ChunkLevel.byStatus(newStatus), chunk));
 
         PlayerBlockBreakEvents.BEFORE.register(FabricCommonHooks::onBlockDestroy);
         UseBlockCallback.EVENT.register(CommonHooks::onUseBlock);

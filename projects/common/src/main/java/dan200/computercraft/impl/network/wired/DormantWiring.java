@@ -11,6 +11,8 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
@@ -22,6 +24,7 @@ import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.LongPredicate;
 
 /**
  * The wiring of chunks which aren't loaded, which keeps wired networks connected through them.
@@ -315,6 +318,37 @@ public final class DormantWiring {
         var result = new ArrayList<Ports>();
         for (var pieces : chunks.values()) {
             for (var piece : pieces) result.add(piece.ports);
+        }
+        return result;
+    }
+
+    /**
+     * Count the chunks whose wiring we have.
+     *
+     * @return How many there are.
+     */
+    public int chunkCount() {
+        return chunks.size();
+    }
+
+    /**
+     * Find the chunks which wiring leads into, but which we know nothing of: the chunks across pieces' ports, which
+     * aren't loaded, and whose wiring we don't have.
+     *
+     * @param ports The ports of the wiring we know of.
+     * @param known Whether we know a chunk (given as {@link ChunkPos#pack()}): it's loaded, or we have its wiring.
+     * @return The chunks, as {@link ChunkPos#pack()}, in the order their ports were given.
+     */
+    public static LongSet frontier(Collection<Ports> ports, LongPredicate known) {
+        var result = new LongLinkedOpenHashSet();
+        for (var piece : ports) {
+            for (var i = 0; i < piece.positions().length; i++) {
+                for (var direction : Direction.Plane.HORIZONTAL) {
+                    if ((piece.sides()[i] & bit(direction)) == 0) continue;
+                    var other = chunkOf(BlockPos.offset(piece.positions()[i], direction));
+                    if (other != piece.chunk() && !known.test(other)) result.add(other);
+                }
+            }
         }
         return result;
     }

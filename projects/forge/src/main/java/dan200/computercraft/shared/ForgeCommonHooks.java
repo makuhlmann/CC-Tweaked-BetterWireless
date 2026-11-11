@@ -92,7 +92,10 @@ public class ForgeCommonHooks {
 
     @SubscribeEvent
     public static void onChunkTicketLevelChanged(ChunkTicketLevelUpdatedEvent event) {
-        CommonHooks.onChunkTicketLevelChanged(event.getLevel(), event.getChunkPos(), event.getOldTicketLevel(), event.getNewTicketLevel());
+        var holder = event.getChunkHolder();
+        CommonHooks.onChunkTicketLevelChanged(
+            event.getLevel(), event.getChunkPos(), event.getOldTicketLevel(), event.getNewTicketLevel(), holder == null ? null : holder.getLatestChunk()
+        );
     }
 
     @SubscribeEvent

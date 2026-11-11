@@ -587,6 +587,7 @@ public final class ModRegistry {
         public static final Predicate<CommandSourceStack> PERMISSION_TRACK = REGISTRY.registerCommand("track", UserLevel.OWNER_OP);
         public static final Predicate<CommandSourceStack> PERMISSION_QUEUE = REGISTRY.registerCommand("queue", UserLevel.ANYONE);
         public static final Predicate<CommandSourceStack> PERMISSION_VIEW = REGISTRY.registerCommand("view", UserLevel.OP);
+        public static final Predicate<CommandSourceStack> PERMISSION_WIRING = REGISTRY.registerCommand("wiring", UserLevel.OWNER_OP);
     }
 
     static class CreativeTabs {

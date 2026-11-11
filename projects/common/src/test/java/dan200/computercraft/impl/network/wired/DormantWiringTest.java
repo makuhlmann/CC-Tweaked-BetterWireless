@@ -107,6 +107,23 @@ public class DormantWiringTest {
             retire.run();
         }
 
+        // The chunk is no longer fully loaded: its blocks stay, but blocks next to it see it as unloaded, and its
+        // wiring is remembered.
+        void demote(int chunkX) {
+            var chunk = ChunkPos.pack(chunkX, 0);
+            wiring.unload(chunk, blocksIn(chunk), this::find);
+            unloaded.add(chunk);
+        }
+
+        // The chunk is fully loaded again, with the blocks it kept: they join their networks again.
+        void promote(int chunkX) {
+            var chunk = ChunkPos.pack(chunkX, 0);
+            unloaded.remove(chunk);
+            var retire = wiring.load(chunk);
+            for (var block : blocksIn(chunk)) connect(block.pos());
+            retire.run();
+        }
+
         // The server restarts: only what was saved is left (loaded chunks as they are), and no chunk is loaded.
         void restart() {
             var saved = new ArrayList<>(wiring.ports());
@@ -180,6 +197,62 @@ public class DormantWiringTest {
         world.breakBlock(new BlockPos(70, 64, 8));
         assertNotSame(network(a), network(b));
         assertFalse(a.allPeripherals().containsKey("b"));
+    }
+
+    @Test
+    public void keepsANetworkConnectedThroughChunksNoLongerFullyLoaded() {
+        var world = new World();
+        var a = world.place(new BlockPos(0, 64, 8), ALONG_X, "a");
+        world.cable(1, 46);
+        var b = world.place(new BlockPos(47, 64, 8), ALONG_X, "b");
+
+        // The middle chunk is no longer fully loaded. A cable next to it, placed again, connects through what's
+        // remembered of it.
+        world.demote(1);
+        world.breakBlock(new BlockPos(32, 64, 8));
+        assertNotSame(network(a), network(b));
+        world.place(new BlockPos(32, 64, 8), ALONG_X, null);
+        assertSame(network(a), network(b));
+        assertTrue(a.allPeripherals().containsKey("b"));
+
+        // Then it unloads: its piece stays, once.
+        world.unload(1);
+        assertSame(network(a), network(b));
+        assertEquals(16 + 16 + 1, network(a).nodes.size());
+        assertEquals(1, world.wiring.ports().size());
+    }
+
+    @Test
+    public void forgetsAChunksPiecesWhenItsFullyLoadedAgain() {
+        var world = new World();
+        var a = world.place(new BlockPos(0, 64, 8), ALONG_X, "a");
+        world.cable(1, 46);
+        var b = world.place(new BlockPos(47, 64, 8), ALONG_X, "b");
+
+        world.demote(1);
+        assertEquals(48 + 1, network(a).nodes.size());
+        world.promote(1);
+        assertSame(network(a), network(b));
+        assertEquals(48, network(a).nodes.size());
+        assertEquals(0, world.wiring.ports().size());
+    }
+
+    @Test
+    public void findsTheChunksCablesLeadIntoWhichArentKnown() {
+        var world = new World();
+        world.place(new BlockPos(0, 64, 8), ALONG_X, "a");
+        world.cable(1, 78);
+        world.unload(1);
+        world.unload(2);
+        // A cable which turns south at the edge of chunk 3, into chunk (3, 1).
+        world.place(new BlockPos(63, 64, 15), bit(Direction.WEST) | bit(Direction.SOUTH), null);
+
+        // Chunks 0 and 4 are loaded, 1 and 2 remembered; 3 and (3, 1) are neither.
+        LongSet loaded = new LongOpenHashSet(new long[]{ ChunkPos.pack(0, 0), ChunkPos.pack(4, 0) });
+        var ports = new ArrayList<>(world.wiring.ports());
+        ports.addAll(DormantWiring.findPieces(ChunkPos.pack(3, 0), world.blocksIn(ChunkPos.pack(3, 0))));
+        var frontier = DormantWiring.frontier(ports, pos -> loaded.contains(pos) || world.wiring.has(pos));
+        assertEquals(Set.of(ChunkPos.pack(3, 0), ChunkPos.pack(3, 1)), Set.of(Arrays.stream(frontier.toLongArray()).boxed().toArray(Long[]::new)));
     }
 
     @Test

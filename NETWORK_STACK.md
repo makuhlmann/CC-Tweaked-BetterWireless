@@ -178,6 +178,17 @@ An interface is a modem on one band:
   wiring is saved (in `computercraft/wiring.dat`, with that of loaded chunks), so networks come back after a restart
   before the chunks between their ends load. Only CC's own cables and wired modems are remembered; another mod's wired
   blocks in a chunk which isn't loaded still break the connection.
+  - A chunk which stops being fully loaded often stays in memory a long while first (or for good, near a chunk kept
+    loaded), and blocks next to it see it as unloaded from the start, with no unload to say so. So its wiring is
+    remembered when it leaves full loading (Fabric's full chunk status event, or NeoForge's ticket level event), and
+    it joins its networks again when it's fully loaded again. Without that, such chunks were never remembered, and
+    long cables broke beside them.
+  - A piece's ports are where its cables do connect to the next chunk, as their block states show (kept while the next
+    chunk is unloaded), not everywhere they might.
+  - `/computercraft wiring status` says how many chunks' wiring is remembered, and how many chunks cables lead into
+    that aren't known (loaded, or remembered). `/computercraft wiring trace` loads those, one each tick, follows the
+    cables on through them, and so remembers every chunk a cable crosses, without anyone going there; `stop` ends it.
+    It looks at most 4,096 chunks at a time.
 - **Wireless modems** are one interface on their configured band, by default the high band (short range, like Wi-Fi).
   The same modem can also be a second interface on the other band (`top:low`), so one modem can serve both a local
   network and a long-range link.

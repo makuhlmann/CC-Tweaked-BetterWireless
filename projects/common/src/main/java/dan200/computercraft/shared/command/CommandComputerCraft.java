@@ -100,7 +100,62 @@ public final class CommandComputerCraft {
                 .then(command("dump")
                     .argManyValue("fields", metric(), DEFAULT_FIELDS)
                     .executes((c, f) -> trackDump(c.getSource(), f))))
+
+            .then(choice("wiring")
+                .requires(ModRegistry.Permissions.PERMISSION_WIRING)
+                .then(command("status").executes(c -> wiringStatus(c.getSource())))
+                .then(command("trace").executes(c -> wiringTrace(c.getSource())))
+                .then(command("stop").executes(c -> wiringStop(c.getSource()))))
         );
+    }
+
+    /**
+     * Say what's known of wiring in chunks which aren't loaded, in the source's dimension.
+     *
+     * @param source The thing that executed this command.
+     * @return How many chunks cables lead into whose wiring isn't known.
+     */
+    private static int wiringStatus(CommandSourceStack source) {
+        var status = ServerContext.get(source.getServer()).unloadedWiring().status(source.getLevel());
+        source.sendSuccess(() -> Component.translatable("commands.computercraft.wiring.status.result", status.remembered(), status.unknown()), false);
+        if (status.tracing()) {
+            source.sendSuccess(() -> Component.translatable("commands.computercraft.wiring.trace.running", status.looked(), status.toLook()), false);
+        }
+        return status.unknown();
+    }
+
+    /**
+     * Follow cables into chunks whose wiring isn't known, in the source's dimension.
+     *
+     * @param source The thing that executed this command.
+     * @return How many chunks there are to look at, to start with.
+     */
+    private static int wiringTrace(CommandSourceStack source) {
+        var wiring = ServerContext.get(source.getServer()).unloadedWiring();
+        var count = wiring.startTrace(source.getLevel(), message -> source.sendSuccess(() -> message, true));
+        if (count < 0) {
+            var status = wiring.status(source.getLevel());
+            source.sendSuccess(() -> Component.translatable("commands.computercraft.wiring.trace.running", status.looked(), status.toLook()), false);
+            return 0;
+        }
+        source.sendSuccess(() -> Component.translatable(count == 0 ? "commands.computercraft.wiring.trace.none" : "commands.computercraft.wiring.trace.started", count), true);
+        return count;
+    }
+
+    /**
+     * Stop following cables into chunks whose wiring isn't known.
+     *
+     * @param source The thing that executed this command.
+     * @return How many chunks were looked at.
+     */
+    private static int wiringStop(CommandSourceStack source) {
+        var looked = ServerContext.get(source.getServer()).unloadedWiring().stopTrace();
+        if (looked < 0) {
+            source.sendFailure(Component.translatable("commands.computercraft.wiring.stop.not_tracing"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.translatable("commands.computercraft.wiring.stop.done", looked), true);
+        return looked;
     }
 
     /**

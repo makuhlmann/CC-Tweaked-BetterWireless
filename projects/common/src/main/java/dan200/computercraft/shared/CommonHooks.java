@@ -32,6 +32,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LecternBlock;
+import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.storage.loot.BuiltInLootTables;
 import net.minecraft.world.level.storage.loot.LootPool;
@@ -116,8 +117,21 @@ public final class CommonHooks {
         MonitorWatcher.onWatch(chunk, player);
     }
 
-    public static void onChunkTicketLevelChanged(ServerLevel level, long chunkPos, int oldLevel, int newLevel) {
+    /**
+     * A chunk's ticket level has changed: as it moves between not being loaded, and being fully loaded.
+     *
+     * @param level    The chunk's level.
+     * @param chunkPos The chunk, as {@link net.minecraft.world.level.ChunkPos#pack()}.
+     * @param oldLevel Its old ticket level.
+     * @param newLevel Its new ticket level.
+     * @param chunk    The chunk, if it's in memory.
+     */
+    public static void onChunkTicketLevelChanged(ServerLevel level, long chunkPos, int oldLevel, int newLevel, @Nullable ChunkAccess chunk) {
         TickScheduler.onChunkTicketChanged(level, chunkPos, oldLevel, newLevel);
+        var context = ServerContext.getIfRunning(level.getServer());
+        if (context != null) {
+            context.unloadedWiring().onChunkLevelChanged(level, chunkPos, oldLevel, newLevel, chunk instanceof LevelChunk full ? full : null);
+        }
     }
 
     public static InteractionResult onUseBlock(Player player, Level level, InteractionHand hand, BlockHitResult hitResult) {
