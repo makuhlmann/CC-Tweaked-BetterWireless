@@ -5,6 +5,9 @@
 package dan200.computercraft.shared.peripheral.modem.wired;
 
 import dan200.computercraft.impl.network.wired.DormantWiring;
+import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,6 +40,39 @@ public class UnloadedWiringTest {
             assertArrayEquals(overworld.get(i).sides(), pieces.get(i).sides());
         }
         assertFalse(Files.exists(file.resolveSibling("wiring.dat.new")));
+    }
+
+    /**
+     * Joining a chunk which has loaded may load others (a block looking at its neighbour waits for a chunk still loading,
+     * and the server loads others meanwhile), which adds them to the chunks loading while we go through them. That once
+     * spoilt the set, and crashed the server when the next chunk loaded.
+     */
+    @Test
+    public void drainsChunksWhichLoadOthers() {
+        LongSet loading = new LongLinkedOpenHashSet();
+        for (long pos = 0; pos < 150; pos++) loading.add(pos);
+
+        // Each chunk loads two more as it joins, enough for the set to grow, and every third isn't ready yet.
+        UnloadedWiring.drain(loading, pos -> {
+            if (pos < 150) {
+                loading.add(1000 + pos);
+                loading.add(2000 + pos);
+            }
+            return pos % 3 != 0;
+        });
+
+        LongSet expected = new LongOpenHashSet();
+        for (long pos = 0; pos < 150; pos++) {
+            if (pos % 3 == 0) expected.add(pos);
+            expected.add(1000 + pos);
+            expected.add(2000 + pos);
+        }
+        assertEquals(expected, loading);
+
+        // The set still works.
+        for (long pos = 5000; pos < 6000; pos++) loading.add(pos);
+        for (long pos = 5000; pos < 6000; pos++) assertTrue(loading.remove(pos));
+        assertEquals(expected, loading);
     }
 
     @Test

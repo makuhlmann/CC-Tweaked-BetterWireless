@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.function.LongPredicate;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -188,14 +189,27 @@ public final class UnloadedWiring {
     }
 
     public void tick() {
-        for (var state : levels.values()) {
-            for (var it = state.loading.iterator(); it.hasNext(); ) {
-                if (join(state, it.nextLong())) it.remove();
-            }
-        }
+        // Joining a chunk may load others (and so add to the chunks loading, possibly in another level): see drain.
+        for (var state : List.copyOf(levels.values())) drain(state.loading, pos -> join(state, pos));
 
         sinceSave++;
         if (dirty && sinceSave >= SAVE_INTERVAL) save();
+    }
+
+    /**
+     * Try each of a set of chunks, and take out those which are done.
+     * <p>
+     * Trying one may load other chunks, which adds them to the set: a block looking at its neighbour in a chunk which is
+     * still loading waits for that chunk, and the server finishes loading others meanwhile. Changing a set while going
+     * through it spoils it, so go through a copy.
+     *
+     * @param chunks The chunks.
+     * @param done   Tries a chunk, returning whether it's done.
+     */
+    static void drain(LongSet chunks, LongPredicate done) {
+        for (var pos : chunks.toLongArray()) {
+            if (chunks.contains(pos) && done.test(pos)) chunks.remove(pos);
+        }
     }
 
     /**
