@@ -6,3 +6,5 @@ ex:
 "cell activate ACME 7Q2M-K4XD-9PRB-T6WN-HJ3C" activates the phone on the network ACME, with a code from its administrator.
 "cell send 0042 Meet at the station" sends a message to the phone with the number 0042.
 "cell messages" lists the messages this phone has received.
+"cell gui" shows menus to read, send and answer messages, to choose a network (or let the phone choose), to turn cell service off and on, and to open the monitor. Choose with Up, Down and Enter or with the mouse, go back with Backspace or Left, and quit with Q. The top line is a status bar: the network's name, an R when roaming, and the signal as four bars, with a note in the middle when there are new messages. There's no bar while cell service is turned off, or before the phone is activated.
+"cell bar" runs a shell beneath the same status bar, and "cell bar <program> [arguments]" another program. Put "cell bar" in a startup file to always have the bar.

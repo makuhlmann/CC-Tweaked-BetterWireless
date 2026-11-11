@@ -12,6 +12,8 @@ local function usage()
     print(name .. " send <number> <message>")
     print(name .. " messages")
     print(name .. " monitor")
+    print(name .. " gui")
+    print(name .. " bar [program] [arguments]")
 end
 
 if not crypto or not enclave then
@@ -213,6 +215,12 @@ end
 local command = args[1]
 if command == "monitor" and #args == 1 then
     monitor()
+elseif command == "gui" and #args == 1 then
+    require("cc.internal.net.cell.gui").run(monitor)
+elseif command == "bar" then
+    -- Run a program beneath the status bar: a shell, if none is given.
+    if #args == 1 then args[2] = "shell" end
+    require("cc.internal.net.cell.bar").run(shell.execute, table.unpack(args, 2))
 elseif command == nil then
     local info = net.cell.info()
     print(STATES[info.state] or info.state)

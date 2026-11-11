@@ -148,9 +148,13 @@ shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, ind
     end
 end)
 shell.setCompletionFunction("rom/programs/net/celld.lua", completion.build({ completion.choice, { "stop" } }))
-shell.setCompletionFunction("rom/programs/net/cell.lua", completion.build(
-    { completion.choice, { "activate ", "send ", "messages", "monitor" } }
-))
+shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, text, previous)
+    if index == 1 then
+        return completion.choice(shell, text, previous, { "activate ", "send ", "messages", "monitor", "gui", "bar " })
+    elseif previous[2] == "bar" then
+        return completion.programWithArgs(shell, text, previous, 3)
+    end
+end)
 shell.setCompletionFunction("rom/programs/command/exec.lua", completion.build(completion.command))
 shell.setCompletionFunction("rom/programs/http/wget.lua", completion.build({ completion.choice, { "run " } }))
 
