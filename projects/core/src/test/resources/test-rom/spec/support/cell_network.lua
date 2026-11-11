@@ -137,6 +137,32 @@ local function operator(cell_positions, options)
         start_tower(entry)
     end
 
+    --[[- Let this operator's phones roam on another operator's cells. The other's core joins ours as a cell would
+    (and as `cellcore` has it do over a connection), and ours tells its phones about the other network.
+
+    @tparam table visited The other operator.
+    ]]
+    function setup.roam_on(visited)
+        local home_core, visited_core = setup.core, visited.core
+        local key = home_core:add_tower(visited.core_stack.id, visited.core_stack.interfaces.backhaul.address, function(message)
+            visited.core_stack:schedule(0.01, function()
+                if visited.core == visited_core then visited_core:partner_control(name, copy(message)) end
+            end)
+        end, visited.name)
+        visited_core:add_partner(name, {
+            address = core_stack.interfaces.backhaul.address, tunnel_key = key,
+            send = function(message)
+                core_stack:schedule(0.01, function()
+                    if setup.core == home_core then home_core:control(visited.core_stack.id, copy(message)) end
+                end)
+            end,
+        })
+        local keys = {}
+        for network, signing in pairs(home_core.partner_keys) do keys[network] = signing end
+        keys[visited.name] = visited.signing_public
+        home_core:set_partner_keys(keys)
+    end
+
     --- Restart the core: it forgets every phone, and its cells join it again, forgetting their phones too.
     function setup.restart_core()
         for _, entry in ipairs(towers) do entry.tower:stop() end
@@ -156,7 +182,8 @@ local function operator(cell_positions, options)
             stack = stack, crypto = crypto, interface = "air", epoch = now, sim = sim,
             operator = phone_options.activated ~= false and { network = name, key = operator_key.public, signing = signing_public } or nil,
             on_message = phone_options.on_message, on_activated = phone_options.on_activated,
-            on_sent = phone_options.on_sent,
+            on_sent = phone_options.on_sent, partners = phone_options.partners, selection = phone_options.selection,
+            on_partners = phone_options.on_partners,
         }
         return phone, stack
     end

@@ -13,10 +13,15 @@ Computers connect securely, and say what they want to be: a cell, or an administ
 always allowed. Others wait, with their connection open, until someone allows their key. That's done by the computer's
 ID, after checking its fingerprint, so nobody needs to type a key in.
 
-Every connection starts with a hello, `{ role = "cell" or "admin", id = <computer ID> }`, which the core answers:
-`{ waiting = true, fingerprint = ... }` while the computer waits, then the cell's details (for a cell) or `{ ok = true }`
-(for an administrator), or `{ error = ... }`. Administrators then send requests, each with an `op`, and get a reply to
-each: `status`, `allow`, `deny`, `add`, `remove` and `log`.
+Every connection starts with a hello, `{ role = "cell", "admin" or "roam", id = <computer ID> }`, which the core
+answers: `{ waiting = true, fingerprint = ... }` while the computer waits, then the cell's details (for a cell) or
+`{ ok = true }` (for an administrator), or `{ error = ... }`. Administrators then send requests, each with an `op`, and
+get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `log`, `carry` and `uncarry`.
+
+Roaming: the core of another network which carries this network's phones connects with the role `roam`, giving its
+network's name and signing key. Once it's allowed, it's to this core what a cell is (see [`cc.internal.net.cell.core`]),
+and this network's phones are told they may use its cells. The other way round, this core connects to the cores of the
+networks whose phones it carries (`carry`), kept in the file `roaming`, and tries again when it loses them.
 
 @local
 ]]
@@ -45,7 +50,11 @@ local CERTIFICATE_LIFETIME = 365 * 24 * 60 * 60 * 1000
 local ROLES = {
     cell = { name = "Cell", wants = "to join as a cell" },
     admin = { name = "Computer", wants = "to manage the network" },
+    roam = { name = "Network", wants = "to carry this network's phones" },
 }
+
+-- How long to wait before connecting again to a network whose phones we carry, at first and at most, in seconds.
+local FIRST_DELAY, MAX_DELAY = 2, 60
 
 local Service = {}
 Service.__index = Service
@@ -89,11 +98,13 @@ end
     listen = function():table, start_core = function(options:table):table,
     signing = string, sign = function(data:string):string,
     clock = function():number, epoch = function():number, wake = function(),
+    id? = number, connect? = function(core:string):table, sleep? = function(seconds:number),
 } options Where the core's files are, with its `config` (the network's name and prefix, from `cellcore setup`); this
 computer's key, as hexadecimal digits, and a way to get a key's fingerprint; a way to listen for secure connections on
 the control port; a way to start the core itself (given the network, prefix, subscribers, activation codes, and a
 function told about events); the operator's Ed25519 key and a way to sign with it, for cells' certificates; the time,
-as `os.clock` and `os.epoch("utc")` give it; and a way to wake tasks waiting for something to change.
+as `os.clock` and `os.epoch("utc")` give it; a way to wake tasks waiting for something to change; and, to carry other
+networks' phones, this computer's ID, a way to connect securely to another core's control port, and a way to wait.
 @treturn[1] table The service. Pass it every event with `resume`.
 @treturn[2] nil If it couldn't start.
 @treturn[2] string Why not.
@@ -108,9 +119,12 @@ local function new(options)
         options = options, config = config,
         files = {
             subscribers = fs.combine(options.dir, "subscribers"), codes = fs.combine(options.dir, "codes"),
-            cells = fs.combine(options.dir, "cells"),
+            cells = fs.combine(options.dir, "cells"), roaming = fs.combine(options.dir, "roaming"),
         },
         waiting = {}, cells = {}, admins = {}, lines = {}, line_count = 0,
+        -- Roaming: the cores of networks which carry our phones, connected now, by network; and the networks whose
+        -- phones we carry, by name.
+        partners = {}, carrying = {},
     }, Service)
     self.subscribers = read_table(self.files.subscribers)
     self:read_codes()
@@ -132,6 +146,13 @@ local function new(options)
     self.tasks = tasks.new(function(task_err) self:log("Error: " .. tostring(task_err)) end)
     self.tasks:spawn(function() self:accept() end)
     self:log(("Started the core of %s, giving phones addresses in %s"):format(config.network, config.prefix))
+
+    self:update_partner_keys()
+    for network, entry in pairs(read_table(self.files.roaming)) do
+        if common.is_network(network) and network ~= config.network and type(entry) == "table" and type(entry.core) == "string" then
+            self:start_carrying(network, entry.core)
+        end
+    end
     return self
 end
 
@@ -163,7 +184,12 @@ function Service:read_allowed()
         if is_key(key) then
             if type(entry) == "string" then entry = { label = entry, role = "cell" } end
             if type(entry) == "table" and (ROLES[entry.role] or entry.role == "denied") then
-                self.allowed[key:lower()] = { label = tostring(entry.label or ""), role = entry.role, id = tonumber(entry.id) }
+                self.allowed[key:lower()] = {
+                    label = tostring(entry.label or ""), role = entry.role, id = tonumber(entry.id),
+                    -- For a roaming partner: its network, and the key its cells are certified with.
+                    network = common.is_network(entry.network) and entry.network or nil,
+                    signing = is_key(entry.signing) and entry.signing or nil,
+                }
             end
         end
     end
@@ -206,7 +232,11 @@ function Service:event(event, ...)
         self:save_subscribers()
         self:log(("Activated %s, number %s"):format(tostring(details[2]), tostring(details[3])))
     elseif event == "attached" then
-        self:log(("%s attached at cell #%d, as %s"):format(self:subscriber_name(details[1]), details[3], details[2]))
+        self:log(("%s attached at cell #%d%s, as %s"):format(
+            self:subscriber_name(details[1]), details[3], details[4] and " of " .. details[4] or "", details[2]
+        ))
+    elseif event == "visitor" then
+        self:log(("A phone of %s attached at cell #%d"):format(tostring(details[1]), details[2]))
     elseif event == "handover" then
         self:log(("%s moved from cell #%d to #%d"):format(self:subscriber_name(details[1]), details[2], details[3]))
     elseif event == "rejected" then
@@ -257,19 +287,19 @@ function Service:serve(connection)
         if entry and entry.role == "denied" then
             return refuse(connection, "The core has refused this computer.")
         elseif entry then
-            return refuse(connection, entry.role == "cell"
-                and "This computer may be a cell, but not manage the network."
-                or "This computer may manage the network, but not be a cell.")
+            local may = { cell = "be a cell", admin = "manage the network", roam = "carry the network's phones" }
+            return refuse(connection, ("This computer may %s, but not %s."):format(may[entry.role], may[role]))
         end
-        if not self:wait(connection, key, role, id) then return end
+        if not self:wait(connection, key, role, id, hello) then return end
     end
 
     if role == "cell" then return self:serve_cell(connection, key, hello, id) end
+    if role == "roam" then return self:serve_partner(connection, key, hello, id) end
     return self:serve_admin(connection, key)
 end
 
 -- Keep a computer waiting until it's allowed. Returns whether it was.
-function Service:wait(connection, key, role, id)
+function Service:wait(connection, key, role, id, hello)
     local count = 0
     for _ in pairs(self.waiting) do count = count + 1 end
     local old = self.waiting[key]
@@ -283,10 +313,13 @@ function Service:wait(connection, key, role, id)
     local fingerprint = self.options.fingerprint(key)
     local entry = {
         key = key, id = id, role = role, fingerprint = fingerprint, since = self.options.clock(), connection = connection,
+        -- A network which wants to carry our phones says which it is.
+        network = role == "roam" and common.is_network(hello.network) and hello.network or nil,
     }
     self.waiting[key] = entry
-    self:log(("%s #%s wants %s. Fingerprint %s. Allow it with 'cellcore allow %s'"):format(
-        ROLES[role].name, tostring(id or "?"), ROLES[role].wants, fingerprint, tostring(id or fingerprint:sub(1, 9))
+    self:log(("%s #%s%s wants %s. Fingerprint %s. Allow it with 'cellcore allow %s'"):format(
+        ROLES[role].name, tostring(id or "?"), entry.network and " (" .. entry.network .. ")" or "", ROLES[role].wants,
+        fingerprint, tostring(id or fingerprint:sub(1, 9))
     ))
     connection:send({ waiting = true, fingerprint = fingerprint })
 
@@ -373,6 +406,181 @@ function Service:serve_cell(connection, key, hello, id)
     end
 end
 
+-- Tell the core which networks' cells our phones may use: every partner we've allowed, connected now or not, so
+-- phones keep hearing of a partner whose core is away for a moment.
+function Service:update_partner_keys()
+    local keys = {}
+    for _, entry in pairs(self.allowed) do
+        local signing = entry.role == "roam" and entry.network and from_hex(entry.signing)
+        if signing and #signing == 32 then keys[entry.network] = signing end
+    end
+    self.core:set_partner_keys(keys)
+end
+
+-- Another network's core, which carries our phones at its cells. To our core, it's a cell.
+function Service:serve_partner(connection, key, hello, id)
+    local network, signing = hello.network, from_hex(hello.signing)
+    if not common.is_network(network) or not signing or #signing ~= 32 or not id then return connection:abort() end
+    if network == self.config.network then return refuse(connection, "That's this network's own name.") end
+    -- A partner is allowed as one network, and can't come back as another. Nor can two be the same network.
+    local known = self.allowed[key]
+    if known and known.network and known.network ~= network then
+        return refuse(connection, ("This computer was allowed as the core of %s, not of %s."):format(known.network, network))
+    end
+    for other_key, other in pairs(self.allowed) do
+        if other_key ~= key and other.role == "roam" and other.network == network then
+            return refuse(connection, ("Another computer is the core of %s."):format(network))
+        end
+    end
+
+    local old = self.partners[network]
+    if old then old.connection:abort() end
+
+    local outbox, done = {}, false
+    local function send(message)
+        outbox[#outbox + 1] = message
+        self.options.wake()
+    end
+    local peer = connection:getPeer()
+    local tunnel_key = self.core:add_tower(id, address.parse(peer), send, network)
+    if not connection:send({ network = self.config.network, tunnel_key = tunnel_key }) then
+        self.core:remove_tower(id, send)
+        return connection:abort()
+    end
+
+    local entry = { id = id, key = key, network = network, address = peer, since = self.options.epoch(), connection = connection }
+    self.partners[network] = entry
+    if known and (known.id ~= id or known.network ~= network or known.signing ~= hello.signing:lower()) then
+        known.id, known.network, known.signing = id, network, hello.signing:lower()
+        self:save_allowed()
+    end
+    self:update_partner_keys()
+    self:log(("%s (core #%d, from %s) now carries this network's phones"):format(network, id, peer))
+
+    self.tasks:spawn(function()
+        while not done do
+            local message = table.remove(outbox, 1)
+            if message then
+                if not connection:send(message) then done = true end
+            else
+                coroutine.yield()
+            end
+        end
+    end)
+    while not done do
+        local message = connection:receive()
+        if message == nil then break end
+        local ok, err = pcall(self.core.control, self.core, id, message)
+        if not ok then self:log("Error: " .. tostring(err)) end
+    end
+    done = true
+    connection:abort()
+    self.core:remove_tower(id, send)
+    if self.partners[network] == entry then
+        self.partners[network] = nil
+        self:log(("Lost the core of %s, which carries this network's phones"):format(network))
+    end
+end
+
+-- Carry another network's phones: connect to its core, and keep connecting.
+function Service:start_carrying(network, core)
+    local options = self.options
+    local entry = { network = network, core = core, state = "connecting" }
+    local old = self.carrying[network]
+    self.carrying[network] = entry
+    if old and old.connection then old.connection:abort() end
+    if not options.connect or not options.sleep then
+        entry.state, entry.error = "lost", "This computer can't connect to other cores"
+        return
+    end
+
+    self.tasks:spawn(function()
+        local delay = FIRST_DELAY
+        while not self.stopped and self.carrying[network] == entry do
+            entry.state, entry.error = "connecting", nil
+            local connected, connection, err = pcall(options.connect, core)
+            if not connected then connection, err = nil, tostring(connection) end
+            if connection then
+                entry.connection = connection
+                local ok, reason = pcall(self.carry, self, entry, connection)
+                entry.connection = nil
+                connection:abort()
+                if entry.served then delay, entry.served = FIRST_DELAY, false end
+                if not ok then reason = tostring(reason) end
+                if entry.state ~= "refused" then entry.state, entry.error = "lost", reason or "Its core closed the connection" end
+            else
+                entry.state, entry.error = "lost", tostring(err)
+            end
+            if self.stopped or self.carrying[network] ~= entry then return end
+            entry.retry = delay
+            options.sleep(delay)
+            delay = math.min(delay * 2, MAX_DELAY)
+        end
+    end)
+end
+
+-- One connection to the core of a network whose phones we carry. Returns why it ended.
+function Service:carry(entry, connection)
+    local options, network = self.options, entry.network
+    connection:send({ role = "roam", id = options.id, network = self.config.network, signing = to_hex(options.signing) })
+    local reply, err = connection:receive(HELLO_TIMEOUT)
+    if type(reply) == "table" and reply.waiting then
+        entry.state = "waiting"
+        reply, err = connection:receive(WAIT_TIMEOUT + 60)
+    end
+    if type(reply) == "table" and type(reply.error) == "string" then
+        entry.state, entry.error = "refused", reply.error
+        return
+    end
+    if type(reply) ~= "table" or type(reply.tunnel_key) ~= "string" or #reply.tunnel_key ~= 32 then
+        return err or "Its core didn't answer"
+    end
+    if reply.network ~= network then
+        entry.state, entry.error = "refused", ("That's the core of %s, not of %s"):format(tostring(reply.network), network)
+        return
+    end
+
+    local outbox, done = {}, false
+    local function send(message)
+        outbox[#outbox + 1] = message
+        options.wake()
+    end
+    self.core:add_partner(network, { address = address.parse(connection:getPeer()), tunnel_key = reply.tunnel_key, send = send })
+    entry.state, entry.served = "serving", true
+    self:log(("Carrying the phones of %s, through its core %s"):format(network, entry.core))
+
+    self.tasks:spawn(function()
+        while not done do
+            local message = table.remove(outbox, 1)
+            if message then
+                if not connection:send(message) then done = true end
+            else
+                coroutine.yield()
+            end
+        end
+    end)
+    local reason
+    while not done do
+        local message, receive_err = connection:receive()
+        if message == nil then
+            reason = receive_err or "Its core closed the connection"
+            break
+        end
+        local ok, control_err = pcall(self.core.partner_control, self.core, network, message)
+        if not ok then self:log("Error: " .. tostring(control_err)) end
+    end
+    done = true
+    self.core:remove_partner(network, send)
+    self:log(("Lost the core of %s: its phones here have no service"):format(network))
+    return reason
+end
+
+function Service:save_carrying()
+    local saved = {}
+    for network, entry in pairs(self.carrying) do saved[network] = { core = entry.core } end
+    write_table(self.files.roaming, saved)
+end
+
 local requests = {}
 
 function Service:serve_admin(connection, key)
@@ -406,7 +614,7 @@ function requests.status(self)
     local fingerprint, now = self.options.fingerprint, self.options.epoch()
     local result = {
         network = self.config.network, prefix = self.config.prefix, messages = #self.core.messages, codes = 0,
-        cells = {}, allowed = {}, waiting = {}, subscribers = {},
+        cells = {}, allowed = {}, waiting = {}, subscribers = {}, partners = {}, carrying = {},
     }
     for id, cell in pairs(self.cells) do
         result.cells[#result.cells + 1] = {
@@ -418,12 +626,31 @@ function requests.status(self)
     for key, entry in pairs(self.allowed) do
         result.allowed[#result.allowed + 1] = {
             key = key, fingerprint = fingerprint(key), label = entry.label, role = entry.role, id = entry.id,
+            network = entry.network,
+        }
+        -- Networks which carry our phones.
+        if entry.role == "roam" and entry.network then
+            local connected = self.partners[entry.network]
+            result.partners[#result.partners + 1] = {
+                network = entry.network, id = entry.id, key = key, fingerprint = fingerprint(key), phones = 0,
+                connected = connected ~= nil and connected.key == key, address = connected and connected.address or nil,
+            }
+        end
+    end
+    table.sort(result.partners, function(a, b) return a.network < b.network end)
+    -- Networks whose phones we carry.
+    local visitors = {}
+    for _, visitor in ipairs(self.core:visitor_info()) do visitors[visitor.network] = (visitors[visitor.network] or 0) + 1 end
+    for network, entry in pairs(self.carrying) do
+        result.carrying[#result.carrying + 1] = {
+            network = network, core = entry.core, state = entry.state, error = entry.error, phones = visitors[network] or 0,
         }
     end
+    table.sort(result.carrying, function(a, b) return a.network < b.network end)
     table.sort(result.allowed, by_id)
     for key, entry in pairs(self.waiting) do
         result.waiting[#result.waiting + 1] = {
-            key = key, fingerprint = entry.fingerprint, id = entry.id, role = entry.role,
+            key = key, fingerprint = entry.fingerprint, id = entry.id, role = entry.role, network = entry.network,
             waited = math.floor(self.options.clock() - entry.since),
         }
     end
@@ -433,10 +660,18 @@ function requests.status(self)
     for _, session in ipairs(self.core:info()) do sessions[session.sim] = session end
     for sim, subscriber in pairs(self.subscribers) do
         local session = sessions[sim]
+        local attached = session and session.attached
         result.subscribers[#result.subscribers + 1] = {
             id = subscriber.id, number = subscriber.number, fingerprint = fingerprint(sim),
-            address = session and session.address, cell = session and session.attached and session.cell or nil,
+            address = session and session.address, cell = attached and session.cell or nil,
+            roaming = attached and session.roaming or nil, barred = subscriber.barred or nil,
+            may_roam = subscriber.roaming ~= false,
         }
+        if attached and session.roaming then
+            for _, partner in ipairs(result.partners) do
+                if partner.network == session.roaming then partner.phones = partner.phones + 1 end
+            end
+        end
     end
     table.sort(result.subscribers, function(a, b) return tostring(a.id) < tostring(b.id) end)
     for _, code in pairs(self.codes) do
@@ -452,17 +687,20 @@ function requests.allow(self, request, by)
 
     local waiting, known = self.waiting[key], self.allowed[key]
     if known and known.role == "denied" then known = nil end
-    local role = waiting and waiting.role or (request.role == "admin" and "admin") or (known and known.role) or "cell"
+    local role = waiting and waiting.role or (ROLES[request.role] and request.role ~= "cell" and request.role)
+        or (known and known.role) or "cell"
     local id = waiting and waiting.id or (known and known.id) or (self.allowed[key] and self.allowed[key].id)
+    local network = role == "roam" and ((waiting and waiting.network) or (known and known.network)) or nil
+    local names = { cell = "cell", admin = "administrator", roam = "roaming partner" }
     local label = type(request.label) == "string" and request.label ~= "" and request.label:sub(1, 32)
-        or (known and known.label ~= "" and known.label)
-        or ((role == "cell" and "cell #" or "admin #") .. tostring(id or "?"))
+        or (known and known.label ~= "" and known.label) or network
+        or (({ cell = "cell #", admin = "admin #", roam = "partner #" })[role] .. tostring(id or "?"))
 
-    self.allowed[key] = { label = label, role = role, id = id }
+    self.allowed[key] = { label = label, role = role, id = id, network = network, signing = known and known.signing or nil }
     self:save_allowed()
-    self:log(("Allowed %s #%s, %s%s"):format(role == "cell" and "cell" or "administrator", tostring(id or "?"), label, self:by(by)))
+    self:log(("Allowed %s #%s, %s%s"):format(names[role], tostring(id or "?"), label, self:by(by)))
     self.options.wake()
-    return { role = role, id = id, label = label, fingerprint = self.options.fingerprint(key) }
+    return { role = role, id = id, label = label, network = network, fingerprint = self.options.fingerprint(key) }
 end
 
 --- Refuse a computer, by its key, from now on. Any connections it has are dropped.
@@ -487,7 +725,40 @@ function requests.deny(self, request, by)
     for connection, admin in pairs(self.admins) do
         if admin == key then connection:abort() end
     end
+    -- A network which carried our phones no longer does, and they're told its cells aren't for them.
+    for _, partner in pairs(self.partners) do
+        if partner.key == key then partner.connection:abort() end
+    end
+    self:update_partner_keys()
     return { id = id }
+end
+
+--- Carry another network's phones at our cells: connect to its core, from now on.
+function requests.carry(self, request, by)
+    local network, core = request.network, request.core
+    if not common.is_network(network) then return { error = "Network names are letters, digits and dashes, up to 32 of them" } end
+    if network == self.config.network then return { error = "That's this network" } end
+    if type(core) ~= "string" or #core < 1 or #core > 64 or core:find("[^%w%.%-_:]") then
+        return { error = "Expected the name or address of the other network's core" }
+    end
+    self:start_carrying(network, core)
+    self:save_carrying()
+    self:log(("Set up to carry the phones of %s, through its core %s%s"):format(network, core, self:by(by)))
+    -- What the other core's administrator needs, to allow this one.
+    return { network = network, core = core, id = self.options.id, fingerprint = self.options.fingerprint(self.options.identity) }
+end
+
+--- Stop carrying another network's phones.
+function requests.uncarry(self, request, by)
+    local entry = type(request.network) == "string" and self.carrying[request.network]
+    if not entry then return { error = "This network doesn't carry the phones of " .. tostring(request.network) } end
+    self.carrying[request.network] = nil
+    if entry.connection then entry.connection:abort() end
+    self.core:remove_partner(request.network)
+    self:save_carrying()
+    self:log(("Stopped carrying the phones of %s%s"):format(request.network, self:by(by)))
+    self.options.wake()
+    return { network = request.network }
 end
 
 --- Make an activation code for a subscriber.
@@ -562,7 +833,11 @@ function Service:stop()
     for _, entry in pairs(self.waiting) do entry.connection:abort() end
     for _, cell in pairs(self.cells) do cell.connection:abort() end
     for connection in pairs(self.admins) do connection:abort() end
-    self.waiting, self.cells, self.admins = {}, {}, {}
+    for _, partner in pairs(self.partners) do partner.connection:abort() end
+    for _, entry in pairs(self.carrying) do
+        if entry.connection then entry.connection:abort() end
+    end
+    self.waiting, self.cells, self.admins, self.partners, self.carrying = {}, {}, {}, {}, {}
 end
 
 return {

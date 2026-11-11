@@ -81,8 +81,12 @@ end
 function Tower:radio(phone, message)
     if type(message) ~= "table" then return end
     local op = message.op
-    if op == "attach" and message.network == self.network and type(message.handshake) == "string" then
-        self.control_send({ op = "attach", phone = phone, handshake = message.handshake })
+    if op == "attach" and common.is_network(message.network) and type(message.handshake) == "string" then
+        -- A phone of another network may be roaming: the core knows whether we carry that network's phones.
+        self.control_send({
+            op = "attach", phone = phone, handshake = message.handshake,
+            network = message.network ~= self.network and message.network or nil,
+        })
     elseif op == "activate" and message.network == self.network and type(message.tag) == "string"
         and type(message.handshake) == "string" then
         self.control_send({ op = "activate", phone = phone, tag = message.tag, handshake = message.handshake })

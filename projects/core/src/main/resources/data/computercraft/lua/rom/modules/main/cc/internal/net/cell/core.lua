@@ -16,6 +16,11 @@ sealed tunnel to the phone's cell, and packets from phones come up tunnels into 
 Handover goes through the core, like LTE's S1 handover: the phone's cell asks for it, the core gives the target cell
 the phone's context, the phone moves, and the target cell asks the core to switch the phone's tunnel to it.
 
+Roaming: a core can carry the phones of another network (a partner) at its own cells. To the phones' own core (their
+home), the core carrying them (the visited one) is one big cell: it passes on their handshakes, which only the home core
+can answer, and their packets go through a tunnel to the home core's gateway, so a roaming phone keeps its address.
+`add_tower` takes a visited core at the home core, and `add_partner` a home core at the visited one.
+
 @local
 ]]
 
@@ -50,6 +55,9 @@ local MAX_MESSAGES, MAX_MAILBOX, MESSAGE_LIFETIME = 1000, 50, 7 * 24 * 60 * 60 *
 
 -- How many of the messages each phone sent to remember, to tell when one comes twice.
 local MAX_SENT = 64
+
+-- How many phones of other networks may be attached here, or attaching, at once.
+local MAX_VISITORS, MAX_ROAM_PENDING = 256, 256
 
 local is_id = common.is_id
 
@@ -92,6 +100,11 @@ local function new(options)
         network_address = address.network(network_address, prefix), prefix = prefix,
         next_host = 2,
         towers = {}, sessions = {}, by_teid = {}, by_address = {}, pending = {},
+        -- Roaming. At home: the networks whose cells our phones may use, by name, to their signing keys. Visited:
+        -- the networks whose phones we carry; those phones, by our tunnel ID for them, by their network and its
+        -- tunnel ID, and by network and phone; and phones still attaching, by cell and phone, and network and phone.
+        partner_keys = {}, partners = {}, visitors = {}, visitor_count = 0, visitors_by_home = {}, visitors_by_phone = {},
+        roam_pending = {}, roam_pending_count = 0,
     }, Core)
 
     -- The gateway: everything for phones goes down their tunnels.
@@ -101,6 +114,8 @@ local function new(options)
 
     -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
     self.socket = assert(stack:udp_open(common.TUNNEL_PORT, function(data, from) self:uplink(data, from) end, common.TUNNEL_LIMITS))
+    -- Packets for other networks' phones here, from their own cores.
+    self.roam_socket = assert(stack:udp_open(common.ROAM_TUNNEL_PORT, function(data, from) self:roam_downlink(data, from) end, common.TUNNEL_LIMITS))
     self.retry_timer = stack:schedule(MESSAGE_RETRY, function() self:retry_messages() end)
     return self
 end
@@ -124,19 +139,33 @@ end
 
 --[[- Add a cell. Its control messages come to [`Core:control`], and its tunnel is sealed with the key returned.
 
+The core of a network which carries our phones (a roaming partner) is added the same way: to us it's one big cell,
+which says which of its own cells each phone is at.
+
 @tparam number id The cell's computer ID.
 @tparam number cell_address The cell's address, for its tunnel.
 @tparam function(message:table) send Sends a control message to the cell.
+@tparam[opt] string partner For another network's core, that network's name.
 @treturn string The key for the cell's tunnel.
 ]]
-function Core:add_tower(id, cell_address, send)
+function Core:add_tower(id, cell_address, send, partner)
     local key = self.make_tunnel_key(id)
     self.towers[id] = {
-        id = id, address = cell_address, send = send,
+        id = id, address = cell_address, send = send, partner = partner,
+        port = partner and common.ROAM_TUNNEL_PORT or common.CELL_TUNNEL_PORT,
         sealer = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK),
     }
     self:update_paths()
     return key
+end
+
+--[[- Set the networks whose cells our phones may use: our roaming partners. Phones are told when they attach, and only
+believe cells with a certificate from one of these keys.
+
+@tparam { [string] = string } partners Each network's name, and its operator's Ed25519 signing key.
+]]
+function Core:set_partner_keys(partners)
+    self.partner_keys = partners
 end
 
 --[[- Find the relays a cell's backhaul goes through, nearest first.
@@ -240,8 +269,12 @@ function Core:stop()
             if session.teid and session.cell == tower.id then tower.send({ op = "release", teid = session.teid }) end
         end
     end
+    for _, visitor in pairs(self.visitors) do self:send(visitor.cell, { op = "release", teid = visitor.teid }) end
+    self.partners, self.visitors, self.visitor_count, self.visitors_by_home, self.visitors_by_phone = {}, {}, 0, {}, {}
+    self.roam_pending, self.roam_pending_count = {}, 0
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
+    self.stack:udp_close(self.roam_socket)
     self.stack:remove_interface("cellular")
     self.towers, self.sessions, self.by_teid, self.by_address, self.pending = {}, {}, {}, {}, {}
     self.activating, self.activating_count, self.activating_order = {}, 0, {}
@@ -281,15 +314,17 @@ function Core:control(tower_id, message)
     local tower = self.towers[tower_id]
     if not tower or type(message) ~= "table" then return end
     local op = message.op
+    -- A phone of another network at one of our cells: its own network's core decides.
+    if not tower.partner and self:carry(tower, message) then return end
 
     if op == "attach" and is_id(message.phone) and type(message.handshake) == "string" then
-        self:attach(tower, message.phone, message.handshake)
+        self:attach(tower, message.phone, message.handshake, message.cell)
     elseif op == "attach_complete" and is_id(message.phone) then
         self:attach_complete(tower, message.phone, message.data)
     elseif op == "handover" and is_id(message.teid) and is_id(message.target) then
         self:handover(tower, message.teid, message.target)
     elseif op == "path_switch" and is_id(message.teid) then
-        self:path_switch(tower, message.teid)
+        self:path_switch(tower, message.teid, message.cell)
     elseif op == "activate" and is_id(message.phone) and type(message.tag) == "string"
         and type(message.handshake) == "string" then
         self:activate(tower, message.phone, message.tag, message.handshake)
@@ -508,10 +543,16 @@ function Core:retry_messages()
     for _, message in ipairs(self.messages) do self:deliver(message, sessions) end
 end
 
-function Core:attach(tower, phone, message)
-    -- A relay's phone can't reach us through a cell which reaches us through the relay, or is too far away.
-    local refused = self:refuse(phone, tower.id)
-    if refused then return self:send(tower.id, { op = "reject", phone = phone, reason = refused }) end
+function Core:attach(tower, phone, message, visited_cell)
+    if tower.partner then
+        -- Roaming: the other network's core says which of its cells the phone is at.
+        if not is_id(visited_cell) then return end
+    else
+        -- A relay's phone can't reach us through a cell which reaches us through the relay, or is too far away.
+        visited_cell = nil
+        local refused = self:refuse(phone, tower.id)
+        if refused then return self:send(tower.id, { op = "reject", phone = phone, reason = refused }) end
+    end
     local handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = false, prologue = PROLOGUE .. self.network,
         static = self.operator,
@@ -525,13 +566,21 @@ function Core:attach(tower, phone, message)
         self.on_event("rejected", sim)
         return self:send(tower.id, { op = "reject", phone = phone, reason = "Not a subscriber of " .. self.network })
     end
+    if tower.partner and subscriber.roaming == false then
+        return self:send(tower.id, { op = "reject", phone = phone, reason = "This subscription doesn't include roaming" })
+    end
 
-    local reply = handshake:write(codec.encode({ v = 1, id = subscriber.id, number = subscriber.number }))
+    -- Tell the phone which other networks it may use, and the keys their cells are certified with. Only the phone
+    -- can read this, and only we could have written it.
+    local partners = {}
+    for network, signing in pairs(self.partner_keys) do partners[#partners + 1] = { network = network, signing = signing } end
+    table.sort(partners, function(a, b) return a.network < b.network end)
+    local reply = handshake:write(codec.encode({ v = 1, id = subscriber.id, number = subscriber.number, partners = partners }))
     if not reply then return end
     local _, receive = handshake:split()
     -- Nothing is given out until the phone confirms, as the first message alone could be a recording.
     local key = tower.id .. ":" .. phone
-    local pending = { sim = sim, receive = receive, secret = handshake.ck, phone = phone }
+    local pending = { sim = sim, receive = receive, secret = handshake.ck, phone = phone, cell = visited_cell }
     add_attempt(self.pending, key, pending)
     self.stack:schedule(ATTACH_TIMEOUT, function() remove_attempt(self.pending, key, pending) end)
     self:send(tower.id, { op = "attach_reply", phone = phone, handshake = reply })
@@ -565,15 +614,17 @@ function Core:attach_complete(tower, phone, data)
     end
     -- Tunnels' IDs are picked at random, and no two phones share one.
     repeat session.teid = math.random(1, 0x7FFFFFFF) until not self.by_teid[session.teid]
-    session.secret, session.phone, session.cell = pending.secret, phone, tower.id
+    session.secret, session.phone, session.cell, session.handover = pending.secret, phone, tower.id, nil
+    -- When roaming, the cell of the other network the phone is at: its key with the phone is for that cell.
+    session.visited_cell = pending.cell
     self.by_teid[session.teid] = session
 
     self:send(tower.id, {
-        op = "context", phone = phone, teid = session.teid, address = session.address,
-        key = common.cell_key(self.crypto, session.secret, tower.id),
+        op = "context", phone = phone, teid = session.teid, address = session.address, cell = pending.cell,
+        key = common.cell_key(self.crypto, session.secret, pending.cell or tower.id),
     })
     self:update_paths()
-    self.on_event("attached", pending.sim, address.format(session.address), tower.id)
+    self.on_event("attached", pending.sim, address.format(session.address), pending.cell or tower.id, tower.partner)
 
     -- Anything waiting for this phone can go now.
     local subscriber = self.subscribers[pending.sim]
@@ -584,8 +635,19 @@ end
 
 function Core:handover(tower, teid, target_id)
     local session = self.by_teid[teid]
+    if not session or session.cell ~= tower.id then return end
+    if tower.partner then
+        -- Between two cells of the network a phone is roaming on. That network's core does the rest: all it needs
+        -- from us is the key the phone will share with the new cell.
+        self:send(tower.id, {
+            op = "context", phone = session.phone, teid = teid, address = session.address, handover = true, cell = target_id,
+            key = common.cell_key(self.crypto, session.secret, target_id),
+        })
+        return self:send(tower.id, { op = "handover_go", teid = teid, target = target_id })
+    end
     local target = self.towers[target_id]
-    if not session or session.cell ~= tower.id or not target or target_id == tower.id then return end
+    -- Phones don't hand over to another network's cells: they attach again there.
+    if not target or target.partner or target_id == tower.id then return end
     if self:refuse(session.phone, target_id) then return end
 
     session.handover = target_id
@@ -596,8 +658,17 @@ function Core:handover(tower, teid, target_id)
     self:send(tower.id, { op = "handover_go", teid = teid, target = target_id })
 end
 
-function Core:path_switch(tower, teid)
+function Core:path_switch(tower, teid, visited_cell)
     local session = self.by_teid[teid]
+    if tower.partner then
+        -- The network a phone is roaming on has moved it to another of its cells.
+        if session and session.cell == tower.id and is_id(visited_cell) then
+            local old = session.visited_cell
+            session.visited_cell = visited_cell
+            self.on_event("handover", session.sim, old, visited_cell)
+        end
+        return
+    end
     if not session or session.handover ~= tower.id then return end
     local old = session.cell
     session.cell, session.handover = tower.id, nil
@@ -613,7 +684,7 @@ function Core:downlink(packet, next_hop)
     if not tower then return end
     local sealed = tower.sealer:seal({ teid = session.teid, packet = codec.encode(packet) })
     if sealed then
-        local ok, err = self.stack:udp_send(self.socket, tower.address, common.CELL_TUNNEL_PORT, sealed)
+        local ok, err = self.stack:udp_send(self.socket, tower.address, tower.port, sealed)
         if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end
     end
 end
@@ -623,13 +694,260 @@ function Core:uplink(data, from)
     for _, tower in pairs(self.towers) do
         if tower.address == from then
             local inner = tower.sealer:open(data)
-            local session = type(inner) == "table" and self.by_teid[inner.teid]
-            local packet = session and session.cell == tower.id and type(inner.packet) == "string" and codec.decode(inner.packet)
+            if type(inner) ~= "table" or type(inner.packet) ~= "string" then return end
+            local session = self.by_teid[inner.teid]
+            if not session then
+                -- Another network's phone, at one of our cells: on to its own core's gateway.
+                local visitor = not tower.partner and self.visitors[inner.teid]
+                if visitor and visitor.cell == tower.id then self:roam_uplink(visitor, inner.packet) end
+                return
+            end
+            local packet = session.cell == tower.id and codec.decode(inner.packet)
             -- A phone may only send from its own address.
             if type(packet) == "table" and packet.src == session.address then self.stack:inject("cellular", packet) end
             return
         end
     end
+end
+
+--[[- Carry another network's phones: add its core, which we have connected to. To that core, we're one big cell (see
+[`Core:add_tower`]).
+
+@tparam string network The other network's name.
+@tparam { address = number, tunnel_key = string, send = function(message:table) } options The other core's address;
+the key it gave us for the tunnel to it; and a way to send it control messages.
+]]
+function Core:add_partner(network, options)
+    self:remove_partner(network)
+    self.partners[network] = {
+        network = network, address = options.address, send = options.send,
+        sealer = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
+    }
+end
+
+--[[- Stop carrying another network's phones: those here lose service until they find another cell.
+
+@tparam string network The other network's name.
+@tparam[opt] function send The function [`Core:add_partner`] was given. If the network has been added again since,
+with another, the new one is kept.
+]]
+function Core:remove_partner(network, send)
+    local partner = self.partners[network]
+    if not partner or (send ~= nil and partner.send ~= send) then return end
+    self.partners[network] = nil
+    local gone = {}
+    for _, visitor in pairs(self.visitors) do
+        if visitor.network == network then gone[#gone + 1] = visitor end
+    end
+    for _, visitor in ipairs(gone) do self:forget_visitor(visitor) end
+end
+
+-- Forget another network's phone, telling the cells which know of it.
+function Core:forget_visitor(visitor)
+    if self.visitors[visitor.teid] ~= visitor then return end
+    self.visitors[visitor.teid] = nil
+    self.visitor_count = self.visitor_count - 1
+    local key = visitor.network .. ":" .. visitor.home_teid
+    if self.visitors_by_home[key] == visitor then self.visitors_by_home[key] = nil end
+    key = visitor.network .. ":" .. visitor.phone
+    if self.visitors_by_phone[key] == visitor then self.visitors_by_phone[key] = nil end
+    self:send(visitor.cell, { op = "release", teid = visitor.teid })
+    if visitor.handover then self:send(visitor.handover, { op = "release", teid = visitor.teid }) end
+end
+
+-- Remember which cell a phone of another network is attaching at, for a moment, so its core's answers find it.
+function Core:remember_roamer(network, phone, cell)
+    local now = self.stack.clock()
+    if self.roam_pending_count >= MAX_ROAM_PENDING then
+        for key, pending in pairs(self.roam_pending) do
+            if pending.expires <= now then
+                self.roam_pending[key] = nil
+                self.roam_pending_count = self.roam_pending_count - 1
+            end
+        end
+        if self.roam_pending_count >= MAX_ROAM_PENDING then return false end
+    end
+    local pending = { network = network, phone = phone, cell = cell, expires = now + ATTACH_TIMEOUT }
+    for _, key in ipairs { network .. ":" .. phone, cell .. "@" .. phone } do
+        if not self.roam_pending[key] then self.roam_pending_count = self.roam_pending_count + 1 end
+        self.roam_pending[key] = pending
+    end
+    return true
+end
+
+function Core:roamer(key)
+    local pending = self.roam_pending[key]
+    if pending and pending.expires > self.stack.clock() then return pending end
+end
+
+--[[- Handle a control message from one of our cells which is about another network's phone, by passing it to that
+network's core.
+
+@tparam table tower The cell.
+@tparam table message The message.
+@treturn boolean Whether it was about another network's phone.
+]]
+function Core:carry(tower, message)
+    local op = message.op
+    if op == "attach" then
+        local network = message.network
+        if network == nil or network == self.network then return false end
+        if not is_id(message.phone) or type(message.handshake) ~= "string" then return true end
+        local partner = common.is_network(network) and self.partners[network]
+        if not partner then
+            self:send(tower.id, { op = "reject", phone = message.phone, reason = ("%s doesn't carry phones of that network"):format(self.network) })
+        elseif self:remember_roamer(network, message.phone, tower.id) then
+            partner.send({ op = "attach", phone = message.phone, handshake = message.handshake, cell = tower.id })
+        end
+        return true
+    elseif op == "attach_complete" then
+        if not is_id(message.phone) or type(message.data) ~= "string" then return false end
+        local pending = self:roamer(tower.id .. "@" .. message.phone)
+        local partner = pending and self.partners[pending.network]
+        if not partner then return false end
+        partner.send({ op = "attach_complete", phone = message.phone, data = message.data, cell = tower.id })
+        -- Unless one of our own phones is attaching under the same ID, that was all.
+        return self.pending[tower.id .. ":" .. message.phone] == nil
+    end
+
+    -- Everything else is by tunnel ID: ours for a phone of ours, or one we made up for a visitor.
+    local visitor = is_id(message.teid) and self.visitors[message.teid]
+    if not visitor then return false end
+    local partner = self.partners[visitor.network]
+    if not partner then return true end
+    if op == "path_switch" then
+        if visitor.handover ~= tower.id then return true end
+        local old = visitor.cell
+        visitor.cell, visitor.handover = tower.id, nil
+        self:send(old, { op = "release", teid = visitor.teid })
+        partner.send({ op = "path_switch", teid = visitor.home_teid, cell = tower.id })
+    elseif visitor.cell ~= tower.id then
+        return true
+    elseif op == "handover" then
+        -- To another of our cells. The phone's own core makes the key for it.
+        local target = is_id(message.target) and self.towers[message.target]
+        if target and not target.partner and target.id ~= tower.id then
+            partner.send({ op = "handover", teid = visitor.home_teid, target = target.id })
+        end
+    elseif op == "sms" then
+        partner.send({ op = "sms", teid = visitor.home_teid, id = message.id, to = message.to, text = message.text })
+    elseif op == "sms_ack" then
+        partner.send({ op = "sms_ack", teid = visitor.home_teid, id = message.id })
+    end
+    return true
+end
+
+--[[- Handle a control message from the core of a network whose phones we carry. It sends us what it would send a cell,
+and we pass it on to the cell the phone is at.
+
+@tparam string network The other network's name.
+@param message The message.
+]]
+function Core:partner_control(network, message)
+    local partner = self.partners[network]
+    if not partner or type(message) ~= "table" then return end
+    local op = message.op
+
+    if (op == "attach_reply" or op == "reject") and is_id(message.phone) then
+        local pending = self:roamer(network .. ":" .. message.phone)
+        if pending then
+            self:send(pending.cell, {
+                op = op, phone = message.phone, handshake = type(message.handshake) == "string" and message.handshake or nil,
+                reason = type(message.reason) == "string" and message.reason:sub(1, 100) or nil,
+            })
+        end
+    elseif op == "context" and is_id(message.phone) and is_id(message.teid) and is_id(message.cell)
+        and type(message.key) == "string" and #message.key == 32 then
+        local tower = self.towers[message.cell]
+        if not tower or tower.partner then return end
+        if message.handover then
+            -- One of the phones we carry is moving to another of our cells.
+            local visitor = self.visitors_by_home[network .. ":" .. message.teid]
+            if not visitor or visitor.cell == tower.id then return end
+            if visitor.handover and visitor.handover ~= tower.id then self:send(visitor.handover, { op = "release", teid = visitor.teid }) end
+            visitor.handover = tower.id
+            return self:send(tower.id, {
+                op = "context", phone = visitor.phone, teid = visitor.teid, address = message.address, key = message.key,
+                handover = true,
+            })
+        end
+
+        -- A phone has attached. Its core's answer is for the cell we passed its request on from.
+        local pending = self:roamer(network .. ":" .. message.phone)
+        if not pending or pending.cell ~= tower.id then return end
+        local old = self.visitors_by_phone[network .. ":" .. message.phone]
+        if old then
+            -- Attaching again, at the same cell or another: the cell's new context for the phone replaces the old.
+            if old.cell == tower.id then old.cell = nil end
+            self:forget_visitor(old)
+        end
+        if self.visitor_count >= MAX_VISITORS then return end
+        local visitor = { network = network, home_teid = message.teid, phone = message.phone, cell = tower.id, address = message.address }
+        repeat visitor.teid = math.random(1, 0x7FFFFFFF) until not self.by_teid[visitor.teid] and not self.visitors[visitor.teid]
+        self.visitors[visitor.teid] = visitor
+        self.visitor_count = self.visitor_count + 1
+        self.visitors_by_home[network .. ":" .. visitor.home_teid] = visitor
+        self.visitors_by_phone[network .. ":" .. visitor.phone] = visitor
+        self:send(tower.id, { op = "context", phone = visitor.phone, teid = visitor.teid, address = message.address, key = message.key })
+        self.on_event("visitor", network, tower.id)
+    elseif is_id(message.teid) then
+        local visitor = self.visitors_by_home[network .. ":" .. message.teid]
+        if not visitor then return end
+        if op == "release" then
+            self:forget_visitor(visitor)
+        elseif op == "handover_go" and is_id(message.target) then
+            self:send(visitor.cell, { op = "handover_go", teid = visitor.teid, target = message.target })
+        elseif op == "sms" then
+            self:send(visitor.cell, { op = "sms", teid = visitor.teid, id = message.id, from = message.from, text = message.text })
+        elseif op == "sms_sent" then
+            self:send(visitor.cell, { op = "sms_sent", teid = visitor.teid, id = message.id, ok = message.ok, error = message.error })
+        end
+    end
+end
+
+-- A packet from another network's phone here: up the tunnel to its own core's gateway.
+function Core:roam_uplink(visitor, packet)
+    local partner = self.partners[visitor.network]
+    if not partner then return end
+    local sealed = partner.sealer:seal({ teid = visitor.home_teid, packet = packet })
+    if sealed then
+        local ok, err = self.stack:udp_send(self.roam_socket, partner.address, common.TUNNEL_PORT, sealed)
+        if not ok then self.stack.log(("Core couldn't tunnel a packet to the core of %s: %s"):format(visitor.network, tostring(err))) end
+    end
+end
+
+-- A packet for another network's phone here, down the tunnel from its own core's gateway: on to its cell.
+function Core:roam_downlink(data, from)
+    for network, partner in pairs(self.partners) do
+        if partner.address == from then
+            local inner = partner.sealer:open(data)
+            if type(inner) ~= "table" or not is_id(inner.teid) or type(inner.packet) ~= "string" then return end
+            local visitor = self.visitors_by_home[network .. ":" .. inner.teid]
+            local tower = visitor and self.towers[visitor.cell]
+            if not tower then return end
+            local sealed = tower.sealer:seal({ teid = visitor.teid, packet = inner.packet })
+            if sealed then
+                local ok, err = self.stack:udp_send(self.socket, tower.address, tower.port, sealed)
+                if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end
+            end
+            return
+        end
+    end
+end
+
+--- Describe the phones of other networks which are here.
+--
+-- @treturn { table... } Each phone's network, its address, and the cell it's at.
+function Core:visitor_info()
+    local result = {}
+    for _, visitor in pairs(self.visitors) do
+        result[#result + 1] = {
+            network = visitor.network, cell = visitor.cell,
+            address = type(visitor.address) == "number" and address.is_valid(visitor.address) and address.format(visitor.address) or nil,
+        }
+    end
+    table.sort(result, function(a, b) return a.network < b.network or (a.network == b.network and a.cell < b.cell) end)
+    return result
 end
 
 --- Describe the phones with sessions.
@@ -638,9 +956,10 @@ end
 function Core:info()
     local result = {}
     for sim, session in pairs(self.sessions) do
+        local tower = session.teid and self.towers[session.cell]
         result[#result + 1] = {
-            sim = sim, address = address.format(session.address), cell = session.cell,
-            attached = session.teid ~= nil and self.towers[session.cell] ~= nil,
+            sim = sim, address = address.format(session.address), cell = session.visited_cell or session.cell,
+            attached = tower ~= nil, roaming = tower and tower.partner or nil,
         }
     end
     table.sort(result, function(a, b) return a.address < b.address end)

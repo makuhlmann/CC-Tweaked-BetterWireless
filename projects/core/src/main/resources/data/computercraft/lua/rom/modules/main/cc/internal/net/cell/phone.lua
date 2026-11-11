@@ -16,6 +16,12 @@ Every couple of seconds, it compares its cell with the others it hears. If anoth
 tells its cell, which hands it over. If its cell goes quiet, it attaches again through the best one, keeping its
 address.
 
+Roaming: where it can't hear its own network, the phone uses a cell of a network its operator has an agreement with (a
+partner). Its operator tells it which those are, and the keys their cells are certified with, each time it attaches. It
+still attaches to its own network's core, through the partner's cell and core, and keeps its address. It goes back to
+its own network once it has heard it steadily for a while. Moving between networks, it attaches again rather than being
+handed over. It can also be told to use one network only.
+
 Radio frames get lost, and cells and cores restart and forget their phones. So the phone checks its cell still knows
 it, every few seconds when nothing else has come from it, and attaches again if it doesn't. It says it has arrived at a
 new cell until the cell answers. And it sends each message until the network says it has it.
@@ -58,8 +64,10 @@ local REJECT_GRACE = 1
 -- Messages: how many may wait to be sent, how often they're sent again, in seconds, how many times, and how many
 -- received messages to remember, to tell when one comes twice.
 local MAX_OUTBOX, MESSAGE_RETRY, MESSAGE_TRIES, MAX_SEEN = 20, 5, 12, 128
--- How long a network's name may be: letters, digits and dashes.
-local MAX_NAME = 32
+-- How many roaming partners a phone takes from its operator.
+local MAX_PARTNERS = 16
+-- How long a roaming phone must hear its own network, in seconds, and how well (in dBm), before going back to it.
+local HOME_TIME, HOME_SIGNAL = 5, -95
 
 local Phone = {}
 Phone.__index = Phone
@@ -70,12 +78,15 @@ Phone.__index = Phone
     stack = table, crypto = table, interface = string, epoch = function():number,
     sim = { public = string, exchange = function(public:string):string },
     operator? = { network = string, key = string, signing = string },
+    partners? = { [string] = string }, selection? = string, on_partners? = function(partners:table),
     on_change? = function(phone:table),
     on_message? = function(from:string, text:string),
     on_sent? = function(id:number, ok:boolean, reason:string|nil),
     on_activated? = function(info:table), relay? = function():boolean,
 } options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
-phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; what to call
+phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; the
+networks it may roam on, by name, with their signing keys, as its operator last gave them; the only network it should
+use, if it has been told to use one; what to call when its operator gives it other networks to roam on; what to call
 when its state changes; what to call with each message; what to call when the network has taken a message we sent (or
 refused it, or it couldn't be sent); what to call when it's activated, with the operator's keys and its subscription,
 to save them; and whether this computer is a relay, whose cell's backhaul is this phone (so it avoids cells already as
@@ -88,7 +99,8 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
-        on_sent = options.on_sent or function() end,
+        on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
+        partners = options.partners or {}, selection = options.selection,
         relay = options.relay or function() return false end,
         cells = {}, heard = {}, events = {}, state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
@@ -108,7 +120,7 @@ function Phone:set_state(state)
     if self.state == state then return end
     self.state = state
     if state == "attached" then
-        self:event("attached", { cell = self.cell })
+        self:event("attached", { cell = self.cell, roaming = self:roaming() and self.cells[self.cell].network or nil })
     elseif state == "rejected" then
         self:event("rejected", { reason = self.rejected })
     end
@@ -170,18 +182,63 @@ function Phone:behind_us(cell)
     return false
 end
 
--- The best cell we can hear, and its signal.
-function Phone:best_cell(except)
-    local best, best_signal
+-- Whether we may use a cell at all: we can hear it, it isn't behind us, and it's of a network we may use.
+function Phone:usable(id, cell, now)
+    return now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and not self:behind_us(cell)
+        and not (self.relay() and #(cell.path or {}) >= common.MAX_PATH)
+        and (self.selection == nil or cell.network == self.selection)
+        and (cell.network == self.operator.network or self.partners[cell.network] ~= nil)
+        -- A relay's phone and cell share its computer.
+        and id ~= self.stack.id
+end
+
+--[[ The best cell we can hear, and its signal.
+
+Left to choose, that's the strongest of our own network, and only without one, the strongest of a partner's. `network`
+limits the choice to one network (the one we're on, when looking for a cell to be handed over to).
+]]
+function Phone:best_cell(except, network)
+    local best, best_signal, best_home
     local now = self.stack.clock()
     for id, cell in pairs(self.cells) do
-        if id ~= except and now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and not self:behind_us(cell)
-            and not (self.relay() and #(cell.path or {}) >= common.MAX_PATH)
-            and (not best_signal or cell.signal > best_signal) then
-            best, best_signal = id, cell.signal
+        if id ~= except and self:usable(id, cell, now) and (network == nil or cell.network == network) then
+            local home = cell.network == self.operator.network
+            if not best or (home and not best_home) or (home == best_home and cell.signal > best_signal) then
+                best, best_signal, best_home = id, cell.signal, home
+            end
         end
     end
     return best, best_signal
+end
+
+--- Whether the cell we're attached to is another network's.
+--
+-- @treturn boolean Whether we're roaming.
+function Phone:roaming()
+    local serving = self.state == "attached" and self.cells[self.cell]
+    return serving ~= nil and serving ~= false and self.operator ~= nil and serving.network ~= self.operator.network
+end
+
+--[[- Use one network only, or go back to choosing.
+
+@tparam[opt] string network The network's name, or `nil` to choose: our own when we can hear it, else a partner's.
+]]
+function Phone:select(network)
+    if self.selection == network then return end
+    self.selection = network
+    self.home_since = nil
+    if not self.operator then return end
+    -- If we're on a network we may no longer use, or attaching to one, look again.
+    local serving = self.cells[self.cell]
+    if (self.state == "attached" or self.state == "attaching") and serving and network and serving.network ~= network then
+        if self.state == "attached" then self:event("lost", { cell = self.cell }) end
+        self.handshake, self.attempt = nil, nil
+        self:set_state("searching")
+        self:attach()
+    elseif self.state == "searching" or self.state == "rejected" then
+        self:set_state("searching")
+        self:attach()
+    end
 end
 
 function Phone:radio(src, message, signal)
@@ -190,14 +247,14 @@ function Phone:radio(src, message, signal)
 
     if op == "sib" then
         -- Names are shown to people, so only take ones a network could have.
-        if type(message.network) ~= "string" or #message.network > MAX_NAME or not message.network:find("^[%w%-]+$") then return end
+        if not common.is_network(message.network) then return end
         -- Cells of other networks (or of any network, before we're activated) can't be checked, but we can see what's
-        -- around. A cell which claims to be ours, but isn't, may be a fake.
-        if not self.operator or message.network ~= self.operator.network then
-            return self:hear(src, message, signal, nil)
-        end
+        -- around. A cell which claims to be ours, or a partner's, but isn't, may be a fake.
+        local signing = self.operator and (message.network == self.operator.network and self.operator.signing
+            or self.partners[message.network])
+        if not signing then return self:hear(src, message, signal, nil) end
         local ok = common.check_sib(self.crypto, message, {
-            network = self.operator.network, signing = self.operator.signing, now = self.epoch(), sender = src,
+            network = message.network, signing = signing, now = self.epoch(), sender = src,
         })
         self:hear(src, message, signal, ok == true)
         if not ok then return end
@@ -209,7 +266,7 @@ function Phone:radio(src, message, signal)
         local total = 0
         for _, sample in ipairs(cell.samples) do total = total + sample end
         cell.signal, cell.heard, cell.area = total / #cell.samples, self.stack.clock(), message.area
-        cell.path = message.path
+        cell.path, cell.network = message.path, message.network
         if self.state == "searching" then self:attach() end
         return
     end
@@ -223,6 +280,7 @@ function Phone:radio(src, message, signal)
         local info = payload and codec.decode(payload)
         if type(info) ~= "table" then return end
         self.subscriber = { id = info.id, number = info.number }
+        self:set_partners(info.partners)
         local send = handshake:split()
         self.secret = handshake.ck
         self.handshake = nil
@@ -299,7 +357,11 @@ function Phone:radio(src, message, signal)
     elseif op == "handover" and self.state == "attached" then
         local value = self.sealer:open(message.sealed)
         local target = type(value) == "table" and value.target
-        if not common.is_id(target) or not self.cells[target] or target == self.cell then return end
+        local serving = self.cells[self.cell]
+        if not common.is_id(target) or not self.cells[target] or target == self.cell
+            or (serving and self.cells[target].network ~= serving.network) then
+            return
+        end
         -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
         self:event("handover", { from = self.cell, to = target })
         self.cell, self.candidate = target, nil
@@ -323,6 +385,31 @@ function Phone:radio(src, message, signal)
         -- The cell says it doesn't know us (or someone says so for it): find out.
         self.fast_check, self.unanswered, self.last_check = true, 0, -math.huge
     end
+end
+
+-- Our operator says which other networks we may use, each time we attach.
+function Phone:set_partners(list)
+    if type(list) ~= "table" then return end
+    local partners, count, changed = {}, 0, false
+    for _, partner in ipairs(list) do
+        if count < MAX_PARTNERS and type(partner) == "table" and common.is_network(partner.network)
+            and partner.network ~= self.operator.network and type(partner.signing) == "string" and #partner.signing == 32
+            and not partners[partner.network] then
+            partners[partner.network] = partner.signing
+            count = count + 1
+            if self.partners[partner.network] ~= partner.signing then changed = true end
+        end
+    end
+    for network in pairs(self.partners) do
+        if not partners[network] then changed = true end
+    end
+    if not changed then return end
+    self.partners = partners
+    -- Cells of networks which are no longer partners can't be used. (Ones of new partners are heard within a second.)
+    for id, cell in pairs(self.cells) do
+        if cell.network ~= self.operator.network and not partners[cell.network] then self.cells[id] = nil end
+    end
+    self.on_partners(partners)
 end
 
 -- Something came from our cell which only it could have sent: it knows us.
@@ -426,7 +513,7 @@ end
 function Phone:attach()
     local best = self:best_cell()
     if not best then return end
-    self.cell, self.secret, self.rejected, self.refusal = best, nil, nil, nil
+    self.cell, self.secret, self.rejected, self.refusal, self.home_since = best, nil, nil, nil, nil
     self.handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
         static = self.sim, remote_static = self.operator.key,
@@ -514,7 +601,24 @@ function Phone:measure()
 
     self:send_waiting(true)
 
-    local best, best_signal = self:best_cell(self.cell)
+    -- Roaming, and left to choose: go back to our own network once we've heard it well enough for a while. We
+    -- attach again, through its cell, rather than being handed over, and keep our address.
+    if serving.network ~= self.operator.network and not self.selection and not confirming then
+        local home, home_signal = self:best_cell(nil, self.operator.network)
+        if home and home_signal >= HOME_SIGNAL then
+            self.home_since = self.home_since or now
+            if now - self.home_since >= HOME_TIME then
+                self:event("home", { from = self.cell })
+                self:set_state("searching")
+                return self:attach()
+            end
+        else
+            self.home_since = nil
+        end
+    end
+
+    -- Handovers stay within the network we're on.
+    local best, best_signal = self:best_cell(self.cell, serving.network)
     if best and best_signal >= serving.signal + HYSTERESIS then
         if self.candidate ~= best then
             self.candidate, self.candidate_since = best, now
@@ -540,12 +644,15 @@ end
 
 --- Describe the phone.
 --
--- @treturn table Its state, cell, address and subscriber; the cells of its network it hears (`cells`); every cell it
--- has heard lately, of any network (`heard`); the networks around; and what has happened lately (`events`).
+-- @treturn table Its state, cell, address and subscriber; the cells it may use which it hears (`cells`); every cell it
+-- has heard lately, of any network (`heard`); the networks around; what has happened lately (`events`); whether it's
+-- roaming; the network it has been told to use (`selection`); and the networks it may roam on (`partners`).
 function Phone:info()
     local now = self.stack.clock()
     local cells = {}
-    for id, cell in pairs(self.cells) do cells[#cells + 1] = { id = id, signal = cell.signal, area = cell.area } end
+    for id, cell in pairs(self.cells) do
+        cells[#cells + 1] = { id = id, signal = cell.signal, area = cell.area, network = cell.network }
+    end
     table.sort(cells, function(a, b) return a.signal > b.signal end)
 
     local heard, names, networks = {}, {}, {}
@@ -569,6 +676,9 @@ function Phone:info()
     end)
     table.sort(networks)
 
+    local partners = {}
+    for network in pairs(self.partners) do partners[network] = true end
+
     local events = {}
     for i, event in ipairs(self.events) do
         events[i] = {}
@@ -579,6 +689,7 @@ function Phone:info()
         state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
         heard = heard, events = events, network = self.operator and self.operator.network,
+        roaming = self:roaming(), selection = self.selection, partners = partners,
     }
 end
 

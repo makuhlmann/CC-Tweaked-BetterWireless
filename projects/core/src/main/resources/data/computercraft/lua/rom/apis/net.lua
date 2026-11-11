@@ -1469,14 +1469,24 @@ local function cell_interface()
     end
 end
 
-local function new_phone(operator)
+local function new_phone(operator, partners)
     -- A computer may be a phone and a cell at once: a relay, whose cell reaches the core through its phone.
     local name = cell_interface()
     if not name then return nil, "This needs a wireless modem" end
     local cell = env_require("cc.internal.net.cell.phone")
+    local chosen = read_table(PHONE_FILE)
     phone_instance = cell.new {
         stack = stack, crypto = crypto, interface = name, epoch = function() return os.epoch("utc") end,
-        sim = sim_key(), operator = operator,
+        sim = sim_key(), operator = operator, partners = partners,
+        selection = type(chosen.network) == "string" and chosen.network or nil,
+        -- The operator says which other networks the phone may use: remember them, for when it starts out of reach
+        -- of its own.
+        on_partners = function(list)
+            local sim = read_table(SIM_FILE)
+            sim.roaming = {}
+            for network, signing in pairs(list) do sim.roaming[network] = to_hex(signing) end
+            write_table(SIM_FILE, sim)
+        end,
         -- With a cell on this computer, this phone may be its backhaul.
         relay = function() return background.cell ~= nil end,
         on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
@@ -1507,7 +1517,12 @@ function start_phone()
     local sim = read_table(SIM_FILE)
     local key, signing = from_hex(sim.key), from_hex(sim.signing)
     if type(sim.network) ~= "string" or not key or not signing then return end
-    new_phone({ network = sim.network, key = key, signing = signing })
+    local partners = {}
+    for network, partner in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do
+        local partner_key = from_hex(partner)
+        if type(network) == "string" and partner_key and #partner_key == 32 then partners[network] = partner_key end
+    end
+    new_phone({ network = sim.network, key = key, signing = signing }, partners)
 end
 
 local CORE_CONFIG, CELL_CONFIG = "/.cell/config", "/.cell/cell"
@@ -1555,6 +1570,8 @@ local function start_core_service()
         start_core = new_core,
         signing = signing, sign = function(data) return enclave.sign("cell.signing", data) end,
         clock = os.clock, epoch = function() return os.epoch("utc") end, wake = cell_wake,
+        -- To carry other networks' phones (roaming), the core connects to their cores.
+        id = os.getComputerID(), connect = function(core) return secure.connect(core, CONTROL_PORT) end, sleep = sleep,
     }
     if not service then return nil, err end
     -- The core must keep running when nobody is nearby.
@@ -1668,6 +1685,10 @@ cell = {
             info = { state = "none", network = sim.network }
         end
         if off then info.state = "off" end
+        if not info.partners then
+            info.partners = {}
+            for network in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do info.partners[network] = true end
+        end
         if not info.subscriber and sim.id then info.subscriber = { id = sim.id, number = sim.number } end
         info.enabled = not off
         info.selection = type(chosen.network) == "string" and chosen.network or "auto"

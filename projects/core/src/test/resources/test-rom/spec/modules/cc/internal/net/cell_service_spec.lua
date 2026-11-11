@@ -112,15 +112,19 @@ describe("Cellular services", function()
         return connection:receive(15)
     end
 
-    --[[ A core for ACME, on computer 50, whose files are in DIR. ]]
-    local function setup(files)
-        fs.delete(DIR)
-        write_table(fs.combine(DIR, "config"), { network = "ACME", prefix = "10.64.0.0/16" })
-        for name, value in pairs(files or {}) do write_table(fs.combine(DIR, name), value) end
+    --[[ A core for ACME, on computer 50, whose files are in DIR. Another network's core, for roaming, is made by giving
+    its name, its computer's ID and the end of its address, where its files are, and the network to join. ]]
+    local function setup(files, other)
+        other = other or {}
+        local dir, name, id = other.dir or DIR, other.network or "ACME", other.id or 50
+        local own_address = "10.0.0." .. (other.host or 1)
+        fs.delete(dir)
+        write_table(fs.combine(dir, "config"), { network = name, prefix = other.prefix or "10.64.0.0/16" })
+        for file, value in pairs(files or {}) do write_table(fs.combine(dir, file), value) end
 
-        local net = network()
-        local stack = net.stack(50)
-        net.connect(stack, "backhaul", "10.0.0.1/24")
+        local net = other.net or network()
+        local stack = net.stack(id)
+        net.connect(stack, "backhaul", own_address .. "/24")
         stack.forwarding = true
         local now = function() return 1.7e12 + net.time * 1000 end
         local operator_private = crypto.generateKeyPair("x25519")
@@ -129,7 +133,7 @@ describe("Cellular services", function()
             exchange = function(public) return crypto.exchange(operator_private, public) end,
         }
         local signing_private, signing_public = crypto.generateKeyPair("ed25519")
-        local env = { net = net, stack = stack, identity = new_key(), signing = signing_public, now = now }
+        local env = { net = net, stack = stack, identity = new_key(), signing = signing_public, now = now, dir = dir }
 
         env.listener = { queue = {} }
         function env.listener.accept(self)
@@ -142,7 +146,12 @@ describe("Cellular services", function()
         function env.listener.close(self) self.closed = true end
 
         env.options = {
-            dir = DIR, identity = env.identity, fingerprint = fingerprint,
+            dir = dir, identity = env.identity, fingerprint = fingerprint, id = id,
+            -- Waiting, as tasks do: until enough time has passed on the network.
+            sleep = function(seconds)
+                local deadline = net.time + seconds
+                while net.time < deadline do coroutine.yield() end
+            end,
             listen = function()
                 if env.listening then return nil, "Port 2123 is in use" end
                 env.listening, env.listener.closed = true, false
@@ -163,7 +172,7 @@ describe("Cellular services", function()
         -- Connect to the core, as a computer with this key.
         function env.connect(key, addr)
             local client, server = pipe(function() return net.time end,
-                { key = key, address = addr or "10.0.0.9" }, { key = env.identity, address = "10.0.0.1" })
+                { key = key, address = addr or "10.0.0.9" }, { key = env.identity, address = own_address })
             table.insert(env.listener.queue, server)
             return client
         end
@@ -171,7 +180,7 @@ describe("Cellular services", function()
         -- Connect as the core's own computer, to manage it.
         function env.admin()
             local admin = env.connect(env.identity, "127.0.0.1")
-            expect(hello(admin, "admin", 50)):same { ok = true, network = "ACME" }
+            expect(hello(admin, "admin", id)):same { ok = true, network = name }
             return admin
         end
         return env
@@ -514,9 +523,10 @@ describe("Cellular services", function()
                 local admin = env.admin()
                 local template = {
                     key = new_key(), label = "label", role = "admin", id = "ACME-1", number = "1", subscriber = "ACME-1", after = 0,
+                    network = "BETA", core = "10.0.0.2",
                 }
                 local asked = 0
-                for _, op in ipairs { "status", "allow", "deny", "add", "remove", "log", "nonsense" } do
+                for _, op in ipairs { "status", "allow", "deny", "add", "remove", "log", "carry", "uncarry", "nonsense" } do
                     for field in pairs(template) do
                         for _, bad in ipairs(BAD) do
                             local request = with(template, field, bad)
@@ -543,19 +553,22 @@ describe("Cellular services", function()
 
         it("turns away computers which introduce themselves oddly", function()
             local env = setup()
-            local cell_key, admin_key = new_key(), new_key()
+            local cell_key, admin_key, partner_key = new_key(), new_key(), new_key()
             local _, tower_public = crypto.generateKeyPair("ed25519")
             env.service.allowed[cell_key] = { label = "tower", role = "cell" }
             env.service.allowed[admin_key] = { label = "boss", role = "admin" }
+            env.service.allowed[partner_key] = { label = "BETA", role = "roam" }
             run(env.net, { env.service }, { function()
-                local template = { role = "cell", id = 11, signing = hex(tower_public), area = 1 }
-                for field in pairs(template) do
-                    for _, bad in ipairs(BAD) do
-                        for _, key in ipairs { cell_key, admin_key, new_key() } do
-                            local connection = env.connect(key, "10.0.0.11")
-                            assert(connection:send(with(template, field, bad)))
-                            connection:receive(2)
-                            connection:abort()
+                for _, role in ipairs { "cell", "roam" } do
+                    local template = { role = role, id = 11, signing = hex(tower_public), area = 1, network = "BETA" }
+                    for field in pairs(template) do
+                        for _, bad in ipairs(BAD) do
+                            for _, key in ipairs { cell_key, admin_key, partner_key, new_key() } do
+                                local connection = env.connect(key, "10.0.0.11")
+                                assert(connection:send(with(template, field, bad)))
+                                connection:receive(2)
+                                connection:abort()
+                            end
                         end
                     end
                 end
@@ -575,6 +588,160 @@ describe("Cellular services", function()
                 expect(#ask(admin, { op = "status" }).cells):eq(0)
                 admin:close()
             end, }, 900)
+        end)
+
+        describe("roaming", function()
+            local function two_cores(allowed)
+                local acme = setup(allowed and { cells = allowed })
+                local beta = setup(nil, { dir = DIR .. "-beta", network = "BETA", id = 51, host = 2, prefix = "10.65.0.0/16", net = acme.net })
+                -- BETA's core reaches ACME's as itself.
+                beta.options.connect = function() return acme.connect(beta.identity, "10.0.0.2") end
+                return acme, beta
+            end
+
+            it("carries another network's phones, once that network's core allows it", function()
+                local acme, beta = two_cores()
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local acme_admin, beta_admin = acme.admin(), beta.admin()
+                    expect(ask(beta_admin, { op = "carry", network = "ACME", core = "10.0.0.1" })):same {
+                        network = "ACME", core = "10.0.0.1", id = 51, fingerprint = fingerprint(beta.identity),
+                    }
+
+                    -- ACME's administrator sees who is asking, and allows it.
+                    local status
+                    repeat
+                        status = ask(acme_admin, { op = "status" })
+                        coroutine.yield()
+                    until #status.waiting == 1
+                    local waiting = status.waiting[1]
+                    expect({ waiting.key, waiting.id, waiting.role, waiting.network }):same { beta.identity, 51, "roam", "BETA" }
+                    expect(ask(beta_admin, { op = "status" }).carrying):same {
+                        { network = "ACME", core = "10.0.0.1", state = "waiting", phones = 0 },
+                    }
+                    expect(ask(acme_admin, { op = "allow", key = beta.identity })):same {
+                        role = "roam", id = 51, label = "BETA", network = "BETA", fingerprint = fingerprint(beta.identity),
+                    }
+                    wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
+
+                    -- To ACME's core, BETA's is a cell, and its phones are told they may use BETA's cells.
+                    expect(acme.service.core.towers[51].partner):eq("BETA")
+                    expect(acme.service.core.partner_keys):same { BETA = beta.signing }
+                    expect(beta.service.core.partners.ACME):ne(nil)
+                    expect(ask(acme_admin, { op = "status" }).partners):same { {
+                        network = "BETA", id = 51, key = beta.identity, fingerprint = fingerprint(beta.identity), phones = 0,
+                        connected = true, address = "10.0.0.2",
+                    }, }
+                    expect(ask(beta_admin, { op = "status" }).carrying[1].state):eq("serving")
+                    expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity]):same {
+                        label = "BETA", role = "roam", id = 51, network = "BETA", signing = hex(beta.signing),
+                    }
+                    expect(read_table(fs.combine(beta.dir, "roaming"))):same { ACME = { core = "10.0.0.1" } }
+
+                    -- What the cores say to each other passes over the connection, both ways.
+                    local at_home, at_partner = {}, {}
+                    local control, partner_control = acme.service.core.control, beta.service.core.partner_control
+                    acme.service.core.control = function(core, id, message)
+                        at_home[#at_home + 1] = { id, message }
+                        return control(core, id, message)
+                    end
+                    beta.service.core.partner_control = function(core, from, message)
+                        at_partner[#at_partner + 1] = { from, message }
+                        return partner_control(core, from, message)
+                    end
+                    beta.service.core.partners.ACME.send({ op = "sms_ack", teid = 5, id = 1 })
+                    acme.service.core:send(51, { op = "release", teid = 5 })
+                    wait_until(function() return #at_home > 0 and #at_partner > 0 end)
+                    expect(at_home):same { { 51, { op = "sms_ack", teid = 5, id = 1 } } }
+                    expect(at_partner[#at_partner]):same { "ACME", { op = "release", teid = 5 } }
+
+                    -- It connects again when it loses ACME's core.
+                    acme.service.partners.BETA.connection:abort()
+                    wait_until(function() return beta.service.carrying.ACME.state == "lost" end)
+                    expect(beta.service.core.partners.ACME):eq(nil)
+                    wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
+                    expect(acme.service.core.towers[51].partner):eq("BETA")
+
+                    -- Either side can end it. ACME refuses BETA: its phones are no longer told of BETA's cells.
+                    expect(ask(acme_admin, { op = "deny", key = beta.identity })):same { id = 51 }
+                    wait_until(function() return beta.service.carrying.ACME.state == "refused" end)
+                    expect(beta.service.carrying.ACME.error):eq("The core has refused this computer.")
+                    expect(acme.service.core.partner_keys):same {}
+                    expect(acme.service.core.towers[51]):eq(nil)
+                    expect(ask(acme_admin, { op = "status" }).partners):same {}
+
+                    expect(ask(beta_admin, { op = "uncarry", network = "ACME" })):same { network = "ACME" }
+                    expect(ask(beta_admin, { op = "uncarry", network = "ACME" }).error):eq("This network doesn't carry the phones of ACME")
+                    expect(ask(beta_admin, { op = "status" }).carrying):same {}
+                    expect(read_table(fs.combine(beta.dir, "roaming"))):same {}
+                    acme_admin:close()
+                    beta_admin:close()
+                end, }, 300)
+            end)
+
+            it("is set up again when the cores start", function()
+                local acme, beta = two_cores()
+                acme.service.allowed[beta.identity] = { label = "BETA", role = "roam" }
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local beta_admin = beta.admin()
+                    ask(beta_admin, { op = "carry", network = "ACME", core = "10.0.0.1" })
+                    wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
+                    beta_admin:close()
+                end, })
+
+                -- ACME's core starts again: it tells phones of BETA before BETA's core has connected.
+                acme.service:stop()
+                beta.service:stop()
+                acme.listening, beta.listening = false, false
+                acme.service = assert(core_service.new(acme.options))
+                expect(acme.service.core.partner_keys):same { BETA = beta.signing }
+                -- And BETA's connects to ACME's by itself.
+                beta.service = assert(core_service.new(beta.options))
+                run(acme.net, { acme.service, beta.service }, { function()
+                    wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
+                    expect(acme.service.core.towers[51].partner):eq("BETA")
+                end, })
+            end)
+
+            it("only takes a partner as the network it was allowed as", function()
+                local key, other_key = new_key(), new_key()
+                local acme = setup({ cells = {
+                    [key] = { label = "BETA", role = "roam", network = "BETA", id = 51 },
+                    [other_key] = { label = "tower", role = "cell" },
+                }, })
+                local signing = hex(crypto.random(32))
+                run(acme.net, { acme.service }, { function()
+                    local function try(with_key, role, name)
+                        return hello(acme.connect(with_key, "10.0.0.2"), role, 51, { network = name, signing = signing })
+                    end
+                    expect(try(key, "roam", "GAMMA")):same { error = "This computer was allowed as the core of BETA, not of GAMMA." }
+                    expect(try(key, "roam", "ACME")):same { error = "That's this network's own name." }
+                    expect(try(key, "cell", "BETA")):same { error = "This computer may carry the network's phones, but not be a cell." }
+                    expect(try(other_key, "roam", "BETA")):same { error = "This computer may be a cell, but not carry the network's phones." }
+                    expect(try(key, "roam", "BETA").network):eq("ACME")
+
+                    -- Another computer can't be allowed as a network which has a core already.
+                    local third = new_key()
+                    acme.service.allowed[third] = { label = "BETA too", role = "roam" }
+                    expect(try(third, "roam", "BETA")):same { error = "Another computer is the core of BETA." }
+                end, })
+            end)
+
+            it("says when the core it connects to isn't the network's", function()
+                local acme, beta = two_cores()
+                acme.service.allowed[beta.identity] = { label = "BETA", role = "roam" }
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local beta_admin = beta.admin()
+                    ask(beta_admin, { op = "carry", network = "GAMMA", core = "10.0.0.1" })
+                    wait_until(function() return beta.service.carrying.GAMMA.state == "refused" end)
+                    expect(beta.service.carrying.GAMMA.error):eq("That's the core of ACME, not of GAMMA")
+                    expect(beta.service.core.partners.GAMMA):eq(nil)
+
+                    expect(ask(beta_admin, { op = "carry", network = "BETA", core = "10.0.0.1" })):same { error = "That's this network" }
+                    expect(ask(beta_admin, { op = "carry", network = "no spaces", core = "10.0.0.1" }).error):ne(nil)
+                    expect(ask(beta_admin, { op = "carry", network = "ACME", core = "" }).error):ne(nil)
+                    beta_admin:close()
+                end, })
+            end)
         end)
 
         it("needs setting up first", function()

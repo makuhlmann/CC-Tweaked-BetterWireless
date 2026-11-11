@@ -23,6 +23,10 @@ local TUNNEL_PORT = 2152
 --- The port of the cells' end of tunnels. It differs from the gateway's, so a computer can be a cell and the core.
 local CELL_TUNNEL_PORT = 2153
 
+--- The port a core takes tunnels on from the cores of networks whose phones it carries (roaming partners). It differs
+-- from the cells', so a core can be a cell too.
+local ROAM_TUNNEL_PORT = 2154
+
 --- The number in the nonce for messages from phones (and cells' tunnels to the gateway).
 local UPLINK = 1
 
@@ -52,6 +56,14 @@ local REPLAY_WINDOW = 64
 -- @treturn boolean Whether it's an ID.
 local function is_id(value)
     return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 2 ^ 53
+end
+
+--- Whether a value could be a network's name: letters, digits and dashes, up to 32 of them.
+--
+-- @param value The value.
+-- @treturn boolean Whether it's a name.
+local function is_network(value)
+    return type(value) == "string" and #value >= 1 and #value <= 32 and value:find("^[%w%-]+$") ~= nil
 end
 
 --- The name a cell's certificate is for: its network and its ID.
@@ -268,6 +280,7 @@ return {
     FRAME = FRAME,
     TUNNEL_PORT = TUNNEL_PORT,
     CELL_TUNNEL_PORT = CELL_TUNNEL_PORT,
+    ROAM_TUNNEL_PORT = ROAM_TUNNEL_PORT,
     CONTROL_PORT = CONTROL_PORT,
     SIB_INTERVAL = SIB_INTERVAL,
     UPLINK = UPLINK,
@@ -276,6 +289,7 @@ return {
     TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
     is_id = is_id,
+    is_network = is_network,
     is_path = is_path,
     make_code = make_code,
     parse_code = parse_code,
