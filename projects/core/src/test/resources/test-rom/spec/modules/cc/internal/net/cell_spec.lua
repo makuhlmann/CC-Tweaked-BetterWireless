@@ -349,7 +349,7 @@ describe("Cellular networks", function()
         local setup = operator { 0 }
         local tower = setup.towers[1].tower
         local sent = {}
-        tower.control_send = function(message) sent[#sent + 1] = message end
+        tower.links.ACME.control_send = function(message) sent[#sent + 1] = message end
         local function confirm(phone, key)
             local sealer = common.new_sealer(crypto, key, common.UPLINK, common.DOWNLINK)
             tower:radio(phone, { op = "confirm", sealed = sealer:seal({ confirm = true }) })
@@ -400,7 +400,7 @@ describe("Cellular networks", function()
             end)
             expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
             expect(setup.core:path_of(30)):same { 11 }
-            expect(relay.tower.path):same { 11 }
+            expect(relay.tower.links.ACME.path):same { 11 }
 
             local listener = assert(tcp.listen(setup.server, 80))
             local client = assert(tcp.connect(stack, ip("10.0.0.60"), 80))
@@ -433,7 +433,7 @@ describe("Cellular networks", function()
             for i = 1, sent do expect(got[i]):eq(i) end
             -- The relay now goes through the other cell, and says so.
             expect(setup.core:path_of(30)):same { 12 }
-            expect(relay.tower.path):same { 12 }
+            expect(relay.tower.links.ACME.path):same { 12 }
             expect(setup.net.errors):same {}
         end)
 
@@ -444,7 +444,7 @@ describe("Cellular networks", function()
             local relays = {}
             for i = 1, 3 do
                 relays[i] = setup.add_relay(29 + i, i * 90)
-                wait_until(setup, function() return relays[i].tower ~= nil and #relays[i].tower.path == i end, 60)
+                wait_until(setup, function() return relays[i].tower ~= nil and #relays[i].tower.links.ACME.path == i end, 60)
             end
             local phone, stack = setup.add_phone(1, 300)
             wait_until(setup, function()
@@ -502,7 +502,7 @@ describe("Cellular networks", function()
             local ok, err = pcall(function()
                 local setup = operator { 0 }
                 local first = setup.add_relay(30, 90)
-                wait_until(setup, function() return first.tower ~= nil and #first.tower.path == 1 end, 60)
+                wait_until(setup, function() return first.tower ~= nil and #first.tower.links.ACME.path == 1 end, 60)
 
                 -- A second relay only hears the first, which is as far from the core as a cell may be: its phone
                 -- doesn't use it. An ordinary phone does.
@@ -536,9 +536,9 @@ describe("Cellular networks", function()
             wait_until(setup, function() return first.tower ~= nil end)
             -- A second relay, out of the cell's range, goes through the first.
             local second = setup.add_relay(31, 150)
-            wait_until(setup, function() return second.tower ~= nil and #second.tower.path == 2 end)
+            wait_until(setup, function() return second.tower ~= nil and #second.tower.links.ACME.path == 2 end)
             expect(second.phone.cell):eq(30)
-            expect(second.tower.path):same { 30, 11 }
+            expect(second.tower.links.ACME.path):same { 30, 11 }
 
             -- The second relay comes right next to the first. The first's phone hears it far better than its own cell,
             -- but never uses it: that would be a loop.

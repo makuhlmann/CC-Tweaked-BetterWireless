@@ -503,7 +503,7 @@ describe("Cellular networks, under stress,", function()
             end
             -- Tunnel IDs are all different, however the dice fall.
             expect(count(setup.core.by_teid)):eq(60)
-            expect(count(setup.towers[1].tower.by_teid)):eq(60)
+            expect(count(setup.towers[1].tower.links.ACME.by_teid)):eq(60)
             expect(setup.net.errors):same {}
         end)
 
@@ -623,7 +623,10 @@ describe("Cellular networks, under stress,", function()
                 for id = 2000, 2299 do
                     setup.net.inject("air", phone.stack.interfaces.air.broadcast, {
                         net = 1, src = id, dst = -1, type = common.FRAME,
-                        body = { op = "sib", network = "FAKE" .. id % 7, cell = id, area = 1, load = 0, time = setup.now() },
+                        body = {
+                            op = "sib", cell = id, area = 1, load = 0, time = setup.now(),
+                            networks = { { network = "FAKE" .. id % 7 }, { network = "FAKE" .. id % 5 } },
+                        },
                     })
                 end
                 setup.net.advance(1)

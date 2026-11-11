@@ -6,6 +6,9 @@
 waits for the core to allow it if it must, and then runs the cell. When it loses the core, it connects again, less often
 each time.
 
+A cell may serve several networks, connecting to each one's core (operators sharing a cell site): each connection is
+kept on its own, and the cell serves each network while its core is there.
+
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use the `celld` program instead.
 
@@ -24,86 +27,98 @@ local FIRST_DELAY = 2
 --- The longest to wait before connecting again, in seconds.
 local MAX_DELAY = 60
 
+-- Which state of a core's to show for the cell as a whole: the best one.
+local STATE_ORDER = { serving = 1, waiting = 2, connecting = 3, lost = 4, refused = 5 }
+
 local Service = {}
 Service.__index = Service
 
 --[[- Start a cell.
 
 @tparam {
-    core = string, area? = number, id = number, identity = string, fingerprint = function(key:string):string,
-    signing = string, connect = function(core:string):table,
+    core? = string, cores? = { string... }, area? = number, id = number, identity = string,
+    fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
     start_tower = function(welcome:table, control:function):table,
     sleep = function(seconds:number), wake = function(),
-} options The core's name or address; the cell's tracking area; this computer's ID and its key (as hexadecimal
-digits), and a way to get a key's fingerprint; the cell's own Ed25519 key, as hexadecimal digits, which the core
-certifies; a way to connect securely to the core's control port; a way to start the cell itself, given what the core
-said (`network`, `certificate`, `tunnel_key`, `core` and `area`) and a function to send the core control messages;
-a way to wait; and a way to wake tasks waiting for something to change.
+} options The core's name or address, or the names or addresses of several (for a cell which serves several
+networks); the cell's tracking area; this computer's ID and its key (as hexadecimal digits), and a way to get a key's
+fingerprint; the cell's own Ed25519 key, as hexadecimal digits, which each core certifies; a way to connect securely
+to a core's control port; a way to have the cell serve a network, given what its core said (`network`, `certificate`,
+`tunnel_key`, `core` and `area`) and a function to send that core control messages, which returns something to give
+the core's messages to (`control`) and to stop serving the network with (`stop`); a way to wait; and a way to wake
+tasks waiting for something to change.
 @treturn table The service. Pass it every event with `resume`.
 ]]
 local function new(options)
-    local self = setmetatable({ options = options, state = "connecting" }, Service)
+    local self = setmetatable({ options = options, links = {} }, Service)
     self.tasks = tasks.new(function(err) self.error = tostring(err) end)
-    self.tasks:spawn(function() self:run() end)
+    for i, core in ipairs(options.cores or { options.core }) do
+        local link = { core = core, state = "connecting" }
+        self.links[i] = link
+        self.tasks:spawn(function() self:run(link) end)
+    end
     return self
 end
 
-function Service:set(state, err)
-    self.state, self.error = state, err
-end
-
-function Service:run()
+-- Keep a core connected: connect, serve its network, and connect again once it's lost, less often each time.
+function Service:run(link)
     local delay = FIRST_DELAY
     while not self.stopped do
-        self:set("connecting")
-        local connected, connection, err = pcall(self.options.connect, self.options.core)
+        link.state, link.error = "connecting", nil
+        local connected, connection, err = pcall(self.options.connect, link.core)
         if not connected then connection, err = nil, tostring(connection) end
         if connection then
-            self.connection = connection
-            local ok, reason = pcall(self.serve, self, connection)
-            self.connection = nil
+            link.connection = connection
+            local ok, reason = pcall(self.serve, self, link, connection)
+            link.connection = nil
             connection:abort()
-            if self.served then delay, self.served = FIRST_DELAY, false end
+            if link.served then delay, link.served = FIRST_DELAY, false end
             if not ok then reason = tostring(reason) end
-            if self.state ~= "refused" then self:set("lost", reason or "The core closed the connection") end
+            if link.state ~= "refused" then link.state, link.error = "lost", reason or "The core closed the connection" end
         else
-            self:set("lost", err)
+            link.state, link.error = "lost", err
         end
         if self.stopped then return end
-        self.retry = delay
+        link.retry = delay
         self.options.sleep(delay)
         delay = math.min(delay * 2, MAX_DELAY)
     end
 end
 
-function Service:serve(connection)
+function Service:serve(link, connection)
     local options = self.options
     connection:send({ role = "cell", id = options.id, signing = options.signing, area = options.area or 0 })
     local reply, err = connection:receive(HELLO_TIMEOUT)
     if type(reply) == "table" and reply.waiting then
-        self:set("waiting")
+        link.state = "waiting"
         reply, err = connection:receive(WAIT_TIMEOUT)
     end
     if type(reply) == "table" and type(reply.error) == "string" then
-        self:set("refused", reply.error)
+        link.state, link.error = "refused", reply.error
         return
     end
     if type(reply) ~= "table" or type(reply.network) ~= "string" or type(reply.certificate) ~= "string"
         or type(reply.tunnel_key) ~= "string" then
         return err or "The core didn't answer"
     end
+    -- One core for each network.
+    for _, other in ipairs(self.links) do
+        if other ~= link and other.handle and other.network == reply.network then
+            link.state, link.error = "refused", ("This cell serves %s through the core %s already"):format(reply.network, other.core)
+            return
+        end
+    end
 
     -- The cell sends control messages from inside the network stack, where nothing may wait: queue them.
     local outbox, done = {}, false
-    local tower = options.start_tower({
+    local handle = options.start_tower({
         network = reply.network, certificate = reply.certificate, tunnel_key = reply.tunnel_key,
         core = connection:getPeer(), area = options.area or 0,
     }, function(message)
         outbox[#outbox + 1] = message
         options.wake()
     end)
-    self.tower, self.network, self.served = tower, reply.network, true
-    self:set("serving")
+    link.handle, link.network, link.served, link.state = handle, reply.network, true, "serving"
 
     self.tasks:spawn(function()
         while not done do
@@ -124,12 +139,12 @@ function Service:serve(connection)
                 reason = receive_err or "The core closed the connection"
                 break
             end
-            tower:control(message)
+            handle:control(message)
         end
     end)
     done = true
-    self.tower = nil
-    tower:stop()
+    link.handle = nil
+    handle:stop()
     if not ok then error(failure, 0) end
     return reason
 end
@@ -138,13 +153,21 @@ end
 
 @treturn table Its `state`: `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`, `"lost"` (it couldn't
 reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying why; the `core`; the
-`network` it serves; its `area`; and its `id` and `fingerprint`, for allowing it on the core.
+`network` it serves; its `area`; its `id` and `fingerprint`, for allowing it on the core; and `links`, the same for each
+core (`core`, `state`, `error`, `retry` and `network`), for a cell which serves several networks. The cell's own
+`state` (and `core`, `network`, `error` and `retry`) is the best of its cores': serving if it serves any network.
 ]]
 function Service:info()
     local options = self.options
+    local links, best = {}, nil
+    for i, link in ipairs(self.links) do
+        links[i] = { core = link.core, state = link.state, error = link.error, retry = link.retry, network = link.network }
+        if not best or STATE_ORDER[link.state] < STATE_ORDER[best.state] then best = link end
+    end
+    best = best or {}
     return {
-        state = self.state, error = self.error, retry = self.retry, core = options.core, network = self.network,
-        area = options.area or 0, id = options.id, fingerprint = options.fingerprint(options.identity),
+        state = best.state, error = best.error, retry = best.retry, core = best.core, network = best.network,
+        area = options.area or 0, id = options.id, fingerprint = options.fingerprint(options.identity), links = links,
     }
 end
 
@@ -162,11 +185,13 @@ function Service:stop()
     if self.stopped then return end
     self.stopped = true
     self.tasks:stop()
-    if self.tower then
-        self.tower:stop()
-        self.tower = nil
+    for _, link in ipairs(self.links) do
+        if link.handle then
+            link.handle:stop()
+            link.handle = nil
+        end
+        if link.connection then link.connection:abort() end
     end
-    if self.connection then self.connection:abort() end
 end
 
 return {

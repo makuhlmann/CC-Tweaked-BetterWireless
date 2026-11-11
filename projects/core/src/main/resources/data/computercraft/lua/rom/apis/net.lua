@@ -1596,7 +1596,17 @@ local function start_core_service()
     return true
 end
 
--- Run a cell in the background.
+-- The cores a cell connects to, from its settings. Older versions kept only one.
+local function cell_cores(config)
+    local cores = {}
+    for _, core in ipairs(type(config.cores) == "table" and config.cores or {}) do
+        if type(core) == "string" then cores[#cores + 1] = core end
+    end
+    if not cores[1] and type(config.core) == "string" then cores[1] = config.core end
+    return cores[1] and cores or nil
+end
+
+-- Run a cell in the background: one cell, which serves the network of each core it reaches.
 local function start_cell_service(config)
     if background.cell then return true end
     require_crypto()
@@ -1604,27 +1614,32 @@ local function start_cell_service(config)
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not cell_interface() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
+    local tower
     background.cell = env_require("cc.internal.net.cell.cell_service").new {
-        core = config.core, area = config.area, id = os.getComputerID(), identity = getIdentity(),
+        cores = config.cores, area = config.area, id = os.getComputerID(), identity = getIdentity(),
         fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
             local name = cell_interface()
             if not name then error("A cell needs a wireless modem", 0) end
-            local core = address.parse(welcome.core)
-            return env_require("cc.internal.net.cell.tower").new {
-                stack = stack, crypto = crypto, interface = name, network = welcome.network, area = welcome.area,
-                certificate = welcome.certificate, sign = function(data) return enclave.sign("cell.tower", data) end,
-                epoch = function() return os.epoch("utc") end, core = core,
-                tunnel_key = welcome.tunnel_key, control = control,
-                -- A relay reaches the core through this computer's phone, so it can only serve while the phone has
-                -- service. Otherwise its phones would stay, with nowhere for their packets to go.
-                can_serve = function()
-                    if not phone_instance or phone_instance.state == "attached" then return true end
-                    local interface = stack:route(core)
-                    return not (interface and interface.name == "cell")
-                end,
-            }
+            if not tower or tower.stopped then
+                tower = env_require("cc.internal.net.cell.tower").new {
+                    stack = stack, crypto = crypto, interface = name, area = welcome.area,
+                    sign = function(data) return enclave.sign("cell.tower", data) end,
+                    epoch = function() return os.epoch("utc") end,
+                    -- A relay reaches a core through this computer's phone, so it can only serve that core's network
+                    -- while the phone has service. Otherwise its phones would stay, with nowhere for their packets to go.
+                    can_serve = function(core)
+                        if not phone_instance or phone_instance.state == "attached" then return true end
+                        local interface = stack:route(core)
+                        return not (interface and interface.name == "cell")
+                    end,
+                }
+            end
+            return tower:add_network(welcome.network, {
+                certificate = welcome.certificate, core = address.parse(welcome.core), tunnel_key = welcome.tunnel_key,
+                control = control,
+            })
         end,
         sleep = sleep, wake = cell_wake,
     }
@@ -1642,8 +1657,9 @@ function start_cellular()
         if not ok then log_error("Cannot start the cellular core: " .. tostring(err)) end
     end
     local cell = read_table(CELL_CONFIG)
-    if type(cell.core) == "string" and cell.enabled ~= false then
-        local ok, err = start_cell_service(cell)
+    local cores = cell_cores(cell)
+    if cores and cell.enabled ~= false then
+        local ok, err = start_cell_service({ cores = cores, area = cell.area })
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
 end
@@ -2191,22 +2207,42 @@ cell = {
     starts). It connects to the network's core, and if the core hasn't allowed this computer yet, waits until it does.
     This is for the `celld` program.
 
-    @tparam string core The core's name or address.
+    A cell may serve several networks, which share it: give it each network's core. It connects to each, and serves
+    each network while its core is there, naming each in its system information. Phones of each choose it as a cell of
+    their network (or of one they roam on), and it takes them to that network's core.
+
+    @tparam string|{ string... } core The core's name or address, or those of several networks' cores.
     @tparam[opt] number area The cell's tracking area.
     @treturn[1] true If it started.
     @treturn[2] nil If it couldn't.
     @treturn[2] string Why not.
     ]]
     startCell = function(core, area)
-        expect(1, core, "string")
+        expect(1, core, "string", "table")
         expect(2, area, "number", "nil")
+        local cores = {}
+        if type(core) == "string" then
+            cores[1] = core
+        else
+            for i, name in ipairs(core) do
+                if type(name) ~= "string" then error(("bad argument #1 (core %d is a %s, not a string)"):format(i, type(name)), 2) end
+                cores[i] = name
+            end
+            if not cores[1] then error("bad argument #1 (expected at least one core)", 2) end
+        end
         require_crypto()
-        local config = { core = core, area = area or 0 }
+        local config = { cores = cores, area = area or 0 }
         local old = read_table(CELL_CONFIG)
-        -- Start again with new settings, or to try again at once after losing the core.
-        if background.cell and (old.core ~= core or (old.area or 0) ~= config.area or background.cell.state ~= "serving") then
-            background.cell:stop()
-            background.cell = nil
+        -- Start again with new settings, or to try again at once after losing a core.
+        if background.cell then
+            local again = table.concat(cell_cores(old) or {}, " ") ~= table.concat(cores, " ") or (old.area or 0) ~= config.area
+            for _, link in ipairs(background.cell:info().links) do
+                if link.state ~= "serving" then again = true end
+            end
+            if again then
+                background.cell:stop()
+                background.cell = nil
+            end
         end
         write_table(CELL_CONFIG, config)
         return start_cell_service(config)
@@ -2215,7 +2251,7 @@ cell = {
     --- Stop this computer's cell, and don't start it when the computer starts.
     stopCell = function()
         local config = read_table(CELL_CONFIG)
-        if type(config.core) == "string" then
+        if cell_cores(config) then
             config.enabled = false
             write_table(CELL_CONFIG, config)
         end
@@ -2229,14 +2265,16 @@ cell = {
 
     @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
-    why; the `core`; the `network` it serves; its `area`; and its `id` and `fingerprint`, which the core's administrator
-    checks before allowing it.
+    why; the `core`; the `network` it serves; its `area`; its `id` and `fingerprint`, which the core's administrator
+    checks before allowing it; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
+    for each core, for a cell which serves several networks. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()
         if background.cell then return background.cell:info() end
         local config = read_table(CELL_CONFIG)
+        local cores = cell_cores(config)
         return {
-            state = "stopped", core = config.core, area = config.area, id = os.getComputerID(),
+            state = "stopped", core = cores and cores[1], cores = cores, area = config.area, id = os.getComputerID(),
             fingerprint = crypto and enclave and fingerprint(getIdentity()) or nil,
         }
     end,

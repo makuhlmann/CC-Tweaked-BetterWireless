@@ -614,7 +614,7 @@ describe("Roaming", function()
         local acme, beta, net = operators()
         -- A relay of BETA's, further out: a computer which is a phone of BETA and a cell of BETA.
         local relay = beta.add_relay(30, 480)
-        wait_until(net, function() return relay.tower ~= nil and #relay.tower.path == 1 end, 60, "The relay joining")
+        wait_until(net, function() return relay.tower ~= nil and #relay.tower.links.BETA.path == 1 end, 60, "The relay joining")
 
         -- A phone of ACME's which only hears the relay.
         local phone, stack = acme.add_phone(1, 560, true, { partners = { BETA = beta.signing_public } })

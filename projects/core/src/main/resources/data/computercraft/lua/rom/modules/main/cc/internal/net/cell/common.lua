@@ -42,6 +42,9 @@ local SIB_INTERVAL = 1
 -- System information older (or newer) than this, in milliseconds, isn't believed: it may be a recording.
 local SIB_MAX_AGE = 30 * 1000
 
+--- How many networks one cell may serve (and name in its system information): several operators may share a cell.
+local MAX_SIB_NETWORKS = 8
+
 local SIB_PREFIX = "cc-net cell sib 1\0"
 local CELL_KEY_PREFIX = "cc-net cell key 1\0"
 local TUNNEL_KEY_PREFIX = "cc-net tunnel key 1\0"
@@ -98,30 +101,70 @@ local function is_path(path)
     return true
 end
 
---[[- Make the signed system information a cell broadcasts.
+--[[- Make the signed system information a cell broadcasts. It names each network the cell serves (one, or several
+when operators share it), each with the certificate that network's operator gave the cell, and signed with the cell's
+key.
 
 @tparam {
-    network = string, cell = number, area = number, load = number, time = number, path? = { number... },
-    certificate = string, sign = function(data:string):string,
-} options The network; the cell's ID, tracking area and how busy it is (from 0 to 1); the time, as `os.epoch("utc")`
-gives; the relays the cell's backhaul goes through, nearest first, if it's a relay; the cell's certificate, from the
-operator; and a way to sign with the cell's key.
+    cell = number, area = number, load = number, time = number, sign = function(data:string):string,
+    networks? = { { network = string, certificate = string, path? = { number... } }... },
+    network? = string, certificate? = string, path? = { number... },
+} options The cell's ID, tracking area and how busy it is (from 0 to 1); the time, as `os.epoch("utc")` gives; a way
+to sign with the cell's key; and the networks it serves, each with its name, the cell's certificate from its operator,
+and the relays the cell's backhaul to its core goes through, nearest first, if it's a relay. A cell of one network may
+give that network's `network`, `certificate` and `path` instead.
 @treturn table The system information.
 ]]
 local function make_sib(options)
-    local fields = {
-        network = options.network, cell = options.cell, area = options.area, load = options.load, time = options.time,
-        path = options.path and #options.path > 0 and options.path or nil,
+    local networks = options.networks
+        or { { network = options.network, certificate = options.certificate, path = options.path } }
+    local sib = {
+        op = "sib", cell = options.cell, area = options.area, load = options.load, time = options.time, networks = {},
     }
-    local sib = { op = "sib", cert = options.certificate, sig = options.sign(SIB_PREFIX .. codec.encode(fields)) }
-    for k, v in pairs(fields) do sib[k] = v end
+    for i, entry in ipairs(networks) do
+        local path = entry.path and #entry.path > 0 and entry.path or nil
+        local fields = {
+            network = entry.network, cell = options.cell, area = options.area, load = options.load, time = options.time,
+            path = path,
+        }
+        sib.networks[i] = {
+            network = entry.network, path = path, cert = entry.certificate, sig = options.sign(SIB_PREFIX .. codec.encode(fields)),
+        }
+    end
     return sib
 end
 
---[[- Check system information comes from a real cell of a network.
+--[[- Read which networks a cell's system information names, without checking any of them: those whose names and
+paths could be real, up to as many as a cell may serve.
+
+@param sib The system information, which may be anything.
+@tparam number sender The ID of the computer which sent it.
+@treturn { { network = string, path? = table, cert = any, sig = any }... }|nil The networks, or `nil` if it isn't
+system information from that computer.
+]]
+local function sib_networks(sib, sender)
+    if type(sib) ~= "table" or sib.cell ~= sender or type(sib.area) ~= "number" or type(sib.load) ~= "number"
+        or type(sib.time) ~= "number" or type(sib.networks) ~= "table" then
+        return nil
+    end
+    local result, seen = {}, {}
+    for i = 1, MAX_SIB_NETWORKS do
+        local entry = sib.networks[i]
+        if entry == nil then break end
+        if type(entry) == "table" and is_network(entry.network) and not seen[entry.network]
+            and (entry.path == nil or is_path(entry.path)) then
+            seen[entry.network] = true
+            result[#result + 1] = entry
+        end
+    end
+    return result
+end
+
+--[[- Check that a cell's system information comes from a real cell of a network it names.
 
 @tparam table crypto The `crypto` API.
-@param sib The system information, which may be anything.
+@tparam table sib The system information, as [`sib_networks`] took it.
+@tparam table entry The network's part of it, from what [`sib_networks`] gave.
 @tparam {
     network = string, signing = string, now = number, sender = number,
 } options The network we want; its operator's Ed25519 key; the time; and the ID of the computer which sent it.
@@ -129,15 +172,15 @@ end
 @treturn[2] nil If it isn't.
 @treturn[2] string Why not.
 ]]
-local function check_sib(crypto, sib, options)
-    if type(sib) ~= "table" or sib.network ~= options.network or sib.cell ~= options.sender then return nil, "not ours" end
+local function check_sib(crypto, sib, entry, options)
+    if type(entry) ~= "table" or entry.network ~= options.network or sib.cell ~= options.sender then return nil, "not ours" end
     if type(sib.area) ~= "number" or type(sib.load) ~= "number" or type(sib.time) ~= "number"
-        or type(sib.sig) ~= "string" or #sib.sig ~= 64 or (sib.path ~= nil and not is_path(sib.path)) then
+        or type(entry.sig) ~= "string" or #entry.sig ~= 64 or (entry.path ~= nil and not is_path(entry.path)) then
         return nil, "malformed"
     end
     if math.abs(sib.time - options.now) > SIB_MAX_AGE then return nil, "too old" end
 
-    local cert = certificate.decode(sib.cert)
+    local cert = certificate.decode(entry.cert)
     if not cert then return nil, "no certificate" end
     local name = cell_name(options.network, options.sender)
     local ok, reason = certificate.verify(crypto, cert, {
@@ -145,8 +188,10 @@ local function check_sib(crypto, sib, options)
     })
     if not ok then return nil, "certificate " .. reason end
 
-    local fields = { network = sib.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time, path = sib.path }
-    if not crypto.verify(cert.key, SIB_PREFIX .. codec.encode(fields), sib.sig) then return nil, "bad signature" end
+    local fields = {
+        network = entry.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time, path = entry.path,
+    }
+    if not crypto.verify(cert.key, SIB_PREFIX .. codec.encode(fields), entry.sig) then return nil, "bad signature" end
     return true
 end
 
@@ -286,6 +331,7 @@ return {
     UPLINK = UPLINK,
     DOWNLINK = DOWNLINK,
     MAX_PATH = MAX_PATH,
+    MAX_SIB_NETWORKS = MAX_SIB_NETWORKS,
     TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
     is_id = is_id,
@@ -295,6 +341,7 @@ return {
     parse_code = parse_code,
     activation_key = activation_key,
     make_sib = make_sib,
+    sib_networks = sib_networks,
     check_sib = check_sib,
     cell_key = cell_key,
     tunnel_key = tunnel_key,

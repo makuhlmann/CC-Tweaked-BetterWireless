@@ -8,5 +8,6 @@ ex:
 "celld core.acme" runs a cell of the network whose core is core.acme.
 "celld 10.64.0.1" runs a relay, through this computer's own phone.
 "celld 10.0.0.1 3" runs a cell in tracking area 3.
+"celld core.acme core.beta" runs one cell for two networks, whose operators share it (as for a cell site in a quiet area, which neither would build alone). It connects to both cores, each of which must allow it, and serves each network's phones, and phones roaming on either. Each network sees the cell as one of its own. If one core is lost, the cell carries on serving the other network.
 "celld" shows how the cell is doing.
 "celld stop" stops the cell.

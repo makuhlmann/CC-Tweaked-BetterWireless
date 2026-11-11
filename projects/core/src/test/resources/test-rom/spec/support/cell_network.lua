@@ -98,7 +98,11 @@ local function operator(cell_positions, options)
         local stack, id, core = entry.stack, entry.id, setup.core
         local tower
         local tunnel_key = core:add_tower(id, entry.address, function(message)
-            stack:schedule(0.01, function() if towers[entry.index] == entry and entry.tower == tower then tower:control(copy(message)) end end)
+            -- To this network's part of the cell: it may serve others too.
+            stack:schedule(0.01, function()
+                local link = tower.links[name]
+                if towers[entry.index] == entry and entry.tower == tower and link then link:control(copy(message)) end
+            end)
         end)
         tower = cell_tower.new {
             stack = stack, crypto = crypto, interface = "air", network = name, area = 1, certificate = entry.certificate,
@@ -119,7 +123,7 @@ local function operator(cell_positions, options)
 
         local cell_private, cell_public = crypto.generateKeyPair("ed25519")
         towers[i] = {
-            index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address,
+            index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address, public = cell_public,
             certificate = certificate.encode(certificate.issue {
                 name = common.cell_name(name, id), key = cell_public, expires = now() + 86400000, issuer = signing_public,
                 sign = function(data) return crypto.sign(signing_private, data) end,
@@ -162,6 +166,35 @@ local function operator(cell_positions, options)
         for network, partner in pairs(home_core.partner_keys) do keys[network] = partner end
         keys[visited.name] = { signing = visited.signing_public, home = roam_options and roam_options.home or nil }
         home_core:set_partner_keys(keys)
+    end
+
+    --[[- Have one of this operator's cells serve another operator's network too, as operators sharing a cell site
+    do. The other's core takes it as one of its own cells (as `celld` with both cores has it do), and certifies it.
+
+    @tparam number i Which of this operator's cells.
+    @tparam table other The other operator.
+    @treturn table The cell's link for the other network, which stops serving it with `stop()`.
+    ]]
+    function setup.share_cell(i, other)
+        local entry = towers[i]
+        local stack, id, tower, other_core = entry.stack, entry.id, entry.tower, other.core
+        local link
+        local key = other_core:add_tower(id, entry.address, function(message)
+            stack:schedule(0.01, function() if link and tower.links[other.name] == link then link:control(copy(message)) end end)
+        end)
+        link = tower:add_network(other.name, {
+            certificate = certificate.encode(certificate.issue {
+                name = common.cell_name(other.name, id), key = entry.public, expires = now() + 86400000,
+                issuer = other.signing_public, sign = function(data) return crypto.sign(other.signing_private, data) end,
+            }),
+            core = ip(other.core_address), tunnel_key = key,
+            control = function(message)
+                other.core_stack:schedule(0.01, function()
+                    if other.core == other_core then other_core:control(id, copy(message)) end
+                end)
+            end,
+        })
+        return link
     end
 
     --[[- Exchange messages with another operator's phones. The cores pass them to each other, as `cellcore` has them

@@ -941,13 +941,14 @@ describe("Cellular services", function()
     end)
 
     describe("a cell", function()
-        local function cell_setup()
+        local function cell_setup(cores)
             local net = network()
             local key, core_key = new_key(), new_key()
             local _, signing = crypto.generateKeyPair("ed25519")
             local env = { net = net, connections = {}, towers = {}, key = key }
             env.service = cell_service.new {
-                core = "core.acme", area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing),
+                core = not cores and "core.acme" or nil, cores = cores,
+                area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing),
                 connect = function(core)
                     if env.unreachable then return nil, "No route to host" end
                     local mine, theirs = pipe(function() return net.time end,
@@ -985,6 +986,7 @@ describe("Cellular services", function()
                 wait_until(function() return env.service:info().state == "waiting" end)
                 expect(env.service:info()):same {
                     state = "waiting", core = "core.acme", area = 3, id = 11, fingerprint = fingerprint(env.key),
+                    links = { { core = "core.acme", state = "waiting" } },
                 }
 
                 core:send({ network = "ACME", certificate = "certificate", tunnel_key = "key" })
@@ -1010,6 +1012,45 @@ describe("Cellular services", function()
                 wait_until(function() return env.connections[2] end)
                 expect(env.connections[2]:receive(5).role):eq("cell")
             end, })
+        end)
+
+        it("serves several networks, through each one's core, and the others while it loses one", function()
+            local env = cell_setup({ "core.acme", "core.beta" })
+            run(env.net, { env.service }, { function()
+                wait_until(function() return env.connections[2] end)
+                local acme, beta = env.connections[1], env.connections[2]
+                expect(acme:receive(5).role):eq("cell")
+                expect(beta:receive(5).role):eq("cell")
+                acme:send({ network = "ACME", certificate = "a", tunnel_key = "ka" })
+                beta:send({ network = "BETA", certificate = "b", tunnel_key = "kb" })
+                wait_until(function() return env.service:info().links[1].state == "serving" and env.service:info().links[2].state == "serving" end)
+                expect(env.service:info().links):same {
+                    { core = "core.acme", state = "serving", network = "ACME" },
+                    { core = "core.beta", state = "serving", network = "BETA" },
+                }
+                expect({ env.towers[1].welcome.network, env.towers[2].welcome.network }):same { "ACME", "BETA" }
+
+                -- Each core's messages go to its own network's part of the cell, and back.
+                beta:send({ op = "path", path = { 7 } })
+                wait_until(function() return env.towers[2].messages[1] end)
+                expect(env.towers[1].messages):same {}
+                env.towers[1].send({ op = "attach", phone = 70 })
+                expect(acme:receive(5)):same { op = "attach", phone = 70 }
+
+                -- Losing one core stops serving its network only.
+                beta:abort()
+                wait_until(function() return env.service:info().links[2].state == "lost" end)
+                expect({ env.towers[1].stopped, env.towers[2].stopped }):same { nil, true }
+                expect({ env.service:info().state, env.service:info().network }):same { "serving", "ACME" }
+
+                -- Another core of a network it serves already is one too many.
+                wait_until(function() return env.connections[3] end)
+                env.connections[3]:receive(5)
+                env.connections[3]:send({ network = "ACME", certificate = "c", tunnel_key = "kc" })
+                wait_until(function() return env.service:info().links[2].state == "refused" end)
+                expect(env.service:info().links[2].error):eq("This cell serves ACME through the core core.acme already")
+                expect(#env.towers):eq(2)
+            end, }, 300)
         end)
 
         it("tries again, less often each time, while it can't reach the core or is refused", function()

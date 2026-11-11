@@ -11,6 +11,12 @@ A cell broadcasts signed system information every second, relays phones' attach 
 their packets: sealed with the key it shares with each phone over the radio, and sealed tunnels to the gateway behind
 it. When a phone reports a stronger cell, it asks the core to hand the phone over.
 
+One cell may serve several networks, each with its own core, as operators who share a cell site do (like LTE's
+multi-operator core networks). Its system information names each network, with the certificate that network's
+operator gave the cell. A phone says which of them it chose; the cell takes it to that network's core, and carries its
+packets through that core's tunnel. A network whose core is lost is no longer named, and its phones move on, while the
+cell carries on serving the others.
+
 @local
 ]]
 
@@ -27,28 +33,30 @@ local is_id = common.is_id
 local Tower = {}
 Tower.__index = Tower
 
+-- A network the cell serves: what its core sends goes to `control`, and `stop` stops serving it.
+local Link = {}
+Link.__index = Link
+
 --[[- Start a cell.
 
 @tparam {
-    stack = table, crypto = table, interface = string, network = string, area? = number,
-    certificate = string, sign = function(data:string):string, epoch = function():number,
-    core = number, tunnel_key = string, control = function(message:table), can_serve? = function():boolean,
-} options The stack; the `crypto` API; the interface phones are on (a low band wireless one); the network's name and
-this cell's tracking area; the cell's certificate from the operator, and a way to sign with its key; the time, as
-`os.epoch("utc")` gives; the core's address, and the key for the tunnel to it; a way to send the core control
-messages; and whether the cell can serve phones now. A relay can't while its own phone has no service, and stops
-broadcasting, so its phones move to another cell.
+    stack = table, crypto = table, interface = string, area? = number, sign = function(data:string):string,
+    epoch = function():number, can_serve? = function(core:number):boolean,
+    network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
+} options The stack; the `crypto` API; the interface phones are on (a low band wireless one); this cell's tracking
+area; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
+network's phones now, given the address of its core (a relay can't while its own phone has no service, and stops naming
+that network, so its phones move to another cell). It may also be given the first network to serve, as `add_network`
+takes it.
 @treturn table The cell.
 ]]
 local function new(options)
     local stack = options.stack
     local self = setmetatable({
-        stack = stack, crypto = options.crypto, interface = options.interface, network = options.network,
-        area = options.area or 0, certificate = options.certificate, sign = options.sign, epoch = options.epoch,
-        core = options.core, control_send = options.control, id = stack.id,
+        stack = stack, crypto = options.crypto, interface = options.interface, area = options.area or 0,
+        sign = options.sign, epoch = options.epoch, id = stack.id,
         can_serve = options.can_serve or function() return true end,
-        tunnel = common.new_sealer(options.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
-        phones = {}, by_teid = {}, path = {}, early_confirms = {}, unknown = {}, unknown_count = 0,
+        links = {}, phones = {}, early_confirms = {}, unknown = {}, unknown_count = 0,
     }, Tower)
 
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
@@ -56,20 +64,86 @@ local function new(options)
     end, true)
     -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
     self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end, common.TUNNEL_LIMITS))
+    if options.network then self:add_network(options.network, options) end
     self:beacon()
     return self
 end
 
--- Broadcast system information, every second, while we can serve phones.
+-- Stop serving a network: its phones here lose service, and find another cell.
+local function drop(tower, link)
+    tower.links[link.network] = nil
+    for phone, context in pairs(tower.phones) do
+        if context.link == link then tower.phones[phone] = nil end
+    end
+end
+
+--[[- Serve a network: name it in our system information, and take its phones to its core.
+
+@tparam string network The network's name.
+@tparam {
+    certificate = string, core = number, tunnel_key = string, control = function(message:table),
+} options The cell's certificate from the network's operator; the address of its core, and the key for the tunnel to
+it; and a way to send that core control messages.
+@treturn table The network's link: give it what the core sends (`link:control(message)`), and stop serving the network
+with `link:stop()`. Stopping the last network the cell serves stops the cell.
+]]
+function Tower:add_network(network, options)
+    local old = self.links[network]
+    if old then drop(self, old) end
+    local link = setmetatable({
+        tower = self, network = network, certificate = options.certificate, core = options.core,
+        control_send = options.control, path = {}, by_teid = {},
+        tunnel = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
+    }, Link)
+    self.links[network] = link
+    return link
+end
+
+--- Handle a control message from this network's core.
+--
+-- @param message The message.
+function Link:control(message)
+    self.tower:control(message, self)
+end
+
+--- Stop serving this network. Its phones here lose service, and find another cell.
+function Link:stop()
+    local tower = self.tower
+    if tower.links[self.network] ~= self then return end
+    drop(tower, self)
+    if next(tower.links) == nil then tower:stop() end
+end
+
+-- The network a phone chose here, by name: or, if it names none we serve (or none at all), our only one.
+function Tower:link_for(network)
+    local link = network ~= nil and self.links[network]
+    if link then return link end
+    local only, count = nil, 0
+    for _, other in pairs(self.links) do only, count = other, count + 1 end
+    if count == 1 then return only end
+    return nil
+end
+
+-- Broadcast system information, every second, naming the networks we can serve phones of now.
 function Tower:beacon()
     self.beacon_timer = self.stack:schedule(common.SIB_INTERVAL, function() self:beacon() end)
-    -- A relay too many relays from the core can't carry the biggest packets, so doesn't serve.
-    if #self.path > common.MAX_PATH or not self.can_serve() then return end
+    local names = {}
+    for name in pairs(self.links) do names[#names + 1] = name end
+    table.sort(names)
+    local networks = {}
+    for _, name in ipairs(names) do
+        local link = self.links[name]
+        -- A relay too many relays from the core can't carry the biggest packets, so doesn't serve.
+        if #link.path <= common.MAX_PATH and self.can_serve(link.core) and #networks < common.MAX_SIB_NETWORKS then
+            networks[#networks + 1] = { network = name, certificate = link.certificate, path = link.path }
+        end
+    end
+    if not networks[1] then return end
     local load = 0
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
-        network = self.network, cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(),
-        path = self.path, certificate = self.certificate, sign = self.sign,
+        cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
+        sign = self.sign,
     })
 end
 
@@ -81,23 +155,22 @@ end
 function Tower:radio(phone, message)
     if type(message) ~= "table" then return end
     local op = message.op
-    if op == "attach" and common.is_network(message.network) and type(message.handshake) == "string" then
-        -- A phone of another network may be roaming: the core knows whether we carry that network's phones.
-        self.control_send({
-            op = "attach", phone = phone, handshake = message.handshake,
-            network = message.network ~= self.network and message.network or nil,
+    if (op == "attach" or op == "activate") and common.is_network(message.network) and type(message.handshake) == "string"
+        and (op == "attach" or type(message.tag) == "string") then
+        -- The phone names its own network, and the one it chose here (`via`): a phone of another network may be
+        -- roaming, or activating through ours, and that network's core knows whether it carries the phone's.
+        local link = self:link_for(message.via or message.network)
+        if not link then return end
+        link.control_send({
+            op = op, phone = phone, handshake = message.handshake, tag = op == "activate" and message.tag or nil,
+            network = message.network ~= link.network and message.network or nil,
         })
-    elseif op == "activate" and common.is_network(message.network) and type(message.tag) == "string"
-        and type(message.handshake) == "string" then
-        -- A phone of a network with no cells of its own here may activate through ours, if the core carries it.
-        self.control_send({
-            op = "activate", phone = phone, tag = message.tag, handshake = message.handshake,
-            network = message.network ~= self.network and message.network or nil,
-        })
-    elseif op == "activate_finish" and type(message.handshake) == "string" then
-        self.control_send({ op = "activate_finish", phone = phone, handshake = message.handshake })
     elseif op == "attach_complete" and type(message.data) == "string" then
-        self.control_send({ op = "attach_complete", phone = phone, data = message.data })
+        local link = self:link_for(message.via)
+        if link then link.control_send({ op = "attach_complete", phone = phone, data = message.data }) end
+    elseif op == "activate_finish" and type(message.handshake) == "string" then
+        local link = self:link_for(message.via)
+        if link then link.control_send({ op = "activate_finish", phone = phone, handshake = message.handshake }) end
     elseif op == "data" then
         local context = self.phones[phone]
         -- A phone we've forgotten (we restarted, or the core did) would wait a long time for an answer. Tell it, so
@@ -105,17 +178,18 @@ function Tower:radio(phone, message)
         if not context then return self:say_unknown(phone) end
         local value = context.active and context.sealer:open(message.sealed)
         if type(value) ~= "table" then return end
+        local link = context.link
         if type(value.p) == "string" then
             -- Up the tunnel to the gateway.
-            local sealed = self.tunnel:seal({ teid = context.teid, packet = value.p })
+            local sealed = link.tunnel:seal({ teid = context.teid, packet = value.p })
             if sealed then
-                local ok, err = self.stack:udp_send(self.socket, self.core, common.TUNNEL_PORT, sealed)
+                local ok, err = self.stack:udp_send(self.socket, link.core, common.TUNNEL_PORT, sealed)
                 if not ok then self.stack.log("Cell couldn't tunnel a phone's packet: " .. tostring(err)) end
             end
         elseif type(value.sms) == "table" then
-            self.control_send({ op = "sms", teid = context.teid, id = value.sms.id, to = value.sms.to, text = value.sms.text })
+            link.control_send({ op = "sms", teid = context.teid, id = value.sms.id, to = value.sms.to, text = value.sms.text })
         elseif value.sms_ack ~= nil then
-            self.control_send({ op = "sms_ack", teid = context.teid, id = value.sms_ack })
+            link.control_send({ op = "sms_ack", teid = context.teid, id = value.sms_ack })
         elseif value.ping ~= nil then
             -- The phone is checking we still know it.
             self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ pong = true }) })
@@ -123,7 +197,7 @@ function Tower:radio(phone, message)
             and (not context.handing_over or self.stack.clock() - context.handing_over > 5) then
             -- The phone hears another cell better. If the handover doesn't happen, it may ask again later.
             context.handing_over = self.stack.clock()
-            self.control_send({ op = "handover", teid = context.teid, target = value.target })
+            link.control_send({ op = "handover", teid = context.teid, target = value.target })
         end
     elseif op == "confirm" and type(message.sealed) == "table" then
         -- A phone handed over to us. The core's word about it comes over the backhaul, which may be slower than the
@@ -152,7 +226,7 @@ function Tower:say_unknown(phone)
     self:to_phone(phone, { op = "unknown" })
 end
 
--- A phone handed over to us says it's here: tell the core to send its packets our way, and tell the phone we heard.
+-- A phone handed over to us says it's here: tell its core to send its packets our way, and tell the phone we heard.
 -- It says so until we answer, as either frame may be lost.
 function Tower:confirm(phone, sealed)
     local context = self.phones[phone]
@@ -161,17 +235,26 @@ function Tower:confirm(phone, sealed)
     if type(value) ~= "table" or value.confirm ~= true then return end
     if not context.active then
         context.active = true
-        self.control_send({ op = "path_switch", teid = context.teid })
+        context.link.control_send({ op = "path_switch", teid = context.teid })
     end
     self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ confirmed = true }) })
 end
 
---[[- Handle a control message from the core.
+-- Forget a phone's context.
+local function forget(tower, context)
+    if context.link.by_teid[context.teid] == context then context.link.by_teid[context.teid] = nil end
+    if tower.phones[context.phone] == context then tower.phones[context.phone] = nil end
+end
+
+--[[- Handle a control message from a core.
 
 @param message The message.
+@tparam[opt] table link The link of the network whose core sent it: see [`Tower:add_network`]. A cell which serves one
+network needn't say.
 ]]
-function Tower:control(message)
-    if type(message) ~= "table" then return end
+function Tower:control(message, link)
+    link = link or self:link_for(nil)
+    if type(message) ~= "table" or not link or self.links[link.network] ~= link then return end
     local op = message.op
     if op == "attach_reply" and is_id(message.phone) then
         self:to_phone(message.phone, { op = "attach_reply", handshake = message.handshake })
@@ -180,7 +263,7 @@ function Tower:control(message)
     elseif (op == "activate_reply" or op == "activate_accept") and is_id(message.phone) then
         self:to_phone(message.phone, { op = op, handshake = message.handshake, data = message.data })
     elseif op == "sms" and is_id(message.teid) then
-        local context = self.by_teid[message.teid]
+        local context = link.by_teid[message.teid]
         if context and context.active then
             local sms = { id = message.id, from = message.from, text = message.text }
             local sealed = context.sealer:seal({ sms = sms })
@@ -188,21 +271,22 @@ function Tower:control(message)
         end
     elseif op == "sms_sent" and is_id(message.teid) then
         -- The core has a message the phone sent (or won't take it).
-        local context = self.by_teid[message.teid]
+        local context = link.by_teid[message.teid]
         if context and context.active then
             local sealed = context.sealer:seal({ sms_sent = { id = message.id, ok = message.ok, error = message.error } })
             if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
         end
     elseif op == "context" and is_id(message.phone) and is_id(message.teid)
         and type(message.key) == "string" and #message.key == 32 then
+        -- A phone is attached (or handed over) through one network at a time.
         local old = self.phones[message.phone]
-        if old then self.by_teid[old.teid] = nil end
+        if old then forget(self, old) end
         local context = {
-            phone = message.phone, teid = message.teid, active = not message.handover,
+            phone = message.phone, teid = message.teid, link = link, active = not message.handover,
             sealer = common.new_sealer(self.crypto, message.key, common.DOWNLINK, common.UPLINK),
         }
         self.phones[message.phone] = context
-        self.by_teid[message.teid] = context
+        link.by_teid[message.teid] = context
         if context.active then
             local sealed = context.sealer:seal({ address = message.address })
             if sealed then self:to_phone(message.phone, { op = "accept", sealed = sealed }) end
@@ -214,38 +298,44 @@ function Tower:control(message)
             self:confirm(message.phone, early.sealed)
         end
     elseif op == "handover_go" and is_id(message.teid) and is_id(message.target) then
-        local context = self.by_teid[message.teid]
+        local context = link.by_teid[message.teid]
         if context then
             self:to_phone(context.phone, { op = "handover", sealed = context.sealer:seal({ target = message.target }) })
         end
     elseif op == "path" and common.is_path(message.path) then
-        -- The relays our backhaul goes through, which phones on them mustn't use us.
-        self.path = message.path
+        -- The relays our backhaul to this network's core goes through, which phones on them mustn't use us.
+        link.path = message.path
     elseif op == "release" and is_id(message.teid) then
-        local context = self.by_teid[message.teid]
-        if context then
-            self.by_teid[message.teid] = nil
-            if self.phones[context.phone] == context then self.phones[context.phone] = nil end
+        local context = link.by_teid[message.teid]
+        if context then forget(self, context) end
+    end
+end
+
+-- A packet for a phone, down a tunnel from a gateway.
+function Tower:downlink(data)
+    -- Only a core has its tunnel's key, and the sealer refuses replays, so where it came from doesn't matter. (It
+    -- isn't always the address we reached the core at: a relay's tunnel comes from the core's gateway address.) Each
+    -- network's tunnel has its own key: the one which opens it says whose it is.
+    for _, link in pairs(self.links) do
+        local inner = link.tunnel:open(data)
+        if inner ~= nil then
+            local context = type(inner) == "table" and link.by_teid[inner.teid]
+            if not context or not context.active or type(inner.packet) ~= "string" then return end
+            local sealed = context.sealer:seal({ p = inner.packet })
+            if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
+            return
         end
     end
 end
 
--- A packet for a phone, down the tunnel from the gateway.
-function Tower:downlink(data)
-    -- Only the core has the tunnel's key, and the sealer refuses replays, so where it came from doesn't matter. (It
-    -- isn't always the address we reached the core at: a relay's tunnel comes from the core's gateway address.)
-    local inner = self.tunnel:open(data)
-    local context = type(inner) == "table" and self.by_teid[inner.teid]
-    if not context or not context.active or type(inner.packet) ~= "string" then return end
-    local sealed = context.sealer:seal({ p = inner.packet })
-    if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
-end
-
---- Stop the cell.
+--- Stop the cell, for every network it serves.
 function Tower:stop()
+    if self.stopped then return end
+    self.stopped = true
     self.stack:cancel(self.beacon_timer)
     self.stack:udp_close(self.socket)
     self.stack:off_frame(common.FRAME, self.frame_handler)
+    self.links, self.phones = {}, {}
 end
 
 return {

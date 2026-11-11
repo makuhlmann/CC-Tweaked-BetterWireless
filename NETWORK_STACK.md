@@ -1132,6 +1132,25 @@ the design above:
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **Shared cells** (like LTE's multi-operator core networks): one cell may serve several networks, whose operators
+  plan a site together where neither would build alone. `celld core.acme core.beta` connects the cell to each core,
+  each of which allows and certifies it as one of its own cells, and gives it a tunnel key.
+  - **System information** names each network the cell serves (up to eight), each with its own part: the certificate
+    that network's operator gave the cell, the cell's path to that core (relays are per network), and a signature
+    over it with the cell's one key. A cell of one network sends the same, with one part. A phone checks each part it
+    has a key for, and remembers each cell once, with the networks it serves, so its signal is measured once.
+  - **Choosing:** a phone picks a cell and a network together: the best network (its own or one it treats as home,
+    then a partner, then, as before, one it doesn't know), then the strongest cell. Its attach says which network it
+    chose (`via`), and the cell sends it to that network's core, naming the phone's own network if that's another, so
+    roaming through a shared cell works as through any other. The cell keeps each phone's context with its network,
+    and carries its packets through that network's tunnel (each tunnel has its own key, which says whose a datagram
+    is, so one port takes them all).
+  - **Handover** stays within the network a phone is on, to any cell which serves it, shared or not. A roaming phone
+    whose cell also serves its own network goes home through that same cell after five seconds, though it's no
+    stronger there.
+  - **Losing a core:** the cell stops naming that network, and its phones move on, while it serves the others. The cell
+    connects to each core on its own, and is serving while it serves any network. `celld` shows each core's state, and
+    a second core of a network it already serves is refused.
 - **Messages between networks** are apart from roaming: two networks may exchange messages without carrying each
   other's phones, and the other way round.
   - **Number prefixes.** Each network may have a number prefix, 1 to 8 digits, given at setup (`cellcore setup ACME
@@ -1198,6 +1217,13 @@ which activates at home, hears of the other network, is told to use it, reaches 
 message through it, and is sent home again, where it stays when left to choose, though the other network's cell is
 stronger. While it roams, the test runs `cell gui` on a pocket computer's screen, and checks the status bar's network,
 `R` and "1 new msg", opens the message in the menus, and sees the note go.
+
+Shared cells are tested in the virtual network (`cell_sharing_spec.lua`) with one cell serving two operators: each
+network's phone attaches through it to its own core, gets its own network's address and reaches the server; a phone
+is handed over between the shared cell and its network's own and back with a connection open; a phone roams on the
+other network at the shared cell and goes home through it; and the cell stops naming a network whose core it loses,
+whose phone moves on, while the other stays. `cell_service_spec.lua` has a cell keep two cores, lose one, and refuse a
+second core of a network it serves.
 
 Messages between networks are tested in the virtual network with two operators whose cores exchange messages
 (`cell_messaging_spec.lua`): both ways, to a network's own numbers written in full, to numbers nobody has, kept until
