@@ -1556,7 +1556,7 @@ local function new_core(options)
     return env_require("cc.internal.net.cell.core").new {
         stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
         operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
-        signing = signing, subscribers = options.subscribers, codes = options.codes,
+        signing = signing, subscribers = options.subscribers, codes = options.codes, number_prefix = options.number_prefix,
         tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
         epoch = function() return os.epoch("utc") end, on_event = options.on_event,
     }
@@ -1671,10 +1671,11 @@ function Manager:request(request, timeout)
     return reply
 end
 
---- Get everything about the network: its cells, the computers allowed in and waiting, its subscribers, and roaming.
+--- Get everything about the network: its cells, the computers allowed in and waiting, its subscribers, roaming, and
+-- the networks it exchanges messages with.
 --
--- @treturn[1] table `network`, `prefix`, `cells`, `allowed`, `waiting`, `subscribers`, `partners`, `carrying`, and how
--- many `messages` and activation `codes` are waiting.
+-- @treturn[1] table `network`, `prefix`, `number_prefix`, `cells`, `allowed`, `waiting`, `subscribers`, `partners`,
+-- `carrying`, `peers`, and how many `messages` and activation `codes` are waiting.
 -- @treturn[2] nil If it couldn't be had.
 -- @treturn[2] string Why not.
 function Manager:status() return self:request({ op = "status" }) end
@@ -1729,7 +1730,8 @@ function Manager:set(subscriber, changes)
     return self:request({ op = "set", subscriber = subscriber, barred = changes.barred, roaming = changes.roaming })
 end
 
---- Allow a computer in: a cell, another network's core, or a computer to manage this one. Check its fingerprint
+--- Allow a computer in: a cell, another network's core (to carry this network's phones, or to exchange messages with
+-- them, or both), or a computer to manage this one. Check its fingerprint
 -- (in `status().waiting`) against the one the computer shows first.
 --
 -- @tparam string key The computer's key, as 64 hexadecimal digits.
@@ -1793,6 +1795,43 @@ function Manager:uncarry(network)
     return self:request({ op = "uncarry", network = network })
 end
 
+--- Set this network's number prefix. Other networks' phones send messages to this network's at `+`, the prefix, and
+-- their number (`+5550042`), once the networks exchange messages (see `Manager:peer`).
+--
+-- @tparam string prefix The prefix: 1 to 8 digits.
+-- @treturn[1] table The new `prefix`.
+-- @treturn[2] nil If it couldn't be set.
+-- @treturn[2] string Why not.
+function Manager:numbers(prefix)
+    expect(1, prefix, "string")
+    return self:request({ op = "numbers", prefix = prefix })
+end
+
+--- Exchange messages with another network's phones, by connecting to that network's core, which must allow it. This
+-- is apart from roaming. Both networks need a number prefix.
+--
+-- @tparam string network The other network's name.
+-- @tparam string core Its core's name or address.
+-- @treturn[1] table The `id` and `fingerprint` of this core's computer, for the other core's administrator.
+-- @treturn[2] nil If it couldn't be set up.
+-- @treturn[2] string Why not.
+function Manager:peer(network, core)
+    expect(1, network, "string")
+    expect(2, core, "string")
+    return self:request({ op = "peer", network = network, core = core })
+end
+
+--- Stop connecting to another network's core to exchange messages. (Its core ends it by refusing this one's.)
+--
+-- @tparam string network The other network's name.
+-- @treturn[1] table If it was stopped.
+-- @treturn[2] nil If it wasn't.
+-- @treturn[2] string Why not.
+function Manager:unpeer(network)
+    expect(1, network, "string")
+    return self:request({ op = "unpeer", network = network })
+end
+
 --- Stop the core. It can only be started again on its own computer. This closes the manager.
 --
 -- @treturn[1] true If it's stopping.
@@ -1845,7 +1884,8 @@ cell = {
 
     @treturn table `state` (`"none"` with no SIM, `"off"` when cell service is turned off, `"inactive"`, `"activating"`,
     `"searching"`, `"attaching"`, `"attached"` or `"rejected"`); `network`, the SIM's own; `subscriber` (`id` and
-    `number`); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
+    `number`, and `full`, the number other networks' phones reach it at, once it has attached, if its network has a
+    number prefix); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
     with `id` and `signal`; `networks`, the names of the networks around; why it was rejected or activation failed
     (`rejected`, `activation_error`);
 
@@ -1949,7 +1989,8 @@ cell = {
         return phone_instance:activate(network, code)
     end,
 
-    --[[- Send a message to another phone by its number.
+    --[[- Send a message to another phone by its number. A phone of another network which exchanges messages with this
+    one has a number such as `+6660042`: a `+`, that network's number prefix, and its number there.
 
     The phone sends it until the network says it has it, so a lost radio frame doesn't lose the message. A `cell_sent`
     event says how that went: the message's ID and `true`, or `false` and why not (nobody has that number, say). The

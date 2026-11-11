@@ -241,6 +241,7 @@ elseif command == nil then
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
     if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
+    if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end
     if info.address then print("Address:  " .. info.address) end
     if info.cell and info.state == "attached" then print("Cell:     #" .. info.cell) end
     if info.rejected then printError(info.rejected) end

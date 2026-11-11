@@ -119,7 +119,7 @@ describe("Cellular services", function()
         local dir, name, id = other.dir or DIR, other.network or "ACME", other.id or 50
         local own_address = "10.0.0." .. (other.host or 1)
         fs.delete(dir)
-        write_table(fs.combine(dir, "config"), { network = name, prefix = other.prefix or "10.64.0.0/16" })
+        write_table(fs.combine(dir, "config"), { network = name, prefix = other.prefix or "10.64.0.0/16", number_prefix = other.numbers })
         for file, value in pairs(files or {}) do write_table(fs.combine(dir, file), value) end
 
         local net = other.net or network()
@@ -161,7 +161,7 @@ describe("Cellular services", function()
                 return cell_core.new {
                     stack = stack, crypto = crypto, network = options.network, prefix = options.prefix, operator = operator,
                     signing = signing_public, subscribers = options.subscribers, codes = options.codes,
-                    secret = crypto.random(32), epoch = now, on_event = options.on_event,
+                    secret = crypto.random(32), epoch = now, on_event = options.on_event, number_prefix = options.number_prefix,
                 }
             end,
             signing = signing_public, sign = function(data) return crypto.sign(signing_private, data) end,
@@ -640,6 +640,129 @@ describe("Cellular services", function()
                 expect(#ask(admin, { op = "status" }).cells):eq(0)
                 admin:close()
             end, }, 900)
+        end)
+
+        describe("messages between networks", function()
+            local function two_cores(acme_numbers, beta_numbers)
+                local acme = setup(nil, { numbers = acme_numbers })
+                local beta = setup(nil, {
+                    dir = DIR .. "-beta", network = "BETA", id = 51, host = 2, prefix = "10.65.0.0/16", net = acme.net,
+                    numbers = beta_numbers,
+                })
+                -- BETA's core reaches ACME's as itself.
+                beta.options.connect = function() return acme.connect(beta.identity, "10.0.0.2") end
+                return acme, beta
+            end
+
+            it("are exchanged with another network's core, once it allows it", function()
+                local acme, beta = two_cores("555", "666")
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local acme_admin, beta_admin = acme.admin(), beta.admin()
+                    expect(ask(beta_admin, { op = "peer", network = "ACME", core = "10.0.0.1" })):same {
+                        network = "ACME", core = "10.0.0.1", id = 51, fingerprint = fingerprint(beta.identity),
+                    }
+
+                    -- ACME's administrator sees who is asking, and allows it.
+                    local status
+                    repeat
+                        status = ask(acme_admin, { op = "status" })
+                        coroutine.yield()
+                    until #status.waiting == 1
+                    expect({ status.waiting[1].role, status.waiting[1].network }):same { "peer", "BETA" }
+                    expect(ask(acme_admin, { op = "allow", key = beta.identity })):same {
+                        role = "peer", id = 51, label = "BETA", network = "BETA", fingerprint = fingerprint(beta.identity),
+                    }
+                    wait_until(function() return beta.service.peering.ACME.state == "serving" end)
+
+                    -- Each core knows the other's number prefix.
+                    expect(acme.service.core.peers.BETA.prefix):eq("666")
+                    expect(beta.service.core.peers.ACME.prefix):eq("555")
+                    status = ask(acme_admin, { op = "status" })
+                    expect({ status.number_prefix, status.peers }):same {
+                        "555", { { network = "BETA", id = 51, connected = true, prefix = "666" } },
+                    }
+                    expect(ask(beta_admin, { op = "status" }).peers):same {
+                        { network = "ACME", core = "10.0.0.1", state = "serving", connected = true, prefix = "555" },
+                    }
+                    expect(read_table(fs.combine(beta.dir, "peers"))):same { ACME = { core = "10.0.0.1" } }
+
+                    -- What the cores say to each other passes over the connection, both ways.
+                    local at_acme, at_beta = {}, {}
+                    local acme_control, beta_control = acme.service.core.peer_control, beta.service.core.peer_control
+                    acme.service.core.peer_control = function(core, from, message, send)
+                        at_acme[#at_acme + 1] = { from, message }
+                        return acme_control(core, from, message, send)
+                    end
+                    beta.service.core.peer_control = function(core, from, message, send)
+                        at_beta[#at_beta + 1] = { from, message }
+                        return beta_control(core, from, message, send)
+                    end
+                    acme.service.core.peers.BETA.links[1]({ op = "sms_reply", id = 1, ok = true })
+                    beta.service.core.peers.ACME.links[1]({ op = "sms_reply", id = 2, ok = true })
+                    wait_until(function() return #at_acme > 0 and #at_beta > 0 end)
+                    expect(at_beta):same { { "ACME", { op = "sms_reply", id = 1, ok = true } } }
+                    expect(at_acme):same { { "BETA", { op = "sms_reply", id = 2, ok = true } } }
+
+                    -- The same core may carry ACME's phones too: it's allowed for that apart.
+                    ask(beta_admin, { op = "carry", network = "ACME", core = "10.0.0.1" })
+                    repeat
+                        status = ask(acme_admin, { op = "status" })
+                        coroutine.yield()
+                    until #status.waiting == 1
+                    expect(status.waiting[1].role):eq("roam")
+                    expect(ask(acme_admin, { op = "allow", key = beta.identity })):same {
+                        role = "roam", id = 51, label = "BETA", network = "BETA", fingerprint = fingerprint(beta.identity),
+                    }
+                    wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
+                    expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity]):same {
+                        label = "BETA", role = "peer", id = 51, network = "BETA", signing = hex(beta.signing), roles = { roam = true },
+                    }
+                    expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing } }
+                    expect(beta.service.peering.ACME.state):eq("serving")
+
+                    -- With a new number prefix, BETA's core connects again, and hears it.
+                    expect(ask(acme_admin, { op = "numbers", prefix = "556" })):same { prefix = "556" }
+                    wait_until(function()
+                        return beta.service.core.peers.ACME.prefix == "556" and beta.service.peering.ACME.state == "serving"
+                    end)
+                    expect(read_table(fs.combine(acme.dir, "config")).number_prefix):eq("556")
+                    expect(acme.service.core.number_prefix):eq("556")
+                    expect(ask(acme_admin, { op = "numbers", prefix = "666" }).error):eq("BETA has the number prefix 666")
+                    expect(ask(acme_admin, { op = "numbers", prefix = "12a" }).error):eq("Number prefixes are 1 to 8 digits")
+
+                    -- Either side can end it: BETA stops connecting.
+                    expect(ask(beta_admin, { op = "unpeer", network = "ACME" })):same { network = "ACME" }
+                    wait_until(function() return acme.service.peer_links.BETA == nil end)
+                    expect(read_table(fs.combine(beta.dir, "peers"))):same {}
+                    expect(ask(beta_admin, { op = "unpeer", network = "ACME" }).error)
+                        :eq("This network doesn't connect to the core of ACME")
+                    -- Carrying ACME's phones goes on.
+                    expect(beta.service.carrying.ACME.state):eq("serving")
+                    expect(errors_logged(acme)):same {}
+                    acme_admin:close()
+                    beta_admin:close()
+                end, }, 600)
+            end)
+
+            it("need both networks to have number prefixes, and different ones", function()
+                local acme, beta = two_cores(nil, "666")
+                acme.service.allowed[beta.identity] = { label = "BETA", role = "peer" }
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local acme_admin, beta_admin = acme.admin(), beta.admin()
+                    expect(ask(acme_admin, { op = "peer", network = "BETA", core = "10.0.0.2" }).error)
+                        :eq("Set this network's number prefix first, with 'cellcore numbers'")
+
+                    ask(beta_admin, { op = "peer", network = "ACME", core = "10.0.0.1" })
+                    wait_until(function() return beta.service.peering.ACME.error == "ACME has no number prefix yet." end)
+                    ask(acme_admin, { op = "numbers", prefix = "666" })
+                    wait_until(function() return beta.service.peering.ACME.error == "ACME has the number prefix 666 too." end)
+                    ask(acme_admin, { op = "numbers", prefix = "555" })
+                    wait_until(function() return beta.service.peering.ACME.state == "serving" end)
+                    expect(acme.service.core.peers.BETA.prefix):eq("666")
+                    acme_admin:close()
+                    beta_admin:close()
+                end, }, 600)
+            end)
         end)
 
         describe("roaming", function()

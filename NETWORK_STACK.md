@@ -1132,6 +1132,27 @@ the design above:
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **Messages between networks** are apart from roaming: two networks may exchange messages without carrying each
+  other's phones, and the other way round.
+  - **Number prefixes.** Each network may have a number prefix, 1 to 8 digits, given at setup (`cellcore setup ACME
+    10.64.0.0/16 555`) or later, without a restart (`cellcore numbers 555`). It's kept in `/.cell/config`. Numbers
+    stay as they were within a network; another network's phone is written `+`, its network's prefix, and its number
+    there (`+6660042`). A network's own numbers may be written that way too. The longest prefix which fits wins, so
+    `55` and `555` can be different networks'. A phone hears its network's prefix when it attaches, and shows its
+    full number (`+5550042`).
+  - **Peers.** On one core, `cellcore peer <network> <core>` connects to the other network's core (with the role
+    `peer`, giving its name and prefix) and keeps connecting, as `carry` does; the other core's administrator allows
+    it, as for a cell. Messages then go both ways over that one connection, which is secure (§9), so they're encrypted
+    between the cores, though not end to end. Both networks need a prefix, and different ones. A network's core may be
+    both a roaming partner and a peer: its key is allowed for each role apart (`roles` in `/.cell/cells`). Peers are
+    kept in `/.cell/peers`; `cellcore peers` lists them, and `cellcore unpeer` (or `cellcore deny`, from the other
+    side) ends it. Changing the prefix makes the peers connect again, as they hear it when they connect.
+  - **Delivery.** A phone's message for another network's number goes to its core, which passes it on with a number
+    of its own, and the sender's full number. The other core keeps it for its subscriber as it would its own phones',
+    and answers whether it has taken it, or why not ("Nobody has the number +6669"); only then does the sending phone
+    hear how it went. A core which doesn't answer within 20 seconds counts as a failure, and so does one which isn't
+    connected ("Can't reach BETA now"). A core only takes messages from a peer's own numbers, so a network can't send
+    in another's name. The recipient sees the sender's full number, so an answer finds its way back.
 - **The phone's menus and status bar.** `cell gui` is the phone as its user sees it, drawn for a pocket computer's
   26 columns and usable on any computer, with the keyboard alone or the mouse, in greys where there are no colours.
   - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
@@ -1177,6 +1198,13 @@ which activates at home, hears of the other network, is told to use it, reaches 
 message through it, and is sent home again, where it stays when left to choose, though the other network's cell is
 stronger. While it roams, the test runs `cell gui` on a pocket computer's screen, and checks the status bar's network,
 `R` and "1 new msg", opens the message in the menus, and sees the note go.
+
+Messages between networks are tested in the virtual network with two operators whose cores exchange messages
+(`cell_messaging_spec.lua`): both ways, to a network's own numbers written in full, to numbers nobody has, kept until
+the other network's phone is on, a peer which can't be reached or doesn't answer, a peer speaking for numbers not its
+own, and messages between the cores with something unexpected in them. `cell_service_spec.lua` has two cores agree
+over a connection, take a second role (carrying phones too), change a prefix, and end it, and checks prefixes which
+are missing or the same are refused.
 
 The menus and the bar are tested against a made-up phone (`spec/programs/net/cell_gui_spec.lua`): what the bar shows
 in each state and at each width, with and without colours; that it comes and goes with cell service and the SIM; and

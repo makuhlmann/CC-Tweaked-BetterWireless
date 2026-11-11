@@ -147,7 +147,8 @@ local function new(options)
 end
 
 function Phone:set_state(state)
-    if self.state == state then return end
+    local old = self.state
+    if old == state then return end
     self.state = state
     -- An attach which didn't work is part of the same search.
     if state == "searching" and old ~= "attaching" and old ~= "rejected" then self.searching_since = self.stack.clock() end
@@ -364,6 +365,10 @@ function Phone:radio(src, message, signal)
         local info = payload and codec.decode(payload)
         if type(info) ~= "table" then return end
         self.subscriber = { id = info.id, number = info.number }
+        -- Other networks' phones reach ours at "+", our network's number prefix, and our number.
+        if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
+            self.subscriber.full = "+" .. info.numbers .. info.number
+        end
         self:set_partners(info.partners)
         local send = handshake:split()
         self.secret = handshake.ck

@@ -26,6 +26,13 @@ between two operators, or for a network which has a core but no cells of its own
 use partners' cells. Phones which may not roam may use those. Phones activate through a partner's cell too, where their
 own network has none.
 
+Messages between networks: each network may have a number prefix, and cores of networks which agree to (peers) pass
+messages between their phones, over a secure connection between them, apart from any roaming agreement. A number of
+another network's phone is `+`, that network's prefix, and the number there (`+6660042`); our own network's numbers
+may be written that way too. A message for another network goes to its core, which says whether it has taken it (or
+why not) before the phone is told. The other network's phone sees it from `+`, our prefix and the sender's number, so
+an answer finds its way back. `add_peer` takes another network's core.
+
 @local
 ]]
 
@@ -64,6 +71,12 @@ local MAX_SENT = 64
 -- How many phones of other networks may be attached here, or attaching, at once.
 local MAX_VISITORS, MAX_ROAM_PENDING = 256, 256
 
+-- How long another network's core has to say whether it has taken a message, in seconds.
+local PEER_TIMEOUT = 20
+
+-- What a phone's message is while another network's core hasn't said whether it has taken it.
+local PENDING = {}
+
 local is_id = common.is_id
 
 local Core = {}
@@ -77,15 +90,15 @@ local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x")
     stack = table, crypto = table, network = string,
     operator = { public = string, exchange = function(public:string):string }, signing = string,
     prefix = string, subscribers = table, secret? = string, tunnel_key? = function(cell:number):string,
-    codes? = table, epoch = function():number,
+    codes? = table, epoch = function():number, number_prefix? = string,
     on_event? = function(event:string, ...:any),
 } options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name;
 the operator's X25519 key, and its Ed25519 signing key's public half (which phones check cells' certificates with); the
 operator's network for phones' addresses (such as `"10.64.0.0/16"`), whose first address the gateway takes; the
 subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys (or a
 function giving a cell's tunnel key, so the secret can stay in the enclave); activation codes, by their first group, as
-`add_code` makes them; the time, as `os.epoch("utc")` gives; and a function told about attaches, handovers and so
-on, for logging and saving.
+`add_code` makes them; the time, as `os.epoch("utc")` gives; the network's number prefix, which other networks'
+phones reach ours by, if it has one; and a function told about attaches, handovers and so on, for logging and saving.
 @treturn table The core.
 ]]
 local function new(options)
@@ -110,6 +123,10 @@ local function new(options)
         -- tunnel ID, and by network and phone; and phones still attaching, by cell and phone, and network and phone.
         partner_keys = {}, partners = {}, visitors = {}, visitor_count = 0, visitors_by_home = {}, visitors_by_phone = {},
         roam_pending = {}, roam_pending_count = 0,
+        -- Messages between networks: our number prefix; the networks we exchange messages with, by name (each with
+        -- its number prefix and the connections to its core); and messages passed on to them which they haven't
+        -- answered for yet, by the ID we gave them.
+        number_prefix = options.number_prefix, peers = {}, outgoing = {},
     }, Core)
 
     -- The gateway: everything for phones goes down their tunnels.
@@ -297,6 +314,7 @@ function Core:stop()
     for _, visitor in pairs(self.visitors) do self:send(visitor.cell, { op = "release", teid = visitor.teid }) end
     self.partners, self.visitors, self.visitor_count, self.visitors_by_home, self.visitors_by_phone = {}, {}, 0, {}, {}
     self.roam_pending, self.roam_pending_count = {}, 0
+    self.peers, self.outgoing = {}, {}
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
     self.stack:udp_close(self.roam_socket)
@@ -491,36 +509,179 @@ function Core:sms(tower, teid, id, to, text)
     if not sender or not is_id(id) or type(to) ~= "string" or type(text) ~= "string" then return end
     if #text > 1000 or #to > 32 or #to < 1 then return self:sms_sent(session, id, false, "That message can't be sent") end
 
-    -- The phone sends a message until we say we have it, so it may come more than once.
+    -- The phone sends a message until we say we have it, so it may come more than once. While another network's core
+    -- hasn't answered for it, there's nothing to say yet.
     session.sent = session.sent or { order = {} }
     local sent = session.sent
+    if sent[id] == PENDING then return end
     if sent[id] ~= nil then return self:sms_sent(session, id, sent[id] == true, sent[id] ~= true and sent[id] or nil) end
-    local function done(ok, reason)
-        sent[id] = ok or reason
-        sent.order[#sent.order + 1] = id
-        if #sent.order > MAX_SENT then sent[table.remove(sent.order, 1)] = nil end
-        self:sms_sent(session, id, ok, reason)
-    end
+    sent[id] = PENDING
+    sent.order[#sent.order + 1] = id
+    if #sent.order > MAX_SENT then sent[table.remove(sent.order, 1)] = nil end
 
-    local known, waiting = false, 0
+    local network, number = self:find_number(to)
+    if network then return self:send_to_peer(session, sender, id, network, number, text) end
+    local message, reason = self:keep_message(sender.number, number, text, to)
+    self:message_done(session, id, message ~= nil, reason)
+    if message then self:deliver(message) end
+end
+
+-- Say what became of a message a phone sent, and remember it, as the phone may send it again.
+function Core:message_done(session, id, ok, reason)
+    local sent = session.sent
+    if sent and sent[id] == PENDING then sent[id] = ok or reason end
+    self:sms_sent(session, id, ok, reason)
+end
+
+-- Whether one of our subscribers has a number.
+function Core:has_number(number)
     for _, subscriber in pairs(self.subscribers) do
-        if subscriber.number == to then known = true end
+        if subscriber.number == number then return true end
     end
-    if not known then return done(false, "Nobody has the number " .. to) end
+    return false
+end
+
+--[[ Find which network a number is: ours (`nil`, and the number here) or another's (its name, and the number there).
+Another network's numbers are `+`, its number prefix, and the number there; ours may be written so too. The longest
+prefix which fits wins.
+]]
+function Core:find_number(to)
+    local digits = to:match("^%+(.*)$")
+    if not digits or self:has_number(to) then return nil, to end
+    local network, length = nil, 0
+    local own = self.number_prefix
+    if own and digits:sub(1, #own) == own then length = #own end
+    for name, peer in pairs(self.peers) do
+        if #peer.prefix > length and digits:sub(1, #peer.prefix) == peer.prefix then network, length = name, #peer.prefix end
+    end
+    if length == 0 then return nil, to end
+    return network, digits:sub(length + 1)
+end
+
+--[[ Keep a message for one of our subscribers, until their phone is attached and says it has it.
+
+@treturn[1] table The message, to deliver.
+@treturn[2] nil If it can't be kept.
+@treturn[2] string Why not, naming the number as it was written (`shown`).
+]]
+function Core:keep_message(from, to, text, shown)
+    if not self:has_number(to) then return nil, "Nobody has the number " .. shown end
     self:expire_messages()
+    local waiting = 0
     for _, message in ipairs(self.messages) do
         if message.to == to then waiting = waiting + 1 end
     end
-    if waiting >= MAX_MAILBOX or #self.messages >= MAX_MESSAGES then
-        return done(false, "Too many messages are waiting for " .. to)
-    end
+    if waiting >= MAX_MAILBOX or #self.messages >= MAX_MESSAGES then return nil, "Too many messages are waiting for " .. shown end
 
     self.next_message = self.next_message + 1
-    local message = { id = self.next_message, from = sender.number, to = to, text = text, expires = self.epoch() + MESSAGE_LIFETIME }
+    local message = { id = self.next_message, from = from, to = to, text = text, expires = self.epoch() + MESSAGE_LIFETIME }
     self.messages[#self.messages + 1] = message
-    self.on_event("message", sender.number, to)
-    done(true)
-    self:deliver(message)
+    self.on_event("message", from, to)
+    return message
+end
+
+-- Pass a message on to another network's core. The phone hears how it went once that core says.
+function Core:send_to_peer(session, sender, id, network, number, text)
+    local peer = self.peers[network]
+    local send = peer.links[#peer.links]
+    if not self.number_prefix then
+        return self:message_done(session, id, false, "This network has no number prefix, so can't reach others")
+    elseif not send then
+        return self:message_done(session, id, false, ("Can't reach %s now"):format(network))
+    end
+    self.next_message = self.next_message + 1
+    self.outgoing[self.next_message] = {
+        sim = session.sim, id = id, network = network, expires = self.stack.clock() + PEER_TIMEOUT,
+    }
+    self.on_event("message", sender.number, "+" .. peer.prefix .. number)
+    send({ op = "sms", id = self.next_message, from = "+" .. self.number_prefix .. sender.number, to = number, text = text })
+end
+
+-- Give up on messages other networks' cores haven't answered for in time.
+function Core:expire_outgoing()
+    local now = self.stack.clock()
+    for message_id, outgoing in pairs(self.outgoing) do
+        if outgoing.expires <= now then
+            self.outgoing[message_id] = nil
+            local session = self.sessions[outgoing.sim]
+            if session then self:message_done(session, outgoing.id, false, ("%s didn't answer"):format(outgoing.network)) end
+        end
+    end
+end
+
+--[[- Set our number prefix: other networks' phones reach ours at `+`, the prefix, and their number. Networks we
+exchange messages with heard the old one when they connected, so connect to them again.
+
+@tparam string|nil prefix The prefix, digits only, or `nil` for none.
+]]
+function Core:set_number_prefix(prefix)
+    self.number_prefix = prefix
+end
+
+--[[- Exchange messages with another network's phones, over a connection to its core. There may be more than one
+connection (each core may have connected to the other): messages go over the newest.
+
+@tparam string network The other network's name.
+@tparam string prefix Its number prefix.
+@tparam function(message:table) send Sends its core a message.
+]]
+function Core:add_peer(network, prefix, send)
+    local peer = self.peers[network]
+    if not peer then
+        peer = { links = {} }
+        self.peers[network] = peer
+    end
+    peer.prefix = prefix
+    peer.links[#peer.links + 1] = send
+end
+
+--[[- Forget a connection to another network's core, once it has gone. While there are none, messages for its phones
+are refused, as it can't be reached.
+
+@tparam string network The other network's name.
+@tparam function send The function [`Core:add_peer`] was given.
+]]
+function Core:remove_peer(network, send)
+    local peer = self.peers[network]
+    if not peer then return end
+    for i, link in ipairs(peer.links) do
+        if link == send then
+            table.remove(peer.links, i)
+            break
+        end
+    end
+end
+
+--[[- Handle a message from the core of a network we exchange messages with: a message for one of our phones, or
+whether one we passed on was taken.
+
+@tparam string network The other network's name.
+@param message The message.
+@tparam function(message:table) send Sends that core a message, over the connection this came on.
+]]
+function Core:peer_control(network, message, send)
+    local peer = self.peers[network]
+    if not peer or type(message) ~= "table" or not is_id(message.id) then return end
+    if message.op == "sms" then
+        local from, to, text = message.from, message.to, message.text
+        local function reply(ok, reason) send({ op = "sms_reply", id = message.id, ok = ok, error = reason }) end
+        -- A network only speaks for its own phones.
+        if type(from) ~= "string" or #from > 32 or self:find_number(from) ~= network
+            or type(to) ~= "string" or #to < 1 or #to > 32 or type(text) ~= "string" or #text > 1000 then
+            return reply(false, "That message can't be sent")
+        end
+        local kept, reason = self:keep_message(from, to, text, self.number_prefix and "+" .. self.number_prefix .. to or to)
+        reply(kept ~= nil, reason)
+        if kept then self:deliver(kept) end
+    elseif message.op == "sms_reply" then
+        local outgoing = self.outgoing[message.id]
+        if not outgoing or outgoing.network ~= network then return end
+        self.outgoing[message.id] = nil
+        local session = self.sessions[outgoing.sim]
+        local ok = message.ok == true
+        local reason = not ok and (type(message.error) == "string" and message.error:sub(1, 100) or "Not delivered") or nil
+        if session then self:message_done(session, outgoing.id, ok, reason) end
+    end
 end
 
 -- Forget messages nobody collected in time.
@@ -563,6 +724,7 @@ end
 
 function Core:retry_messages()
     self.retry_timer = self.stack:schedule(MESSAGE_RETRY, function() self:retry_messages() end)
+    self:expire_outgoing()
     if not self.messages[1] then return end
     self:expire_messages()
     local sessions = self:sessions_by_number()
@@ -601,7 +763,7 @@ function Core:attach(tower, phone, message, visited_cell)
     -- Tell the phone which other networks it may use, and the keys their cells are certified with. Only the phone
     -- can read this, and only we could have written it.
     local reply = handshake:write(codec.encode({
-        v = 1, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
+        v = 1, id = subscriber.id, number = subscriber.number, partners = self:partner_list(), numbers = self.number_prefix,
     }))
     if not reply then return end
     local _, receive = handshake:split()

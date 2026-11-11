@@ -36,10 +36,10 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam { number... } cell_positions Where each cell is.
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
-    core_is_cell? = boolean,
+    core_is_cell? = boolean, numbers? = string,
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
-and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; and
-whether its first cell is on the core's computer.
+and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
+its first cell is on the core's computer; and its number prefix.
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -77,7 +77,7 @@ local function operator(cell_positions, options)
         setup.core = cell_core.new {
             stack = core_stack, crypto = crypto, network = name, operator = operator_key, signing = signing_public,
             prefix = prefix, subscribers = subscribers, codes = codes, secret = secret, epoch = now,
-            on_event = function(...) events[#events + 1] = { ... } end,
+            number_prefix = options.numbers, on_event = function(...) events[#events + 1] = { ... } end,
         }
     end
     start_core()
@@ -162,6 +162,23 @@ local function operator(cell_positions, options)
         for network, partner in pairs(home_core.partner_keys) do keys[network] = partner end
         keys[visited.name] = { signing = visited.signing_public, home = roam_options and roam_options.home or nil }
         home_core:set_partner_keys(keys)
+    end
+
+    --[[- Exchange messages with another operator's phones. The cores pass them to each other, as `cellcore` has them
+    do over a connection.
+
+    @tparam table other The other operator.
+    ]]
+    function setup.peer_with(other)
+        local to_other, to_us
+        to_other = function(message)
+            other.core_stack:schedule(0.01, function() other.core:peer_control(name, copy(message), to_us) end)
+        end
+        to_us = function(message)
+            core_stack:schedule(0.01, function() setup.core:peer_control(other.name, copy(message), to_other) end)
+        end
+        setup.core:add_peer(other.name, other.number_prefix, to_other)
+        other.core:add_peer(name, options.numbers, to_us)
     end
 
     --- Restart the core: it forgets every phone, and its cells join it again, forgetting their phones too.
@@ -279,7 +296,7 @@ local function operator(cell_positions, options)
         net = net, core_stack = core_stack, server = server, towers = towers, positions = positions,
         events = events, add_phone = add_phone, add_relay = add_relay, signing_public = signing_public, now = now,
         operator_key = operator_key, subscribers = subscribers, signing_private = signing_private, name = name,
-        core_address = core_address,
+        core_address = core_address, number_prefix = options.numbers,
     } do
         setup[k] = v
     end
