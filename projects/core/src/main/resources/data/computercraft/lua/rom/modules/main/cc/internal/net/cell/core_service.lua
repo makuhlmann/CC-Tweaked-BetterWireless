@@ -29,7 +29,9 @@ Messages between networks: the core of a network which exchanges messages with t
 `peer`, giving its network's name and number prefix, and waits to be allowed. Once it is, messages between the two
 networks' phones go over that connection, both ways. The other way round, this core connects to the cores of the
 networks it was told to exchange messages with (`peer`), kept in the file `peers`. Another network's core may be both a
-roaming partner and a peer: it's allowed for each, apart. This network's number prefix is in its `config`.
+roaming partner and a peer: it's allowed for each, apart. This network's number prefix is in its `config`, and each
+peer's is kept with it (in `peers` or `cells`), so messages for a peer which hasn't connected since the core started
+are kept for it, rather than refused.
 
 @local
 ]]
@@ -184,8 +186,15 @@ local function new(options)
     end
     for network, entry in pairs(read_table(self.files.peers)) do
         if common.is_network(network) and network ~= config.network and type(entry) == "table" and type(entry.core) == "string" then
-            self:start_peering(network, entry.core)
+            self:start_peering(network, entry.core, is_number_prefix(entry.prefix) and entry.prefix or nil)
         end
+    end
+    -- Networks we exchange messages with, by the prefixes they had when they last connected: messages for them wait.
+    for network, entry in pairs(self.peering) do
+        if entry.prefix then core:know_peer(network, entry.prefix) end
+    end
+    for _, entry in pairs(self.allowed) do
+        if has_role(entry, "peer") and entry.network and entry.prefix then core:know_peer(entry.network, entry.prefix) end
     end
     return self
 end
@@ -225,6 +234,8 @@ function Service:read_allowed()
                     network = common.is_network(entry.network) and entry.network or nil,
                     signing = is_key(entry.signing) and entry.signing or nil,
                     home = entry.home == true or nil,
+                    -- For a peer: its number prefix, when it last connected.
+                    prefix = is_number_prefix(entry.prefix) and entry.prefix or nil,
                 }
                 -- Another network's core may have a second role.
                 if type(entry.roles) == "table" and NETWORK_ROLES[entry.role] then
@@ -541,7 +552,7 @@ function Service:keep_connecting(list, network, core, run)
     if old and old.connection then old.connection:abort() end
     if not options.connect or not options.sleep then
         entry.state, entry.error = "lost", "This computer can't connect to other cores"
-        return
+        return entry
     end
 
     self.tasks:spawn(function()
@@ -567,6 +578,7 @@ function Service:keep_connecting(list, network, core, run)
             delay = math.min(delay * 2, MAX_DELAY)
         end
     end)
+    return entry
 end
 
 -- Carry another network's phones: connect to its core, and keep connecting.
@@ -575,8 +587,28 @@ function Service:start_carrying(network, core)
 end
 
 -- Exchange messages with another network's phones: connect to its core, and keep connecting.
-function Service:start_peering(network, core)
-    self:keep_connecting(self.peering, network, core, self.exchange)
+function Service:start_peering(network, core, prefix)
+    self:keep_connecting(self.peering, network, core, self.exchange).prefix = prefix
+end
+
+-- Whether a number prefix is another network's we exchange messages with (or one of its which has connected).
+function Service:prefix_taken(prefix, network)
+    for other, peer in pairs(self.core.peers) do
+        if other ~= network and peer.prefix == prefix then return other end
+    end
+    for other, links in pairs(self.peer_links) do
+        if other ~= network and links[1] and links[1].prefix == prefix then return other end
+    end
+    return nil
+end
+
+-- Stop exchanging messages with a network, unless we still connect to its core, or allow it to connect to ours.
+function Service:forget_peer(network)
+    if self.peering[network] then return end
+    for _, entry in pairs(self.allowed) do
+        if entry.network == network and has_role(entry, "peer") then return end
+    end
+    self.core:forget_peer(network)
 end
 
 -- Messages between our phones and another network's, over one connection to its core (either way), until it ends.
@@ -644,19 +676,16 @@ function Service:serve_peer(connection, key, hello, id)
             return refuse(connection, ("Another computer is the core of %s."):format(network))
         end
     end
-    for other, links in pairs(self.peer_links) do
-        if other ~= network and links[1] and links[1].prefix == prefix then
-            return refuse(connection, ("%s has the number prefix %s already."):format(other, prefix))
-        end
-    end
+    local taken = self:prefix_taken(prefix, network)
+    if taken then return refuse(connection, ("%s has the number prefix %s already."):format(taken, prefix)) end
     if not connection:send({ network = self.config.network, number_prefix = own }) then return connection:abort() end
-    if known and (known.id ~= id or known.network ~= network) then
-        known.id, known.network = id, network
+    if known and (known.id ~= id or known.network ~= network or known.prefix ~= prefix) then
+        known.id, known.network, known.prefix = id, network, prefix
         self:save_allowed()
     end
 
     local peer = connection:getPeer()
-    self:log(("%s (core #%d, from %s) exchanges messages with this network, its numbers starting +%s"):format(network, id, peer, prefix))
+    self:log(("%s (core #%d, from %s) exchanges messages with this network, its numbers starting %s"):format(network, id, peer, prefix))
     self:peer_link(network, prefix, connection, { key = key, address = peer, incoming = true })
     self:log(("Lost the core of %s, which exchanges messages with this network"):format(network))
 end
@@ -688,17 +717,26 @@ function Service:exchange(entry, connection)
         entry.state, entry.error = "refused", ("%s has the number prefix %s too"):format(network, own)
         return
     end
+    local taken = self:prefix_taken(reply.number_prefix, network)
+    if taken then
+        entry.state, entry.error = "refused", ("%s has the number prefix %s already"):format(taken, reply.number_prefix)
+        return
+    end
 
-    entry.state, entry.served, entry.prefix = "serving", true, reply.number_prefix
-    self:log(("Exchanging messages with %s, through its core %s, its numbers starting +%s"):format(network, entry.core, reply.number_prefix))
+    entry.state, entry.served = "serving", true
+    if entry.prefix ~= reply.number_prefix then
+        entry.prefix = reply.number_prefix
+        self:save_peering()
+    end
+    self:log(("Exchanging messages with %s, through its core %s, its numbers starting %s"):format(network, entry.core, reply.number_prefix))
     local reason = self:peer_link(network, reply.number_prefix, connection, { address = connection:getPeer() })
-    self:log(("Lost the core of %s: messages for its phones can't be sent"):format(network))
+    self:log(("Lost the core of %s: messages for its phones wait until it's back"):format(network))
     return reason
 end
 
 function Service:save_peering()
     local saved = {}
-    for network, entry in pairs(self.peering) do saved[network] = { core = entry.core } end
+    for network, entry in pairs(self.peering) do saved[network] = { core = entry.core, prefix = entry.prefix } end
     write_table(self.files.peers, saved)
 end
 
@@ -855,10 +893,12 @@ function requests.status(self)
         peers[network] = peer
         peer.core, peer.state, peer.error = entry.core, entry.state, entry.error
     end
+    local held = self.core:held_info()
     for network, peer in pairs(peers) do
         local links = self.peer_links[network]
         peer.connected = links ~= nil
         peer.prefix = links and links[#links].prefix or (self.core.peers[network] and self.core.peers[network].prefix)
+        peer.waiting = held[network] or 0
         result.peers[#result.peers + 1] = peer
     end
     table.sort(result.peers, function(a, b) return a.network < b.network end)
@@ -967,6 +1007,7 @@ function requests.deny(self, request, by)
             if link.key == key then link.connection:abort() end
         end
     end
+    if known and known.network and has_role(known, "peer") then self:forget_peer(known.network) end
     self:update_partner_keys()
     return { id = id }
 end
@@ -1019,9 +1060,8 @@ end
 function requests.numbers(self, request, by)
     local prefix = request.prefix
     if not is_number_prefix(prefix) then return { error = "Number prefixes are 1 to 8 digits" } end
-    for network, links in pairs(self.peer_links) do
-        if links[1] and links[1].prefix == prefix then return { error = ("%s has the number prefix %s"):format(network, prefix) } end
-    end
+    local taken = self:prefix_taken(prefix)
+    if taken then return { error = ("%s has the number prefix %s"):format(taken, prefix) } end
     -- The file may have changed since the core started (it says whether the core starts with the computer).
     local config = read_table(self.files.config)
     config.number_prefix = prefix
@@ -1032,7 +1072,7 @@ function requests.numbers(self, request, by)
     for _, links in pairs(self.peer_links) do
         for _, link in ipairs(links) do link.connection:abort() end
     end
-    self:log(("This network's numbers now start +%s%s"):format(prefix, self:by(by)))
+    self:log(("This network's numbers now start %s%s"):format(prefix, self:by(by)))
     return { prefix = prefix }
 end
 
@@ -1059,7 +1099,8 @@ function requests.unpeer(self, request, by)
     self.peering[request.network] = nil
     if entry.connection then entry.connection:abort() end
     self:save_peering()
-    self:log(("Stopped exchanging messages with %s%s"):format(request.network, self:by(by)))
+    self:forget_peer(request.network)
+    self:log(("Stopped connecting to the core of %s%s"):format(request.network, self:by(by)))
     self.options.wake()
     return { network = request.network }
 end

@@ -84,7 +84,7 @@ if command == "setup" then
     end
     print(("%s is set up and running, giving phones addresses in %s."):format(network, prefix))
     if config.number_prefix then
-        print(("Other networks' phones reach its phones at +%s<number>, once they exchange messages."):format(config.number_prefix))
+        print(("Other networks' phones reach its phones at %s<number>, once they exchange messages."):format(config.number_prefix))
     end
     print("Cells join with 'celld <this computer's address>', and wait for you to allow them here.")
     return
@@ -443,13 +443,13 @@ end
 function commands.numbers(prefix)
     if not prefix then return usage() end
     request({ op = "numbers", prefix = prefix })
-    print(("Other networks' phones reach this network's at +%s<number>."):format(prefix))
+    print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
 end
 
 function commands.peers()
     local status = request({ op = "status" })
     if status.number_prefix then
-        print(("Other networks' phones reach this network's at +%s<number>."):format(status.number_prefix))
+        print(("Other networks' phones reach this network's at %s<number>."):format(status.number_prefix))
     else
         print("This network has no number prefix yet: set one with 'cellcore numbers <digits>'.")
     end
@@ -473,8 +473,9 @@ function commands.peers()
         else
             how = "not connected"
         end
+        if (peer.waiting or 0) > 0 then how = ("%s, %d message(s) waiting"):format(how, peer.waiting) end
         print(("  %s%s%s: %s"):format(
-            peer.network, peer.prefix and " (+" .. peer.prefix .. ")" or "", peer.core and ", through " .. peer.core or "", how
+            peer.network, peer.prefix and " (" .. peer.prefix .. "...)" or "", peer.core and ", through " .. peer.core or "", how
         ))
     end
 end

@@ -28,10 +28,14 @@ own network has none.
 
 Messages between networks: each network may have a number prefix, and cores of networks which agree to (peers) pass
 messages between their phones, over a secure connection between them, apart from any roaming agreement. A number of
-another network's phone is `+`, that network's prefix, and the number there (`+6660042`); our own network's numbers
-may be written that way too. A message for another network goes to its core, which says whether it has taken it (or
-why not) before the phone is told. The other network's phone sees it from `+`, our prefix and the sender's number, so
-an answer finds its way back. `add_peer` takes another network's core.
+another network's phone is that network's prefix followed by the number there (`6660042`); our own network's numbers
+may be written that way too. A number which is no subscriber's, and starts with no prefix we know, isn't reachable.
+
+A message for another network goes to its core, which says whether it has taken it (or why not), and the phone hears
+that. If that core can't be reached, or doesn't answer soon, we keep the message, tell the phone we have it, and send it
+again until that core takes it: if it then refuses it, or never takes it, the sender gets a message saying so. The other
+network's phone sees the message from our prefix and the sender's number, so an answer finds its way back. `add_peer`
+takes a connection to another network's core.
 
 @local
 ]]
@@ -71,8 +75,13 @@ local MAX_SENT = 64
 -- How many phones of other networks may be attached here, or attaching, at once.
 local MAX_VISITORS, MAX_ROAM_PENDING = 256, 256
 
--- How long another network's core has to say whether it has taken a message, in seconds.
-local PEER_TIMEOUT = 20
+-- How long another network's core has to say whether it has taken a message before the phone is told we have it, and
+-- how often to send it again until that core does, in seconds.
+local PEER_TIMEOUT, PEER_RETRY = 20, 30
+
+-- How many messages may wait for other networks' cores, in all, and how many messages from each other network's core
+-- to remember, to tell when one comes twice.
+local MAX_HELD, MAX_PEER_SEEN = 1000, 256
 
 -- What a phone's message is while another network's core hasn't said whether it has taken it.
 local PENDING = {}
@@ -124,9 +133,9 @@ local function new(options)
         partner_keys = {}, partners = {}, visitors = {}, visitor_count = 0, visitors_by_home = {}, visitors_by_phone = {},
         roam_pending = {}, roam_pending_count = 0,
         -- Messages between networks: our number prefix; the networks we exchange messages with, by name (each with
-        -- its number prefix and the connections to its core); and messages passed on to them which they haven't
-        -- answered for yet, by the ID we gave them.
-        number_prefix = options.number_prefix, peers = {}, outgoing = {},
+        -- its number prefix and the connections to its core, if any); and messages for them which their cores haven't
+        -- taken yet, by the ID we gave them.
+        number_prefix = options.number_prefix, peers = {}, held = {}, held_count = 0,
     }, Core)
 
     -- The gateway: everything for phones goes down their tunnels.
@@ -314,7 +323,7 @@ function Core:stop()
     for _, visitor in pairs(self.visitors) do self:send(visitor.cell, { op = "release", teid = visitor.teid }) end
     self.partners, self.visitors, self.visitor_count, self.visitors_by_home, self.visitors_by_phone = {}, {}, 0, {}, {}
     self.roam_pending, self.roam_pending_count = {}, 0
-    self.peers, self.outgoing = {}, {}
+    self.peers, self.held, self.held_count = {}, {}, 0
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
     self.stack:udp_close(self.roam_socket)
@@ -520,6 +529,7 @@ function Core:sms(tower, teid, id, to, text)
     if #sent.order > MAX_SENT then sent[table.remove(sent.order, 1)] = nil end
 
     local network, number = self:find_number(to)
+    if network == false then return self:message_done(session, id, false, "Destination not reachable") end
     if network then return self:send_to_peer(session, sender, id, network, number, text) end
     local message, reason = self:keep_message(sender.number, number, text, to)
     self:message_done(session, id, message ~= nil, reason)
@@ -541,21 +551,24 @@ function Core:has_number(number)
     return false
 end
 
---[[ Find which network a number is: ours (`nil`, and the number here) or another's (its name, and the number there).
-Another network's numbers are `+`, its number prefix, and the number there; ours may be written so too. The longest
-prefix which fits wins.
+--[[ Find which network a number is: ours (`nil`, and the number here), another's (its name, and the number there), or
+none we can reach (`false`).
+
+A number is ours if one of our subscribers has it. Otherwise it's a network's number prefix followed by the number
+there: ours, or that of a network we exchange messages with. The longest prefix which fits wins. A network with no
+prefix, which exchanges messages with nobody, takes every number for one of its own.
 ]]
 function Core:find_number(to)
-    local digits = to:match("^%+(.*)$")
-    if not digits or self:has_number(to) then return nil, to end
+    if self:has_number(to) then return nil, to end
     local network, length = nil, 0
     local own = self.number_prefix
-    if own and digits:sub(1, #own) == own then length = #own end
+    if own and to:sub(1, #own) == own then length = #own end
     for name, peer in pairs(self.peers) do
-        if #peer.prefix > length and digits:sub(1, #peer.prefix) == peer.prefix then network, length = name, #peer.prefix end
+        if #peer.prefix > length and to:sub(1, #peer.prefix) == peer.prefix then network, length = name, #peer.prefix end
     end
-    if length == 0 then return nil, to end
-    return network, digits:sub(length + 1)
+    if length > 0 then return network, to:sub(length + 1) end
+    if not own and next(self.peers) == nil then return nil, to end
+    return false
 end
 
 --[[ Keep a message for one of our subscribers, until their phone is attached and says it has it.
@@ -580,36 +593,87 @@ function Core:keep_message(from, to, text, shown)
     return message
 end
 
--- Pass a message on to another network's core. The phone hears how it went once that core says.
+-- Pass a message on to another network's core, keeping it until that core takes it. The phone hears how it went once
+-- that core says, or, if it can't be reached or doesn't say soon, that we have the message.
 function Core:send_to_peer(session, sender, id, network, number, text)
-    local peer = self.peers[network]
-    local send = peer.links[#peer.links]
     if not self.number_prefix then
         return self:message_done(session, id, false, "This network has no number prefix, so can't reach others")
-    elseif not send then
-        return self:message_done(session, id, false, ("Can't reach %s now"):format(network))
+    elseif self.held_count >= MAX_HELD then
+        return self:message_done(session, id, false, "Too many messages are waiting for other networks")
     end
+    local prefix = self.peers[network].prefix
     self.next_message = self.next_message + 1
-    self.outgoing[self.next_message] = {
-        sim = session.sim, id = id, network = network, expires = self.stack.clock() + PEER_TIMEOUT,
+    local held = {
+        id = self.next_message, network = network, sim = session.sim, phone_message = id, sender = sender.number,
+        from = self.number_prefix .. sender.number, to = number, shown = prefix .. number, text = text,
+        since = self.stack.clock(), expires = self.epoch() + MESSAGE_LIFETIME,
     }
-    self.on_event("message", sender.number, "+" .. peer.prefix .. number)
-    send({ op = "sms", id = self.next_message, from = "+" .. self.number_prefix .. sender.number, to = number, text = text })
+    self.held[held.id] = held
+    self.held_count = self.held_count + 1
+    self.on_event("message", sender.number, held.shown)
+    -- Its core isn't connected: we have the message, and send it once it is.
+    if not self:pass_on(held) then self:message_held(held) end
 end
 
--- Give up on messages other networks' cores haven't answered for in time.
-function Core:expire_outgoing()
-    local now = self.stack.clock()
-    for message_id, outgoing in pairs(self.outgoing) do
-        if outgoing.expires <= now then
-            self.outgoing[message_id] = nil
-            local session = self.sessions[outgoing.sim]
-            if session then self:message_done(session, outgoing.id, false, ("%s didn't answer"):format(outgoing.network)) end
+-- Send a message to its network's core, if that's connected. Returns whether it was sent.
+function Core:pass_on(held)
+    local peer = self.peers[held.network]
+    local send = peer and peer.links[#peer.links]
+    if not send then return false end
+    held.sent = self.stack.clock()
+    send({ op = "sms", id = held.id, from = held.from, to = held.to, text = held.text })
+    return true
+end
+
+-- Tell a phone we have its message for another network, which we send when we can.
+function Core:message_held(held)
+    if held.told then return end
+    held.told = true
+    local session = self.sessions[held.sim]
+    if session then self:message_done(session, held.phone_message, true) end
+end
+
+-- What became of a message for another network: tell its sender. If their phone was told we had it, and it wasn't
+-- delivered after all, they get a message from us saying why.
+function Core:release(held, ok, reason)
+    if self.held[held.id] ~= held then return end
+    self.held[held.id] = nil
+    self.held_count = self.held_count - 1
+    if not held.told then
+        local session = self.sessions[held.sim]
+        if session then self:message_done(session, held.phone_message, ok, reason) end
+    elseif not ok then
+        local notice = ("Not delivered to %s: %s"):format(held.shown, reason)
+        local message = self:keep_message(self.network, held.sender, notice:sub(1, 1000), held.sender)
+        if message then self:deliver(message) end
+    end
+end
+
+-- Messages for other networks: send them again now and then until their cores take them, tell senders who have waited
+-- a while that we have theirs, and give up on those kept too long.
+function Core:retry_held()
+    local now, epoch = self.stack.clock(), self.epoch()
+    for _, held in pairs(self.held) do
+        if held.expires <= epoch then
+            self:release(held, false, ("%s couldn't be reached"):format(held.network))
+        else
+            if not held.told and now - held.since >= PEER_TIMEOUT then self:message_held(held) end
+            if not held.sent or now - held.sent >= PEER_RETRY then self:pass_on(held) end
         end
     end
 end
 
---[[- Set our number prefix: other networks' phones reach ours at `+`, the prefix, and their number. Networks we
+--[[- Describe the messages waiting for other networks' cores.
+
+@treturn { [string] = number } How many wait for each network.
+]]
+function Core:held_info()
+    local result = {}
+    for _, held in pairs(self.held) do result[held.network] = (result[held.network] or 0) + 1 end
+    return result
+end
+
+--[[- Set our number prefix: other networks' phones reach ours at the prefix followed by their number. Networks we
 exchange messages with heard the old one when they connected, so connect to them again.
 
 @tparam string|nil prefix The prefix, digits only, or `nil` for none.
@@ -618,25 +682,52 @@ function Core:set_number_prefix(prefix)
     self.number_prefix = prefix
 end
 
---[[- Exchange messages with another network's phones, over a connection to its core. There may be more than one
-connection (each core may have connected to the other): messages go over the newest.
+--[[- Exchange messages with another network's phones. Messages for its numbers are kept until its core is
+connected.
 
 @tparam string network The other network's name.
 @tparam string prefix Its number prefix.
-@tparam function(message:table) send Sends its core a message.
 ]]
-function Core:add_peer(network, prefix, send)
+function Core:know_peer(network, prefix)
     local peer = self.peers[network]
     if not peer then
         peer = { links = {} }
         self.peers[network] = peer
     end
     peer.prefix = prefix
-    peer.links[#peer.links + 1] = send
+end
+
+--[[- Exchange messages with another network's phones, over a connection to its core. There may be more than one
+connection (each core may have connected to the other): messages go over the newest. Messages kept for its phones go
+now.
+
+@tparam string network The other network's name.
+@tparam string prefix Its number prefix.
+@tparam function(message:table) send Sends its core a message.
+]]
+function Core:add_peer(network, prefix, send)
+    self:know_peer(network, prefix)
+    local links = self.peers[network].links
+    links[#links + 1] = send
+    for _, held in pairs(self.held) do
+        if held.network == network then self:pass_on(held) end
+    end
+end
+
+--[[- Stop exchanging messages with another network. Its numbers can't be reached any more, and the senders of messages
+kept for it are told they weren't delivered.
+
+@tparam string network The other network's name.
+]]
+function Core:forget_peer(network)
+    self.peers[network] = nil
+    for _, held in pairs(self.held) do
+        if held.network == network then self:release(held, false, ("%s is no longer reachable"):format(network)) end
+    end
 end
 
 --[[- Forget a connection to another network's core, once it has gone. While there are none, messages for its phones
-are refused, as it can't be reached.
+are kept until there is one.
 
 @tparam string network The other network's name.
 @tparam function send The function [`Core:add_peer`] was given.
@@ -663,24 +754,37 @@ function Core:peer_control(network, message, send)
     local peer = self.peers[network]
     if not peer or type(message) ~= "table" or not is_id(message.id) then return end
     if message.op == "sms" then
-        local from, to, text = message.from, message.to, message.text
-        local function reply(ok, reason) send({ op = "sms_reply", id = message.id, ok = ok, error = reason }) end
+        local id, from, to, text = message.id, message.from, message.to, message.text
+        local function reply(ok, reason) send({ op = "sms_reply", id = id, ok = ok, error = reason }) end
+        -- That core sends a message until we answer, so it may come more than once.
+        local seen = peer.seen
+        if not seen then
+            seen = { order = {} }
+            peer.seen = seen
+        end
+        if seen[id] ~= nil then return reply(seen[id] == true, seen[id] ~= true and seen[id] or nil) end
+
+        local ok, reason
         -- A network only speaks for its own phones.
         if type(from) ~= "string" or #from > 32 or self:find_number(from) ~= network
             or type(to) ~= "string" or #to < 1 or #to > 32 or type(text) ~= "string" or #text > 1000 then
-            return reply(false, "That message can't be sent")
+            ok, reason = false, "That message can't be sent"
         end
-        local kept, reason = self:keep_message(from, to, text, self.number_prefix and "+" .. self.number_prefix .. to or to)
-        reply(kept ~= nil, reason)
+        local kept
+        if ok == nil then
+            kept, reason = self:keep_message(from, to, text, (self.number_prefix or "") .. to)
+            ok = kept ~= nil
+        end
+        seen[id] = ok or reason
+        seen.order[#seen.order + 1] = id
+        if #seen.order > MAX_PEER_SEEN then seen[table.remove(seen.order, 1)] = nil end
+        reply(ok, reason)
         if kept then self:deliver(kept) end
     elseif message.op == "sms_reply" then
-        local outgoing = self.outgoing[message.id]
-        if not outgoing or outgoing.network ~= network then return end
-        self.outgoing[message.id] = nil
-        local session = self.sessions[outgoing.sim]
+        local held = self.held[message.id]
+        if not held or held.network ~= network then return end
         local ok = message.ok == true
-        local reason = not ok and (type(message.error) == "string" and message.error:sub(1, 100) or "Not delivered") or nil
-        if session then self:message_done(session, outgoing.id, ok, reason) end
+        self:release(held, ok, not ok and (type(message.error) == "string" and message.error:sub(1, 100) or "Not delivered") or nil)
     end
 end
 
@@ -724,7 +828,7 @@ end
 
 function Core:retry_messages()
     self.retry_timer = self.stack:schedule(MESSAGE_RETRY, function() self:retry_messages() end)
-    self:expire_outgoing()
+    self:retry_held()
     if not self.messages[1] then return end
     self:expire_messages()
     local sessions = self:sessions_by_number()

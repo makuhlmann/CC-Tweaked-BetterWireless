@@ -1155,23 +1155,31 @@ the design above:
   other's phones, and the other way round.
   - **Number prefixes.** Each network may have a number prefix, 1 to 8 digits, given at setup (`cellcore setup ACME
     10.64.0.0/16 555`) or later, without a restart (`cellcore numbers 555`). It's kept in `/.cell/config`. Numbers
-    stay as they were within a network; another network's phone is written `+`, its network's prefix, and its number
-    there (`+6660042`). A network's own numbers may be written that way too. The longest prefix which fits wins, so
-    `55` and `555` can be different networks'. A phone hears its network's prefix when it attaches, and shows its
-    full number (`+5550042`).
+    stay as they were within a network; another network's phone is written with its network's prefix in front of its
+    number there (`6660042`). A network's own numbers may be written that way too. A subscriber's own number comes
+    first; then the longest prefix which fits wins, so `55` and `555` can be different networks'. A number which is
+    nobody's here and has no prefix the core knows gets "Destination not reachable" (a network with no prefix, which
+    exchanges messages with nobody, still says nobody has it). A phone hears its network's prefix when it attaches,
+    and shows its full number (`5550042`).
   - **Peers.** On one core, `cellcore peer <network> <core>` connects to the other network's core (with the role
     `peer`, giving its name and prefix) and keeps connecting, as `carry` does; the other core's administrator allows
     it, as for a cell. Messages then go both ways over that one connection, which is secure (§9), so they're encrypted
     between the cores, though not end to end. Both networks need a prefix, and different ones. A network's core may be
     both a roaming partner and a peer: its key is allowed for each role apart (`roles` in `/.cell/cells`). Peers are
     kept in `/.cell/peers`; `cellcore peers` lists them, and `cellcore unpeer` (or `cellcore deny`, from the other
-    side) ends it. Changing the prefix makes the peers connect again, as they hear it when they connect.
+    side) ends it. Changing the prefix makes the peers connect again, as they hear it when they connect. Each core
+    keeps its peers' prefixes (with their entries in `/.cell/peers` and `/.cell/cells`), so after a restart it knows
+    their numbers before they connect again.
   - **Delivery.** A phone's message for another network's number goes to its core, which passes it on with a number
     of its own, and the sender's full number. The other core keeps it for its subscriber as it would its own phones',
-    and answers whether it has taken it, or why not ("Nobody has the number +6669"); only then does the sending phone
-    hear how it went. A core which doesn't answer within 20 seconds counts as a failure, and so does one which isn't
-    connected ("Can't reach BETA now"). A core only takes messages from a peer's own numbers, so a network can't send
-    in another's name. The recipient sees the sender's full number, so an answer finds its way back.
+    and answers whether it has taken it, or why not ("Nobody has the number 6669"), which the sending phone hears.
+    When the other core isn't connected, or doesn't answer within 20 seconds, the sending core keeps the message and
+    tells the phone it has it, as for its own phones' messages. It sends it again when that core connects, and every
+    30 seconds while it hasn't answered; the other core remembers the last 256 messages each peer sent, so one which
+    comes twice is kept once. If the message is refused after all, or not taken within a week, or the agreement ends,
+    the sender gets a message from its own network saying so ("Not delivered to 6669: Nobody has the number 6669").
+    At most 1,000 messages wait for other networks. A core only takes messages from a peer's own numbers, so a network
+    can't send in another's name. The recipient sees the sender's full number, so an answer finds its way back.
 - **The phone's menus and status bar.** `cell gui` is the phone as its user sees it, drawn for a pocket computer's
   26 columns and usable on any computer, with the keyboard alone or the mouse, in greys where there are no colours.
   - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
@@ -1226,11 +1234,13 @@ whose phone moves on, while the other stays. `cell_service_spec.lua` has a cell 
 second core of a network it serves.
 
 Messages between networks are tested in the virtual network with two operators whose cores exchange messages
-(`cell_messaging_spec.lua`): both ways, to a network's own numbers written in full, to numbers nobody has, kept until
-the other network's phone is on, a peer which can't be reached or doesn't answer, a peer speaking for numbers not its
-own, and messages between the cores with something unexpected in them. `cell_service_spec.lua` has two cores agree
-over a connection, take a second role (carrying phones too), change a prefix, and end it, and checks prefixes which
-are missing or the same are refused.
+(`cell_messaging_spec.lua`): both ways, to a network's own numbers written in full, to numbers nobody has and
+prefixes nobody has, kept until the other network's phone is on, kept while the other core can't be reached and sent
+when it's back (and the sender told if it's refused then, or kept too long, or the agreement ends), a core which
+doesn't answer, a message which comes twice, a peer speaking for numbers not its own, and messages between the cores
+with something unexpected in them. `cell_service_spec.lua` has two cores agree
+over a connection, take a second role (carrying phones too), change a prefix, and end it; checks prefixes which
+are missing or the same are refused; and has a core know a peer's prefix again after a restart, before it connects.
 
 The menus and the bar are tested against a made-up phone (`spec/programs/net/cell_gui_spec.lua`): what the bar shows
 in each state and at each width, with and without colours; that it comes and goes with cell service and the SIM; and

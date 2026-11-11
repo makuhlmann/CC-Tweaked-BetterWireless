@@ -679,12 +679,13 @@ describe("Cellular services", function()
                     expect(beta.service.core.peers.ACME.prefix):eq("555")
                     status = ask(acme_admin, { op = "status" })
                     expect({ status.number_prefix, status.peers }):same {
-                        "555", { { network = "BETA", id = 51, connected = true, prefix = "666" } },
+                        "555", { { network = "BETA", id = 51, connected = true, prefix = "666", waiting = 0 } },
                     }
                     expect(ask(beta_admin, { op = "status" }).peers):same {
-                        { network = "ACME", core = "10.0.0.1", state = "serving", connected = true, prefix = "555" },
+                        { network = "ACME", core = "10.0.0.1", state = "serving", connected = true, prefix = "555", waiting = 0 },
                     }
-                    expect(read_table(fs.combine(beta.dir, "peers"))):same { ACME = { core = "10.0.0.1" } }
+                    expect(read_table(fs.combine(beta.dir, "peers"))):same { ACME = { core = "10.0.0.1", prefix = "555" } }
+                    expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity].prefix):eq("666")
 
                     -- What the cores say to each other passes over the connection, both ways.
                     local at_acme, at_beta = {}, {}
@@ -716,6 +717,7 @@ describe("Cellular services", function()
                     wait_until(function() return beta.service.carrying.ACME.state == "serving" end)
                     expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity]):same {
                         label = "BETA", role = "peer", id = 51, network = "BETA", signing = hex(beta.signing), roles = { roam = true },
+                        prefix = "666",
                     }
                     expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing } }
                     expect(beta.service.peering.ACME.state):eq("serving")
@@ -742,6 +744,39 @@ describe("Cellular services", function()
                     acme_admin:close()
                     beta_admin:close()
                 end, }, 600)
+            end)
+
+            it("are kept for a peer which hasn't connected since its core started", function()
+                local acme, beta = two_cores("555", "666")
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local acme_admin, beta_admin = acme.admin(), beta.admin()
+                    ask(beta_admin, { op = "peer", network = "ACME", core = "10.0.0.1" })
+                    repeat coroutine.yield() until #ask(acme_admin, { op = "status" }).waiting == 1
+                    ask(acme_admin, { op = "allow", key = beta.identity })
+                    wait_until(function() return beta.service.peering.ACME.state == "serving" end)
+                    acme_admin:close()
+                    beta_admin:close()
+                end, })
+
+                -- Both cores start again. Before they connect, each knows the other's prefix: messages for it wait.
+                acme.service:stop()
+                beta.service:stop()
+                acme.listening, beta.listening = false, false
+                acme.service = assert(core_service.new(acme.options))
+                beta.options.connect = function() return nil, "No route to host" end
+                beta.service = assert(core_service.new(beta.options))
+                expect({ acme.service.core.peers.BETA.prefix, #acme.service.core.peers.BETA.links }):same { "666", 0 }
+                expect({ beta.service.core.peers.ACME.prefix, #beta.service.core.peers.ACME.links }):same { "555", 0 }
+                expect(acme.service.core:find_number("6660042")):eq("BETA")
+
+                -- Ending it forgets the prefix: its numbers can't be reached.
+                run(acme.net, { acme.service, beta.service }, { function()
+                    local beta_admin = beta.admin()
+                    expect(ask(beta_admin, { op = "unpeer", network = "ACME" })):same { network = "ACME" }
+                    beta_admin:close()
+                end, })
+                expect(beta.service.core.peers.ACME):eq(nil)
+                expect(beta.service.core:find_number("5550042")):eq(false)
             end)
 
             it("need both networks to have number prefixes, and different ones", function()

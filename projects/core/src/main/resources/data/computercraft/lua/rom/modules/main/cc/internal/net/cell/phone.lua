@@ -406,9 +406,9 @@ function Phone:radio(src, message, signal)
         local info = payload and codec.decode(payload)
         if type(info) ~= "table" then return end
         self.subscriber = { id = info.id, number = info.number }
-        -- Other networks' phones reach ours at "+", our network's number prefix, and our number.
+        -- Other networks' phones reach ours at our network's number prefix followed by our number.
         if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
-            self.subscriber.full = "+" .. info.numbers .. info.number
+            self.subscriber.full = info.numbers .. info.number
         end
         self:set_partners(info.partners)
         local send = handshake:split()

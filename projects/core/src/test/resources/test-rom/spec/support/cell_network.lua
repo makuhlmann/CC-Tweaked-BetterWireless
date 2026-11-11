@@ -201,6 +201,7 @@ local function operator(cell_positions, options)
     do over a connection.
 
     @tparam table other The other operator.
+    @treturn table The connection between the cores, which can be cut (`cut()`), and mended (`mend()`).
     ]]
     function setup.peer_with(other)
         local to_other, to_us
@@ -210,8 +211,17 @@ local function operator(cell_positions, options)
         to_us = function(message)
             core_stack:schedule(0.01, function() setup.core:peer_control(other.name, copy(message), to_other) end)
         end
-        setup.core:add_peer(other.name, other.number_prefix, to_other)
-        other.core:add_peer(name, options.numbers, to_us)
+        local connection = {}
+        function connection.mend()
+            setup.core:add_peer(other.name, other.number_prefix, to_other)
+            other.core:add_peer(name, options.numbers, to_us)
+        end
+        function connection.cut()
+            setup.core:remove_peer(other.name, to_other)
+            other.core:remove_peer(name, to_us)
+        end
+        connection.mend()
+        return connection
     end
 
     --- Restart the core: it forgets every phone, and its cells join it again, forgetting their phones too.

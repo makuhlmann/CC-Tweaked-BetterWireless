@@ -1811,8 +1811,8 @@ function Manager:uncarry(network)
     return self:request({ op = "uncarry", network = network })
 end
 
---- Set this network's number prefix. Other networks' phones send messages to this network's at `+`, the prefix, and
--- their number (`+5550042`), once the networks exchange messages (see `Manager:peer`).
+--- Set this network's number prefix. Other networks' phones send messages to this network's at the prefix followed by
+-- their number (`5550042`), once the networks exchange messages (see `Manager:peer`).
 --
 -- @tparam string prefix The prefix: 1 to 8 digits.
 -- @treturn[1] table The new `prefix`.
@@ -2006,7 +2006,10 @@ cell = {
     end,
 
     --[[- Send a message to another phone by its number. A phone of another network which exchanges messages with this
-    one has a number such as `+6660042`: a `+`, that network's number prefix, and its number there.
+    one has a number such as `6660042`: that network's number prefix, followed by its number there. If that network's
+    core can't be reached, the network keeps the message, says it has it, and sends it on once it can (and if it isn't
+    delivered after all, a message from the network says so). A number with no prefix the network knows isn't
+    reachable.
 
     The phone sends it until the network says it has it, so a lost radio frame doesn't lose the message. A `cell_sent`
     event says how that went: the message's ID and `true`, or `false` and why not (nobody has that number, say). The
