@@ -331,7 +331,7 @@ elseif command == "networks" and #args == 1 then
     if #networks == 0 then print("No networks in range.") end
     for _, network in ipairs(networks) do
         local kind = network.kind
-        if not network.allowed then kind = "not allowed" elseif kind == "other" then kind = "allowed" end
+        if not network.allowed then kind = "unknown" elseif kind == "other" then kind = "allowed" end
         local signal = network.signal and ("%4d dBm"):format(math.floor(network.signal + 0.5)) or "       -"
         print(("%s %-12s %-11s %s"):format(network.serving and ">" or " ", network.name, kind, signal))
     end
@@ -343,6 +343,11 @@ elseif command == "network" and #args == 2 then
         print("The phone chooses the network.")
     else
         print(("The phone only uses %s."):format(args[2]))
+        for _, network in ipairs(net.cell.networks()) do
+            if network.name == args[2] and not network.allowed then
+                print(("It doesn't know whether %s carries its network's phones, so it tries."):format(args[2]))
+            end
+        end
     end
 elseif (command == "on" or command == "off") and #args == 1 then
     local ok, err = net.cell.setEnabled(command == "on")

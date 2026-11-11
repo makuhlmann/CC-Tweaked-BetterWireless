@@ -684,7 +684,7 @@ local function networks_screen()
             for i, network in ipairs(networks) do
                 name_width = math.max(name_width, #tostring(network.name))
                 if not network.allowed then
-                    kinds[i] = "not allowed"
+                    kinds[i] = "unknown"
                 elseif network.kind == "home" or network.kind == "partner" then
                     kinds[i] = network.kind
                 else

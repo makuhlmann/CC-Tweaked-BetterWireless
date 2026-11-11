@@ -2047,7 +2047,8 @@ cell = {
 
     @treturn { { name = string, kind = string, allowed = boolean, signal? = number, serving = boolean,
     selected = boolean }... } Each network's `name`; its `kind`: `"home"` (the SIM's own), `"partner"` (one the SIM's
-    network has a roaming agreement with) or `"other"`; whether the phone is `allowed` to use it; the `signal` of its
+    network has a roaming agreement with) or `"other"`; whether the phone knows it's `allowed` to use it (its own
+    network or a partner: it can still be told to use another, which it tries); the `signal` of its
     strongest cell in range (dBm), or `nil` if none is; whether the phone is using it now (`serving`); and whether it's
     the network the phone has been told to use (`selected`). The SIM's own network comes first, then partners, then the
     rest, strongest first.
@@ -2093,7 +2094,9 @@ cell = {
     Left to itself, the phone uses its SIM's own network when it can hear it, and otherwise a partner's: it stays on
     its own network until it loses it, and goes back once its own network is stronger than the one it roams on. Where
     it hears neither, it tries other networks too, which may have an agreement with its own it hasn't heard of yet.
-    Told to use one network, it uses no other, and has no service where that network has no cells.
+    Told to use one network, it uses no other, and has no service where that network has no cells. That may be any
+    network: one the phone doesn't know has an agreement with its own, it tries anyway (and keeps trying, if turned
+    away), and learns that it's a partner if it is.
 
     @tparam[opt] string name The network's name, or `nil` (or `"auto"`) to let the phone choose.
     @treturn[1] true If the choice was made.
@@ -2104,12 +2107,8 @@ cell = {
         expect(1, name, "string", "nil")
         load()
         if name == "auto" then name = nil end
-        if name then
-            local allowed = false
-            for _, network in ipairs(cell.networks()) do
-                if network.name == name then allowed = network.allowed end
-            end
-            if not allowed then return nil, ("This SIM can't use %s"):format(name) end
+        if name and (#name > 32 or not name:find("^[%w%-]+$")) then
+            return nil, "Network names are letters, digits and dashes, up to 32 of them"
         end
         local chosen = read_table(PHONE_FILE)
         chosen.network = name

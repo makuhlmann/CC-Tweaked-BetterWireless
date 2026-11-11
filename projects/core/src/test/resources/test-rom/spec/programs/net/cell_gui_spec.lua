@@ -58,9 +58,7 @@ describe("The cell program's GUI", function()
         stub(net.cell, "networks", function() return phone.networks end)
         stub(net.cell, "setNetwork", function(name)
             phone.chosen[#phone.chosen + 1] = name
-            for _, network in ipairs(phone.networks) do
-                if network.name == name and not network.allowed then return nil, "This SIM can't use " .. name end
-            end
+            if phone.refuse_network then return nil, phone.refuse_network end
             for _, network in ipairs(phone.networks) do network.selected = network.name == name end
             phone.info.selection = name
             return true
@@ -1065,7 +1063,7 @@ describe("The cell program's GUI", function()
                     " *Automatic",
                     "> ACME  home          ||||",
                     "  BETA  partner       ||..",
-                    "  GAMMA not allowed      -",
+                    "  GAMMA unknown          -",
                     "",
                 }
                 expect(app.lines(19, 20)):same { "> in use  * chosen", "Backspace: back" }
@@ -1074,7 +1072,7 @@ describe("The cell program's GUI", function()
             run(phone, { width = 51, height = 19 }, function(app)
                 app.key(keys.down, keys.down, keys.enter)
                 expect(app.line(5)):eq("> ACME  home" .. (" "):rep(35) .. "||||")
-                expect(app.line(7)):eq("  GAMMA not allowed" .. (" "):rep(31) .. "-")
+                expect(app.line(7)):eq("  GAMMA unknown" .. (" "):rep(35) .. "-")
                 expect(app.line(19)):eq("> in use  * chosen  Backspace: back")
             end)
         end)
@@ -1094,7 +1092,7 @@ describe("The cell program's GUI", function()
                     "> ACME  home          ||||",
                     "  DELTA partner       |||.",
                     "  BETA  partner          -",
-                    "  GAMMA not allowed      -",
+                    "  GAMMA unknown          -",
                 }
                 expect(app.bg(7)):eq(("0"):rep(26))
 
@@ -1137,22 +1135,34 @@ describe("The cell program's GUI", function()
             run(phone, {}, function(app)
                 app.key(keys.down, keys.down, keys.enter)
                 expect(app.lines(5, 7)):same {
-                    "> ACME    home        ||||",
-                    "  BETA    partner     ||..",
-                    "  GAMMA-T not allowed    -",
+                    "> ACME        home    ||||",
+                    "  BETA        partner ||..",
+                    "  GAMMA-TELEC unknown    -",
                 }
             end)
         end)
 
-        it("say why one can't be chosen", function()
+        it("may be one the phone knows of no agreement with, which it tries", function()
             local phone = fake_phone()
             phone.networks = network_fixture()
             run(phone, {}, function(app)
                 app.key(keys.down, keys.down, keys.enter, keys.up, keys.enter)
                 expect(phone.chosen):same { "GAMMA" }
-                expect(app.line(18)):eq("This SIM can't use GAMMA")
+                expect(app.line(18)):eq("Using GAMMA only.")
+                expect(app.line(4)):eq("  Automatic")
+                expect(app.line(7)):eq(" *GAMMA unknown          -")
+            end)
+        end)
+
+        it("say why one can't be chosen", function()
+            local phone = fake_phone()
+            phone.networks, phone.refuse_network = network_fixture(), "No such network"
+            run(phone, {}, function(app)
+                app.key(keys.down, keys.down, keys.enter, keys.up, keys.enter)
+                expect(phone.chosen):same { "GAMMA" }
+                expect(app.line(18)):eq("No such network")
                 expect(app.line(4)):eq(" *Automatic")
-                expect(app.line(7)):eq("  GAMMA not allowed      -")
+                expect(app.line(7)):eq("  GAMMA unknown          -")
             end)
         end)
     end)

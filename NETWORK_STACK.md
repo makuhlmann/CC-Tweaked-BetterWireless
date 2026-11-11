@@ -1093,7 +1093,16 @@ the design above:
     only where it can't. It stays on its home network until it loses it. While roaming, once its home network's best
     cell has been 3 dB stronger than the cell it's on for 5 seconds, it goes home. Between networks it attaches again
     rather than being handed over, which takes a moment, and its address stays the same. `net.cell.setNetwork` tells
-    it to use one network only, and `net.cell.networks` lists those around.
+    it to use one network only, and `net.cell.networks` lists those around. A phone may be told to use any network,
+    even one it knows of no agreement with: it tries that network's cells at once (whether or not it turned the phone
+    away lately), keeps trying while it's turned away, and learns the network is a partner if it is.
+  - **Cells which don't hear the phone.** A phone may hear a cell well enough to choose it, while the cell doesn't hear
+    the phone: at the edge of the cell's coverage, the phone's radio being the weaker. Preferring its home network
+    whatever the signal, such a phone used to try its home cell again and again, and stay without service beside a
+    partner's strong cell. Now, when an attach through a cell gets no answer at all (a refusal doesn't count), the
+    phone leaves that cell alone for 30 seconds, then twice as long each time it happens again, up to five minutes,
+    and attaches through the next best cell, a partner's if need be. It only tries such a cell sooner when there's
+    nothing else, and doesn't go home to one. An attach which works forgets the cell's failures.
   - **Networks it doesn't know.** A phone only hears of new agreements when it attaches, so one which made its way
     out of its home network's coverage before an agreement was made wouldn't know it may roam. Where it can hear
     neither its home network nor a partner's, a phone left to choose tries other networks' cells too, strongest
@@ -1143,7 +1152,9 @@ it.
 Roaming is tested in the virtual network with two operators side by side (`cell_roaming_spec.lua`): a phone walks out
 of one's coverage, across the other's two cells and back, with an open connection, and keeps every message. Others
 cover going home (only once home is stronger), trying a network the phone hasn't heard is a partner, being told which
-network to use, agreements which are missing or ended, cells which only claim to be
+network to use (also one it knows of no agreement with, and one which turns it away), a home cell which hears too
+faintly to answer (the phone roams, and tries home less and less often until the cell hears it), agreements which are
+missing or ended, cells which only claim to be
 a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 10,000 control
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone

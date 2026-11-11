@@ -49,8 +49,10 @@ for _ = 1, 20 do
     wait_for("Attaching again", function(now) return now.state == "attached" end, 15)
 end
 if not partner() then error("Never heard of VISIT: " .. textutils.serialise(net.cell.networks()), 0) end
-local refused, why = net.cell.setNetwork("NOWHERE")
-if refused or why ~= "This SIM can't use NOWHERE" then error("Could choose a network which isn't there", 0) end
+local refused, why = net.cell.setNetwork("NOT A NAME")
+if refused or why ~= "Network names are letters, digits and dashes, up to 32 of them" then
+    error("Could choose a network which can't be: " .. tostring(why), 0)
+end
 
 -- Told to use VISIT, the phone roams, with the address its own network gave it.
 assert(net.cell.setNetwork("VISIT"))

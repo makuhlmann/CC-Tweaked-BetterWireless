@@ -241,7 +241,13 @@ describe("The net library", function()
             expect(net.cell.networks()):same {
                 { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
             }
-            expect({ net.cell.setNetwork("BETA") }):same { nil, "This SIM can't use BETA" }
+            -- Any network may be chosen, even one it knows of no agreement with: the phone tries it.
+            expect({ net.cell.setNetwork("NOT A NAME") }):same { nil, "Network names are letters, digits and dashes, up to 32 of them" }
+            expect(net.cell.setNetwork("BETA")):eq(true)
+            expect(net.cell.networks()):same {
+                { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
+                { name = "BETA", kind = "other", allowed = false, serving = false, selected = true },
+            }
             expect(net.cell.setNetwork("ACME")):eq(true)
             expect(net.cell.info().selection):eq("ACME")
             expect(net.cell.networks()[1].selected):eq(true)

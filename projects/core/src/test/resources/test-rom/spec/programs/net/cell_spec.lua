@@ -160,7 +160,7 @@ describe("The cell program", function()
             stub(net.cell, "networks", function() return phone.networks or {} end)
             stub(net.cell, "setNetwork", function(name)
                 phone.calls[#phone.calls + 1] = { "setNetwork", name }
-                if name == "BETA" then return nil, "This SIM can't use BETA" end
+                if name == "NOT-A-NAME!" then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
                 return true
             end)
             stub(net.cell, "setEnabled", function(enabled)
@@ -188,19 +188,27 @@ describe("The cell program", function()
                 output = "The phone only uses OTHER.\n" ..
                     "  ACME         home               -\n" ..
                     "> OTHER        partner      -75 dBm\n" ..
-                    "  BETA         not allowed -100 dBm\n",
+                    "  BETA         unknown     -100 dBm\n",
             }
         end)
 
         it("chooses a network, or lets the phone choose", function()
             local phone = fake_phone()
+            phone.networks = { { name = "BETA", kind = "other", allowed = false, signal = -80, serving = false, selected = false } }
             expect(capture("/rom/programs/net/cell.lua network OTHER"))
                 :matches { ok = true, output = "The phone only uses OTHER.\n", error = "" }
             expect(capture("/rom/programs/net/cell.lua network auto"))
                 :matches { ok = true, output = "The phone chooses the network.\n", error = "" }
-            expect(capture("/rom/programs/net/cell.lua network BETA"))
-                :matches { ok = true, output = "", error = "This SIM can't use BETA\n" }
-            expect(phone.calls):same { { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" } }
+            -- One it knows of no agreement with, it tries.
+            expect(capture("/rom/programs/net/cell.lua network BETA")):matches {
+                ok = true, error = "",
+                output = "The phone only uses BETA.\nIt doesn't know whether BETA carries its network's phones, so it tries.\n",
+            }
+            expect(capture("/rom/programs/net/cell.lua network NOT-A-NAME!"))
+                :matches { ok = true, output = "", error = "Network names are letters, digits and dashes, up to 32 of them\n" }
+            expect(phone.calls):same {
+                { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" }, { "setNetwork", "NOT-A-NAME!" },
+            }
         end)
 
         it("turns cell service off and on", function()
