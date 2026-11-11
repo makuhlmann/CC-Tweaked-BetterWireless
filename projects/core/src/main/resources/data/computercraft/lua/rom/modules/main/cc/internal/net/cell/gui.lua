@@ -296,7 +296,8 @@ local function list_screen(options)
         elseif event == "timer" and a == timer then
             timer = os.startTimer(options.refresh)
             load()
-        elseif event == "cell_state" or event == "cell_message" or event == "cell_sent" or event == "term_resize" then
+        elseif event == "cell_state" or event == "cell_message" or event == "cell_sent" or event == "cell_messages"
+            or event == "term_resize" then
             load()
         else
             dirty = false

@@ -1817,8 +1817,9 @@ Cells run `celld`, and the network's core runs `cellcore`. Both run in the stack
 can be used for other things, and start again when it does.
 
 The stack queues `cell_state` (with the phone's state) when it attaches or loses service, `cell_message` (with the
-sender's number and the text) when a message arrives, and `cell_sent` (with a message's ID, whether the network took it,
-and why not) for each message sent.
+sender's number and the text) when a message arrives, `cell_sent` (with a message's ID, whether the network took it,
+and why not) for each message sent, and `cell_messages` whenever the messages it keeps change in another way: one was
+read or deleted, say.
 ]]
 cell = {
     --[[- Get the phone's state.
@@ -1945,6 +1946,7 @@ cell = {
         local ok, id = phone_instance:send_message(number, text)
         if not ok then return nil, id end
         add_message({ to = number, text = text, time = os.epoch("utc"), id = id, status = "sending" })
+        os.queueEvent("cell_messages")
         return true, id
     end,
 
@@ -1979,8 +1981,10 @@ cell = {
     ]]
     markRead = function(n)
         expect(1, n, "number", "nil")
-        return change_messages(function(message) return message.from and message.read == false and (n == nil or message.n == n) end,
+        local count = change_messages(function(message) return message.from and message.read == false and (n == nil or message.n == n) end,
             function(message) message.read = true end)
+        if count > 0 then os.queueEvent("cell_messages") end
+        return count
     end,
 
     --[[- Delete a message.
@@ -1990,7 +1994,9 @@ cell = {
     ]]
     deleteMessage = function(n)
         expect(1, n, "number")
-        return change_messages(function(message) return message.n == n end, function() return false end) > 0
+        local found = change_messages(function(message) return message.n == n end, function() return false end) > 0
+        if found then os.queueEvent("cell_messages") end
+        return found
     end,
 
     --[[- Turn cell service off or on. While it's off, the phone doesn't listen or send, has no address, and isn't

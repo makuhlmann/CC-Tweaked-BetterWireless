@@ -1097,6 +1097,27 @@ the design above:
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **The phone's menus and status bar.** `cell gui` is the phone as its user sees it, drawn for a pocket computer's
+  26 columns and usable on any computer, with the keyboard alone or the mouse, in greys where there are no colours.
+  - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
+    doing: "Searching...", "Connecting...", "No service" after ten seconds of searching), the signal as four bars on
+    the right with an `R` before them when roaming, and between them a note such as "1 new msg". There's no bar while
+    cell service is turned off or the phone has no SIM, and what runs beneath it gets the line back (as a
+    `term_resize`). `cell bar [program]` runs any program beneath the bar (a shell, if none is given), in a window
+    one line shorter, so the bar can stay for good from a startup file. A program which is already beneath a bar
+    doesn't get a second one.
+  - **Menus:** messages (newest first, received and sent, with which are new and which failed; opening one marks it
+    read, and it can be answered or deleted), writing a message (and watching whether the network took it), networks
+    (every network in range and the SIM's own and partners', with signal, which is in use and which is chosen;
+    choosing one keeps the phone to it, and "Automatic" lets it choose), cell service off and on, and the monitor.
+  - **The same from the shell:** `cell networks`, `cell network <name>|auto`, `cell on` and `cell off`.
+  - **What it's built on.** The menus only use `net.cell`: `info` (which also has `enabled`, `signal`,
+    `serving_network`, `roaming`, `selection` and `unread`), `messages`, `markRead`, `deleteMessage`, `send`,
+    `networks`, `setNetwork` and `setEnabled`, so other programs can do all they do. They redraw on the events
+    `cell_state`, `cell_message`, `cell_sent`, and `cell_messages`, which is queued when the kept messages change in
+    another way (one was read or deleted), so a bar in one tab follows messages read in another.
+  - Turning cell service off stops the phone altogether (it neither listens nor sends, and has no address) and is
+    remembered across restarts in `/.net/phone`, as is the chosen network.
 - **Not built yet:** idle mode and paging, cell broadcast, numbers in DNS, and the SIM PIN.
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
@@ -1112,7 +1133,12 @@ a partner's, messages on a bad link, either core restarting, a visited core over
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone
 which activates at home, hears of the other network, is told to use it, reaches its home gateway and sends itself a
-message through it, and goes home again.
+message through it, and goes home again. While it roams, the test runs `cell gui` on a pocket computer's screen, and
+checks the status bar's network, `R` and "1 new msg", opens the message in the menus, and sees the note go.
+
+The menus and the bar are tested against a made-up phone (`spec/programs/net/cell_gui_spec.lua`): what the bar shows
+in each state and at each width, with and without colours; that it comes and goes with cell service and the SIM; and
+each menu with keys and with clicks, on a pocket computer's screen and a wider one.
 
 ## 12. Changes to the mod
 

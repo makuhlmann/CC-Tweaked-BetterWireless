@@ -150,7 +150,15 @@ end)
 shell.setCompletionFunction("rom/programs/net/celld.lua", completion.build({ completion.choice, { "stop" } }))
 shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, text, previous)
     if index == 1 then
-        return completion.choice(shell, text, previous, { "activate ", "send ", "messages", "monitor", "gui", "bar " })
+        return completion.choice(shell, text, previous, {
+            "activate ", "send ", "messages", "networks", "network ", "on", "off", "monitor", "gui", "bar ",
+        })
+    elseif index == 2 and previous[2] == "network" then
+        local choices = { "auto" }
+        for _, network in ipairs(net.cell.networks()) do
+            if network.allowed then choices[#choices + 1] = network.name end
+        end
+        return completion.choice(shell, text, previous, choices)
     elseif previous[2] == "bar" then
         return completion.programWithArgs(shell, text, previous, 3)
     end

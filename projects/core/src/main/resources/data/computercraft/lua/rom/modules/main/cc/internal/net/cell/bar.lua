@@ -210,7 +210,7 @@ local function run(fn, ...)
             local name, pass, look = event[1], true, false
             if name == "timer" and event[2] == timer then
                 timer, pass, look = os.startTimer(BAR_REFRESH), false, true
-            elseif name == "cell_state" or name == "cell_message" or name == "cell_sent" then
+            elseif name == "cell_state" or name == "cell_message" or name == "cell_sent" or name == "cell_messages" then
                 look = true
             elseif name == "term_resize" then
                 layout()

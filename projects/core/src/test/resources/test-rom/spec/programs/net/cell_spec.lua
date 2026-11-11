@@ -114,6 +114,23 @@ describe("The cell program", function()
             }
         end)
 
+        it("shows a phone which is roaming", function()
+            local now = os.epoch("utc")
+            local lines = show {
+                state = "attached", network = "ACME", subscriber = { id = "ACME-0042", number = "0042" },
+                address = "10.64.0.2", cell = 31, roaming = true, serving_network = "OTHER",
+                heard = { { id = 31, network = "OTHER", signal = -75, age = 0, serving = true } },
+                events = {
+                    { kind = "attached", cell = 31, roaming = "OTHER", time = now },
+                    { kind = "home", from = 31, time = now },
+                },
+            }
+            expect(lines[2]):eq("Roaming              |||.")
+            expect(lines[3]):eq("Net  ACME (on OTHER)")
+            expect(lines[10]:sub(10)):eq("Home from #31")
+            expect(lines[11]:sub(10)):eq("Roaming #31 OTHER")
+        end)
+
         it("keeps running until Q is pressed", function()
             local _, _, finished = show({ state = "inactive", heard = {}, events = {} }, {
                 { "char", "x" }, { "cell_state", "inactive" }, { "term_resize" },
@@ -128,6 +145,99 @@ describe("The cell program", function()
             local capture = require "test_helpers".capture_program
             expect(capture("/rom/programs/net/cell.lua monitor"))
                 :matches { ok = true, output = "", error = "This needs a wireless modem\n" }
+        end)
+    end)
+
+    describe("commands", function()
+        local capture = require "test_helpers".capture_program
+
+        local function fake_phone()
+            if not crypto then stub(_G, "crypto", {}) end
+            if not enclave then stub(_G, "enclave", {}) end
+            local phone = { info = { state = "attached", network = "ACME", selection = "auto", roaming = false }, calls = {} }
+            stub(net.cell, "listen", function() return true end)
+            stub(net.cell, "info", function() return phone.info end)
+            stub(net.cell, "networks", function() return phone.networks or {} end)
+            stub(net.cell, "setNetwork", function(name)
+                phone.calls[#phone.calls + 1] = { "setNetwork", name }
+                if name == "BETA" then return nil, "This SIM can't use BETA" end
+                return true
+            end)
+            stub(net.cell, "setEnabled", function(enabled)
+                phone.calls[#phone.calls + 1] = { "setEnabled", enabled }
+                if enabled and phone.no_modem then return nil, "This needs a wireless modem" end
+                return true
+            end)
+            stub(net.cell, "send", function() return nil, "No SIM" end)
+            return phone
+        end
+
+        it("lists the networks", function()
+            local phone = fake_phone()
+            expect(capture("/rom/programs/net/cell.lua networks"))
+                :matches { ok = true, output = "The phone chooses the network.\nNo networks in range.\n", error = "" }
+
+            phone.info.selection = "OTHER"
+            phone.networks = {
+                { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
+                { name = "OTHER", kind = "partner", allowed = true, signal = -75.4, serving = true, selected = true },
+                { name = "BETA", kind = "other", allowed = false, signal = -99.6, serving = false, selected = false },
+            }
+            expect(capture("/rom/programs/net/cell.lua networks")):matches {
+                ok = true, error = "",
+                output = "The phone only uses OTHER.\n" ..
+                    "  ACME         home               -\n" ..
+                    "> OTHER        partner      -75 dBm\n" ..
+                    "  BETA         not allowed -100 dBm\n",
+            }
+        end)
+
+        it("chooses a network, or lets the phone choose", function()
+            local phone = fake_phone()
+            expect(capture("/rom/programs/net/cell.lua network OTHER"))
+                :matches { ok = true, output = "The phone only uses OTHER.\n", error = "" }
+            expect(capture("/rom/programs/net/cell.lua network auto"))
+                :matches { ok = true, output = "The phone chooses the network.\n", error = "" }
+            expect(capture("/rom/programs/net/cell.lua network BETA"))
+                :matches { ok = true, output = "", error = "This SIM can't use BETA\n" }
+            expect(phone.calls):same { { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" } }
+        end)
+
+        it("turns cell service off and on", function()
+            local phone = fake_phone()
+            expect(capture("/rom/programs/net/cell.lua off"))
+                :matches { ok = true, output = "Cell service is turned off.\n", error = "" }
+            expect(capture("/rom/programs/net/cell.lua on"))
+                :matches { ok = true, output = "Cell service is turned on.\n", error = "" }
+            phone.no_modem = true
+            expect(capture("/rom/programs/net/cell.lua on"))
+                :matches { ok = true, output = "", error = "This needs a wireless modem\n" }
+            expect(phone.calls):same { { "setEnabled", false }, { "setEnabled", true }, { "setEnabled", true } }
+        end)
+
+        it("says why a message can't be sent, without waiting", function()
+            fake_phone()
+            expect(capture("/rom/programs/net/cell.lua send 0042 Hello there"))
+                :matches { ok = true, output = "", error = "No SIM\n" }
+        end)
+
+        it("says when the phone is roaming, or kept to one network", function()
+            local phone = fake_phone()
+            phone.info.roaming, phone.info.serving_network, phone.info.selection = true, "OTHER", "OTHER"
+            expect(capture("/rom/programs/net/cell.lua")):matches {
+                ok = true, error = "",
+                output = "Attached\nNetwork:  ACME\nRoaming:  on OTHER\nOnly uses OTHER\n",
+            }
+        end)
+
+        it("is completed", function()
+            fake_phone().networks = {
+                { name = "ACME", kind = "home", allowed = true },
+                { name = "BETA", kind = "other", allowed = false },
+            }
+            expect(shell.complete("cell n")):same { "etworks", "etwork " }
+            expect(shell.complete("cell o")):same { "n", "ff" }
+            expect(shell.complete("cell network ")):same { "auto", "ACME" }
         end)
     end)
 end)

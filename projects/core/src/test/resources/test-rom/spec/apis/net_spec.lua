@@ -194,6 +194,28 @@ describe("The net library", function()
             expect(net.cell.messages()):same {}
         end)
 
+        it("says when the messages it keeps change", function()
+            write("/.net/messages", {
+                { from = "2", text = "new", time = 2000, read = false, n = 7 },
+                { from = "2", text = "newer", time = 3000, read = false, n = 8 },
+            })
+            local queued = {}
+            stub(os, "queueEvent", function(name) queued[#queued + 1] = name end)
+
+            -- Nothing is said when nothing changed.
+            net.cell.markRead(99)
+            net.cell.deleteMessage(99)
+            expect(queued):same {}
+
+            net.cell.markRead(7)
+            expect(queued):same { "cell_messages" }
+            net.cell.markRead(7)
+            expect(queued):same { "cell_messages" }
+            net.cell.markRead()
+            net.cell.deleteMessage(8)
+            expect(queued):same { "cell_messages", "cell_messages", "cell_messages" }
+        end)
+
         it("manages a core, if there's one to manage", function()
             expect.error(net.cell.manage, 5):eq("bad argument #1 (string expected, got number)")
             expect.error(net.cell.manage, "10.0.0.1", "wait"):eq("bad argument #2 (function expected, got string)")

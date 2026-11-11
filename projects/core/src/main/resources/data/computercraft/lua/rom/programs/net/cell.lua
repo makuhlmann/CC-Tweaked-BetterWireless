@@ -11,6 +11,9 @@ local function usage()
     print(name .. " activate <network> <code>")
     print(name .. " send <number> <message>")
     print(name .. " messages")
+    print(name .. " networks")
+    print(name .. " network <name>|auto")
+    print(name .. " on|off")
     print(name .. " monitor")
     print(name .. " gui")
     print(name .. " bar [program] [arguments]")
@@ -77,7 +80,10 @@ local function monitor()
 
     local function describe(event)
         local kind = event.kind
-        if kind == "attached" then return ("Attached #%s"):format(event.cell), c(colours.lime)
+        if kind == "attached" and event.roaming then
+            return ("Roaming #%s %s"):format(event.cell, event.roaming), c(colours.lime)
+        elseif kind == "attached" then return ("Attached #%s"):format(event.cell), c(colours.lime)
+        elseif kind == "home" then return ("Home from #%s"):format(event.from), c(colours.lightBlue)
         elseif kind == "handover" then return ("Moved #%s > #%s"):format(event.from, event.to), c(colours.lightBlue)
         elseif kind == "lost" then return ("Lost #%s"):format(event.cell), c(colours.orange)
         elseif kind == "rejected" then return "Rejected: " .. tostring(event.reason), c(colours.red)
@@ -131,7 +137,9 @@ local function monitor()
         line(" Cell monitor", colours.white, HEADER_BG)
         right(os.date("%H:%M:%S "), colours.white, HEADER_BG)
 
-        line(SHORT_STATES[info.state] or tostring(info.state), STATE_COLOURS[info.state])
+        local state = SHORT_STATES[info.state] or tostring(info.state)
+        if info.state == "attached" and info.roaming then state = "Roaming" end
+        line(state, STATE_COLOURS[info.state])
         if serving then
             -- Four bars, then a space.
             local count, x = bars(serving.signal), w - 4
@@ -139,7 +147,9 @@ local function monitor()
             at(x + count, ("."):rep(4 - count), colours.grey)
         end
         local function row(label, value) line(("%-5s%s"):format(label, value)) end
-        row("Net", info.network or "-")
+        local network = info.network or "-"
+        if info.state == "attached" and info.roaming then network = ("%s (on %s)"):format(network, tostring(info.serving_network)) end
+        row("Net", network)
         row("No.", info.subscriber and ("%s (%s)"):format(info.subscriber.number, info.subscriber.id) or "-")
         row("IP", info.address or "-")
         row("Cell", serving and ("#%d, %d dBm"):format(serving.id, round(serving.signal)) or "-")
@@ -225,6 +235,8 @@ elseif command == nil then
     local info = net.cell.info()
     print(STATES[info.state] or info.state)
     if info.network then print("Network:  " .. info.network) end
+    if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
+    if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.address then print("Address:  " .. info.address) end
     if info.cell and info.state == "attached" then print("Cell:     #" .. info.cell) end
@@ -278,9 +290,9 @@ elseif command == "activate" and #args >= 3 then
     info = net.cell.info()
     if info.state == "attached" then print("Attached, with the address " .. info.address .. ".") end
 elseif command == "send" and #args >= 3 then
-    local id, err = select(2, net.cell.send(args[2], table.concat(args, " ", 3)))
-    if not id then
-        printError(err)
+    local ok, id = net.cell.send(args[2], table.concat(args, " ", 3))
+    if not ok then
+        printError(id)
         return
     end
     -- Wait for the network to say it has it.
@@ -308,6 +320,34 @@ elseif command == "messages" and #args == 1 then
         end
     end
     net.cell.markRead()
+elseif command == "networks" and #args == 1 then
+    -- A phone which was only just started hasn't heard much yet.
+    net.cell.listen()
+    local info, networks = net.cell.info(), net.cell.networks()
+    print(info.selection == "auto" and "The phone chooses the network." or ("The phone only uses %s."):format(info.selection))
+    if #networks == 0 then print("No networks in range.") end
+    for _, network in ipairs(networks) do
+        local kind = network.kind
+        if not network.allowed then kind = "not allowed" elseif kind == "other" then kind = "allowed" end
+        local signal = network.signal and ("%4d dBm"):format(math.floor(network.signal + 0.5)) or "       -"
+        print(("%s %-12s %-11s %s"):format(network.serving and ">" or " ", network.name, kind, signal))
+    end
+elseif command == "network" and #args == 2 then
+    local ok, err = net.cell.setNetwork(args[2])
+    if not ok then
+        printError(err)
+    elseif args[2] == "auto" then
+        print("The phone chooses the network.")
+    else
+        print(("The phone only uses %s."):format(args[2]))
+    end
+elseif (command == "on" or command == "off") and #args == 1 then
+    local ok, err = net.cell.setEnabled(command == "on")
+    if not ok then
+        printError(err)
+    else
+        print(command == "on" and "Cell service is turned on." or "Cell service is turned off.")
+    end
 else
     usage()
 end

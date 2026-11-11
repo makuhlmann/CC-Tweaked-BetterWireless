@@ -81,8 +81,56 @@ if not sent or sent.to ~= "100" or sent.status ~= "sent" or not received or rece
     error("Wrong messages: " .. textutils.serialise(messages), 0)
 end
 
+-- The menus show all this beneath the status bar: the network in use, an R for roaming, and the new message. Reading
+-- the message there takes the note away.
+do
+    local screen = window.create(term.current(), 1, 1, 26, 20, false)
+    local old = term.redirect(screen)
+    local co = coroutine.create(function() return shell.run("cell", "gui") end)
+    local function line(y) return (screen.getLine(y):gsub("%s+$", "")) end
+    local function fail(what)
+        term.redirect(old)
+        local lines = {}
+        for y = 1, 20 do lines[y] = line(y) end
+        error(what .. ":\n" .. table.concat(lines, "\n"), 0)
+    end
+    local function event(...)
+        local ok, problem = coroutine.resume(co, ...)
+        if not ok then fail("The menus failed: " .. tostring(problem)) end
+    end
+    local function shown(text)
+        for y = 2, 20 do
+            if line(y):find(text, 1, true) then return true end
+        end
+        return false
+    end
+
+    event()
+    local bar = line(1)
+    if not bar:find("^ VISIT ") or not bar:find("1 new msg", 1, true) or not bar:find(" R[|.][|.][|.][|.]$") then
+        fail("Wrong status bar while roaming")
+    end
+    if not shown("Messages (1 new)") or not shown("No. 100") then fail("Wrong menu") end
+
+    event("key", keys.enter, false)
+    if not shown("*100 ") or not shown(">100 ") or not shown("Hello from") then fail("The messages aren't listed") end
+    event("key", keys.enter, false)
+    if not shown("From 100") or not shown("Reply") then fail("The message isn't shown") end
+    if line(1):find("new msg", 1, true) then fail("The message is still new") end
+
+    event("key", keys.backspace, false)
+    event("key", keys.backspace, false)
+    if not shown("Networks") or shown("new)") then fail("Not back at the menu") end
+    event("char", "q")
+    term.redirect(old)
+    if coroutine.status(co) ~= "dead" then error("The menus didn't quit", 0) end
+    messages = net.cell.messages()
+    if messages[#messages].read ~= true then error("The message wasn't read: " .. textutils.serialise(messages), 0) end
+end
+if not shell.run("cell", "networks") then error("Couldn't list the networks", 0) end
+
 -- Left to choose again, it goes home.
-assert(net.cell.setNetwork("auto"))
+if not shell.run("cell", "network", "auto") then error("Couldn't let the phone choose", 0) end
 info = wait_for("Going home", function(now) return now.state == "attached" and not now.roaming end, 30)
 if info.serving_network ~= "HOME" or info.address ~= addr then error("Wrong service at home: " .. textutils.serialise(info), 0) end
 time, ping_err = net.ping("10.64.0.1", 2)
