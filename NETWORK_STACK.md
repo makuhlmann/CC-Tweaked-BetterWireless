@@ -1058,13 +1058,54 @@ the design above:
 - **Forwarding:** `cellcore` turns `net.forwarding` on and saves it, as phones' packets go through the core.
 - **Floods:** each attach request costs the core three X25519 operations, and nothing limits how often a cell relays
   them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
-- **Not built yet:** idle mode and paging, roaming, cell broadcast, numbers in DNS, and the SIM PIN.
+- **Roaming** is built much as designed above. The network a phone belongs to is its *home*; one whose cells it
+  uses instead is *visited*.
+  - **One big cell.** To the home core, the visited core is a cell: it connects to the home core's control port (with
+    the role `roam`), waits to be allowed by its key, as cells do, and gets a key for a tunnel. A roaming phone's
+    attach handshake goes phone → visited cell → visited core → home core and back. Only the home core can answer it
+    (it's `Noise_IK` with the home operator's key), so the visited network can't attach a phone by itself, or read
+    what the two say. The home core gives the phone its usual address.
+  - **Keys.** A phone's key with a cell is still an HMAC of the handshake's secret and that cell's ID. The visited
+    core tells the home core which of its cells the phone is at, the home core makes the key, and the visited core
+    passes it to the cell. For a handover between two visited cells the visited core asks the home core for the new
+    cell's key, and does the rest itself.
+  - **Packets** go phone → visited cell → visited core → home gateway, and back the same way: the visited core has a
+    tunnel ID of its own for each visitor, and swaps it for the home core's. The tunnel between the cores is sealed
+    like a cell's, and arrives at the visited core on port 2154. It counts as one relay towards the limit on how
+    deeply tunnels nest. A roaming phone's connections stay open, as its address is its home network's.
+  - **Which cells to trust.** A phone can't check a visited cell's system information with its own operator's key. So
+    the home core tells each phone, in the handshake's answer (which only that phone can read), the names of the
+    networks it may use and the keys their cells are certified with. The phone remembers them (in `/.net/sim`), so it
+    can roam straight after starting far from home. It hears of a new partner the next time it attaches.
+  - **Choosing a network.** Left to itself, a phone uses its home network wherever it can hear it, and a partner's
+    only where it can't. While roaming, once it has heard a home cell at −95 dBm or better for 5 seconds, it goes
+    home. Between networks it attaches again rather than being handed over, which takes a moment, and its address
+    stays the same. `net.cell.setNetwork` tells it to use one network only, and `net.cell.networks` lists those around.
+  - **Agreements** are made by the two cores' administrators. On the visited core, `cellcore carry <network> <core>`
+    connects to the home core, and keeps connecting. On the home core, `cellcore allow` lets it in, after showing its
+    fingerprint and the network it says it is. It's remembered as that network, and can't come back as another.
+    `cellcore deny` and `cellcore uncarry` end it from either side, and `cellcore roaming` shows both directions. An
+    agreement only goes one way: for each network's phones to use the other's cells, each core carries the other's.
+  - **What a visited network can do** is carry a phone, or not. It can't speak for phones which aren't with it: the
+    home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
+    subscriber whose entry has `roaming = false` is refused when roaming.
+  - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **Not built yet:** idle mode and paging, cell broadcast, numbers in DNS, and the SIM PIN.
 
 The phase's test, walking across the eight test cells with an open connection, needs the towers to reach a core. In
 the virtual network, a phone walks past three cells with an open connection and keeps every message. A game test
 activates a phone over the air, attaches, reaches the network, and sends itself a message, through one cell, with the
 core and cell running in the background. Then the phone manages the core through the network, once the core has allowed
 it.
+
+Roaming is tested in the virtual network with two operators side by side (`cell_roaming_spec.lua`): a phone walks out
+of one's coverage, across the other's two cells and back, with an open connection, and keeps every message. Others
+cover going home, being told which network to use, agreements which are missing or ended, cells which only claim to be
+a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 6,500 control
+messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
+connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone
+which activates at home, hears of the other network, is told to use it, reaches its home gateway and sends itself a
+message through it, and goes home again.
 
 ## 12. Changes to the mod
 

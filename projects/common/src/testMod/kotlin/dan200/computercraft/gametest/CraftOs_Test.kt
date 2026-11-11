@@ -68,4 +68,13 @@ class CraftOs_Test {
      */
     @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 4)
     fun Net_cell(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
+
+    /**
+     * A phone roams. Two computers are each a cellular network's core and a cell; one network carries the other's
+     * phones. The phone activates and attaches at home, hears that it may use the other network, is told to use it,
+     * and reaches its own network's gateway and sends itself a message through the other network's cell. Then it
+     * goes home again.
+     */
+    @GameTest(timeoutTicks = Timeouts.COMPUTER_TIMEOUT * 8)
+    fun Net_roaming(context: GameTestHelper) = context.sequence { thenComputerOk("main") }
 }

@@ -13,4 +13,7 @@ ex:
 "cellcore cells" lists the cells, and the computers allowed in or refused.
 "cellcore allow 7" allows computer 7, which is waiting, after checking its fingerprint.
 "cellcore deny 7" refuses computer 7 from now on.
+"cellcore carry ACME 10.0.0.1" has this network carry the phones of the network ACME at its cells (roaming), by connecting to ACME's core at 10.0.0.1. ACME's core must allow this one, with "cellcore allow", as it would a cell. ACME's phones then use this network's cells where they can't hear their own, keeping their addresses.
+"cellcore uncarry ACME" stops carrying ACME's phones.
+"cellcore roaming" lists the networks which carry this network's phones, and those whose phones it carries.
 "cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time.
