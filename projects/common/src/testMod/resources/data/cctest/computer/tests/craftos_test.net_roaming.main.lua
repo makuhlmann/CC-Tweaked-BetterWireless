@@ -129,12 +129,22 @@ do
 end
 if not shell.run("cell", "networks") then error("Couldn't list the networks", 0) end
 
--- Left to choose again, it goes home.
-if not shell.run("cell", "network", "auto") then error("Couldn't let the phone choose", 0) end
+-- Told to use its own network, it goes home. (Left to choose, it would stay on VISIT here, whose cell is the stronger:
+-- a roaming phone only goes home once its own network is stronger.)
+if not shell.run("cell", "network", "HOME") then error("Couldn't send the phone home", 0) end
 info = wait_for("Going home", function(now) return now.state == "attached" and not now.roaming end, 30)
 if info.serving_network ~= "HOME" or info.address ~= addr then error("Wrong service at home: " .. textutils.serialise(info), 0) end
 time, ping_err = net.ping("10.64.0.1", 2)
 if not time then error("No answer from the gateway at home: " .. tostring(ping_err), 0) end
+
+-- Left to choose again, it stays at home, though VISIT's cell is stronger: it only leaves its own network when it
+-- loses it.
+if not shell.run("cell", "network", "auto") then error("Couldn't let the phone choose", 0) end
+sleep(6)
+info = net.cell.info()
+if info.state ~= "attached" or info.roaming or info.serving_network ~= "HOME" then
+    error("Didn't stay at home: " .. textutils.serialise(info), 0)
+end
 
 local errors = net.getErrors()
 if #errors > 0 then error("Network errors: " .. table.concat(errors, "; "), 0) end

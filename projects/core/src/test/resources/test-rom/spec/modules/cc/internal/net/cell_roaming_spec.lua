@@ -196,6 +196,24 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
+    it("only tries other networks once it has searched for its own for a while", function()
+        math.randomseed(33)
+        -- Both networks cover the same place, BETA better, but the phone hasn't heard of BETA as a partner. At first
+        -- it only hears BETA, as a phone which has just been activated has yet to check its own network's cells.
+        local acme, beta, net = operators({ 0 }, { 30 })
+        local phone = acme.add_phone(1, 125)
+        net.advance(1.5)
+        expect(phone.state):eq("searching")
+        expect(phone:info().heard[1].network):eq("BETA")
+
+        -- It hears its own network before it has searched for long: it uses that, and doesn't try BETA.
+        acme.positions[1] = 25
+        net.advance(10)
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+        expect(event_kinds(phone)):same { "attached" }
+        expect(beta.core:visitor_info()):same {}
+    end)
+
     it("leaves a network which turned it away alone for a while, then tries again", function()
         math.randomseed(32)
         local acme, beta, net = operators(nil, nil, false)

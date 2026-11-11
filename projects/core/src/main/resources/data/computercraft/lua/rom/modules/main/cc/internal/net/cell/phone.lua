@@ -23,11 +23,13 @@ own network until it loses it, and goes back to it once its own network's best c
 roams on for a few seconds. Moving between networks, it attaches again rather than being handed over. It can also be
 told to use one network only.
 
-Agreements change, and the phone only hears of them when it attaches. So where it can hear neither its own network nor
-a partner's, it tries the cells of other networks too, strongest first, as real phones do: the other network's core
-passes the attach on to its own if they have an agreement, and turns it away if not. A network which turned it away is
-left alone for a minute. Its cells can't be checked until the phone learns its key, but nothing depends on them: the
-handshake is with the phone's own operator, end to end.
+Agreements change, and the phone only hears of them when it attaches. So where it has heard neither its own network nor
+a partner's for a few seconds, it tries the cells of other networks too, strongest first, as real phones do. (Not
+straight away: every cell around should be heard first, and the phone can only check its own network's cells once it
+has heard from them since it was activated or started.) The other network's core passes the attach on to its own if
+they have an agreement, and turns it away if not. A network which turned it away is left alone for a minute. Its cells
+can't be checked until the phone learns its key, but nothing depends on them: the handshake is with the phone's own
+operator, end to end.
 
 Radio frames get lost, and cells and cores restart and forget their phones. So the phone checks its cell still knows
 it, every few seconds when nothing else has come from it, and attaches again if it doesn't. It says it has arrived at a
@@ -78,6 +80,9 @@ local MAX_PARTNERS = 16
 local HOME_TIME = 5
 -- How long to leave a network alone after it turned the phone away (or didn't answer), in seconds.
 local FORBIDDEN_TIME = 60
+-- How long a phone must search without finding a cell of its own network or a partner's before it tries other
+-- networks, in seconds: long enough to hear every cell around.
+local SCAN_TIME = 3
 
 local Phone = {}
 Phone.__index = Phone
@@ -115,7 +120,7 @@ local function new(options)
         cells = {}, heard = {}, events = {}, forbidden = {},
         state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
-        unanswered = 0, last_heard = 0, last_check = 0,
+        unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(),
     }, Phone)
 
     -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
@@ -130,6 +135,7 @@ end
 function Phone:set_state(state)
     if self.state == state then return end
     self.state = state
+    if state == "searching" then self.searching_since = self.stack.clock() end
     if state == "attached" then
         self:event("attached", { cell = self.cell, roaming = self:roaming() and self.cells[self.cell].network or nil })
     elseif state == "rejected" then
@@ -224,11 +230,12 @@ function Phone:best_cell(except, network)
 end
 
 --[[ The strongest cell of a network we don't know to carry us (neither ours nor a partner's), to try when there's
-nothing else. Networks which turned us away lately are left alone.
+nothing else, once we've searched long enough to have heard every cell around. Networks which turned us away lately are
+left alone.
 ]]
 function Phone:other_cell()
-    if self.selection then return nil end
     local now = self.stack.clock()
+    if self.selection or now - self.searching_since < SCAN_TIME then return nil end
     local best, best_signal
     for id, cell in pairs(self.heard) do
         local refused = self.forbidden[cell.network]

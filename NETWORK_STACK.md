@@ -1142,8 +1142,9 @@ a partner's, messages on a bad link, either core restarting, a visited core over
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone
 which activates at home, hears of the other network, is told to use it, reaches its home gateway and sends itself a
-message through it, and goes home again. While it roams, the test runs `cell gui` on a pocket computer's screen, and
-checks the status bar's network, `R` and "1 new msg", opens the message in the menus, and sees the note go.
+message through it, and is sent home again, where it stays when left to choose, though the other network's cell is
+stronger. While it roams, the test runs `cell gui` on a pocket computer's screen, and checks the status bar's network,
+`R` and "1 new msg", opens the message in the menus, and sees the note go.
 
 The menus and the bar are tested against a made-up phone (`spec/programs/net/cell_gui_spec.lua`): what the bar shows
 in each state and at each width, with and without colours; that it comes and goes with cell service and the SIM; and
