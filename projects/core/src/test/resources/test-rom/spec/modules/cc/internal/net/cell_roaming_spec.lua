@@ -166,6 +166,20 @@ describe("Roaming", function()
         expect(event_kinds(phone)):same { "attached", "lost", "attached roaming", "home", "attached" }
     end)
 
+    it("doesn't settle for a partner's cell before it has heard its own network's, after starting", function()
+        math.randomseed(46)
+        -- The phone starts where it only hears BETA's cell, and is in ACME's a moment later, where both networks
+        -- cover it, BETA the better.
+        local acme, beta, net = operators({ 0 }, { 30 })
+        local phone = acme.add_phone(1, 125, true, { partners = { BETA = beta.signing_public } })
+        net.advance(1.5)
+        expect(phone.state):eq("searching")
+        acme.positions[1] = 25
+        net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+        expect(event_kinds(phone)):same { "attached" }
+    end)
+
     it("tries a network it hasn't heard is a partner, and learns that it is", function()
         math.randomseed(31)
         -- The agreement was made after the phone last attached, so it doesn't know BETA carries it.

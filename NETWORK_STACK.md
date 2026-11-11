@@ -1092,7 +1092,10 @@ the design above:
   - **Choosing a network.** Left to itself, a phone uses its home network wherever it can hear it, and a partner's
     only where it can't. It stays on its home network until it loses it. While roaming, once its home network's best
     cell has been 3 dB stronger than the cell it's on for 5 seconds, it goes home. Between networks it attaches again
-    rather than being handed over, which takes a moment, and its address stays the same. `net.cell.setNetwork` tells
+    rather than being handed over, which takes a moment, and its address stays the same. A phone which has just
+    started, or been activated (which now tells it its partners), listens for three seconds before it uses a partner's
+    cell: otherwise a partner's cell heard a moment before its own network's would keep it roaming at home.
+    `net.cell.setNetwork` tells
     it to use one network only, and `net.cell.networks` lists those around. A phone may be told to use any network,
     even one it knows of no agreement with: it tries that network's cells at once (whether or not it turned the phone
     away lately), keeps trying while it's turned away, and learns the network is a partner if it is.

@@ -24,7 +24,9 @@ Roaming: where it can't hear its own network, the phone uses a cell of a network
 partner). Its operator tells it which those are, and the keys their cells are certified with, each time it attaches. It
 still attaches to its own network's core, through the partner's cell and core, and keeps its address. It stays on its
 own network until it loses it, and goes back to it once its own network's best cell has been stronger than the one it
-roams on for a few seconds. Moving between networks, it attaches again rather than being handed over. It can also be
+roams on for a few seconds. Moving between networks, it attaches again rather than being handed over. Having just
+started (or been activated), it listens for a few seconds before it uses a partner's cell, as it may not have heard
+its own network's yet, and would stay on the partner's. It can also be
 told to use one network only: any network, even one it doesn't know has an agreement with its own, which it tries.
 
 Some partners are as good as home (like LTE's equivalent networks): for national roaming between two operators, or where
@@ -140,7 +142,7 @@ local function new(options)
         cells = {}, heard = {}, events = {}, forbidden = {}, failed = {},
         state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
-        unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(),
+        unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(), started = stack.clock(),
     }, Phone)
 
     -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
@@ -481,7 +483,7 @@ function Phone:radio(src, message, signal)
         self.subscriber = { id = info.id, number = info.number }
         self:event("activated", { network = info.network })
         self.on_activated(info)
-        self.activation = nil
+        self.activation, self.started = nil, self.stack.clock()
         -- Which networks we may use (or treat as home), so we can use them at once: a network may have no cells.
         self:set_partners(info.partners)
         self.retry = 2
@@ -703,6 +705,9 @@ end
 -- may have an agreement with ours we don't know of yet. Cells which didn't answer lately come last.
 function Phone:attach()
     local best, _, via = self:best_cell(nil, nil, true)
+    -- Just started (or activated), we may not have heard our own network's cells yet, only a partner's. Don't settle
+    -- for that, and stay there, until we've listened for long enough to hear every cell around.
+    if best and not self:home_class(via) and self.stack.clock() - self.started < SCAN_TIME then return end
     if not best then
         best, via = self:other_cell()
         if best then
