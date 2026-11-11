@@ -87,9 +87,13 @@ function Tower:radio(phone, message)
             op = "attach", phone = phone, handshake = message.handshake,
             network = message.network ~= self.network and message.network or nil,
         })
-    elseif op == "activate" and message.network == self.network and type(message.tag) == "string"
+    elseif op == "activate" and common.is_network(message.network) and type(message.tag) == "string"
         and type(message.handshake) == "string" then
-        self.control_send({ op = "activate", phone = phone, tag = message.tag, handshake = message.handshake })
+        -- A phone of a network with no cells of its own here may activate through ours, if the core carries it.
+        self.control_send({
+            op = "activate", phone = phone, tag = message.tag, handshake = message.handshake,
+            network = message.network ~= self.network and message.network or nil,
+        })
     elseif op == "activate_finish" and type(message.handshake) == "string" then
         self.control_send({ op = "activate_finish", phone = phone, handshake = message.handshake })
     elseif op == "attach_complete" and type(message.data) == "string" then

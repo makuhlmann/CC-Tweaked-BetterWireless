@@ -328,6 +328,81 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
+    it("treats a partner its network says is as good as home as home", function()
+        math.randomseed(43)
+        -- Both networks cover the same place, BETA better. ACME's phones treat BETA as home, as for national roaming.
+        local acme, beta, net = operators({ 0 }, { 30 }, false)
+        acme.roam_on(beta, { home = true })
+        local partners, equivalent
+        local phone, stack = acme.add_phone(1, 10, true, {
+            on_partners = function(list, home) partners, equivalent = list, home end,
+        })
+        net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+        expect(partners):same { BETA = beta.signing_public }
+        expect(equivalent):same { BETA = true }
+
+        -- Its own network's cell fails: it goes to BETA's, and isn't roaming there.
+        net.remove(acme.towers[1].stack)
+        wait_until(net, function() return phone.state == "attached" and phone.cell == 21 end, 30, "Moving to BETA")
+        expect(phone:roaming()):eq(false)
+        local info = phone:info()
+        expect({ info.roaming, info.equivalent, info.partners }):same { false, { BETA = true }, { BETA = true } }
+        expect(reaches_server(net, stack)):eq(true)
+
+        -- With its own network's cell back, and stronger, it stays: as on its own network, it stays until it loses
+        -- BETA's.
+        table.insert(net.stacks, acme.towers[1].stack)
+        acme.positions[1] = 5
+        net.advance(30)
+        expect(phone.cell):eq(21)
+        expect(event_kinds(phone)):same { "attached", "lost", "attached" }
+
+        -- A subscriber who mayn't roam may still use BETA.
+        net.remove(acme.towers[1].stack)
+        acme.subscribers[hex(phone.sim.public)].roaming = false
+        acme.core:detach(hex(phone.sim.public))
+        wait_until(net, function()
+            local session = acme.core:info()[1]
+            return session ~= nil and session.attached
+        end, 30, "Attaching again")
+        expect({ phone.state, phone.cell }):same { "attached", 21 }
+        expect(reaches_server(net, stack)):eq(true)
+        expect(net.errors):same {}
+    end)
+
+    it("lets a network with no cells use partners' as home, and activate phones through them", function()
+        math.randomseed(44)
+        -- MVNO has a core, but no cells: ACME carries its phones, which treat ACME as home. BETA doesn't carry them.
+        local acme, _, net = operators({ 0 }, { 30 }, false)
+        local mvno = operator({}, { join = acme, name = "MVNO", core_id = 52, core_host = 3, cell_base = 30, prefix = "10.66.0.0/16" })
+        mvno.roam_on(acme, { home = true })
+        local activated
+        local phone, stack = mvno.add_phone(1, 25, false, { activated = false, on_activated = function(info) activated = info end })
+        local code = mvno.core:add_code("MVNO-1", "1")
+        net.advance(3)
+
+        -- It tries BETA's cell first, the strongest, which turns it away; then ACME's, which passes it on.
+        assert(phone:activate("MVNO", code))
+        wait_until(net, function() return phone.state == "attached" end, 30, "Activating and attaching")
+        expect(activated.network):eq("MVNO")
+        expect(activated.partners):same { { network = "ACME", signing = acme.signing_public, home = true } }
+        expect(phone.cell):eq(11)
+        expect(phone:roaming()):eq(false)
+        expect(address.format(stack.interfaces.cell.address)):eq("10.66.0.2")
+        expect(reaches_server(net, stack)):eq(true)
+        expect(event_kinds(phone)):same { "activated", "attached" }
+        expect(acme.core:visitor_info()):same { { network = "MVNO", cell = 11, address = "10.66.0.2" } }
+
+        -- A network nobody here carries can't be reached.
+        local lost = mvno.add_phone(2, 25, false, { activated = false })
+        net.advance(2)
+        assert(lost:activate("NOWHERE", code))
+        wait_until(net, function() return lost.state == "inactive" end, 30, "Giving up")
+        expect(lost.activation_error):eq("ACME doesn't carry phones of that network")
+        expect(net.errors):same {}
+    end)
+
     it("needs both networks to agree", function()
         math.randomseed(5)
         local acme, beta, net = operators(nil, nil, false)

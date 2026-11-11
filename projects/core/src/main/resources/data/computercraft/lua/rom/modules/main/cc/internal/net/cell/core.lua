@@ -21,6 +21,11 @@ home), the core carrying them (the visited one) is one big cell: it passes on th
 can answer, and their packets go through a tunnel to the home core's gateway, so a roaming phone keeps its address.
 `add_tower` takes a visited core at the home core, and `add_partner` a home core at the visited one.
 
+A partner may be one the home network's phones treat as home (like an equivalent network in LTE): for national roaming
+between two operators, or for a network which has a core but no cells of its own (a full MVNO), whose phones only ever
+use partners' cells. Phones which may not roam may use those. Phones activate through a partner's cell too, where their
+own network has none.
+
 @local
 ]]
 
@@ -159,13 +164,24 @@ function Core:add_tower(id, cell_address, send, partner)
     return key
 end
 
---[[- Set the networks whose cells our phones may use: our roaming partners. Phones are told when they attach, and only
-believe cells with a certificate from one of these keys.
+--[[- Set the networks whose cells our phones may use: our roaming partners. Phones are told when they attach (and when
+they're activated), and only believe cells with a certificate from one of these keys.
 
-@tparam { [string] = string } partners Each network's name, and its operator's Ed25519 signing key.
+@tparam { [string] = { signing = string, home? = boolean } } partners Each network's name, its operator's Ed25519
+signing key, and whether our phones treat it as home.
 ]]
 function Core:set_partner_keys(partners)
     self.partner_keys = partners
+end
+
+-- The partners, as phones are told of them: each network's name and signing key, and whether it's as good as home.
+function Core:partner_list()
+    local partners = {}
+    for network, partner in pairs(self.partner_keys) do
+        partners[#partners + 1] = { network = network, signing = partner.signing, home = partner.home == true or nil }
+    end
+    table.sort(partners, function(a, b) return a.network < b.network end)
+    return partners
 end
 
 --[[- Find the relays a cell's backhaul goes through, nearest first.
@@ -456,6 +472,7 @@ function Core:activate_finish(tower, phone, message)
     local send = activating.handshake:split()
     local info = codec.encode({
         network = self.network, key = self.operator.public, signing = self.signing, id = code.id, number = code.number,
+        partners = self:partner_list(),
     })
     self:send(tower.id, { op = "activate_accept", phone = phone, data = send:encrypt(info) })
 end
@@ -575,16 +592,17 @@ function Core:attach(tower, phone, message, visited_cell)
         self.on_event("rejected", sim)
         return self:send(tower.id, { op = "reject", phone = phone, reason = "Not a subscriber of " .. self.network })
     end
-    if tower.partner and subscriber.roaming == false then
+    -- A partner our phones treat as home isn't roaming.
+    local partner = tower.partner and self.partner_keys[tower.partner]
+    if tower.partner and subscriber.roaming == false and not (partner and partner.home) then
         return self:send(tower.id, { op = "reject", phone = phone, reason = "This subscription doesn't include roaming" })
     end
 
     -- Tell the phone which other networks it may use, and the keys their cells are certified with. Only the phone
     -- can read this, and only we could have written it.
-    local partners = {}
-    for network, signing in pairs(self.partner_keys) do partners[#partners + 1] = { network = network, signing = signing } end
-    table.sort(partners, function(a, b) return a.network < b.network end)
-    local reply = handshake:write(codec.encode({ v = 1, id = subscriber.id, number = subscriber.number, partners = partners }))
+    local reply = handshake:write(codec.encode({
+        v = 1, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
+    }))
     if not reply then return end
     local _, receive = handshake:split()
     -- Nothing is given out until the phone confirms, as the first message alone could be a recording.
@@ -817,6 +835,26 @@ function Core:carry(tower, message)
         partner.send({ op = "attach_complete", phone = message.phone, data = message.data, cell = tower.id })
         -- Unless one of our own phones is attaching under the same ID, that was all.
         return self.pending[tower.id .. ":" .. message.phone] == nil
+    elseif op == "activate" then
+        -- A phone of a network with no cells here (or none at all) activating: its own core decides, as for attaches.
+        local network = message.network
+        if network == nil or network == self.network then return false end
+        if not is_id(message.phone) or type(message.tag) ~= "string" or type(message.handshake) ~= "string" then return true end
+        local partner = common.is_network(network) and self.partners[network]
+        if not partner then
+            self:send(tower.id, { op = "reject", phone = message.phone, reason = ("%s doesn't carry phones of that network"):format(self.network) })
+        elseif self:remember_roamer(network, message.phone, tower.id) then
+            partner.send({ op = "activate", phone = message.phone, tag = message.tag, handshake = message.handshake, cell = tower.id })
+        end
+        return true
+    elseif op == "activate_finish" then
+        if not is_id(message.phone) or type(message.handshake) ~= "string" then return false end
+        local pending = self:roamer(tower.id .. "@" .. message.phone)
+        local partner = pending and self.partners[pending.network]
+        if not partner then return false end
+        partner.send({ op = "activate_finish", phone = message.phone, handshake = message.handshake, cell = tower.id })
+        -- Unless one of our own phones is activating under the same ID, that was all.
+        return self.activating[tower.id .. ":" .. message.phone] == nil
     end
 
     -- Everything else is by tunnel ID: ours for a phone of ours, or one we made up for a visitor.
@@ -857,12 +895,13 @@ function Core:partner_control(network, message)
     if not partner or type(message) ~= "table" then return end
     local op = message.op
 
-    if (op == "attach_reply" or op == "reject") and is_id(message.phone) then
+    if (op == "attach_reply" or op == "reject" or op == "activate_reply" or op == "activate_accept") and is_id(message.phone) then
         local pending = self:roamer(network .. ":" .. message.phone)
         if pending then
             self:send(pending.cell, {
                 op = op, phone = message.phone, handshake = type(message.handshake) == "string" and message.handshake or nil,
                 reason = type(message.reason) == "string" and message.reason:sub(1, 100) or nil,
+                data = type(message.data) == "string" and message.data or nil,
             })
         end
     elseif op == "context" and is_id(message.phone) and is_id(message.teid) and is_id(message.cell)

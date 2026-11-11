@@ -1471,7 +1471,7 @@ local function cell_interface()
     end
 end
 
-local function new_phone(operator, partners)
+local function new_phone(operator, partners, equivalent)
     -- A computer may be a phone and a cell at once: a relay, whose cell reaches the core through its phone.
     local name = cell_interface()
     if not name then return nil, "This needs a wireless modem" end
@@ -1479,14 +1479,15 @@ local function new_phone(operator, partners)
     local chosen = read_table(PHONE_FILE)
     phone_instance = cell.new {
         stack = stack, crypto = crypto, interface = name, epoch = function() return os.epoch("utc") end,
-        sim = sim_key(), operator = operator, partners = partners,
+        sim = sim_key(), operator = operator, partners = partners, equivalent = equivalent,
         selection = type(chosen.network) == "string" and chosen.network or nil,
-        -- The operator says which other networks the phone may use: remember them, for when it starts out of reach
-        -- of its own.
-        on_partners = function(list)
+        -- The operator says which other networks the phone may use (and which it treats as home): remember them, for
+        -- when it starts out of reach of its own.
+        on_partners = function(list, equivalent)
             local sim = read_table(SIM_FILE)
-            sim.roaming = {}
+            sim.roaming, sim.equivalent = {}, {}
             for network, signing in pairs(list) do sim.roaming[network] = to_hex(signing) end
+            for network in pairs(equivalent or {}) do sim.equivalent[network] = true end
             write_table(SIM_FILE, sim)
         end,
         -- With a cell on this computer, this phone may be its backhaul.
@@ -1519,12 +1520,15 @@ function start_phone()
     local sim = read_table(SIM_FILE)
     local key, signing = from_hex(sim.key), from_hex(sim.signing)
     if type(sim.network) ~= "string" or not key or not signing then return end
-    local partners = {}
+    local partners, equivalent = {}, {}
     for network, partner in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do
         local partner_key = from_hex(partner)
         if type(network) == "string" and partner_key and #partner_key == 32 then partners[network] = partner_key end
     end
-    new_phone({ network = sim.network, key = key, signing = signing }, partners)
+    for network in pairs(type(sim.equivalent) == "table" and sim.equivalent or {}) do
+        if partners[network] then equivalent[network] = true end
+    end
+    new_phone({ network = sim.network, key = key, signing = signing }, partners, equivalent)
 end
 
 local CORE_CONFIG, CELL_CONFIG = "/.cell/config", "/.cell/cell"
@@ -1763,6 +1767,21 @@ function Manager:carry(network, core)
     return self:request({ op = "carry", network = network, core = core })
 end
 
+--- Say whether this network's phones treat a partner (a network which carries them) as home: they aren't roaming
+-- there, use its cells as readily as this network's own, and may use it even if they mayn't roam. This is for national
+-- roaming, and for a network with no cells of its own (a full MVNO). Phones hear of it when they next attach.
+--
+-- @tparam string network The partner's name.
+-- @tparam boolean home Whether phones treat it as home.
+-- @treturn[1] table The partner's `network`, and whether it's now `home`.
+-- @treturn[2] nil If it isn't a partner.
+-- @treturn[2] string Why not.
+function Manager:partner(network, home)
+    expect(1, network, "string")
+    expect(2, home, "boolean")
+    return self:request({ op = "partner", network = network, home = home })
+end
+
 --- Stop carrying another network's phones.
 --
 -- @tparam string network The other network's name.
@@ -1832,7 +1851,9 @@ cell = {
 
      - `enabled`: whether cell service is turned on (see `net.cell.setEnabled`);
      - `signal` and `serving_network`: the signal strength (dBm) and network of the cell it's using, when attached;
-     - `roaming`: whether that's another network than the SIM's own;
+     - `roaming`: whether that's another network than the SIM's own (and not one it treats as its own);
+     - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
+       the phone treats as its own network (it isn't roaming there);
      - `selection`: `"auto"`, or the only network it has been told to use (see `net.cell.setNetwork`);
      - `unread`: how many messages haven't been read;
 
@@ -1861,8 +1882,11 @@ cell = {
         end
         if off then info.state = "off" end
         if not info.partners then
-            info.partners = {}
+            info.partners, info.equivalent = {}, {}
             for network in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do info.partners[network] = true end
+            for network in pairs(type(sim.equivalent) == "table" and sim.equivalent or {}) do
+                if info.partners[network] then info.equivalent[network] = true end
+            end
         end
         if not info.subscriber and sim.id then info.subscriber = { id = sim.id, number = sim.number } end
         info.enabled = not off
@@ -2046,12 +2070,13 @@ cell = {
     --[[- List the networks around, and the SIM's own.
 
     @treturn { { name = string, kind = string, allowed = boolean, signal? = number, serving = boolean,
-    selected = boolean }... } Each network's `name`; its `kind`: `"home"` (the SIM's own), `"partner"` (one the SIM's
-    network has a roaming agreement with) or `"other"`; whether the phone knows it's `allowed` to use it (its own
+    selected = boolean, equivalent? = boolean }... } Each network's `name`; its `kind`: `"home"` (the SIM's own, or one
+    the phone treats as its own, which is `equivalent`), `"partner"` (one the SIM's network has a roaming agreement
+    with) or `"other"`; whether the phone knows it's `allowed` to use it (its own
     network or a partner: it can still be told to use another, which it tries); the `signal` of its
     strongest cell in range (dBm), or `nil` if none is; whether the phone is using it now (`serving`); and whether it's
-    the network the phone has been told to use (`selected`). The SIM's own network comes first, then partners, then the
-    rest, strongest first.
+    the network the phone has been told to use (`selected`). The SIM's own network comes first, then those it treats as
+    its own, then partners, then the rest, strongest first.
     ]]
     networks = function()
         local info = cell.info()
@@ -2070,6 +2095,7 @@ cell = {
         for name in pairs(info.partners or {}) do
             local partner = entry(name)
             partner.kind, partner.allowed = "partner", true
+            if (info.equivalent or {})[name] then partner.kind, partner.equivalent = "home", true end
         end
         if info.selection ~= "auto" then entry(info.selection) end
         for _, heard in ipairs(info.heard or {}) do
@@ -2080,9 +2106,10 @@ cell = {
                 if heard.serving then network.serving = true end
             end
         end
-        local order = { home = 1, partner = 2, other = 3 }
+        local order = { home = 1, partner = 3, other = 4 }
+        local function rank(network) return network.equivalent and 2 or order[network.kind] end
         table.sort(list, function(a, b)
-            if order[a.kind] ~= order[b.kind] then return order[a.kind] < order[b.kind] end
+            if rank(a) ~= rank(b) then return rank(a) < rank(b) end
             if (a.signal or -math.huge) ~= (b.signal or -math.huge) then return (a.signal or -math.huge) > (b.signal or -math.huge) end
             return a.name < b.name
         end)
@@ -2091,8 +2118,9 @@ cell = {
 
     --[[- Choose the network to use, or let the phone choose.
 
-    Left to itself, the phone uses its SIM's own network when it can hear it, and otherwise a partner's: it stays on
-    its own network until it loses it, and goes back once its own network is stronger than the one it roams on. Where
+    Left to itself, the phone uses its SIM's own network when it can hear it (or one it treats as its own), and
+    otherwise a partner's: it stays on its own network until it loses it, and goes back once its own network is stronger
+    than the one it roams on. Where
     it hears neither, it tries other networks too, which may have an agreement with its own it hasn't heard of yet.
     Told to use one network, it uses no other, and has no service where that network has no cells. That may be any
     network: one the phone doesn't know has an agreement with its own, it tries anyway (and keeps trying, if turned

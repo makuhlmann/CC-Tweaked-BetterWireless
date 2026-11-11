@@ -421,6 +421,14 @@ describe("The cell program's GUI", function()
             end)
         end)
 
+        it("names the SIM's own network on one the phone treats as its own", function()
+            local phone = fake_phone()
+            phone.info.serving_network, phone.info.equivalent = "BETA", { BETA = true }
+            run(phone, {}, function(app)
+                expect(app.line(1)):eq(" ACME              [|||.]")
+            end)
+        end)
+
         it("counts new messages", function()
             local phone = fake_phone()
             phone.messages = message_fixture()

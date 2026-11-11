@@ -225,6 +225,22 @@ describe("The net library", function()
             end
         end)
 
+        it("lists networks the SIM treats as its own with it", function()
+            write("/.net/sim", {
+                network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1",
+                roaming = { BETA = ("ef"):rep(32), GAMMA = ("01"):rep(32) }, equivalent = { BETA = true, DELTA = true },
+            })
+            expect(net.cell.setEnabled(false)):eq(true)
+            local info = net.cell.info()
+            expect({ info.partners, info.equivalent }):same { { BETA = true, GAMMA = true }, { BETA = true } }
+            expect(net.cell.networks()):same {
+                { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
+                { name = "BETA", kind = "home", allowed = true, serving = false, selected = false, equivalent = true },
+                { name = "GAMMA", kind = "partner", allowed = true, serving = false, selected = false },
+            }
+            clean()
+        end)
+
         it("can be turned off, and told which network to use", function()
             expect(net.cell.info().state):eq("none")
             expect(net.cell.info().enabled):eq(true)

@@ -677,17 +677,29 @@ describe("Cellular services", function()
 
                     -- To ACME's core, BETA's is a cell, and its phones are told they may use BETA's cells.
                     expect(acme.service.core.towers[51].partner):eq("BETA")
-                    expect(acme.service.core.partner_keys):same { BETA = beta.signing }
+                    expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing } }
                     expect(beta.service.core.partners.ACME):ne(nil)
                     expect(ask(acme_admin, { op = "status" }).partners):same { {
                         network = "BETA", id = 51, key = beta.identity, fingerprint = fingerprint(beta.identity), phones = 0,
-                        connected = true, address = "10.0.0.2",
+                        connected = true, address = "10.0.0.2", home = false,
                     }, }
                     expect(ask(beta_admin, { op = "status" }).carrying[1].state):eq("serving")
                     expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity]):same {
                         label = "BETA", role = "roam", id = 51, network = "BETA", signing = hex(beta.signing),
                     }
                     expect(read_table(fs.combine(beta.dir, "roaming"))):same { ACME = { core = "10.0.0.1" } }
+
+                    -- ACME's phones may treat BETA as home, and roam on it again.
+                    expect(ask(acme_admin, { op = "partner", network = "BETA", home = true })):same { network = "BETA", home = true }
+                    expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing, home = true } }
+                    expect(read_table(fs.combine(acme.dir, "cells"))[beta.identity].home):eq(true)
+                    expect(ask(acme_admin, { op = "status" }).partners[1].home):eq(true)
+                    expect(ask(acme_admin, { op = "partner", network = "GAMMA", home = true }).error)
+                        :eq("GAMMA doesn't carry this network's phones")
+                    expect(ask(acme_admin, { op = "partner", network = "BETA", home = "yes" }).error)
+                        :eq("Expected home to be true or false")
+                    expect(ask(acme_admin, { op = "partner", network = "BETA", home = false })):same { network = "BETA", home = false }
+                    expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing } }
 
                     -- What the cores say to each other passes over the connection, both ways.
                     local at_home, at_partner = {}, {}
@@ -745,7 +757,7 @@ describe("Cellular services", function()
                 beta.service:stop()
                 acme.listening, beta.listening = false, false
                 acme.service = assert(core_service.new(acme.options))
-                expect(acme.service.core.partner_keys):same { BETA = beta.signing }
+                expect(acme.service.core.partner_keys):same { BETA = { signing = beta.signing } }
                 -- And BETA's connects to ACME's by itself.
                 beta.service = assert(core_service.new(beta.options))
                 run(acme.net, { acme.service, beta.service }, { function()

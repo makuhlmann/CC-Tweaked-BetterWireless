@@ -1115,6 +1115,19 @@ the design above:
     fingerprint and the network it says it is. It's remembered as that network, and can't come back as another.
     `cellcore deny` and `cellcore uncarry` end it from either side, and `cellcore roaming` shows both directions. An
     agreement only goes one way: for each network's phones to use the other's cells, each core carries the other's.
+  - **Partners as good as home** (LTE's equivalent networks). The home core's administrator may say its phones treat a
+    partner as home (`cellcore partner <network> home`, kept with the partner's key in `/.cell/cells`). Phones hear of
+    it with the partner list (`home = true`), and remember it in `/.net/sim`. They use such a network's cells as
+    readily as their own network's (the strongest of either), aren't roaming there (no `R`, and the bar shows their
+    own network's name), stay on it until they lose it (as on their own network: moving between two networks means
+    attaching again, so they don't), and may use it even if their subscription doesn't include roaming. This is for
+    national roaming between two operators, each of which carries the other's phones and treats the other as home.
+  - **Full MVNOs:** a network with a core but no cells, whose phones only ever use partners' cells, which it treats as
+    home. Its phones can't activate through its own cells, as it has none, so activation goes through partners too:
+    a phone which hears no cell of the network it's activating on tries the strongest cell of each network around.
+    That network's core passes the activation on to the phone's own core if it carries its phones (as it does
+    attaches), and turns it away otherwise, and the phone tries the next. The activation's answer brings the partner
+    list, so the phone can check its partners' cells at once.
   - **What a visited network can do** is carry a phone, or not. It can't speak for phones which aren't with it: the
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
@@ -1153,8 +1166,10 @@ Roaming is tested in the virtual network with two operators side by side (`cell_
 of one's coverage, across the other's two cells and back, with an open connection, and keeps every message. Others
 cover going home (only once home is stronger), trying a network the phone hasn't heard is a partner, being told which
 network to use (also one it knows of no agreement with, and one which turns it away), a home cell which hears too
-faintly to answer (the phone roams, and tries home less and less often until the cell hears it), agreements which are
-missing or ended, cells which only claim to be
+faintly to answer (the phone roams, and tries home less and less often until the cell hears it), a partner treated as
+home (no roaming there, staying on it, and letting subscribers who mayn't roam use it), a network with no cells of its
+own whose phone activates through the partner which carries it (after another network turns it away), agreements
+which are missing or ended, cells which only claim to be
 a partner's, messages on a bad link, either core restarting, a visited core overstepping, and about 10,000 control
 messages between the cores with a field made bad. `cell_service_spec.lua` has two cores make an agreement over a
 connection, lose each other, and end it. A game test has three computers: two networks' cores and cells, and a phone

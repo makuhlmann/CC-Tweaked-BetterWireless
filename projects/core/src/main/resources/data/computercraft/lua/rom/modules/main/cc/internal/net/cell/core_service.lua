@@ -16,12 +16,14 @@ ID, after checking its fingerprint, so nobody needs to type a key in.
 Every connection starts with a hello, `{ role = "cell", "admin" or "roam", id = <computer ID> }`, which the core
 answers: `{ waiting = true, fingerprint = ... }` while the computer waits, then the cell's details (for a cell) or
 `{ ok = true }` (for an administrator), or `{ error = ... }`. Administrators then send requests, each with an `op`, and
-get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `set`, `log`, `carry`, `uncarry`, `stop` and `restart`.
+get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `set`, `log`, `carry`, `uncarry`, `partner`, `stop`
+and `restart`.
 
 Roaming: the core of another network which carries this network's phones connects with the role `roam`, giving its
 network's name and signing key. Once it's allowed, it's to this core what a cell is (see [`cc.internal.net.cell.core`]),
 and this network's phones are told they may use its cells. The other way round, this core connects to the cores of the
-networks whose phones it carries (`carry`), kept in the file `roaming`, and tries again when it loses them.
+networks whose phones it carries (`carry`), kept in the file `roaming`, and tries again when it loses them. A partner
+may be one this network's phones treat as home (`partner`), kept with its key.
 
 @local
 ]]
@@ -188,9 +190,11 @@ function Service:read_allowed()
             if type(entry) == "table" and (ROLES[entry.role] or entry.role == "denied") then
                 self.allowed[key:lower()] = {
                     label = tostring(entry.label or ""), role = entry.role, id = tonumber(entry.id),
-                    -- For a roaming partner: its network, and the key its cells are certified with.
+                    -- For a roaming partner: its network, the key its cells are certified with, and whether our
+                    -- phones treat it as home.
                     network = common.is_network(entry.network) and entry.network or nil,
                     signing = is_key(entry.signing) and entry.signing or nil,
+                    home = entry.home == true or nil,
                 }
             end
         end
@@ -414,7 +418,7 @@ function Service:update_partner_keys()
     local keys = {}
     for _, entry in pairs(self.allowed) do
         local signing = entry.role == "roam" and entry.network and from_hex(entry.signing)
-        if signing and #signing == 32 then keys[entry.network] = signing end
+        if signing and #signing == 32 then keys[entry.network] = { signing = signing, home = entry.home } end
     end
     self.core:set_partner_keys(keys)
 end
@@ -644,6 +648,7 @@ function requests.status(self)
             result.partners[#result.partners + 1] = {
                 network = entry.network, id = entry.id, key = key, fingerprint = fingerprint(key), phones = 0,
                 connected = connected ~= nil and connected.key == key, address = connected and connected.address or nil,
+                home = entry.home == true,
             }
         end
     end
@@ -706,7 +711,10 @@ function requests.allow(self, request, by)
         or (known and known.label ~= "" and known.label) or network
         or (({ cell = "cell #", admin = "admin #", roam = "partner #" })[role] .. tostring(id or "?"))
 
-    self.allowed[key] = { label = label, role = role, id = id, network = network, signing = known and known.signing or nil }
+    self.allowed[key] = {
+        label = label, role = role, id = id, network = network, signing = known and known.signing or nil,
+        home = known and known.home or nil,
+    }
     self:save_allowed()
     self:log(("Allowed %s #%s, %s%s"):format(names[role], tostring(id or "?"), label, self:by(by)))
     self.options.wake()
@@ -769,6 +777,22 @@ function requests.uncarry(self, request, by)
     self:log(("Stopped carrying the phones of %s%s"):format(request.network, self:by(by)))
     self.options.wake()
     return { network = request.network }
+end
+
+--- Say whether our phones treat a partner (a network which carries them) as home.
+function requests.partner(self, request, by)
+    local network, home = request.network, request.home
+    if type(home) ~= "boolean" then return { error = "Expected home to be true or false" } end
+    local found
+    for _, entry in pairs(self.allowed) do
+        if entry.role == "roam" and entry.network == network then found = entry end
+    end
+    if not found then return { error = ("%s doesn't carry this network's phones"):format(tostring(network)) } end
+    found.home = home or nil
+    self:save_allowed()
+    self:update_partner_keys()
+    self:log(("%s is %s%s"):format(network, home and "home to this network's phones" or "a roaming partner", self:by(by)))
+    return { network = network, home = home }
 end
 
 --- Make an activation code for a subscriber.

@@ -26,6 +26,7 @@ local function usage()
     print(name .. " roaming")
     print(name .. " carry <network> <core>")
     print(name .. " uncarry <network>")
+    print(name .. " partner <network> home|roaming")
     print(name .. " remote <core> <command...>")
 end
 
@@ -107,7 +108,7 @@ end
 
 local known = {
     status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1,
-    roaming = 1, carry = 1, uncarry = 1, stop = 1, restart = 1,
+    roaming = 1, carry = 1, uncarry = 1, partner = 1, stop = 1, restart = 1,
 }
 if not known[command] then return usage() end
 
@@ -381,7 +382,7 @@ function commands.roaming()
         print(("Networks which carry %s's phones:"):format(status.network))
         for _, partner in ipairs(status.partners) do
             local how = partner.connected and ("%d phone(s) there"):format(partner.phones) or "not connected"
-            print(("  %s, core #%s: %s"):format(partner.network, tostring(partner.id or "?"), how))
+            print(("  %s, core #%s%s: %s"):format(partner.network, tostring(partner.id or "?"), partner.home and ", as home" or "", how))
         end
     end
     if #status.carrying > 0 then
@@ -405,6 +406,17 @@ function commands.carry(network, core)
     print(("Its core must allow this one: there, run 'cellcore allow %s', and check it shows this fingerprint:"):format(tostring(reply.id or "<ID>")))
     print("  " .. tostring(reply.fingerprint))
     print("'cellcore roaming' shows how it's going.")
+end
+
+function commands.partner(network, how)
+    if not network or (how ~= "home" and how ~= "roaming") then return usage() end
+    request({ op = "partner", network = network, home = how == "home" })
+    if how == "home" then
+        print(("This network's phones treat %s as home: they aren't roaming there, and use its cells as they would"):format(network))
+        print("this network's own. They hear of it when they next attach.")
+    else
+        print(("This network's phones roam on %s. They hear of it when they next attach."):format(network))
+    end
 end
 
 function commands.uncarry(network)
