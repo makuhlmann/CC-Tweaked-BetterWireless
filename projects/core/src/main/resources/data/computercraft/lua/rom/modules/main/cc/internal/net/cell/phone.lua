@@ -759,6 +759,10 @@ function Phone:give_up(unanswered)
     local cell = self.cells[self.cell]
     local entry = cell and cell.networks[self.via]
     if entry and entry.unverified then
+        -- Anyone can make up networks, so forget those whose time is up, rather than only on trying them again.
+        for network, since in pairs(self.forbidden) do
+            if now - since >= FORBIDDEN_TIME then self.forbidden[network] = nil end
+        end
         self.forbidden[self.via] = now
         cell.networks[self.via] = nil
         if next(cell.networks) == nil then self.cells[self.cell] = nil end

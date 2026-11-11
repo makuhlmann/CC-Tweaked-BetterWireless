@@ -1566,6 +1566,50 @@ After phase 6, the cellular layer was tested the same way (`cell_stress_spec.lua
 - **Pretending to be a cell which is out of the phone's hearing.** A frame which says a cell doesn't know a phone
   makes the phone ask, once a second at most. Nothing else which can't be checked makes a phone do anything.
 
+### Robustness of several networks
+
+Once phones chose between networks, cells were shared and networks exchanged messages, those were tested the same way
+(`cell_networks_stress_spec.lua`, and additions to `cell_service_spec.lua`):
+
+- **Everything at once:** two operators which carry each other's phones, share a cell and exchange messages, with four
+  phones wandering along the line at 15% loss and sending each other messages, within a network and between them.
+  Meanwhile cells restart, the shared cell loses and regains its second network, the cores lose and find each other,
+  and phones are told which network to use. Then everything is mended and left alone for 200 seconds. Thirty such
+  runs, four of which are kept as tests: every phone ends up attached and reaches the server, every message the network
+  took arrives once, and no session, visitor, attach or message is left over.
+- **Made-up cells and networks:** 96 network names a second, which keep changing, for 400 seconds, heard by a phone
+  with no service, and for 120 seconds by a phone with service, along with cells which say they're its own network's
+  and frames which say they're from its cell.
+- **One phone sending all it can** to another network whose core can't be reached: 2,400 messages.
+- **Odd things:** system information with each field made bad, in the whole and in each network's part, with 2,000
+  parts, and with paths of 5,000 relays; about 1,500 frames to a shared cell, from a stranger and from each phone it
+  serves, with each field made bad, the network a phone chose among them; activations passed between two cores with
+  each field made bad; a core which answers a cell with a name, certificate or key which can't be used; and computers
+  which introduce themselves oddly as another network's core, to exchange messages.
+- **A core claiming another network's phone** at a cell both networks share.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| A phone remembered every network which turned it away, or didn't answer, for good. Where it had no service and someone made up network names, the list grew by one every few seconds. | Networks whose minute is up are forgotten whenever another is added. |
+| One phone could take all 1,000 places for messages waiting for other networks, within a minute, while another network's core couldn't be reached. Nobody else could then send that way until the core was back, or a week had passed. | At most 50 of one subscriber's messages wait for other networks. |
+| At a shared cell, any network's core could give the cell a context for any phone, which replaced the one the phone had through another network. One operator's core could so cut the other's phones off, again and again. | A core only takes over a phone which is at the cell through another network if the phone asked to attach through its own. |
+| A cell used whatever network name, certificate and tunnel key a core gave it. All networks' parts are broadcast together, so a name or certificate too long for a modem to send would have taken every network at the cell off the air. | A cell refuses a core whose answer isn't a network's name, a certificate of at most 1,024 bytes and a 32-byte key, and serves its other networks. |
+
+**Left as they are:**
+
+- **A phone which names a network its cell doesn't serve** is taken to the cell's only network, if it has just one.
+  Phones only name networks the cell broadcast, so this happens for a second or so after a shared cell loses a core.
+  The phone then attaches as a visitor, notices its network is gone from the cell, and attaches again.
+- **Two cores which say they're the same network** at one cell: the first is served, the second refused. The cell
+  can't tell which is real. Phones can, as only one has the operator's key, so the worst a false one does is keep that
+  network off this cell.
+- **Unsigned system information which says it's from a real cell** changes what the monitor shows for that cell
+  (its signal, and whether it checked out) until the cell's next broadcast. It doesn't change which cell is used.
+- **Another network's core is trusted with its own numbers:** a peer can send messages from any number with its
+  prefix, and fill the mailboxes of subscribers who aren't reachable (50 each, 1,000 in all).
+
 ## 14. Implementation plan
 
 Each phase is usable on its own.

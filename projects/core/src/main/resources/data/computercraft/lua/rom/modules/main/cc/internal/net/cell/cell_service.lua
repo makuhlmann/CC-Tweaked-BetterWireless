@@ -16,6 +16,7 @@ kept on its own, and the cell serves each network while its core is there.
 ]]
 
 local tasks = require "cc.internal.net.tasks"
+local common = require "cc.internal.net.cell.common"
 
 -- How long the core has to answer, and how long to wait to be allowed, in seconds. The core gives up waiting first.
 local HELLO_TIMEOUT = 15
@@ -26,6 +27,10 @@ local FIRST_DELAY = 2
 
 --- The longest to wait before connecting again, in seconds.
 local MAX_DELAY = 60
+
+-- The longest certificate a core may give the cell, in bytes. It's broadcast every second, along with those of the
+-- other networks the cell serves, so one which is far too long would keep all of them off the air.
+local MAX_CERTIFICATE = 1024
 
 -- Which state of a core's to show for the cell as a whole: the best one.
 local STATE_ORDER = { serving = 1, waiting = 2, connecting = 3, lost = 4, refused = 5 }
@@ -97,9 +102,13 @@ function Service:serve(link, connection)
         link.state, link.error = "refused", reply.error
         return
     end
-    if type(reply) ~= "table" or type(reply.network) ~= "string" or type(reply.certificate) ~= "string"
-        or type(reply.tunnel_key) ~= "string" then
-        return err or "The core didn't answer"
+    if type(reply) ~= "table" then return err or "The core didn't answer" end
+    -- What the core says is broadcast, and used as a key. A cell may serve other networks too, which a core that
+    -- says something unfit mustn't spoil.
+    if not common.is_network(reply.network) or type(reply.certificate) ~= "string" or #reply.certificate > MAX_CERTIFICATE
+        or type(reply.tunnel_key) ~= "string" or #reply.tunnel_key ~= 32 then
+        link.state, link.error = "refused", "The core's answer can't be used"
+        return
     end
     -- One core for each network.
     for _, other in ipairs(self.links) do

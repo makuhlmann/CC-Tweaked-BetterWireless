@@ -83,6 +83,9 @@ local PEER_TIMEOUT, PEER_RETRY = 20, 30
 -- to remember, to tell when one comes twice.
 local MAX_HELD, MAX_PEER_SEEN = 1000, 256
 
+-- How many of one subscriber's messages may wait for other networks' cores, so one phone can't take all the room.
+local MAX_HELD_EACH = 50
+
 -- What a phone's message is while another network's core hasn't said whether it has taken it.
 local PENDING = {}
 
@@ -135,7 +138,7 @@ local function new(options)
         -- Messages between networks: our number prefix; the networks we exchange messages with, by name (each with
         -- its number prefix and the connections to its core, if any); and messages for them which their cores haven't
         -- taken yet, by the ID we gave them.
-        number_prefix = options.number_prefix, peers = {}, held = {}, held_count = 0,
+        number_prefix = options.number_prefix, peers = {}, held = {}, held_count = 0, held_from = {},
     }, Core)
 
     -- The gateway: everything for phones goes down their tunnels.
@@ -323,7 +326,7 @@ function Core:stop()
     for _, visitor in pairs(self.visitors) do self:send(visitor.cell, { op = "release", teid = visitor.teid }) end
     self.partners, self.visitors, self.visitor_count, self.visitors_by_home, self.visitors_by_phone = {}, {}, 0, {}, {}
     self.roam_pending, self.roam_pending_count = {}, 0
-    self.peers, self.held, self.held_count = {}, {}, 0
+    self.peers, self.held, self.held_count, self.held_from = {}, {}, 0, {}
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
     self.stack:udp_close(self.roam_socket)
@@ -600,6 +603,8 @@ function Core:send_to_peer(session, sender, id, network, number, text)
         return self:message_done(session, id, false, "This network has no number prefix, so can't reach others")
     elseif self.held_count >= MAX_HELD then
         return self:message_done(session, id, false, "Too many messages are waiting for other networks")
+    elseif (self.held_from[session.sim] or 0) >= MAX_HELD_EACH then
+        return self:message_done(session, id, false, "Too many of your messages are waiting for other networks")
     end
     local prefix = self.peers[network].prefix
     self.next_message = self.next_message + 1
@@ -610,6 +615,7 @@ function Core:send_to_peer(session, sender, id, network, number, text)
     }
     self.held[held.id] = held
     self.held_count = self.held_count + 1
+    self.held_from[held.sim] = (self.held_from[held.sim] or 0) + 1
     self.on_event("message", sender.number, held.shown)
     -- Its core isn't connected: we have the message, and send it once it is.
     if not self:pass_on(held) then self:message_held(held) end
@@ -639,6 +645,8 @@ function Core:release(held, ok, reason)
     if self.held[held.id] ~= held then return end
     self.held[held.id] = nil
     self.held_count = self.held_count - 1
+    local from = (self.held_from[held.sim] or 1) - 1
+    self.held_from[held.sim] = from > 0 and from or nil
     if not held.told then
         local session = self.sessions[held.sim]
         if session then self:message_done(session, held.phone_message, ok, reason) end

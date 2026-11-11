@@ -605,17 +605,20 @@ describe("Cellular services", function()
 
         it("turns away computers which introduce themselves oddly", function()
             local env = setup()
-            local cell_key, admin_key, partner_key = new_key(), new_key(), new_key()
+            local cell_key, admin_key, partner_key, peer_key = new_key(), new_key(), new_key(), new_key()
             local _, tower_public = crypto.generateKeyPair("ed25519")
             env.service.allowed[cell_key] = { label = "tower", role = "cell" }
             env.service.allowed[admin_key] = { label = "boss", role = "admin" }
             env.service.allowed[partner_key] = { label = "BETA", role = "roam" }
+            env.service.allowed[peer_key] = { label = "GAMMA", role = "peer", network = "GAMMA" }
             run(env.net, { env.service }, { function()
-                for _, role in ipairs { "cell", "roam" } do
-                    local template = { role = role, id = 11, signing = hex(tower_public), area = 1, network = "BETA" }
+                for _, role in ipairs { "cell", "roam", "peer" } do
+                    local template = {
+                        role = role, id = 11, signing = hex(tower_public), area = 1, network = "BETA", number_prefix = "666",
+                    }
                     for field in pairs(template) do
                         for _, bad in ipairs(BAD) do
-                            for _, key in ipairs { cell_key, admin_key, partner_key, new_key() } do
+                            for _, key in ipairs { cell_key, admin_key, partner_key, peer_key, new_key() } do
                                 local connection = env.connect(key, "10.0.0.11")
                                 assert(connection:send(with(template, field, bad)))
                                 connection:receive(2)
@@ -636,6 +639,8 @@ describe("Cellular services", function()
                 -- Only cells with whole numbers for IDs got in, and none is left.
                 wait_until(function() return next(env.service.cells) == nil end)
                 expect(next(env.service.core.towers)):eq(nil)
+                wait_until(function() return next(env.service.peer_links) == nil end)
+                expect(next(env.service.waiting)):eq(nil)
                 local admin = env.admin()
                 expect(#ask(admin, { op = "status" }).cells):eq(0)
                 admin:close()
@@ -1024,12 +1029,12 @@ describe("Cellular services", function()
                     links = { { core = "core.acme", state = "waiting" } },
                 }
 
-                core:send({ network = "ACME", certificate = "certificate", tunnel_key = "key" })
+                core:send({ network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
                 wait_until(function() return env.service:info().state == "serving" end)
                 expect(env.service:info().network):eq("ACME")
                 local tower = env.towers[1]
                 expect(tower.welcome):same {
-                    network = "ACME", certificate = "certificate", tunnel_key = "key", core = "10.0.0.1", area = 3,
+                    network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32), core = "10.0.0.1", area = 3,
                 }
 
                 -- Control messages go both ways.
@@ -1056,8 +1061,8 @@ describe("Cellular services", function()
                 local acme, beta = env.connections[1], env.connections[2]
                 expect(acme:receive(5).role):eq("cell")
                 expect(beta:receive(5).role):eq("cell")
-                acme:send({ network = "ACME", certificate = "a", tunnel_key = "ka" })
-                beta:send({ network = "BETA", certificate = "b", tunnel_key = "kb" })
+                acme:send({ network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                beta:send({ network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
                 wait_until(function() return env.service:info().links[1].state == "serving" and env.service:info().links[2].state == "serving" end)
                 expect(env.service:info().links):same {
                     { core = "core.acme", state = "serving", network = "ACME" },
@@ -1081,11 +1086,44 @@ describe("Cellular services", function()
                 -- Another core of a network it serves already is one too many.
                 wait_until(function() return env.connections[3] end)
                 env.connections[3]:receive(5)
-                env.connections[3]:send({ network = "ACME", certificate = "c", tunnel_key = "kc" })
+                env.connections[3]:send({ network = "ACME", certificate = "c", tunnel_key = ("c"):rep(32) })
                 wait_until(function() return env.service:info().links[2].state == "refused" end)
                 expect(env.service:info().links[2].error):eq("This cell serves ACME through the core core.acme already")
                 expect(#env.towers):eq(2)
             end, }, 300)
+        end)
+
+        it("doesn't serve a network whose core's answer is unfit, and serves the others", function()
+            -- What a core says is broadcast every second with the other networks' parts, so a name or certificate
+            -- which is far too long would keep the whole cell off the air.
+            local unfit = {
+                { network = "BE TA", certificate = "b", tunnel_key = ("k"):rep(32) },
+                { network = ("B"):rep(5000), certificate = "b", tunnel_key = ("k"):rep(32) },
+                { network = "", certificate = "b", tunnel_key = ("k"):rep(32) },
+                { network = 7, certificate = "b", tunnel_key = ("k"):rep(32) },
+                { network = "BETA", certificate = ("c"):rep(100000), tunnel_key = ("k"):rep(32) },
+                { network = "BETA", certificate = {}, tunnel_key = ("k"):rep(32) },
+                { network = "BETA", certificate = "b", tunnel_key = "short" },
+                { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(33) },
+                { network = "BETA", certificate = "b" },
+            }
+            for i, welcome in ipairs(unfit) do
+                local env = cell_setup({ "core.acme", "core.beta" })
+                run(env.net, { env.service }, { function()
+                    wait_until(function() return env.connections[2] end)
+                    local acme, beta = env.connections[1], env.connections[2]
+                    acme:receive(5)
+                    beta:receive(5)
+                    acme:send({ network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                    beta:send(welcome)
+                    wait_until(function() return env.service:info().links[2].state == "refused" end)
+                    expect(env.service:info().links[2].error):describe("Answer " .. i):eq("The core's answer can't be used")
+                    expect(env.service:info().links[1].state):eq("serving")
+                    expect(#env.towers):describe("Networks served after answer " .. i):eq(1)
+                    expect(env.towers[1].stopped):eq(nil)
+                end, }, 60)
+                expect(env.service.error):eq(nil)
+            end
         end)
 
         it("tries again, less often each time, while it can't reach the core or is refused", function()
@@ -1117,7 +1155,7 @@ describe("Cellular services", function()
             run(env.net, { env.service }, { function()
                 core = env.connections[1]
                 core:receive(5)
-                core:send({ network = "ACME", certificate = "certificate", tunnel_key = "key" })
+                core:send({ network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
                 wait_until(function() return env.service:info().state == "serving" end)
             end, })
             env.service:stop()
