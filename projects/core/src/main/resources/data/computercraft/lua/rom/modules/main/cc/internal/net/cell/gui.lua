@@ -785,7 +785,12 @@ local function home_screen(monitor)
             elseif item.id == "monitor" then
                 -- The monitor only prints why it can't listen, which the menu would cover at once.
                 local ok, err = net.cell.listen()
-                if ok then monitor() else problem = tostring(err or "The monitor can't listen") end
+                if not ok then
+                    problem = tostring(err or "The monitor can't listen")
+                elseif monitor() == false then
+                    -- It was terminated, and so are the menus.
+                    return "quit"
+                end
                 bar.touch()
             elseif item.id == "quit" then
                 return "quit"
@@ -797,7 +802,8 @@ end
 
 --[[- Run the phone's menus beneath the status bar, until the user quits.
 
-@tparam function() monitor Shows the cell monitor on the current terminal, and returns when the user leaves it.
+@tparam function():boolean|nil monitor Shows the cell monitor on the current terminal, and returns when the user
+leaves it, or `false` when it was terminated.
 ]]
 local function run(monitor)
     expect(1, monitor, "function")

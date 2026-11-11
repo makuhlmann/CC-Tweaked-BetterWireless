@@ -1138,7 +1138,11 @@ checks the status bar's network, `R` and "1 new msg", opens the message in the m
 
 The menus and the bar are tested against a made-up phone (`spec/programs/net/cell_gui_spec.lua`): what the bar shows
 in each state and at each width, with and without colours; that it comes and goes with cell service and the SIM; and
-each menu with keys and with clicks, on a pocket computer's screen and a wider one.
+each menu with keys and with clicks, on a pocket computer's screen and a wider one. A last group of tests uses the
+menus at random (keys, typing, pasting, clicks on and off the screen, resizing, terminating) while the phone changes
+at random (states, networks with long names, messages of a thousand characters or sixty empty lines), on screens from
+80 by 30 down to 1 by 1: about 16,000 things in all, none of which may raise an error. That found one fault: the
+monitor, opened from the menus, took a termination as leaving it, so the menus carried on.
 
 ## 12. Changes to the mod
 

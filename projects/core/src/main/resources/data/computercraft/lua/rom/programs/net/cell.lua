@@ -39,12 +39,13 @@ local STATES = {
 local SILENCE = 4
 
 -- Everything about the phone's service on one screen, which fits a pocket computer: its state, the cells it hears (of
--- any network), and what has happened lately. It's redrawn every second, and whenever the state changes.
+-- any network), and what has happened lately. It's redrawn every second, and whenever the state changes. This returns
+-- false if it was terminated.
 local function monitor()
     local ok, err = net.cell.listen()
     if not ok then
         printError(err)
-        return
+        return true
     end
 
     local parent = term.current()
@@ -220,6 +221,8 @@ local function monitor()
     term.clear()
     term.setCursorPos(1, 1)
     if not ran and failure ~= "Terminated" then error(failure, 0) end
+    -- Whether the user left it, rather than terminating it.
+    return ran
 end
 
 local command = args[1]

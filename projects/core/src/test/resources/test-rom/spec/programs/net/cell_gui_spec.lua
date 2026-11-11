@@ -167,6 +167,192 @@ describe("The cell program's GUI", function()
         }
     end
 
+    describe("whatever happens", function()
+        -- Random numbers which are the same each time the tests run.
+        local function random_numbers(seed)
+            local state = seed
+            return function(low, high)
+                state = (state * 1103515245 + 12345) % 2147483648
+                return low + math.floor(state / 2147483648 * (high - low + 1))
+            end
+        end
+
+        local KEYS = {
+            keys.up, keys.down, keys.left, keys.right, keys.enter, keys.numPadEnter, keys.backspace, keys.tab, keys.home,
+            keys["end"], keys.delete, keys.pageUp, keys.pageDown, keys.a, keys.f1,
+        }
+        local STATES = { "none", "off", "inactive", "activating", "searching", "attaching", "attached", "rejected", "odd" }
+        local TEXTS = {
+            "", " ", "Hello", "\n\n\n", "one\ntwo\n\nthree\n", ("x"):rep(1000), ("word "):rep(200), "tab\there\0nul\255",
+            ("\n"):rep(60) .. "end", "   leading and trailing   ",
+        }
+        local NAMES = { "ACME", "B", ("LONGNAME"):rep(4), "A-1" }
+        local CHARS = "qQrRdDxy 0123456789"
+
+        -- Use the menus at random on a screen of some size, with a phone which changes at random, and say what was
+        -- done if anything fails.
+        local function storm(width, height, seed, count)
+            local random = random_numbers(seed)
+            local function pick(list) return list[random(1, #list)] end
+
+            local phone = fake_phone()
+            phone.messages, phone.networks = message_fixture(), network_fixture()
+            local done = {}
+            local function note(...) done[#done + 1] = table.concat({ ... }, " ") end
+
+            local function change_phone()
+                local info = phone.info
+                info.state = pick(STATES)
+                info.enabled = info.state ~= "off"
+                info.network = random(1, 5) > 1 and pick(NAMES) or nil
+                info.serving_network = random(1, 4) > 1 and pick(NAMES) or nil
+                info.signal = random(1, 5) > 1 and -random(40, 130) or nil
+                info.roaming = random(1, 2) == 1
+                info.selection = random(1, 3) == 1 and pick(NAMES) or "auto"
+                info.subscriber = random(1, 4) > 1 and { id = "ACME-1", number = pick { "1", ("9"):rep(30) } } or nil
+                info.rejected = random(1, 3) == 1 and "Not allowed here, for a reason which goes on and on" or nil
+                phone.refuse = random(1, 4) == 1 and "No service" or nil
+                phone.no_modem = random(1, 4) == 1
+
+                phone.networks = {}
+                for i = 1, random(0, 12) do
+                    phone.networks[i] = {
+                        name = pick(NAMES) .. i, kind = pick { "home", "partner", "other" }, allowed = random(1, 2) == 1,
+                        signal = random(1, 3) > 1 and -random(40, 130) or nil, serving = random(1, 4) == 1,
+                        selected = random(1, 4) == 1,
+                    }
+                end
+                note("phone", info.state, tostring(info.network), #phone.networks)
+            end
+
+            local function add_message()
+                local n = 0
+                for _, message in ipairs(phone.messages) do n = math.max(n, message.n) end
+                local message = { n = n + 1, text = pick(TEXTS), time = random(1, 4) > 1 and os.epoch("utc") or nil }
+                if random(1, 2) == 1 then
+                    message.from, message.read = pick { "0100", ("7"):rep(40) }, random(1, 3) == 1
+                else
+                    message.to, message.status = "0007", pick { "sending", "sent", "failed" }
+                    message.error = random(1, 2) == 1 and "Nobody has that number" or nil
+                end
+                phone.messages[#phone.messages + 1] = message
+                while #phone.messages > 30 do table.remove(phone.messages, 1) end
+                note("message", message.n)
+            end
+
+            -- The menus are started again whenever they're quit, until enough has been done.
+            local left = count
+            local function session(app)
+                note("start")
+                while left > 0 do
+                    if app.finished() then return end
+                    left = left - 1
+                    local w, h = app.screen.getSize()
+                    local kind = random(1, 26)
+                    if kind <= 7 then
+                        local key, held = pick(KEYS), random(1, 6) == 1
+                        note("key", keys.getName(key), tostring(held))
+                        app.event("key", key, held)
+                    elseif kind <= 10 then
+                        local at = random(1, #CHARS)
+                        note("char", CHARS:sub(at, at))
+                        app.event("char", CHARS:sub(at, at))
+                    elseif kind == 11 then
+                        note("paste")
+                        app.event("paste", pick(TEXTS))
+                    elseif kind <= 14 then
+                        local button, x, y = random(1, 3), random(0, w + 1), random(0, h + 1)
+                        -- Half the clicks are ones a user might make: with the left button, where lists have their rows.
+                        if random(1, 2) == 1 then button, x, y = 1, random(1, math.min(w, 10)), random(1, math.min(h, 9)) end
+                        note("click", button, x, y)
+                        app.event("mouse_click", button, x, y)
+                        if not app.finished() then app.event("mouse_up", button, x, y) end
+                    elseif kind == 15 then
+                        note("drag")
+                        app.event("mouse_drag", 1, random(0, w + 1), random(0, h + 1))
+                    elseif kind == 16 then
+                        local by = random(1, 2) * 2 - 3
+                        note("scroll", by)
+                        app.event("mouse_scroll", by, random(1, w), random(1, h))
+                    elseif kind == 17 then
+                        local new_w, new_h = math.max(1, w + random(-3, 3)), math.max(1, h + random(-3, 3))
+                        note("resize", new_w, new_h)
+                        app.screen.reposition(1, 1, new_w, new_h)
+                        app.event("term_resize")
+                    elseif kind == 18 then
+                        change_phone()
+                        app.event("cell_state", phone.info.state)
+                    elseif kind == 19 then
+                        add_message()
+                        app.event("cell_message", "0100", "text")
+                    elseif kind == 20 then
+                        if #phone.messages > 0 then table.remove(phone.messages, random(1, #phone.messages)) end
+                        note("messages")
+                        app.event("cell_messages")
+                    elseif kind == 21 then
+                        local taken = random(1, 2) == 1
+                        note("sent", tostring(taken))
+                        app.event("cell_sent", pick { 7, 8 }, taken, not taken and random(1, 2) == 1 and "Nobody has that number" or nil)
+                    elseif kind <= 23 then
+                        local ids = {}
+                        for id in pairs(phone.timers) do ids[#ids + 1] = id end
+                        table.sort(ids)
+                        if #ids > 0 then
+                            local id = pick(ids)
+                            note("timer", phone.timers[id])
+                            phone.timers[id] = nil
+                            app.event("timer", id)
+                        end
+                    elseif kind == 24 then
+                        -- Deleting takes two steps, which seldom follow each other by chance.
+                        note("delete")
+                        app.event("char", "d")
+                        if not app.finished() then app.event("key", keys.enter, false) end
+                    elseif kind == 25 then
+                        -- Wherever the menus have got to, terminating ends them, and they start from the top again.
+                        break
+                    else
+                        note("other event")
+                        app.event(pick { "redstone", "modem_message", "timer", "net_cell" }, random(1, 100))
+                    end
+                end
+                if not app.finished() then
+                    note("terminate")
+                    app.event("terminate")
+                end
+                if not app.finished() then error("Still running after it was terminated", 0) end
+            end
+            local ok, err = pcall(function()
+                while left > 0 do run(phone, { width = width, height = height }, session) end
+            end)
+            if not ok then
+                local from = math.max(1, #done - 25)
+                error(("%s\n%dx%d, seed %d, after %d things, the last being:\n%s"):format(
+                    tostring(err), width, height, seed, #done, table.concat(done, "\n", from)), 0)
+            end
+            return phone
+        end
+
+        for _, size in ipairs { { 26, 20 }, { 51, 19 }, { 80, 30 }, { 12, 6 }, { 7, 4 }, { 3, 2 }, { 1, 1 } } do
+            it(("the menus keep going, on a screen of %d by %d"):format(size[1], size[2]), function()
+                local reached = { sent = 0, read = 0, deleted = 0, chosen = 0, enabled = 0 }
+                -- Screens worth the name get more, as there's more to reach on them.
+                local usable = size[1] >= 26
+                for seed = 1, 6 do
+                    local phone = storm(size[1], size[2], seed * 7919 + size[1], usable and 500 or 300)
+                    for what, count in pairs(reached) do reached[what] = count + #phone[what] end
+                end
+                -- There, all this gets as far as each thing the menus can do. If it stops doing so, the menus have
+                -- changed, and the storm needs to be steered to them again.
+                if usable then
+                    for what, count in pairs(reached) do
+                        if count == 0 then fail(("The storm never got as far as %s"):format(what)) end
+                    end
+                end
+            end)
+        end
+    end)
+
     describe("status bar", function()
         it("shows the network and its signal", function()
             run(fake_phone(), {}, function(app)
@@ -1039,6 +1225,17 @@ describe("The cell program's GUI", function()
                 expect(app.line(2)):eq("Phone             No. 0042")
                 expect(app.line(8)):eq(" Monitor")
                 expect(app.bg(8)):eq(("0"):rep(26))
+            end)
+        end)
+
+        it("stops the menus too when it's terminated", function()
+            local phone = fake_phone()
+            run(phone, {}, function(app)
+                app.key(keys.up, keys.up, keys.enter)
+                app.event("cell_state", "attached")
+                expect(app.line(2)):str_match("^ Cell monitor")
+                app.event("terminate")
+                expect(app.finished()):eq(true)
             end)
         end)
 
