@@ -608,6 +608,10 @@ public final class UnloadedWiring {
                 // Only keep dimensions which (still) exist.
                 if (Identifier.tryParse(dimension) != null) result.put(dimension, pieces);
             }
+
+            // Read on to the end of the file, which checks it against its checksum. Wiring from a damaged file could
+            // connect networks which aren't connected, so it must not be used.
+            if (input.read() != -1) throw new IOException("There is more in the file than the wiring");
             return result;
         } catch (IOException | RuntimeException e) {
             LOG.error("Cannot read '{}', so wired networks will only reconnect as their chunks load.", file, e);
