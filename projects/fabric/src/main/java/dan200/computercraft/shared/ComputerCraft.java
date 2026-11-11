@@ -113,10 +113,12 @@ public class ComputerCraft {
             ((FabricConfigFile) ConfigSpec.serverSpec).unload();
         });
         ServerLifecycleEvents.SERVER_STARTED.register(CommonHooks::onServerStarted);
+        ServerLifecycleEvents.SERVER_STOPPING.register(CommonHooks::onServerStopping);
 
         ServerTickEvents.START_SERVER_TICK.register(CommonHooks::onServerTickStart);
         ServerTickEvents.START_SERVER_TICK.register(s -> CommonHooks.onServerTickEnd());
         ServerChunkEvents.CHUNK_UNLOAD.register((l, c) -> CommonHooks.onServerChunkUnload(c));
+        ServerChunkEvents.CHUNK_LOAD.register((l, c, generated) -> CommonHooks.onServerChunkLoad(c));
         ServerChunkEvents.FULL_CHUNK_STATUS_CHANGE.register((level, chunk, oldStatus, newStatus) ->
             CommonHooks.onChunkTicketLevelChanged(level, chunk.getPos().pack(), ChunkLevel.byStatus(oldStatus), ChunkLevel.byStatus(newStatus)));
 

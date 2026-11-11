@@ -98,6 +98,7 @@ public class WiredModemFullBlockEntity extends BlockEntity {
             if (modem != null) modem.removed();
         }
         if (level == null || !level.isClientSide()) node.remove();
+        UnloadedWiring.onChanged(this);
     }
 
     @Override
@@ -106,6 +107,7 @@ public class WiredModemFullBlockEntity extends BlockEntity {
         refreshConnections = true;
         invalidSides = DirectionUtil.ALL_SIDES;
         TickScheduler.schedule(tickToken);
+        UnloadedWiring.onAdded(this);
     }
 
     void neighborChanged() {
@@ -193,7 +195,7 @@ public class WiredModemFullBlockEntity extends BlockEntity {
         getLevel().scheduleTick(getBlockPos(), getBlockState().getBlock(), 0);
     }
 
-    private void connectionsChanged() {
+    void connectionsChanged() {
         if (getLevel().isClientSide()) return;
         refreshConnections = false;
 
@@ -201,12 +203,18 @@ public class WiredModemFullBlockEntity extends BlockEntity {
         var current = getBlockPos();
         for (var facing : DirectionUtil.FACINGS) {
             var offset = current.relative(facing);
-            if (!world.isLoaded(offset)) continue;
+            if (!world.isLoaded(offset)) {
+                // A chunk which isn't loaded: connect to what we know is there, which keeps the network connected
+                // through it.
+                var dormant = UnloadedWiring.nodeAt(world, offset, facing.getOpposite());
+                if (dormant != null) UnloadedWiring.connect(node, dormant);
+                continue;
+            }
 
             var element = connectedElements.get(facing);
             if (element == null) continue;
 
-            node.connectTo(element.getNode());
+            UnloadedWiring.connect(node, element.getNode());
         }
     }
 

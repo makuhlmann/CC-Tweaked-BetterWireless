@@ -77,7 +77,7 @@ class NodeSet {
     }
 
     private static NodeSet mergeInto(NodeSet root, NodeSet child) {
-        assert root.size > child.size;
+        assert root.size >= child.size;
         child.parent = root;
         root.size += child.size;
         return child;

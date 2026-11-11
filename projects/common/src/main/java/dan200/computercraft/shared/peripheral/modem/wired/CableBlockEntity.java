@@ -81,6 +81,7 @@ public class CableBlockEntity extends BlockEntity {
         super.setRemoved();
         modem.removed();
         if (level == null || !level.isClientSide()) node.remove();
+        UnloadedWiring.onChanged(this);
     }
 
     @Override
@@ -88,6 +89,7 @@ public class CableBlockEntity extends BlockEntity {
         super.clearRemoved();
         refreshConnections = refreshPeripheral = true;
         TickScheduler.schedule(tickToken);
+        UnloadedWiring.onAdded(this);
     }
 
     @Override
@@ -98,7 +100,10 @@ public class CableBlockEntity extends BlockEntity {
         super.setBlockState(state);
 
         // We invalidate both the modem and element if the modem direction or cable are different.
-        if (hasCable() != hasCable || getModemDirection() != direction) PlatformHelper.get().invalidateComponent(this);
+        if (hasCable() != hasCable || getModemDirection() != direction) {
+            PlatformHelper.get().invalidateComponent(this);
+            UnloadedWiring.onChanged(this);
+        }
     }
 
     @Nullable
@@ -193,15 +198,21 @@ public class CableBlockEntity extends BlockEntity {
         var current = getBlockPos();
         for (var facing : DirectionUtil.FACINGS) {
             var offset = current.relative(facing);
-            if (!world.isLoaded(offset)) continue;
+            WiredNode node;
+            if (world.isLoaded(offset)) {
+                var element = connectedElements.get(facing);
+                if (element == null) continue;
+                node = element.getNode();
+            } else {
+                // A chunk which isn't loaded: connect to what we know is there, which keeps the network connected
+                // through it.
+                node = UnloadedWiring.nodeAt(world, offset, facing.getOpposite());
+                if (node == null) continue;
+            }
 
-            var element = connectedElements.get(facing);
-            if (element == null) continue;
-
-            var node = element.getNode();
             if (CableBlock.canConnectIn(state, facing)) {
                 // If we can connect to it then do so
-                this.node.connectTo(node);
+                UnloadedWiring.connect(this.node, node);
             } else {
                 // Otherwise break the connection.
                 this.node.disconnectFrom(node);

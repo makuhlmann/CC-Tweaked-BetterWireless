@@ -22,6 +22,7 @@ import dan200.computercraft.shared.CommonHooks;
 import dan200.computercraft.shared.computer.enclave.EnclaveStore;
 import dan200.computercraft.shared.computer.metrics.GlobalMetrics;
 import dan200.computercraft.shared.config.ConfigSpec;
+import dan200.computercraft.shared.peripheral.modem.wired.UnloadedWiring;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessNetwork;
 import dan200.computercraft.shared.util.IDAssigner;
 import net.minecraft.SharedConstants;
@@ -64,6 +65,7 @@ public final class ServerContext {
     private final MainThread mainThread;
     private final IDAssigner idAssigner;
     private final WirelessNetwork wirelessNetwork = new WirelessNetwork();
+    private final UnloadedWiring unloadedWiring;
     private final ComputerChunkLoader chunkLoader;
     private final EnclaveStore enclaves;
     private final NettyHttp http = new NettyHttp(ConfigSpec.getHttpConfig());
@@ -82,6 +84,7 @@ public final class ServerContext {
             .build();
         idAssigner = new IDAssigner(storageDir.resolve("ids.json"));
         chunkLoader = new ComputerChunkLoader(storageDir.resolve("keep_loaded.json"));
+        unloadedWiring = new UnloadedWiring(storageDir.resolve("wiring.dat"));
         enclaves = new EnclaveStore(storageDir.resolve("enclave"));
     }
 
@@ -179,6 +182,7 @@ public final class ServerContext {
         registry.update();
         mainThread.tick();
         wirelessNetwork.tick();
+        unloadedWiring.tick();
         chunkLoader.tick(server);
     }
 
@@ -251,6 +255,15 @@ public final class ServerContext {
      */
     public WirelessNetwork wirelessNetwork() {
         return wirelessNetwork;
+    }
+
+    /**
+     * Get what keeps wired networks connected through chunks which aren't loaded.
+     *
+     * @return The wiring of chunks which aren't loaded.
+     */
+    public UnloadedWiring unloadedWiring() {
+        return unloadedWiring;
     }
 
     private record Environment(MinecraftServer server) implements GlobalEnvironment {

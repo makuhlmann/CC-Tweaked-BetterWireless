@@ -172,7 +172,12 @@ today.
 
 An interface is a modem on one band:
 
-- **Wired modems** are one interface, named after the peripheral (`back`).
+- **Wired modems** are one interface, named after the peripheral (`back`). A cable network stays connected through
+  chunks which aren't loaded: when a chunk unloads, the mod remembers each connected piece of wiring in it and where
+  it meets the next chunks, and keeps one node in the network for each piece, so a cable can cross any distance. The
+  wiring is saved (in `computercraft/wiring.dat`, with that of loaded chunks), so networks come back after a restart
+  before the chunks between their ends load. Only CC's own cables and wired modems are remembered; another mod's wired
+  blocks in a chunk which isn't loaded still break the connection.
 - **Wireless modems** are one interface on their configured band, by default the high band (short range, like Wi-Fi).
   The same modem can also be a second interface on the other band (`top:low`), so one modem can serve both a local
   network and a long-range link.

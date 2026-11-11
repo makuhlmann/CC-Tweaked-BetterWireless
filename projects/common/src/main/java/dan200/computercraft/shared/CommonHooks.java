@@ -9,6 +9,7 @@ import dan200.computercraft.shared.computer.core.ResourceMount;
 import dan200.computercraft.shared.computer.core.ServerContext;
 import dan200.computercraft.shared.computer.metrics.ComputerMBean;
 import dan200.computercraft.shared.lectern.CustomLecternBlock;
+import dan200.computercraft.shared.peripheral.modem.wired.UnloadedWiring;
 import dan200.computercraft.shared.peripheral.monitor.MonitorWatcher;
 import dan200.computercraft.shared.util.DropConsumer;
 import dan200.computercraft.shared.util.TickScheduler;
@@ -81,6 +82,11 @@ public final class CommonHooks {
         ServerContext.get(server).chunkLoader().start(server);
     }
 
+    public static void onServerStopping(MinecraftServer server) {
+        // Save wired networks while every chunk is still loaded.
+        UnloadedWiring.onServerStopping(server);
+    }
+
     public static void onServerStopped() {
         resetState();
     }
@@ -94,7 +100,16 @@ public final class CommonHooks {
         TickScheduler.onChunkUnload(chunk);
 
         var context = ServerContext.getIfRunning(level.getServer());
-        if (context != null) context.wirelessNetwork().onChunkUnload(chunk);
+        if (context != null) {
+            context.wirelessNetwork().onChunkUnload(chunk);
+            context.unloadedWiring().onChunkUnload(level, chunk);
+        }
+    }
+
+    public static void onServerChunkLoad(LevelChunk chunk) {
+        if (!(chunk.getLevel() instanceof ServerLevel level)) throw new IllegalArgumentException("Not a server chunk.");
+        var context = ServerContext.getIfRunning(level.getServer());
+        if (context != null) context.unloadedWiring().onChunkLoad(level, chunk);
     }
 
     public static void onChunkWatch(LevelChunk chunk, ServerPlayer player) {

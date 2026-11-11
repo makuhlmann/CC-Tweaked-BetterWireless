@@ -29,6 +29,7 @@ import net.neoforged.neoforge.event.level.ChunkWatchEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.List;
@@ -60,6 +61,11 @@ public class ForgeCommonHooks {
     }
 
     @SubscribeEvent
+    public static void onServerStopping(ServerStoppingEvent event) {
+        CommonHooks.onServerStopping(event.getServer());
+    }
+
+    @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
         CommonHooks.onServerStopped();
     }
@@ -72,6 +78,11 @@ public class ForgeCommonHooks {
     @SubscribeEvent
     public static void onChunkUnload(ChunkEvent.Unload event) {
         if (event.getLevel() instanceof ServerLevel) CommonHooks.onServerChunkUnload(event.getChunk());
+    }
+
+    @SubscribeEvent
+    public static void onChunkLoad(ChunkEvent.Load event) {
+        if (event.getLevel() instanceof ServerLevel) CommonHooks.onServerChunkLoad(event.getChunk());
     }
 
     @SubscribeEvent
