@@ -222,6 +222,71 @@ public class NetworkTest {
         assertEquals(Set.of(), cE.allPeripherals().keySet(), "C's peripheral set should be empty");
     }
 
+    /**
+     * Splitting a network locks the old half and then the new one. Joining them again must not take the two locks the
+     * other way round, which the lock checker takes for a deadlock (and throws, when assertions are on).
+     */
+    @Test
+    public void testReconnectAfterDisconnect() {
+        NetworkElement
+            aE = new NetworkElement("a"),
+            bE = new NetworkElement("b"),
+            cE = new NetworkElement("c");
+
+        WiredNodeImpl
+            aN = aE.getNode(),
+            bN = bE.getNode(),
+            cN = cE.getNode();
+
+        aN.connectTo(bN);
+        bN.connectTo(cN);
+
+        // Each way round: the node asked to connect is in the new half, or the old one.
+        bN.disconnectFrom(cN);
+        assertNotEquals(bN.getNetwork(), cN.getNetwork(), "B's and C's network must not be equal");
+        assertTrue(bN.connectTo(cN), "Must be able to add connection");
+        assertEquals(Set.of(aN, bN, cN), nodes(aN.getNetwork()), "A's network should be A, B and C");
+
+        bN.disconnectFrom(cN);
+        assertNotEquals(bN.getNetwork(), cN.getNetwork(), "B's and C's network must not be equal");
+        assertTrue(cN.connectTo(bN), "Must be able to add connection");
+        assertEquals(Set.of(aN, bN, cN), nodes(aN.getNetwork()), "A's network should be A, B and C");
+
+        assertEquals(Set.of("a", "b", "c"), aE.allPeripherals().keySet(), "A's peripheral set should be A, B, C");
+        assertEquals(Set.of("a", "b", "c"), cE.allPeripherals().keySet(), "C's peripheral set should be A, B, C");
+    }
+
+    /**
+     * Removing a node which held three parts of a network together locks each part's new network in turn. Joining the
+     * parts again, in every order, must take their locks the same way round.
+     */
+    @Test
+    public void testReconnectAfterRemoveSplit() {
+        for (var attempt = 0; attempt < 16; attempt++) {
+            var hub = new NetworkElement("hub", false).getNode();
+            var parts = new WiredNodeImpl[3];
+            for (var i = 0; i < parts.length; i++) {
+                parts[i] = new NetworkElement("part" + i, false).getNode();
+                // Parts of different sizes, as which network takes in the other may depend on it.
+                for (var j = 0; j < i; j++) parts[i].connectTo(new NetworkElement("part" + i + "_" + j, false).getNode());
+                hub.connectTo(parts[i]);
+            }
+
+            hub.remove();
+            assertEquals(1, nodes(parts[0].getNetwork()).size());
+
+            var order = attempt % 2 == 0 ? new int[]{ 0, 1, 2 } : new int[]{ 2, 1, 0 };
+            if (attempt % 4 < 2) {
+                parts[order[0]].connectTo(parts[order[1]]);
+                parts[order[1]].connectTo(parts[order[2]]);
+            } else {
+                parts[order[1]].connectTo(parts[order[0]]);
+                parts[order[2]].connectTo(parts[order[1]]);
+            }
+            assertEquals(6, nodes(parts[0].getNetwork()).size());
+        }
+    }
+
     static final class NetworkElement implements WiredElement {
         private final String id;
         private final WiredNodeImpl node;

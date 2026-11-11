@@ -11,10 +11,19 @@ import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.core.util.ThreadUtils;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 
 final class WiredNetworkImpl {
+    private static final AtomicLong nextAge = new AtomicLong();
+
     final ReadWriteLock lock = ThreadUtils.newReentrantReadWriteLock("WiredNetworkImpl.lock");
+
+    /**
+     * When this network was made, among all networks. When two networks' locks are held at once, the older network's is
+     * always taken first, so that no two threads can each hold one and wait for the other's.
+     */
+    private final long age = nextAge.getAndIncrement();
     Set<WiredNodeImpl> nodes;
     private Map<String, IPeripheral> peripherals = new HashMap<>();
 
@@ -32,6 +41,20 @@ final class WiredNetworkImpl {
         var wiredV = checkNode(nodeV);
         if (nodeU == nodeV) throw new IllegalArgumentException("Cannot add a connection to oneself.");
 
+        // Splitting a network locks it, and then the newer ones made from it. Joining two takes their locks in the same
+        // order: if the other network is the older, lock it before this one.
+        var other = wiredU.network == this ? wiredV.network : wiredU.network;
+        if (other.age >= age) return connect(wiredU, wiredV);
+
+        other.lock.writeLock().lock();
+        try {
+            return connect(wiredU, wiredV);
+        } finally {
+            other.lock.writeLock().unlock();
+        }
+    }
+
+    private boolean connect(WiredNodeImpl wiredU, WiredNodeImpl wiredV) {
         lock.writeLock().lock();
         try {
             if (nodes.isEmpty()) throw new IllegalStateException("Cannot add a connection to an empty network.");
