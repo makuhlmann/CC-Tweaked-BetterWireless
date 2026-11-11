@@ -107,7 +107,7 @@ do
 
     event()
     local bar = line(1)
-    if not bar:find("^ VISIT ") or not bar:find("1 new msg", 1, true) or not bar:find(" R[|.][|.][|.][|.]$") then
+    if not bar:find("^ VISIT ") or not bar:find("1 new msg", 1, true) or not bar:find(" R %[[|.][|.][|.][|.]%]$") then
         fail("Wrong status bar while roaming")
     end
     if not shown("Messages (1 new)") or not shown("No. 100") then fail("Wrong menu") end

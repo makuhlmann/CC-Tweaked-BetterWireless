@@ -1113,8 +1113,9 @@ the design above:
 - **The phone's menus and status bar.** `cell gui` is the phone as its user sees it, drawn for a pocket computer's
   26 columns and usable on any computer, with the keyboard alone or the mouse, in greys where there are no colours.
   - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
-    doing: "Searching...", "Connecting...", "No service" after ten seconds of searching), the signal as four bars on
-    the right with an `R` before them when roaming, and between them a note such as "1 new msg". There's no bar while
+    doing: "Searching...", "Connecting...", "No service" after ten seconds of searching), the signal as four bars in
+    brackets on the right (`[||..]`) with an `R` and a space before them when roaming (`R [||..]`), and between them a
+    note such as "1 new msg". The bar is dark grey, with colours or without. There's no bar while
     cell service is turned off or the phone has no SIM, and what runs beneath it gets the line back (as a
     `term_resize`). `cell bar [program]` runs any program beneath the bar (a shell, if none is given), in a window
     one line shorter, so the bar can stay for good from a startup file. A program which is already beneath a bar

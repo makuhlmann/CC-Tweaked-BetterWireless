@@ -50,9 +50,9 @@ local function wanted(info)
     return info.state ~= "off" and info.state ~= "none" and info.network ~= nil
 end
 
---[[- Make the status bar's line: the network's name on the left; four bars for the signal on the right, with an `R`
-before them when roaming; and how many messages are new, in the middle. On a narrow screen, the name is cut short to
-leave room for the rest.
+--[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
+(`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle. On a
+narrow screen, the name is cut short to leave room for the rest. The bar is dark grey.
 
 @tparam table info The phone's state, as `net.cell.info` gives it.
 @tparam number width The screen's width.
@@ -86,17 +86,20 @@ local function line(info, width, colour, quiet)
         fg = fg:sub(1, x - 1) .. part_colour:rep(#part) .. fg:sub(x + #part)
     end
 
-    -- An R when roaming, four bars, then a space. Only a very narrow screen has no room for them.
+    -- An R and a space when roaming, four bars in brackets, then a space. Only a very narrow screen has no room for
+    -- them.
     local count = attached and signal_bars(info.signal) or 0
     local roaming = attached and info.roaming == true
-    local right_width = roaming and 6 or 5
+    local right_width = roaming and 9 or 7
     local right = width - right_width + 1
     local room = width - 1
     if width >= right_width + 3 then
         room = width - right_width - 2
         if roaming then put(right, "R", "0") end
-        put(width - 4, ("|"):rep(count), "0")
-        put(width - 4 + count, ("."):rep(4 - count), "8")
+        put(width - 6, "[", "0")
+        put(width - 5, ("|"):rep(count), "0")
+        put(width - 5 + count, ("."):rep(4 - count), "8")
+        put(width - 1, "]", "0")
 
         local unread = tonumber(info.unread) or 0
         if unread > 0 then
@@ -113,7 +116,7 @@ local function line(info, width, colour, quiet)
     end
     put(2, name:sub(1, room), "0")
 
-    return text, fg, (colour and "b" or "7"):rep(width)
+    return text, fg, ("7"):rep(width)
 end
 
 local MOUSE_EVENTS = { mouse_click = true, mouse_up = true, mouse_drag = true, mouse_scroll = true }
