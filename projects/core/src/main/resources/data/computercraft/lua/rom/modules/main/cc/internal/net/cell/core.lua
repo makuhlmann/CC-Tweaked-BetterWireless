@@ -1243,22 +1243,35 @@ function Core:roam_uplink(visitor, packet)
     end
 end
 
--- A packet for another network's phone here, down the tunnel from its own core's gateway: on to its cell.
-function Core:roam_downlink(data, from)
+-- Which network's core a packet down a roaming tunnel is from, and what's in it. Only that core has the tunnel's key,
+-- and the sealer refuses replays, so the key which opens it says whose it is. It usually comes from the address we
+-- reached that core at, but needn't: when that's its gateway's address, it comes from the one it has towards us.
+function Core:open_roam_tunnel(data, from)
     for network, partner in pairs(self.partners) do
         if partner.address == from then
             local inner = partner.sealer:open(data)
-            if type(inner) ~= "table" or not is_id(inner.teid) or type(inner.packet) ~= "string" then return end
-            local visitor = self.visitors_by_home[network .. ":" .. inner.teid]
-            local tower = visitor and self.towers[visitor.cell]
-            if not tower then return end
-            local sealed = tower.sealer:seal({ teid = visitor.teid, packet = inner.packet })
-            if sealed then
-                local ok, err = self.stack:udp_send(self.socket, tower.address, tower.port, sealed)
-                if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end
-            end
-            return
+            if inner ~= nil then return network, inner end
         end
+    end
+    for network, partner in pairs(self.partners) do
+        if partner.address ~= from then
+            local inner = partner.sealer:open(data)
+            if inner ~= nil then return network, inner end
+        end
+    end
+end
+
+-- A packet for another network's phone here, down the tunnel from its own core's gateway: on to its cell.
+function Core:roam_downlink(data, from)
+    local network, inner = self:open_roam_tunnel(data, from)
+    if not network or type(inner) ~= "table" or not is_id(inner.teid) or type(inner.packet) ~= "string" then return end
+    local visitor = self.visitors_by_home[network .. ":" .. inner.teid]
+    local tower = visitor and self.towers[visitor.cell]
+    if not tower then return end
+    local sealed = tower.sealer:seal({ teid = visitor.teid, packet = inner.packet })
+    if sealed then
+        local ok, err = self.stack:udp_send(self.socket, tower.address, tower.port, sealed)
+        if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end
     end
 end
 

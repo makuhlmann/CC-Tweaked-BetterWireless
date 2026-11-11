@@ -86,6 +86,26 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
+    it("carries a phone's packets when its own core answers from another address than the one it's reached at", function()
+        -- As when the other core reaches ours at our gateway's address: our core sends down the tunnel from its
+        -- backhaul address, which is the one it has towards the other.
+        math.randomseed(1)
+        local acme, beta, net = operators(nil, nil, false)
+        beta.core_stack:add_route { network = ip("10.64.0.0"), prefix = 16, gateway = ip(acme.core_address), source = "static" }
+        acme.roam_on(beta, { dial = ip("10.64.0.1") })
+        local phone, stack = acme.add_phone(1, 310, true, { partners = { BETA = beta.signing_public } })
+        net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 21 }
+
+        local function answer(target)
+            local result = net.ping(stack, ip(target))
+            return result and (result.error or "answered") or "no answer"
+        end
+        expect(answer("10.0.0.60")):eq("answered")
+        expect(answer("10.64.0.1")):eq("answered")
+        expect(net.errors):same {}
+    end)
+
     it("is learnt from the phone's own network, and keeps a connection open across the border and back", function()
         math.randomseed(2)
         local acme, beta, net = operators()
