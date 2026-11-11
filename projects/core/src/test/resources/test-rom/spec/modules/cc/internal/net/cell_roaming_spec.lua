@@ -403,6 +403,23 @@ describe("Roaming", function()
         expect(net.errors):same {}
     end)
 
+    it("tries other networks next, when its own network's cell doesn't answer", function()
+        math.randomseed(45)
+        -- ACME's cell doesn't hear the phone, and the phone hasn't heard BETA carries it.
+        local acme, beta, net = operators({ 20 }, { 40 })
+        local reach = net.reach
+        net.reach = function(link, sender, receiver)
+            if sender and sender.id == 1 and receiver.id == 11 then return false end
+            return reach(link, sender, receiver)
+        end
+        local phone = acme.add_phone(1, 25)
+        -- It has searched for long enough once its attach through ACME's cell gets no answer, so tries BETA next.
+        net.advance(11)
+        expect({ phone.state, phone.cell }):same { "attached", 21 }
+        expect(phone.partners.BETA):eq(beta.signing_public)
+        expect(net.errors):same {}
+    end)
+
     it("needs both networks to agree", function()
         math.randomseed(5)
         local acme, beta, net = operators(nil, nil, false)

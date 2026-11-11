@@ -150,9 +150,7 @@ function Phone:set_state(state)
     if self.state == state then return end
     self.state = state
     -- An attach which didn't work is part of the same search.
-    if state == "searching" and self.state ~= "attaching" and self.state ~= "rejected" then
-        self.searching_since = self.stack.clock()
-    end
+    if state == "searching" and old ~= "attaching" and old ~= "rejected" then self.searching_since = self.stack.clock() end
     if state == "attached" then
         self:event("attached", { cell = self.cell, roaming = self:roaming() and self.cells[self.cell].network or nil })
     elseif state == "rejected" then
