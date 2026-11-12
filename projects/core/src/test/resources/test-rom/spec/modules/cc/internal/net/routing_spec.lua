@@ -371,6 +371,47 @@ describe("Routing", function()
             expect(find_route(routers[3], "10.12.0.0/24")):eq(nil)
         end)
 
+        it("ignores signed updates which are sent again later, or are too old", function()
+            local function hmac(key, data) return key .. ":" .. data end
+            local time = 1e12
+            local function epoch() return time end
+            local net = network()
+            local r1 = router(net, 1, { { "a", "10.1.0.1/24" } })
+            local r2 = router(net, 2, { { "a", "10.1.0.2/24" } })
+            net.run()
+            rip.start(r1, { key = "secret", hmac = hmac, epoch = epoch })
+
+            -- An update from r2, as a router which knows the key would send it.
+            local function update(metric, at)
+                local routes = { { network = ip("10.9.0.0"), prefix = 24, metric = metric } }
+                local text = ("%d/%d/%d|%d|%d"):format(ip("10.9.0.0"), 24, metric, at, ip("10.1.0.2"))
+                local message = { version = 2, routes = routes, time = at, mac = hmac("secret", text) }
+                r2:send_broadcast("a", "udp", { sp = rip.PORT, dp = rip.PORT, data = message })
+                net.run()
+            end
+            local function metric()
+                local route = find_route(r1, "10.9.0.0/24")
+                return route and route.metric
+            end
+
+            update(1, time)
+            expect(metric()):eq(2)
+            -- r2 withdraws the route.
+            time = time + 1000
+            update(16, time)
+            expect(metric()):eq(16)
+            -- Its first update, sent again, doesn't bring it back: nor does one from long ago, or far in the future.
+            update(1, time - 1000)
+            expect(metric()):eq(16)
+            time = time + 1000
+            update(1, time - 120 * 1000)
+            update(1, time + 120 * 1000)
+            expect(metric()):eq(16)
+            -- A new one does, and a signature over another time or sender doesn't count.
+            update(1, time)
+            expect(metric()):eq(2)
+        end)
+
         it("forgets what it learned when stopped", function()
             local net, _, _, routers, rips = line()
             net.advance(60)

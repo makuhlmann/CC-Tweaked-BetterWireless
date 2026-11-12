@@ -16,6 +16,11 @@ and is forgotten a minute later.
 Links cost 1, except radio links, which cost more the weaker the neighbour's signal: 1 at -60 dBm or better, and 1 more
 for each 10 dB weaker. Routes prefer strong links, which lose fewer packets.
 
+With a shared key, updates are signed: their routes, the time they were sent (in milliseconds, as `os.epoch("utc")`
+gives, and never the same twice from one router) and the sender's address. A router takes an update only if it's newer
+than the last it took from that neighbour, and no more than a minute out, so an update which was overheard can't be
+sent again later to bring back a route which was withdrawn.
+
 @local
 ]]
 
@@ -32,6 +37,10 @@ local TIMEOUT, GARBAGE = 90, 60
 local CHECK_INTERVAL = 5
 local TRIGGER_DELAY = 1
 local MAX_LINK_COST = 8
+-- The version of the updates we send. Version 2 signs the time and the sender's address too.
+local VERSION = 2
+-- How far a signed update's time may be from ours, in milliseconds, before it's taken for a recording.
+local MAX_AGE = 60 * 1000
 
 local Rip = {}
 Rip.__index = Rip
@@ -44,6 +53,11 @@ local function canonical(routes)
     local parts = {}
     for i, route in ipairs(routes) do parts[i] = ("%d/%d/%d"):format(route.network, route.prefix, route.metric) end
     return table.concat(parts, ";")
+end
+
+--- The text of an update which is signed: its routes, when it was sent, and who sent it.
+local function signed_text(routes, time, from)
+    return ("%s|%d|%d"):format(canonical(routes), time, from)
 end
 
 local function usable(interface)
@@ -68,12 +82,20 @@ end
     default? = boolean,
     key? = string,
     hmac? = function(key:string, data:string):string,
-} options Whether to tell other routers this one is the way to everywhere else (a default route); and a shared key,
-with a way to compute an HMAC, to sign updates and ignore unsigned ones.
+    equals? = function(a:string, b:string):boolean,
+    epoch? = function():number,
+} options Whether to tell other routers this one is the way to everywhere else (a default route); a shared key, with a
+way to compute an HMAC, to sign updates and ignore unsigned ones, and a way to compare signatures which takes as long
+whatever they are (`crypto.equals`); and the time, in milliseconds (`os.epoch("utc")` by default).
 @treturn table The running protocol, with a `stop` method.
 ]]
 local function start(stack, options)
-    local self = setmetatable({ stack = stack, options = options or {} }, Rip)
+    options = options or {}
+    local self = setmetatable({
+        stack = stack, options = options, epoch = options.epoch or function() return os.epoch("utc") end,
+        -- Signed updates: the time of the last we sent, and of the last we took from each neighbour.
+        sent_time = 0, heard = {},
+    }, Rip)
     self.socket = stack:udp_open(PORT, function(message, from, _, name) self:receive(message, from, name) end)
     if not self.socket then error("Port " .. PORT .. " is in use", 2) end
 
@@ -146,8 +168,13 @@ function Rip:advertise()
         -- Routers don't talk over virtual links, such as to phones.
         if usable(interface) and not interface.no_rip then
             local routes = self:routes_for(interface)
-            local message = { version = 1, routes = routes }
-            if self.options.key then message.mac = self.options.hmac(self.options.key, canonical(routes)) end
+            local message = { version = VERSION, routes = routes }
+            if self.options.key then
+                local time = math.max(math.floor(self.epoch()), self.sent_time + 1)
+                self.sent_time = time
+                message.time = time
+                message.mac = self.options.hmac(self.options.key, signed_text(routes, time, interface.address))
+            end
             self.stack:send_broadcast(name, "udp", { sp = PORT, dp = PORT, data = message })
         end
     end
@@ -179,6 +206,10 @@ function Rip:check()
         return true
     end)
     if changed then self:trigger() end
+    -- Forget when we last heard from neighbours which have gone quiet: anything older is refused by its age anyway.
+    for from, heard in pairs(self.heard) do
+        if now - heard.at > TIMEOUT + GARBAGE then self.heard[from] = nil end
+    end
     self.check_timer = self.stack:schedule(CHECK_INTERVAL, function() self:check() end)
 end
 
@@ -227,9 +258,24 @@ function Rip:receive(message, from, name)
             routes[#routes + 1] = route
         end
     end
-    if self.options.key and message.mac ~= self.options.hmac(self.options.key, canonical(routes)) then return end
+    local now = stack.clock()
+    if self.options.key then
+        local time = message.time
+        if not is_integer(time, 0, 2 ^ 53) or type(message.mac) ~= "string" then return end
+        local expected = self.options.hmac(self.options.key, signed_text(routes, time, from))
+        local equals = self.options.equals
+        if equals then
+            if not equals(message.mac, expected) then return end
+        elseif message.mac ~= expected then
+            return
+        end
+        -- A recording, sent again: older than the last we took from this neighbour, or than a minute ago.
+        local heard = self.heard[from]
+        if (heard and time <= heard.time) or math.abs(time - self.epoch()) > MAX_AGE then return end
+        self.heard[from] = { time = time, at = now }
+    end
 
-    local now, cost, changed = stack.clock(), self:link_cost(interface, from), false
+    local cost, changed = self:link_cost(interface, from), false
     local index, count = learned(stack)
     local ours = connected(stack)
     for _, entry in ipairs(routes) do

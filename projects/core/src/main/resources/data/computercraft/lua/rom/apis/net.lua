@@ -261,7 +261,9 @@ function apply_routing()
             -- Running without the key would accept routes from anyone, which the key is there to stop.
             log_error("Cannot start routing: net.rip.key needs the crypto API, which is disabled.")
         elseif enabled then
-            local ok, result = pcall(rip.start, stack, { default = default, key = key, hmac = key and crypto.hmac })
+            local ok, result = pcall(rip.start, stack, {
+                default = default, key = key, hmac = key and crypto.hmac, equals = key and crypto.equals,
+            })
             if ok then rip_instance = result else log_error("Cannot start routing: " .. tostring(result)) end
         end
     end

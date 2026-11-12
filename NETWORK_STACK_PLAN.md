@@ -194,6 +194,11 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
   `~=`, which takes a different time for different wrong answers.
 - **Change:** sign the sender's time too, refuse updates older than the last from that neighbour, and compare with
   `crypto.equals`. **Medium**, and a change to the protocol.
+- **Done:** signed updates (now version 2) carry the time they were sent, in milliseconds and never the same twice from
+  one router, and the signature covers the routes, that time and the sender's address. A router takes one only if it's
+  newer than the last it took from that neighbour and no more than a minute out, and compares signatures with
+  `crypto.equals`. Routers with the older ROM and a key can't talk to these: a change to the protocol, as planned.
+  Tested in `routing_spec.lua`.
 
 ### 1.15 Nothing says which version of a protocol a computer speaks
 
