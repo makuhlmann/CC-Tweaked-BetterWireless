@@ -613,11 +613,52 @@ local statuses = {
 -- Set up each test status count.
 for k in pairs(statuses) do test_status[k] = 0 end
 
---- Do the actual running of our test
+--[[ Run a test's set-up and body, passing them the events they wait for.
+
+Under the test delegate, which gives up on a test which takes too long and asks for the next with a `cct_test_run`
+event, that event ends the test there and then. Were it passed to the test, which may be waiting for something which
+isn't coming, the test would take it, and every test after would wait for an event which never came.
+
+Returns whether the test passed, why not, and, if it was ended so, the name of the test asked for next (`false` if the
+event named none, at the end of the run).
+]]
+local function run_test(test)
+    local co = coroutine.create(function()
+        local ok, err = true, nil
+        for i = 1, test.before.n do
+            if not ok then break end
+            ok, err = try(test.before[i])
+        end
+        if ok then ok, err = try(test.action) end
+        return ok, err
+    end)
+
+    local event = { n = 0 }
+    while true do
+        local resumed = table.pack(coroutine.resume(co, table.unpack(event, 1, event.n)))
+        if not resumed[1] then
+            return false, setmetatable({ message = tostring(resumed[2]) }, error_mt)
+        elseif coroutine.status(co) == "dead" then
+            return resumed[2], resumed[3]
+        end
+
+        local filter = resumed[2]
+        repeat
+            event = table.pack(os.pullEventRaw())
+            if cct_test and event[1] == "cct_test_run" then
+                return false, setmetatable({ message = "Stopped, as it ran on after its time was up" }, error_mt),
+                    event[2] or false
+            end
+        until filter == nil or event[1] == filter or event[1] == "terminate"
+    end
+end
+
+--- Do the actual running of our test. Returns the name of the test to run next, if this one was stopped because the
+-- test delegate asked for it (see `run_test`).
 local function do_run(test)
     -- If we're a pre-computed test, determine our status message. Otherwise,
     -- skip.
-    local status, err
+    local status, err, next_test
     if test.pending then
         status = "pending"
     elseif test.error then
@@ -629,12 +670,8 @@ local function do_run(test)
         -- Flush the event queue and ensure we're running with 0 timeout.
         os.queueEvent("start_test") os.pullEvent("start_test")
 
-        local ok = true
-        for i = 1, test.before.n do
-            if not ok then break end
-            ok, err = try(test.before[i])
-        end
-        if ok then ok, err = try(test.action) end
+        local ok
+        ok, err, next_test = run_test(test)
 
         status = ok and "pass" or (err.fail and "fail" or "error")
 
@@ -662,6 +699,8 @@ local function do_run(test)
     local data = statuses[status]
     term.setTextColour(data.col) io.write(data.dot)
     term.setTextColour(colours.white)
+
+    return next_test
 end
 
 -- Loop over all our tests, running them as required.
@@ -669,10 +708,14 @@ if cct_test then
     -- If we're within a cct_test environment, then submit them and wait on tests
     -- to be run.
     cct_test.start(test_map)
-    while true do
-        local _, name = os.pullEvent("cct_test_run")
-        if not name then break end
-        do_run(test_list[test_map[name].idx])
+    local name = select(2, os.pullEvent("cct_test_run"))
+    while name do
+        local next_test = do_run(test_list[test_map[name].idx])
+        if next_test ~= nil then
+            name = next_test
+        else
+            name = select(2, os.pullEvent("cct_test_run"))
+        end
     end
 else
     for _, test in pairs(test_list) do do_run(test) end

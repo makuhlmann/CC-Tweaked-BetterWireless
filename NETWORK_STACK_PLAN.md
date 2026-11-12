@@ -419,6 +419,14 @@ None of these was measured in the game. They're ordered by how often the code ru
   `ComputerThreadTest.testHardAbort` ran alongside a Lua test. Not looked into further. Everything in this plan was
   tested with `--tests '*ComputerTestDelegate*'`.
 - **Change:** find out whether the two share a computer thread, and keep them apart. **Medium.**
+- **Done:** they share nothing: each `ComputerThreadTest` makes its own computer thread (its "Terminating computer #0"
+  is about its own computer, which has the same ID as the Lua tests'). It only adds load. The stall was the test
+  delegate and `mcfly` falling out of step: when a Lua test runs past its ten seconds, the delegate gives up and asks
+  for the next with a `cct_test_run` event, which the test, still waiting for something, took and dropped. Every test
+  after then waited ten seconds for an event which never came. `mcfly` now runs each test in a coroutine of its own
+  and passes it the events it waits for, but a `cct_test_run` ends it, so only the test which ran on fails.
+- **Still open:** the storm tests in `cell_networks_stress_spec.lua` take ten to eleven seconds each on a machine which
+  is busy, against the delegate's limit of ten, so they fail there. They could be shorter again, or the limit longer.
 
 ### 5.3 What a killed test run leaves behind
 
