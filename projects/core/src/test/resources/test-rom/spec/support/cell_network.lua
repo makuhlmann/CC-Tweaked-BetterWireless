@@ -500,7 +500,8 @@ local function operator(cell_positions, options)
         local stack = net.stack(id)
         net.connect(stack, "air", nil, "wireless")
         positions[id] = position
-        local sim = x25519()
+        -- A phone may have another's SIM, as one which restarted has its own.
+        local sim = phone_options.sim or x25519()
         if subscribed ~= false then setup.subscribers[hex(sim.public)] = { id = name .. "-" .. id, number = tostring(id) } end
         local phone = cell_phone.new {
             stack = stack, crypto = crypto, interface = "air", epoch = now, sim = sim,

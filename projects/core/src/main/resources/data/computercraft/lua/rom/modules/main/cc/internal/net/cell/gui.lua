@@ -2,8 +2,8 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
---[[- The phone's menus, which run beneath its status bar: to read, send and answer messages, to choose a network, to
-turn cell service off and on, and to open the monitor.
+--[[- The phone's menus, which run beneath its status bar: to read and write messages, a conversation with each number,
+to choose a network, to turn cell service off and on, and to open the monitor.
 
 Everything here is drawn for a pocket computer's screen, and works on wider ones. Basic computers get greys where
 advanced ones get colours, and everything can be done with the keyboard alone.
@@ -19,9 +19,6 @@ local bar = require "cc.internal.net.cell.bar"
 
 -- How often the list of networks is read again while it's shown, in seconds.
 local NETWORKS_REFRESH = 2
-
--- How long to wait for the network to take a message, in seconds.
-local SENT_TIMEOUT = 20
 
 -- The longest message and the longest number which can be typed, in characters.
 local MAX_TEXT = 1000
@@ -166,7 +163,8 @@ one a moment too long doesn't go through several screens.
  - `note`: a function which returns a note to show beneath the list, and its colour;
  - `empty`: what to say when the list is empty;
  - `hint`: short reminders for the bottom of the screen;
- - `keys`: what to call for other characters, by character;
+ - `keys`: what to call for other characters, by character, with the chosen item. The list ends when it returns
+   something;
  - `refresh`: how often to get the list again, in seconds;
  - `back`: `"quit"` if there's nowhere to go back to, so Q and Backspace quit (and Left does nothing). The list then
    returns `"quit"`.
@@ -248,8 +246,8 @@ local function list_screen(options)
     local timer = options.refresh and os.startTimer(options.refresh)
 
     -- Do what was chosen, which may show other screens for a while, and then catch up.
-    local function act(handler, ...)
-        local result = handler(...)
+    local function act(handler, item)
+        local result = handler(item)
         if timer then
             os.cancelTimer(timer)
             timer = os.startTimer(options.refresh)
@@ -289,7 +287,7 @@ local function list_screen(options)
             if held then
                 dirty = false
             elseif handler then
-                result = act(handler)
+                result = act(handler, items[selected])
             elseif key == "q" then
                 return options.back
             else
@@ -322,366 +320,438 @@ end
 -- Messages
 --------------------------------------------------------------------------------
 
--- Say how a message which was just sent is getting on, until the network has answered or it has taken too long, and
--- then until a key is pressed. This returns true if the network took the message, false and why if it didn't, and
--- nothing if it hasn't answered.
-local function sending_screen(number, id)
-    local sent, reason
-    local outcome, outcome_fg = "Sending...", colours.white
-    local done = false
+-- Who a message is with: the number it's from, or the one it's to.
+local function contact(message) return tostring(message.from or message.to) end
 
-    local function draw()
-        local w, h = term.getSize()
-        clear()
-        draw_title("To " .. number)
-        for i, line in ipairs(wrapped(outcome, w)) do put(1, i + 2, line, outcome_fg) end
-        if done then put(1, h, "Press any key", colours.grey) end
+-- How a sent message is getting on, in a few words, and the colour to show that in.
+local function status_of(message)
+    if message.status == "sent" then
+        return "Sent", colours.lightGrey
+    elseif message.status == "sending" then
+        return "Sending...", c(colours.yellow, colours.lightGrey)
+    elseif message.status == "waiting" then
+        return "Waiting for service", c(colours.orange, colours.lightGrey)
     end
-
-    local timer = os.startTimer(SENT_TIMEOUT)
-    draw()
-    while true do
-        local event, a, b, why = os.pullEvent()
-        if done then
-            if (event == "key" and not b) or event == "mouse_click" then break end
-        elseif event == "cell_sent" and a == id then
-            done, sent = true, b == true
-            if sent then
-                outcome, outcome_fg = "Sent.", c(colours.lime)
-            else
-                reason = why and tostring(why) or nil
-                outcome, outcome_fg = reason and "Not sent: " .. reason or "Not sent.", c(colours.red)
-            end
-        elseif event == "timer" and a == timer then
-            done = true
-            outcome = "Still sending. The network hasn't answered yet."
-        end
-        draw()
-    end
-    os.cancelTimer(timer)
-    return sent, reason
+    return "Not sent" .. (message.error and ": " .. tostring(message.error) or ""), c(colours.red)
 end
 
--- Write a message and send it. Up, Down and Tab move between the number, the text and the buttons. Enter goes from
--- the number to the text, and sends from there. Backspace in an empty number gives up.
-local function compose_screen(number)
-    local fields = {
-        { value = number or "", pos = #(number or ""), max = MAX_NUMBER },
-        { value = "", pos = 0, max = MAX_TEXT },
-    }
-    -- What is being typed in or would be pressed: the number, the text, Send or Cancel.
-    local NUMBER, TEXT, SEND, CANCEL = 1, 2, 3, 4
-    local focus = number and TEXT or NUMBER
-    local problem
-    local text_top, text_bottom, text_scroll, places = 4, 4, 0, {}
-
-    local function draw()
+-- Ask whether to do something. Left and Right (or Tab) choose between the buttons, and Enter or a click presses one;
+-- Y says yes, and N, Q or Backspace no. This returns whether the answer was yes.
+local function confirm_screen(title, question, yes)
+    local selected, places, held = 1, {}, false
+    while true do
         local w, h = term.getSize()
         clear()
-        draw_title(number and "Reply" or "New message")
-
-        local problems = problem and wrapped(problem, w) or {}
-        local problem_count = math.max(0, math.min(#problems, h - 6))
-        text_bottom = math.max(text_top, h - 2 - problem_count)
-
-        -- The number, on one line. It moves along if the cursor would be off the screen.
-        local to = fields[NUMBER]
-        local along = math.max(0, to.pos - (w - 5))
-        put(1, 2, "To:", focus == NUMBER and colours.white or colours.lightGrey)
-        put(5, 2, to.value:sub(along + 1))
-
-        -- The text, on as many lines as there are. A line is one narrower than the screen, to leave room for the
-        -- cursor after its last character.
-        local text = fields[TEXT]
-        local count = ("%d/%d"):format(#text.value, text.max)
-        put(1, 3, "Message:", focus == TEXT and colours.white or colours.lightGrey)
-        put(w - #count + 1, 3, count, colours.lightGrey)
-        local lines = wrap(text.value, w - 1)
-        local cursor_line = 1
-        for i, line in ipairs(lines) do
-            if line[1] <= text.pos + 1 then cursor_line = i end
+        draw_title(title)
+        for i, line in ipairs(wrapped(question, w)) do
+            if i + 2 < h then put(1, i + 2, line) end
         end
-        local rows = text_bottom - text_top + 1
-        if cursor_line <= text_scroll then text_scroll = cursor_line - 1 end
-        if cursor_line > text_scroll + rows then text_scroll = cursor_line - rows end
-        text_scroll = math.max(0, math.min(text_scroll, #lines - rows))
-        for row = 1, rows do
-            local line = lines[text_scroll + row]
-            if line then put(1, text_top + row - 1, text.value:sub(line[1], line[2])) end
-        end
+        places = draw_buttons(h, { yes, "Keep" }, selected)
 
-        for i = 1, problem_count do put(1, text_bottom + i, problems[i], c(colours.red)) end
-        places = draw_buttons(h, { "Send", "Cancel" }, focus - SEND + 1)
-
-        if focus == NUMBER then
-            term.setCursorPos(5 + to.pos - along, 2)
-        elseif focus == TEXT then
-            term.setCursorPos(text.pos + 2 - lines[cursor_line][1], text_top + cursor_line - 1 - text_scroll)
-        end
-        term.setTextColour(colours.white)
-        term.setCursorBlink(focus <= TEXT)
-    end
-
-    local function insert(typed)
-        local field = fields[focus]
-        if not field then return end
-        typed = typed:gsub("[\r\n]+", " "):sub(1, math.max(0, field.max - #field.value))
-        field.value = field.value:sub(1, field.pos) .. typed .. field.value:sub(field.pos + 1)
-        field.pos = field.pos + #typed
-    end
-
-    -- Send the message. This returns whether there's nothing more to do here.
-    local function submit()
-        local to, text = fields[NUMBER].value:gsub("^%s+", ""):gsub("%s+$", ""), fields[TEXT].value
-        if to == "" then
-            problem, focus = "Enter a number first.", NUMBER
-            return false
-        elseif not text:find("%S") then
-            problem, focus = "Write a message first.", TEXT
-            return false
-        end
-
-        local ok, id = net.cell.send(to, text)
-        bar.touch()
-        if not ok then
-            problem = tostring(id or "The message couldn't be sent")
-            return false
-        end
-        local sent, reason = sending_screen(to, id)
-        if sent == false then
-            problem = reason and "Not sent: " .. reason or "Not sent."
-            return false
-        end
-        return true
-    end
-
-    while true do
-        draw()
         local event, a, b, y = os.pullEvent()
-        local field = fields[focus]
-        if event == "char" or event == "paste" then
-            insert(a)
-        elseif event == "key" then
-            if is_enter(a) and not b then
-                if focus == NUMBER then
-                    focus = TEXT
-                elseif focus == CANCEL or submit() then
-                    break
-                end
-            elseif a == keys.tab then
-                focus = focus % CANCEL + 1
-            elseif a == keys.up then
-                focus = focus >= SEND and TEXT or NUMBER
-            elseif a == keys.down then
-                if focus < SEND then focus = focus + 1 end
-            elseif a == keys.left then
-                if field then field.pos = math.max(0, field.pos - 1) else focus = SEND end
-            elseif a == keys.right then
-                if field then field.pos = math.min(#field.value, field.pos + 1) else focus = CANCEL end
-            elseif a == keys.home and field then
-                field.pos = 0
-            elseif a == keys["end"] and field then
-                field.pos = #field.value
-            elseif a == keys.delete and field then
-                field.value = field.value:sub(1, field.pos) .. field.value:sub(field.pos + 2)
-            elseif a == keys.backspace then
-                if field and field.pos > 0 then
-                    field.value = field.value:sub(1, field.pos - 1) .. field.value:sub(field.pos + 1)
-                    field.pos = field.pos - 1
-                elseif not b and focus == NUMBER and field.value == "" then
-                    break
-                elseif not b and focus ~= NUMBER and (not field or field.value == "") then
-                    focus = focus == TEXT and NUMBER or TEXT
-                end
-            end
-        elseif event == "mouse_click" and a == 1 then
-            local _, h = term.getSize()
-            if y == h then
-                local button = button_at(places, b)
-                if button == 2 or (button == 1 and submit()) then break end
-            elseif y == 2 then
-                focus = NUMBER
-            elseif y >= 3 and y <= text_bottom then
-                focus = TEXT
-            end
-        end
-    end
-    term.setCursorBlink(false)
-end
-
--- Show one message, all of it. Left and Right choose between the buttons, Up and Down move a long message, and Q or
--- Backspace goes back. Opening a message marks it as read.
-local function message_screen(n)
-    local function find()
-        for _, message in ipairs(net.cell.messages()) do
-            if message.n == n then return message end
-        end
-        return nil
-    end
-
-    local message = find()
-    if not message then return end
-    if message.from and message.read == false then
-        net.cell.markRead(n)
-        bar.touch()
-    end
-
-    local selected, scroll, max_scroll, rows, confirming = 1, 0, 0, 1, false
-    local labels, places = {}, {}
-
-    local function draw()
-        local w, h = term.getSize()
-        clear()
-        draw_title((message.from and "From " or "To ") .. tostring(message.from or message.to))
-        local y = 2
-        if type(message.time) == "number" then
-            put(1, y, os.date("%Y-%m-%d %H:%M", math.floor(message.time / 1000)), colours.lightGrey)
-            y = y + 1
-        end
-        if message.to then
-            local status, fg = "Sent", c(colours.lime)
-            if message.status == "sending" then
-                status, fg = "Sending...", c(colours.yellow)
-            elseif message.status ~= "sent" then
-                status, fg = "Not sent" .. (message.error and ": " .. tostring(message.error) or ""), c(colours.red)
-            end
-            for _, line in ipairs(wrapped(status, w)) do
-                put(1, y, line, fg)
-                y = y + 1
-            end
-        end
-
-        -- The text has the lines from here to the one above the buttons, but for a gap on either side.
-        local top = y + 1
-        local lines = wrapped(tostring(message.text):gsub("%s+$", ""), w)
-        rows = math.max(1, h - 2 - top + 1)
-        max_scroll = math.max(0, #lines - rows)
-        scroll = math.max(0, math.min(scroll, max_scroll))
-        for row = 1, rows do
-            if lines[scroll + row] then put(1, top + row - 1, lines[scroll + row]) end
-        end
-
-        if confirming then
-            put(1, h - 1, "Delete this message?")
-            labels = { "Delete", "Keep" }
-        else
-            if max_scroll > 0 then
-                put(1, h - 1, ("Up/Down: more (%d/%d)"):format(scroll + 1, max_scroll + 1), colours.grey)
-            end
-            labels = message.from and { "Reply", "Delete", "Back" } or { "Delete", "Back" }
-        end
-        selected = math.max(1, math.min(selected, #labels))
-        places = draw_buttons(h, labels, selected)
-    end
-
-    -- Press a button. This returns whether the screen is done with.
-    local function press(label)
-        if label == "Reply" then
-            compose_screen(tostring(message.from))
-            message = find()
-            return message == nil
-        elseif label == "Delete" and confirming then
-            net.cell.deleteMessage(n)
-            bar.touch()
-            return true
-        elseif label == "Delete" then
-            confirming, selected = true, 1
-        elseif label == "Keep" then
-            confirming, selected = false, message.from and 2 or 1
-        elseif label == "Back" then
-            return true
-        end
-        return false
-    end
-
-    -- Whether the last key was held down, as for lists: the character it typed is then ignored too.
-    local held = false
-    while true do
-        draw()
-        local event, a, b, y = os.pullEvent()
-        local label
         if event == "key" then
             held = b
             if a == keys.left then
-                selected = math.max(1, selected - 1)
+                selected = 1
             elseif a == keys.right or a == keys.tab then
-                selected = math.min(#labels, selected + 1)
-            elseif a == keys.up then
-                scroll = scroll - 1
-            elseif a == keys.down then
-                scroll = scroll + 1
-            elseif a == keys.pageUp then
-                scroll = scroll - rows
-            elseif a == keys.pageDown then
-                scroll = scroll + rows
+                selected = 2
             elseif is_enter(a) and not b then
-                label = labels[selected]
+                return selected == 1
             elseif a == keys.backspace and not b then
-                label = confirming and "Keep" or "Back"
+                return false
             end
         elseif event == "char" and not held then
             local key = a:lower()
-            if key == "q" then
-                label = confirming and "Keep" or "Back"
-            elseif key == "r" and message.from and not confirming then
-                label = "Reply"
-            elseif key == "d" and not confirming then
-                label = "Delete"
-            end
-        elseif event == "mouse_click" and a == 1 then
-            local _, h = term.getSize()
-            if y == h then label = labels[button_at(places, b)] end
-        elseif event == "mouse_scroll" then
-            scroll = scroll + a
-        elseif event == "cell_sent" or event == "cell_state" then
-            -- A message which was being sent may have got there.
-            message = find()
-            if not message then return end
+            if key == "y" then return true end
+            if key == "n" or key == "q" then return false end
+        elseif event == "mouse_click" and a == 1 and y == h then
+            local button = button_at(places, b)
+            if button then return button == 1 end
         end
-        if label and press(label) then return end
     end
 end
 
--- List the messages, newest first, and open the one which is chosen.
-local function messages_screen()
+-- A line of text being typed: what it says, and where the cursor is in it.
+local function new_field(max)
+    return { value = "", pos = 0, max = max }
+end
+
+-- Type into a field. Line breaks become spaces, and nothing goes past the longest it may be.
+local function field_insert(field, typed)
+    typed = typed:gsub("[\r\n]+", " "):sub(1, math.max(0, field.max - #field.value))
+    field.value = field.value:sub(1, field.pos) .. typed .. field.value:sub(field.pos + 1)
+    field.pos = field.pos + #typed
+end
+
+-- Edit a field with a key, as any line of text is. Returns whether the key did something to it.
+local function field_key(field, key)
+    if key == keys.left then
+        field.pos = math.max(0, field.pos - 1)
+    elseif key == keys.right then
+        field.pos = math.min(#field.value, field.pos + 1)
+    elseif key == keys.home then
+        field.pos = 0
+    elseif key == keys["end"] then
+        field.pos = #field.value
+    elseif key == keys.delete then
+        field.value = field.value:sub(1, field.pos) .. field.value:sub(field.pos + 2)
+    elseif key == keys.backspace and field.pos > 0 then
+        field.value = field.value:sub(1, field.pos - 1) .. field.value:sub(field.pos + 1)
+        field.pos = field.pos - 1
+    else
+        return false
+    end
+    return true
+end
+
+-- Draw a field on one line, from a column to the end of the screen, moving along if the cursor would be off the
+-- screen. Returns the column the cursor is in.
+local function draw_field(field, x, y, placeholder)
+    local w = term.getSize()
+    local room = math.max(1, w - x)
+    local along = math.max(0, field.pos - room)
+    if field.value == "" and placeholder then
+        put(x, y, placeholder, colours.grey)
+    else
+        put(x, y, field.value:sub(along + 1, along + room + 1))
+    end
+    return x + field.pos - along
+end
+
+-- Ask for the number to write to. Enter goes on to the conversation with it, and Backspace in an empty number goes
+-- back. Returns the number, or nothing.
+local function number_screen()
+    local field, problem, held = new_field(MAX_NUMBER), nil, false
+    while true do
+        local w, h = term.getSize()
+        clear()
+        draw_title("New message")
+        put(1, 3, "To:")
+        local x = draw_field(field, 5, 3)
+        for i, line in ipairs(problem and wrapped(problem, w) or {}) do
+            if i + 4 < h then put(1, i + 4, line, c(colours.red)) end
+        end
+        if h >= 6 then put(1, h, fit("Enter: OK  Backspace: back", w), colours.grey) end
+        term.setCursorPos(x, 3)
+        term.setTextColour(colours.white)
+        term.setCursorBlink(true)
+
+        local event, a, b = os.pullEvent()
+        if event == "char" or event == "paste" then
+            field_insert(field, a)
+            problem = nil
+        elseif event == "key" then
+            held = b
+            if is_enter(a) and not b then
+                local number = field.value:gsub("^%s+", ""):gsub("%s+$", "")
+                if number ~= "" then
+                    term.setCursorBlink(false)
+                    return number
+                end
+                problem = "Enter a number first."
+            elseif a == keys.backspace and field.value == "" then
+                if not held then
+                    term.setCursorBlink(false)
+                    return nil
+                end
+            else
+                field_key(field, a)
+            end
+        end
+    end
+end
+
+--[[ A conversation with one number: the messages to and from it, oldest first, with the newest at the bottom, above a
+line to write the next one in. Messages from the number are on the left, and those sent to it on the right, each with
+when, and how a sent one is getting on.
+
+Typing writes, Enter sends (even without service: the message waits until there is some), and Backspace in an empty
+line goes back. Up and Down (and Page Up and Down, or the mouse wheel) scroll. Tab chooses a message instead, which Up
+and Down move between: D deletes it, R sends one which wasn't sent again, and Tab, Q or Backspace go back to writing.
+Opening the conversation reads its messages, and so does one which arrives while it's open.
+]]
+local function conversation_screen(number)
+    local messages, field, problem = {}, new_field(MAX_TEXT), nil
+    -- How many lines up from the newest the conversation is scrolled; the chosen message, while choosing; whether the
+    -- last key was held down (the character it typed is then ignored too); and where things are on the screen.
+    local scroll, choosing, held = 0, nil, false
+    local body_top, body_bottom, input_y, back_x, shown = 2, 1, 1, nil, {}
+
+    local function load()
+        messages = {}
+        local unread = {}
+        for _, message in ipairs(net.cell.messages()) do
+            if contact(message) == number then
+                messages[#messages + 1] = message
+                if message.from and message.read == false then unread[#unread + 1] = message.n end
+            end
+        end
+        for _, n in ipairs(unread) do net.cell.markRead(n) end
+        if #unread > 0 then bar.touch() end
+        if choosing then choosing = #messages > 0 and math.max(1, math.min(choosing, #messages)) or nil end
+    end
+
+    -- Every line of the conversation, oldest first: its text, column, colour, and which message it's part of.
+    local function lay_out(w)
+        local lines = {}
+        local width = w > 8 and w - 3 or w
+        for i, message in ipairs(messages) do
+            local sent = message.to ~= nil
+            local fg = sent and c(colours.lightBlue, colours.white) or colours.white
+            for _, line in ipairs(wrapped(tostring(message.text):gsub("%s+$", ""), width)) do
+                lines[#lines + 1] = { text = line, x = sent and w - #line + 1 or 1, fg = fg, index = i }
+            end
+            local about, about_fg = short_time(message.time), colours.grey
+            if sent then
+                local status, status_fg = status_of(message)
+                about = about ~= "" and about .. " " .. status or status
+                if message.status ~= "sent" then about_fg = status_fg end
+            end
+            for _, line in ipairs(wrapped(about, w)) do
+                lines[#lines + 1] = { text = line, x = sent and w - #line + 1 or 1, fg = about_fg, index = i }
+            end
+        end
+        return lines
+    end
+
+    local function draw()
+        local w, h = term.getSize()
+        clear()
+        local right = w >= #number + 6 and "Back" or nil
+        draw_title(number, right)
+        back_x = right and w - #right + 1 or nil
+
+        input_y = math.max(1, h)
+        local hint_y = h >= 6 and h - 1 or nil
+        body_top, body_bottom = 2, (hint_y or input_y) - 1
+        local rows = math.max(0, body_bottom - body_top + 1)
+
+        local lines = lay_out(w)
+        local max_scroll = math.max(0, #lines - rows)
+        -- The chosen message is kept in sight.
+        if choosing then
+            local first, last
+            for i, line in ipairs(lines) do
+                if line.index == choosing then
+                    first, last = first or i, i
+                end
+            end
+            if first then
+                local top = #lines - rows - scroll
+                if first <= top then scroll = #lines - rows - first + 1 end
+                if last > top + rows then scroll = #lines - last end
+            end
+        end
+        scroll = math.max(0, math.min(scroll, max_scroll))
+        local top = math.max(0, #lines - rows - scroll)
+
+        if #messages == 0 and rows > 0 then put(1, body_top, fit("No messages yet.", w), colours.lightGrey) end
+        shown = {}
+        for row = 1, rows do
+            local line = lines[top + row]
+            if not line then break end
+            local y = body_top + row - 1
+            shown[y] = line.index
+            if line.index == choosing then
+                put(1, y, (" "):rep(w), colours.black, colours.white)
+                put(line.x, y, line.text, colours.black, colours.white)
+            else
+                put(line.x, y, line.text, line.fg)
+            end
+        end
+
+        if hint_y then
+            if problem then
+                put(1, hint_y, fit(problem, w), c(colours.red))
+            elseif choosing then
+                put(1, hint_y, fit("D: delete  R: resend", w), colours.grey)
+            else
+                put(1, hint_y, fit("Enter: send  Tab: choose", w), colours.grey)
+            end
+        end
+
+        put(1, input_y, ">", choosing and colours.grey or colours.white)
+        local x = draw_field(field, 3, input_y, "Write a message")
+        if choosing then
+            term.setCursorBlink(false)
+        else
+            term.setCursorPos(x, input_y)
+            term.setTextColour(colours.white)
+            term.setCursorBlink(true)
+        end
+        return rows
+    end
+
+    local function send(text)
+        local ok, err = net.cell.send(number, text)
+        bar.touch()
+        if not ok then
+            problem = tostring(err or "The message couldn't be sent")
+            return false
+        end
+        problem, scroll = nil, 0
+        return true
+    end
+
+    -- What can be done with the chosen message.
+    local function delete_chosen()
+        local message = messages[choosing]
+        if message and confirm_screen(number, "Delete this message?", "Delete") then
+            net.cell.deleteMessage(message.n)
+            bar.touch()
+        end
+    end
+    local function resend_chosen()
+        local message = messages[choosing]
+        if message and message.to and message.status == "failed" and send(tostring(message.text)) then
+            net.cell.deleteMessage(message.n)
+        end
+    end
+
+    load()
+    local rows = 1
+    while true do
+        rows = draw()
+        local event, a, b, y = os.pullEvent()
+        if event == "key" then
+            held = b
+            if a == keys.up and choosing then
+                choosing = math.max(1, choosing - 1)
+            elseif a == keys.down and choosing then
+                choosing = math.min(#messages, choosing + 1)
+            elseif a == keys.up then
+                scroll = scroll + 1
+            elseif a == keys.down then
+                scroll = scroll - 1
+            elseif a == keys.pageUp then
+                scroll = scroll + math.max(1, rows)
+            elseif a == keys.pageDown then
+                scroll = scroll - math.max(1, rows)
+            elseif a == keys.tab then
+                if choosing then
+                    choosing = nil
+                elseif #messages > 0 then
+                    choosing = #messages
+                end
+            elseif choosing then
+                if a == keys.backspace and not b then choosing = nil end
+            elseif is_enter(a) and not b then
+                if field.value:find("%S") and send(field.value) then field.value, field.pos = "", 0 end
+                load()
+            elseif a == keys.backspace and field.value == "" then
+                if not b then
+                    term.setCursorBlink(false)
+                    return
+                end
+            else
+                field_key(field, a)
+                problem = nil
+            end
+        elseif (event == "char" or event == "paste") and choosing then
+            local key = event == "char" and not held and a:lower()
+            if key == "d" then
+                delete_chosen()
+                load()
+            elseif key == "r" then
+                resend_chosen()
+                load()
+            elseif key == "q" then
+                choosing = nil
+            end
+        elseif event == "char" or event == "paste" then
+            field_insert(field, a)
+            problem = nil
+        elseif event == "mouse_click" and a == 1 then
+            if y == 1 and back_x and b >= back_x then
+                term.setCursorBlink(false)
+                return
+            elseif y == input_y then
+                choosing = nil
+            elseif shown[y] then
+                choosing = shown[y]
+            end
+        elseif event == "mouse_scroll" then
+            scroll = scroll - a
+        elseif event == "cell_message" or event == "cell_sent" or event == "cell_messages" or event == "cell_state"
+            or event == "term_resize" then
+            load()
+        end
+    end
+end
+
+-- List the conversations, with the newest first, and open the one which is chosen. N writes to another number, and D
+-- deletes the chosen conversation, once that's confirmed.
+local function conversations_screen()
     local unread = 0
     return list_screen {
-        hint = { "* new", "> sent", "! failed", "Q/Backspace: back" },
+        hint = { "* new", "! not sent", "N: new", "D: delete", "Q/Backspace: back" },
         empty = "No messages.",
         title = function() return "Messages", unread > 0 and unread .. " new" or nil end,
         items = function()
-            local messages = net.cell.messages()
-            local w = term.getSize()
+            -- Each number's messages, and the newest of them, by number.
+            local by_number, order = {}, {}
+            unread = 0
+            for i, message in ipairs(net.cell.messages()) do
+                local number = contact(message)
+                local entry = by_number[number]
+                if not entry then
+                    entry = { number = number, messages = {}, unread = 0 }
+                    by_number[number] = entry
+                    order[#order + 1] = entry
+                end
+                entry.messages[#entry.messages + 1] = message
+                entry.last, entry.at = message, i
+                if message.from and message.read == false then
+                    entry.unread, unread = entry.unread + 1, unread + 1
+                end
+            end
+            table.sort(order, function(a, b) return a.at > b.at end)
+
             -- The columns are as wide as what's in them, but a long number doesn't take the text's room.
-            local who_width, time_width, times = 1, 1, {}
-            for i, message in ipairs(messages) do
-                times[i] = short_time(message.time)
-                who_width = math.max(who_width, #tostring(message.from or message.to))
-                time_width = math.max(time_width, #times[i])
+            local w = term.getSize()
+            local who_width, time_width = 1, 1
+            for _, entry in ipairs(order) do
+                entry.time = short_time(entry.last.time)
+                who_width = math.max(who_width, #entry.number)
+                time_width = math.max(time_width, #entry.time)
             end
             who_width = math.min(who_width, w >= 40 and 16 or 8)
 
-            unread = 0
             local items = {}
-            for i = #messages, 1, -1 do
-                local message = messages[i]
-                local mark, fg = " ", colours.lightGrey
-                if message.from then
-                    if message.read == false then mark, fg, unread = "*", colours.white, unread + 1 end
-                elseif message.status == "failed" then
+            for _, entry in ipairs(order) do
+                local last, mark, fg = entry.last, " ", colours.lightGrey
+                if entry.unread > 0 then
+                    mark, fg = "*", colours.white
+                elseif last.to and last.status == "failed" then
                     mark = "!"
-                else
+                elseif last.to then
                     mark = ">"
                 end
                 items[#items + 1] = {
-                    id = message.n, fg = fg,
-                    text = ("%s%s %s %s"):format(mark, fit(message.from or message.to, who_width),
-                        fit(times[i], time_width), (tostring(message.text):gsub("%s+", " "))),
+                    id = entry.number, fg = fg, entry = entry,
+                    text = ("%s%s %s %s"):format(mark, fit(entry.number, who_width), fit(entry.time, time_width),
+                        (tostring(last.text):gsub("%s+", " "))),
                 }
             end
             return items
         end,
-        choose = function(item) message_screen(item.id) end,
+        choose = function(item) conversation_screen(item.id) end,
+        keys = {
+            n = function()
+                local number = number_screen()
+                if number then conversation_screen(number) end
+            end,
+            d = function(item)
+                if not item then return end
+                local count = #item.entry.messages
+                local question = count == 1 and ("Delete the message with %s?"):format(item.id)
+                    or ("Delete the %d messages with %s?"):format(count, item.id)
+                if confirm_screen("Messages", question, "Delete") then
+                    for _, message in ipairs(item.entry.messages) do net.cell.deleteMessage(message.n) end
+                    bar.touch()
+                end
+            end,
+        },
     }
 end
 
@@ -794,9 +864,10 @@ local function home_screen(monitor)
         choose = function(item)
             problem = nil
             if item.id == "messages" then
-                messages_screen()
+                conversations_screen()
             elseif item.id == "compose" then
-                compose_screen()
+                local number = number_screen()
+                if number then conversation_screen(number) end
             elseif item.id == "networks" then
                 networks_screen()
             elseif item.id == "service" then

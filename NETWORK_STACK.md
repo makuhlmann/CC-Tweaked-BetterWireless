@@ -1038,8 +1038,11 @@ the design above:
 - **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
   connection to the core. Both halves of the journey are acknowledged, as radio frames get lost:
   - A phone numbers each message, and sends it every 5 seconds until the core says it has it (or won't take it, and
-    why), giving up after a minute. The core remembers the last 64 numbers from each phone, so a message which comes
-    twice is only kept once. Up to 20 messages may be on their way from a phone.
+    why), giving up after a minute of tries. The core remembers the last 64 numbers from each phone, so a message which
+    comes twice is only kept once. Up to 20 messages may be on their way from a phone. Without service (or while cell
+    service is off), a message waits, and is sent once the phone has service: only tries while it has service count.
+    Messages waiting are kept with the phone's others, so a phone which restarts sends them again, with the numbers
+    they had: the core knows any it took already (unless the core restarted since).
   - The core keeps messages until the phone they're for is attached and acknowledges them, trying again every 10
     seconds. It refuses messages for numbers nobody has, keeps at most 50 for a number and 1,000 in all, and forgets
     them after a week. Phones remember the last 128 messages they've had, to drop repeats. The core numbers messages
@@ -1222,11 +1225,14 @@ the design above:
     `term_resize`). `cell bar [program]` runs any program beneath the bar (a shell, if none is given), in a window
     one line shorter, so the bar can stay for good from a startup file. A program which is already beneath a bar
     doesn't get a second one.
-  - **Menus:** messages (newest first, received and sent, with which are new and which failed; opening one marks it
-    read, and it can be answered or deleted), writing a message (and watching whether the network took it), networks
+  - **Menus:** messages, as a conversation with each number (the list has the newest first, and which have new
+    messages or one which wasn't sent; a conversation has those from the number on the left and those sent to it on
+    the right, with how each got on, above a line to write in, and opening it reads its messages; messages can be
+    deleted, one or a conversation at a time, and one which wasn't sent sent again), writing to a new number, networks
     (every network in range and the SIM's own and partners', with signal, which is in use and which is chosen;
     choosing one keeps the phone to it, and "Automatic" lets it choose), cell service off and on, and the monitor.
-    Every screen is left with Q or Backspace (the first quits), and a key held down never leaves two at once.
+    Every screen is left with Q or Backspace (the first quits), but for a conversation, where Q is a letter and
+    Backspace in an empty line leaves; and a key held down never leaves two at once.
   - **The same from the shell:** `cell networks`, `cell network <name>|auto`, `cell on` and `cell off`.
   - **What it's built on.** The menus only use `net.cell`: `info` (which also has `enabled`, `signal`,
     `serving_network`, `roaming`, `selection` and `unread`), `messages`, `markRead`, `deleteMessage`, `send`,

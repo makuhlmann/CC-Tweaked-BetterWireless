@@ -1572,6 +1572,8 @@ local INBOX_FILE = "/.net/messages"
 -- What the user has chosen: `off` (cell service is turned off) and `network` (the only network to use).
 local PHONE_FILE = "/.net/phone"
 local MAX_INBOX = 100
+-- How many sent messages may wait to be sent while cell service is off: as many as the phone keeps.
+local MAX_WAITING = 20
 local phone_instance
 
 -- Messages received and sent, oldest first. Each has a number, `n`, which stays the same as others come and go.
@@ -1681,7 +1683,28 @@ local function new_phone(operator, partners, equivalent)
             })
         end,
     }
+
+    -- Messages which were waiting to be sent when the phone last stopped (or were sent while cell service was off) go
+    -- now, or once it has service, with the IDs they had: the network knows any it took then, and doesn't deliver
+    -- them twice.
+    if operator then
+        local refused = {}
+        for _, message in ipairs(read_messages()) do
+            if message.to and message.status == "sending" and type(message.id) == "number" then
+                local ok, err = phone_instance:send_message(message.to, message.text, message.id)
+                if not ok then refused[message.id] = err end
+            end
+        end
+        change_messages(function(message) return message.status == "sending" and refused[message.id] ~= nil end,
+            function(message) message.status, message.error = "failed", refused[message.id] end)
+    end
     return phone_instance
+end
+
+-- Whether this computer has a SIM: it has been activated on a network.
+local function has_sim()
+    local sim = read_table(SIM_FILE)
+    return type(sim.network) == "string" and from_hex(sim.key) ~= nil and from_hex(sim.signing) ~= nil
 end
 
 -- Start the phone, if this computer has been activated on a network.
@@ -2193,9 +2216,12 @@ cell = {
     event says how that went: the message's ID and `true`, or `false` and why not (nobody has that number, say). The
     network then keeps it until the phone it's for is reachable.
 
+    Without service (or while cell service is off), the message waits, even if the computer restarts, and is sent once
+    the phone has service.
+
     @tparam string number The number.
     @tparam string text The message, up to 1000 characters.
-    @treturn[1] true If it's being sent. It's listed by `net.cell.messages`, with how it's getting on.
+    @treturn[1] true If it's being sent, or waits to be. It's listed by `net.cell.messages`, with how it's getting on.
     @treturn[1] number The message's ID, which the `cell_sent` event has.
     @treturn[2] nil If it couldn't be sent.
     @treturn[2] string Why not.
@@ -2204,9 +2230,25 @@ cell = {
         expect(1, number, "string")
         expect(2, text, "string")
         load()
-        if not phone_instance then return nil, read_table(PHONE_FILE).off and "Cell service is turned off" or "No SIM" end
-        local ok, id = phone_instance:send_message(number, text)
-        if not ok then return nil, id end
+        local id
+        if phone_instance then
+            local ok, result = phone_instance:send_message(number, text)
+            if not ok then return nil, result end
+            id = result
+        else
+            -- Cell service is off (or the phone hasn't started): the message waits, and the phone sends it once it
+            -- has service. It's numbered after those the phone numbered, so it's taken for none of them.
+            if not has_sim() then return nil, "No SIM" end
+            local ok, err = env_require("cc.internal.net.cell.phone").check_message(number, text)
+            if not ok then return nil, err end
+            local last, waiting = nil, 0
+            for _, message in ipairs(read_messages()) do
+                if type(message.id) == "number" and (not last or message.id > last) then last = message.id end
+                if message.to and message.status == "sending" then waiting = waiting + 1 end
+            end
+            if waiting >= MAX_WAITING then return nil, "Too many messages are waiting to be sent" end
+            id = last and last + 1 or math.random(0, 0x3FFFFFFF)
+        end
         add_message({ to = number, text = text, time = os.epoch("utc"), id = id, status = "sending" })
         os.queueEvent("cell_messages")
         return true, id
@@ -2217,19 +2259,27 @@ cell = {
     @treturn { { n = number, from? = string, to? = string, text = string, time = number, read? = boolean,
     status? = string, error? = string }... } The messages. Each has `n`, a number which stays the same as other messages
     come and go; `text`; and `time` (as `os.epoch("utc")` gives it). Received messages have `from`, the sender's number,
-    and `read`. Sent messages have `to`, and `status`: `"sending"`, `"sent"` (the network has it) or `"failed"`, with
-    `error` saying why.
+    and `read`. Sent messages have `to`, and `status`: `"waiting"` (there's no service, or cell service is off: it's
+    sent once there is), `"sending"`, `"sent"` (the network has it) or `"failed"`, with `error` saying why.
     ]]
     messages = function()
-        local waiting = {}
-        for _, message in ipairs(phone_instance and phone_instance.outbox or {}) do waiting[message.id] = true end
+        local outbox = {}
+        for _, message in ipairs(phone_instance and phone_instance.outbox or {}) do outbox[message.id] = true end
+        local attached = phone_instance ~= nil and phone_instance.state == "attached"
+        local sim = not phone_instance and has_sim()
         local list = read_messages()
         for _, message in ipairs(list) do
             if message.from then
                 message.read = message.read ~= false
-            elseif message.status == "sending" and not waiting[message.id] then
-                -- The computer restarted (or cell service was turned off) before the network took it.
-                message.status, message.error = "failed", "Not sent"
+            elseif message.status == "sending" then
+                if outbox[message.id] then
+                    if not attached then message.status = "waiting" end
+                elseif sim and type(message.id) == "number" then
+                    -- Cell service is off: the phone sends it once it's on again.
+                    message.status = "waiting"
+                else
+                    message.status, message.error = "failed", "Not sent"
+                end
             end
             message.id = nil
         end

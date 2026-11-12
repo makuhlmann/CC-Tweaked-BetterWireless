@@ -230,7 +230,7 @@ describe("The cell program's GUI", function()
                 if random(1, 2) == 1 then
                     message.from, message.read = pick { "0100", ("7"):rep(40) }, random(1, 3) == 1
                 else
-                    message.to, message.status = "0007", pick { "sending", "sent", "failed" }
+                    message.to, message.status = "0007", pick { "waiting", "sending", "sent", "failed" }
                     message.error = random(1, 2) == 1 and "Nobody has that number" or nil
                 end
                 phone.messages[#phone.messages + 1] = message
@@ -680,30 +680,27 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
             run(phone, {}, function(app)
-                -- The messages, and one message.
+                -- The messages, and a conversation, where Q is a letter: Backspace in an empty line goes back.
                 app.key(keys.enter)
                 expect(app.line(2)):eq("Messages             1 new")
                 app.key(keys.enter)
-                expect(app.line(2)):eq("From 0100")
-                app.type("q")
-                expect(app.line(2)):eq("Messages")
-                app.key(keys.enter)
+                expect(app.line(2)):eq("0100                  Back")
                 app.key(keys.backspace)
                 expect(app.line(2)):eq("Messages")
                 app.type("Q")
                 expect(app.line(2)):eq("Phone             No. 0042")
 
-                -- Asked whether to delete a message, Q keeps it, as Backspace does.
-                app.key(keys.enter, keys.enter)
+                -- Asked whether to delete a conversation, Q keeps it, as Backspace does.
+                app.key(keys.enter)
                 app.type("d")
-                expect(app.line(19)):eq("Delete this message?")
+                expect(app.line(4)):eq("Delete the message with")
                 app.type("q")
-                expect(app.lines(19, 20)):same { "", " Reply   Delete   Back" }
+                expect(app.line(2)):eq("Messages")
                 app.type("d")
                 app.key(keys.backspace)
-                expect(app.lines(19, 20)):same { "", " Reply   Delete   Back" }
+                expect(app.line(2)):eq("Messages")
                 expect(phone.deleted):same {}
-                app.key(keys.backspace, keys.backspace)
+                app.key(keys.backspace)
                 expect(app.line(2)):eq("Phone             No. 0042")
 
                 -- The networks.
@@ -732,13 +729,11 @@ describe("The cell program's GUI", function()
                     app.event("char", "q")
                 end
 
-                app.key(keys.enter, keys.enter)
-                expect(app.line(2)):eq("From 0100")
-                press_q(false)
-                expect(app.line(2)):eq("Messages")
+                app.key(keys.enter)
+                expect(app.line(2)):eq("Messages             1 new")
                 press_q(true)
                 press_q(true)
-                expect(app.line(2)):eq("Messages")
+                expect(app.line(2)):eq("Messages             1 new")
                 press_q(false)
                 expect(app.line(2)):eq("Phone             No. 0042")
                 press_q(true)
@@ -777,16 +772,16 @@ describe("The cell program's GUI", function()
     end)
 
     describe("messages", function()
-        it("are listed, newest first", function()
+        it("are listed by number, the newest conversation first", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
             run(phone, {}, function(app)
                 app.key(keys.enter)
                 expect(app.line(2)):eq("Messages             1 new")
-                expect(app.line(4)):str_match("^%*0100 %d%d:%d%d  Meet at the s$")
-                expect(app.line(5)):str_match("^>0007 %d%d:%d%d  On my way$")
-                expect(app.line(6)):eq(" 0007 " .. os.date("%d %b", math.floor(phone.messages[1].time / 1000)) .. " Old news")
-                expect(app.lines(19, 20)):same { "* new  > sent  ! failed", "Q/Backspace: back" }
+                expect(app.line(4)):str_match("^%*0100 %d%d:%d%d Meet at the st$")
+                expect(app.line(5)):str_match("^>0007 %d%d:%d%d On my way$")
+                expect(app.line(6)):eq("")
+                expect(app.lines(18, 20)):same { "* new  ! not sent  N: new", "D: delete", "Q/Backspace: back" }
                 -- Listing them doesn't read them.
                 expect(phone.read):same {}
                 expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
@@ -794,8 +789,8 @@ describe("The cell program's GUI", function()
 
             run(phone, { width = 51, height = 19 }, function(app)
                 app.key(keys.enter)
-                expect(app.line(4)):str_match("^%*0100 %d%d:%d%d  Meet at the station at noon, by the bi$")
-                expect(app.line(19)):eq("* new  > sent  ! failed  Q/Backspace: back")
+                expect(app.line(4)):str_match("^%*0100 %d%d:%d%d Meet at the station at noon, by the big$")
+                expect(app.lines(18, 19)):same { "* new  ! not sent  N: new  D: delete", "Q/Backspace: back" }
             end)
         end)
 
@@ -822,152 +817,185 @@ describe("The cell program's GUI", function()
             end)
         end)
 
-        it("are opened, which reads them", function()
+        it("are a conversation with each number, which opening reads", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
             run(phone, {}, function(app)
                 app.key(keys.enter, keys.enter)
-                expect(app.lines(2, 7)):same {
-                    "From 0100",
-                    os.date("%Y-%m-%d %H:%M", math.floor(phone.messages[3].time / 1000)),
-                    "",
-                    "Meet at the station at",
-                    "noon, by the big clock",
-                    "",
-                }
-                expect(app.line(20)):eq(" Reply   Delete   Back")
+                expect(app.lines(2, 4)):same { "0100                  Back", "Meet at the station at", "noon, by the big clock" }
+                expect(app.line(5)):str_match("^%d%d:%d%d$")
+                expect(app.lines(19, 20)):same { "Enter: send  Tab: choose", "> Write a message" }
                 expect(phone.read):same { 3 }
                 -- The bar no longer counts it.
                 expect(app.line(1)):eq(" ACME              [|||.]")
 
-                -- Back in the list, it's no longer marked.
+                -- Back in the list, it's no longer marked, and isn't read again.
                 app.key(keys.backspace)
                 expect(app.line(2)):eq("Messages")
                 expect(app.line(4)):str_match("^ 0100 ")
-
-                -- A message which was read isn't marked again.
-                app.key(keys.enter, keys.right, keys.right, keys.enter)
-                expect(app.line(2)):eq("Messages")
+                app.key(keys.enter)
                 expect(phone.read):same { 3 }
+
+                -- One which arrives while it's open is read at once.
+                phone.messages[4] = { n = 4, from = "0100", text = "Still coming?", time = os.epoch("utc"), read = false }
+                app.event("cell_message", "0100", "Still coming?")
+                expect(app.line(6)):eq("Still coming?")
+                expect(phone.read):same { 3, 4 }
             end)
         end)
 
-        it("say how a sent message got on", function()
+        it("show those sent on the right, with how they got on", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
-            phone.messages[4] = { n = 4, to = "0999", text = "Anyone?", time = os.epoch("utc"), status = "failed", error = "Nobody has that number" }
-            phone.messages[5] = { n = 5, to = "0007", text = "Nearly there", time = os.epoch("utc"), status = "sending" }
+            local now = os.epoch("utc")
+            phone.messages[4] = { n = 4, to = "0007", text = "Nearly there", time = now, status = "sending" }
+            phone.messages[5] = { n = 5, to = "0007", text = "Anyone?", time = now, status = "failed", error = "Nobody has that number" }
+            phone.messages[6] = { n = 6, to = "0007", text = "Hello?", time = now, status = "waiting" }
             run(phone, {}, function(app)
                 app.key(keys.enter)
-                expect(app.line(4)):str_match("^>0007 %d%d:%d%d  Nearly there$")
-                expect(app.line(5)):str_match("^!0999 %d%d:%d%d  Anyone%?$")
-                expect(app.line(8)):str_match("^ 0007 %d%d %a%a%a Old news$")
-
+                expect(app.line(4)):str_match("^>0007 %d%d:%d%d Hello%?$")
                 app.key(keys.enter)
-                expect(app.line(2)):eq("To 0007")
-                expect(app.lines(4, 6)):same { "Sending...", "", "Nearly there" }
-                expect(app.line(20)):eq(" Delete   Back")
-                -- It changes when the network has it.
-                phone.messages[5].status = "sent"
-                app.event("cell_sent", 9, true)
-                expect(app.lines(4, 6)):same { "Sent", "", "Nearly there" }
-                app.key(keys.right, keys.enter)
-
-                app.key(keys.down, keys.enter)
-                expect(app.line(2)):eq("To 0999")
-                expect(app.lines(4, 7)):same { "Not sent: Nobody has that", "number", "", "Anyone?" }
+                expect(app.line(2)):eq("0007                  Back")
+                expect(app.line(3)):eq("Old news")
+                expect(app.line(4)):eq(os.date("%d %b", math.floor(phone.messages[1].time / 1000)))
+                expect(app.line(5)):eq("                 On my way")
+                expect(app.line(6)):str_match("^                %d%d:%d%d Sent$")
+                expect(app.line(7)):eq("              Nearly there")
+                expect(app.line(8)):str_match("^          %d%d:%d%d Sending%.%.%.$")
+                expect(app.line(9)):eq("                   Anyone?")
+                expect(app.line(10)):str_match("^%d%d:%d%d Not sent: Nobody has$")
+                expect(app.line(11)):eq("               that number")
+                expect(app.line(12)):eq("                    Hello?")
+                expect(app.line(13)):str_match("^ %d%d:%d%d Waiting for service$")
+                -- Nothing here was unread.
                 expect(phone.read):same {}
+
+                -- It changes when the network has it.
+                phone.messages[4].status = "sent"
+                app.event("cell_sent", 9, true)
+                expect(app.line(8)):str_match("^                %d%d:%d%d Sent$")
             end)
         end)
 
-        it("are answered, with the number filled in", function()
+        it("send what's written", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
-            run(phone, {}, function(app)
-                app.key(keys.enter, keys.enter, keys.enter)
-                expect(app.lines(2, 4)):same { "Reply", "To: 0100", "Message:            0/1000" }
-                expect(app.line(20)):eq(" Send   Cancel")
-                -- The cursor waits in the text.
-                expect({ term.getCursorPos() }):same { 1, 5 }
-
-                app.type("See you there")
-                expect(app.lines(4, 5)):same { "Message:           13/1000", "See you there" }
-                app.key(keys.enter)
-                expect(phone.sent):same { { "0100", "See you there" } }
-                expect(app.lines(2, 4)):same { "To 0100", "", "Sending..." }
-                app.event("cell_sent", 7, true)
-                expect(app.line(4)):eq("Sent.")
-                -- Then it's back to the message.
-                app.key(keys.enter)
-                expect(app.line(2)):eq("From 0100")
-
-                -- R answers too.
-                app.type("r")
-                expect(app.lines(2, 3)):same { "Reply", "To: 0100" }
-            end)
-        end)
-
-        it("are deleted, once that's confirmed", function()
-            local phone = fake_phone()
-            phone.messages = message_fixture()
-            run(phone, {}, function(app)
-                app.key(keys.enter, keys.enter, keys.right, keys.enter)
-                expect(app.lines(19, 20)):same { "Delete this message?", " Delete   Keep" }
-                expect(phone.deleted):same {}
-
-                -- Keeping it changes nothing.
-                app.key(keys.right, keys.enter)
-                expect(app.lines(19, 20)):same { "", " Reply   Delete   Back" }
-                expect(phone.deleted):same {}
-
-                app.type("d")
-                app.key(keys.enter)
-                expect(phone.deleted):same { 3 }
-                expect(app.line(2)):eq("Messages")
-                expect(app.line(4)):str_match("^>0007 ")
-                expect(#phone.messages):eq(2)
-            end)
-        end)
-
-        it("are used with the mouse", function()
-            local phone = fake_phone()
-            phone.messages = message_fixture()
-            run(phone, {}, function(app)
-                app.event("mouse_click", 1, 5, 4)
-                expect(app.line(2)):eq("Messages             1 new")
-                app.event("mouse_click", 1, 5, 6)
-                expect(app.lines(2, 5)):same { "From 0007", os.date("%Y-%m-%d %H:%M", math.floor(phone.messages[1].time / 1000)), "", "Old news" }
-                -- Delete, then Keep, then Back.
-                app.event("mouse_click", 1, 10, 20)
-                expect(app.line(19)):eq("Delete this message?")
-                app.event("mouse_click", 1, 12, 20)
-                expect(app.line(19)):eq("")
-                app.event("mouse_click", 1, 20, 20)
-                expect(app.line(2)):eq("Messages             1 new")
-            end)
-        end)
-
-        it("scroll when they're long", function()
-            local phone = fake_phone()
-            local words = {}
-            for i = 1, 60 do words[i] = "word" .. i end
-            phone.messages = { { n = 1, from = "0100", text = table.concat(words, " "), time = os.epoch("utc"), read = true } }
             run(phone, {}, function(app)
                 app.key(keys.enter, keys.enter)
-                expect(app.line(5)):eq("word1 word2 word3 word4")
-                expect(app.line(18)):eq("word43 word44 word45")
-                expect(app.line(19)):eq("Up/Down: more (1/6)")
-                app.key(keys.down)
-                expect(app.line(5)):eq("word5 word6 word7 word8")
-                expect(app.line(19)):eq("Up/Down: more (2/6)")
-                app.key(keys.pageDown, keys.down)
-                expect(app.line(18)):eq("word58 word59 word60")
-                expect(app.line(19)):eq("Up/Down: more (6/6)")
-                app.event("mouse_scroll", -1, 1, 5)
-                app.key(keys.up)
-                expect(app.line(5)):eq("word13 word14 word15")
-                app.key(keys.pageUp)
-                expect(app.line(5)):eq("word1 word2 word3 word4")
+                app.type("See you there")
+                expect(app.line(20)):eq("> See you there")
+                app.key(keys.enter)
+                expect(phone.sent):same { { "0100", "See you there" } }
+                expect(app.line(20)):eq("> Write a message")
+
+                -- Nothing is sent without a text, and a key held down doesn't send.
+                app.key(keys.enter)
+                app.type("   ")
+                app.key(keys.enter)
+                app.type("x")
+                app.event("key", keys.enter, true)
+                expect(#phone.sent):eq(1)
+
+                -- Why one can't be sent is said, and what was written is kept.
+                phone.refuse = "Too many messages are waiting to be sent"
+                app.key(keys.enter)
+                expect(phone.sent[2]):same { "0100", "   x" }
+                expect(app.line(19)):eq("Too many messages are wait")
+                expect(app.line(20)):eq(">    x")
+                app.type("y")
+                expect(app.line(19)):eq("Enter: send  Tab: choose")
+            end)
+        end)
+
+        it("are edited like any text, with the end of a long one in sight", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                app.key(keys.enter, keys.enter)
+                app.type("12")
+                app.key(keys.left)
+                app.type("0")
+                app.key(keys.home, keys.delete, keys["end"])
+                app.type("3")
+                expect(app.line(20)):eq("> 023")
+                app.event("paste", "One\nTwo")
+                expect(app.line(20)):eq("> 023One Two")
+                app.type((" abcd"):rep(10))
+                expect(app.line(20)):eq("> bcd abcd abcd abcd abcd")
+                app.key(keys.home)
+                expect(app.line(20)):eq("> 023One Two abcd abcd abc")
+                -- A message is no longer than the network takes.
+                app.event("paste", ("x"):rep(2000))
+                app.key(keys.enter)
+                expect(#phone.sent[1][2]):eq(1000)
+            end)
+        end)
+
+        it("are left with Backspace in an empty line, or with Back", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                app.key(keys.enter, keys.enter)
+                app.type("ab")
+                app.key(keys.backspace, keys.backspace)
+                expect(app.line(2)):eq("0100                  Back")
+                -- Holding it doesn't leave.
+                app.event("key", keys.backspace, true)
+                expect(app.line(2)):eq("0100                  Back")
+                app.key(keys.backspace)
+                expect(app.line(2)):eq("Messages")
+
+                -- Q is a letter here.
+                app.key(keys.enter)
+                app.type("q")
+                expect(app.line(20)):eq("> q")
+                app.event("mouse_click", 1, 24, 2)
+                expect(app.line(2)):eq("Messages")
+            end)
+        end)
+
+        it("are chosen with Tab, to delete one or send it again", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            phone.messages[4] = { n = 4, to = "0007", text = "Anyone?", time = os.epoch("utc"), status = "failed", error = "No service" }
+            run(phone, {}, function(app)
+                app.key(keys.enter, keys.enter)
+                expect(app.line(2)):eq("0007                  Back")
+                app.key(keys.tab)
+                expect(app.line(19)):eq("D: delete  R: resend")
+                expect(app.bg(7)):eq(("0"):rep(26))
+                expect(app.bg(6)):eq(("f"):rep(26))
+
+                -- One which wasn't sent goes again.
+                app.type("r")
+                expect(phone.sent):same { { "0007", "Anyone?" } }
+                expect(phone.deleted):same { 4 }
+
+                -- That one is gone from here (the network lists the new one), and the one before is chosen. It's
+                -- deleted, once that's confirmed: Q and Keep keep it.
+                expect(app.bg(5)):eq(("0"):rep(26))
+                app.type("d")
+                expect(app.lines(2, 4)):same { "0007", "", "Delete this message?" }
+                expect(app.line(20)):eq(" Delete   Keep")
+                app.type("q")
+                app.type("d")
+                app.key(keys.right, keys.enter)
+                expect(phone.deleted):same { 4 }
+                app.type("d")
+                app.key(keys.enter)
+                expect(phone.deleted):same { 4, 2 }
+                expect(app.line(3)):eq("Old news")
+                expect(app.line(5)):eq("")
+
+                -- Tab, Q or Backspace go back to writing.
+                app.key(keys.tab)
+                expect(app.line(19)):eq("Enter: send  Tab: choose")
+                app.key(keys.tab)
+                app.type("q")
+                expect(app.line(19)):eq("Enter: send  Tab: choose")
+                expect(app.line(20)):eq("> Write a message")
+                app.key(keys.tab, keys.backspace)
+                expect(app.line(2)):eq("0007                  Back")
             end)
         end)
 
@@ -977,121 +1005,106 @@ describe("The cell program's GUI", function()
                 phone.messages[i] = { n = i, from = "0100", text = "Number " .. i, time = os.epoch("utc"), read = true }
             end
             run(phone, {}, function(app)
+                app.key(keys.enter, keys.enter)
+                -- The newest is at the bottom.
+                expect(app.line(3)):eq("Number 23")
+                expect(app.line(17)):eq("Number 30")
+                app.key(keys.up)
+                expect(app.line(4)):eq("Number 23")
+                -- A page is as many lines as there's room for.
+                app.key(keys.pageUp)
+                expect(app.line(3)):str_match("^%d%d:%d%d$")
+                expect(app.line(4)):eq("Number 15")
+                app.event("mouse_scroll", 1, 1, 5)
+                expect(app.line(3)):eq("Number 15")
+                app.key(keys.pageDown, keys.pageDown)
+                expect(app.line(17)):eq("Number 30")
+                -- Choosing one keeps it in sight.
+                app.key(keys.tab)
+                for _ = 1, 20 do app.key(keys.up) end
+                expect(app.line(3)):eq("Number 10")
+                expect(app.bg(3)):eq(("0"):rep(26))
+            end)
+        end)
+
+        it("are deleted a conversation at a time, once that's confirmed", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                app.key(keys.enter, keys.down)
+                app.type("d")
+                expect(app.lines(2, 5)):same { "Messages", "", "Delete the 2 messages with", "0007?" }
+                expect(app.line(20)):eq(" Delete   Keep")
+                app.key(keys.right, keys.enter)
+                expect(phone.deleted):same {}
+                app.type("d")
                 app.key(keys.enter)
-                expect(app.line(2)):eq("Messages              1/30")
-                expect(app.line(4)):str_match("^ 0100 %d%d:%d%d Number 30$")
-                expect(app.line(18)):str_match("Number 16$")
-                for _ = 1, 15 do app.key(keys.down) end
-                expect(app.line(2)):eq("Messages             16/30")
-                expect(app.line(18)):str_match("Number 15$")
-                expect(app.bg(18)):eq(("0"):rep(26))
-                app.key(keys["end"])
-                expect(app.line(18)):str_match("Number 1$")
+                expect(phone.deleted):same { 1, 2 }
+                expect(app.line(4)):str_match("^%*0100 ")
+                expect(app.line(5)):eq("")
+            end)
+        end)
+
+        it("are used with the mouse", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                app.event("mouse_click", 1, 5, 4)
+                expect(app.line(2)):eq("Messages             1 new")
+                app.event("mouse_click", 1, 5, 5)
+                expect(app.line(2)):eq("0007                  Back")
+                -- A click on a message chooses it, and one on the line to write in goes back to writing.
+                app.event("mouse_click", 1, 3, 3)
+                expect(app.line(19)):eq("D: delete  R: resend")
+                expect(app.bg(3)):eq(("0"):rep(26))
+                app.event("mouse_click", 1, 3, 20)
+                expect(app.line(19)):eq("Enter: send  Tab: choose")
+                app.event("mouse_click", 1, 24, 2)
+                expect(app.line(2)):eq("Messages             1 new")
             end)
         end)
     end)
 
     describe("new message", function()
-        it("asks for a number and a text, and sends them", function()
+        it("asks for a number, then opens its conversation", function()
             local phone = fake_phone()
             run(phone, {}, function(app)
                 app.key(keys.down, keys.enter)
-                expect(app.lines(2, 4)):same { "New message", "To:", "Message:            0/1000" }
-                expect({ term.getCursorPos() }):same { 5, 3 }
+                expect(app.lines(2, 4)):same { "New message", "", "To:" }
+                expect(app.line(20)):eq("Enter: OK  Backspace: back")
 
-                app.type("0007")
-                expect(app.line(3)):eq("To: 0007")
+                -- Not without a number.
                 app.key(keys.enter)
-                app.type("Meet at the station, by the big clock")
-                expect(app.lines(4, 6)):same { "Message:           37/1000", "Meet at the station, by", "the big clock" }
-                expect({ term.getCursorPos() }):same { 14, 6 }
-                expect(phone.sent):same {}
-
-                app.key(keys.enter)
-                expect(phone.sent):same { { "0007", "Meet at the station, by the big clock" } }
-                expect(app.lines(2, 4)):same { "To 0007", "", "Sending..." }
-                expect(app.line(20)):eq("")
-
-                -- Other messages' news isn't this one's.
-                app.event("cell_sent", 6, false, "Nobody has that number")
-                expect(app.line(4)):eq("Sending...")
-                app.event("cell_sent", 7, true)
-                expect(app.line(4)):eq("Sent.")
-                expect(app.line(20)):eq("Press any key")
-
-                app.event("key", keys.enter, true)
-                expect(app.line(4)):eq("Sent.")
-                app.key(keys.space)
-                expect(app.line(2)):eq("Phone             No. 0042")
-            end)
-        end)
-
-        it("says why the network didn't take a message", function()
-            local phone = fake_phone()
-            run(phone, {}, function(app)
-                app.key(keys.down, keys.enter)
-                app.type("0999")
-                app.key(keys.enter)
-                app.type("Anyone?")
-                app.key(keys.enter)
-                app.event("cell_sent", 7, false, "Nobody has that number")
-                expect(app.lines(4, 5)):same { "Not sent: Nobody has that", "number" }
-
-                -- Then the number can be put right.
-                app.key(keys.enter)
-                expect(app.lines(2, 5)):same { "New message", "To: 0999", "Message:            7/1000", "Anyone?" }
-                expect(app.lines(17, 18)):same { "Not sent: Nobody has that", "number" }
-                app.key(keys.up, keys.backspace, keys.backspace, keys.backspace)
-                app.type("007")
-                app.key(keys.down, keys.down, keys.enter)
-                expect(phone.sent):same { { "0999", "Anyone?" }, { "0007", "Anyone?" } }
-            end)
-        end)
-
-        it("stops waiting for the network after a while", function()
-            local phone = fake_phone()
-            run(phone, {}, function(app)
-                app.key(keys.down, keys.enter)
-                app.type("0007")
-                app.key(keys.enter)
-                app.type("Hello")
-                app.key(keys.enter)
-                expect(app.line(4)):eq("Sending...")
-                app.timers(20)
-                expect(app.lines(4, 5)):same { "Still sending. The network", "hasn't answered yet." }
-                app.event("mouse_click", 1, 1, 5)
-                expect(app.line(2)):eq("Phone             No. 0042")
-            end)
-        end)
-
-        it("says why a message can't be sent", function()
-            local phone = fake_phone()
-            phone.refuse = "No service"
-            run(phone, {}, function(app)
-                app.key(keys.down, keys.enter)
-
-                -- Nothing is sent without a number and a text.
-                app.key(keys.enter, keys.enter)
-                expect(app.line(18)):eq("Enter a number first.")
+                expect(app.line(6)):eq("Enter a number first.")
                 app.type(" 0007 ")
-                app.key(keys.enter, keys.enter)
-                expect(app.line(18)):eq("Write a message first.")
-                expect(phone.sent):same {}
-
-                app.type("Hello")
                 app.key(keys.enter)
-                expect(phone.sent):same { { "0007", "Hello" } }
-                expect(app.line(2)):eq("New message")
-                expect(app.line(18)):eq("No service")
-                expect(app.line(5)):eq("Hello")
+                expect(app.lines(2, 3)):same { "0007                  Back", "No messages yet." }
+                app.type("Hi")
+                app.key(keys.enter)
+                expect(phone.sent):same { { "0007", "Hi" } }
 
-                -- Cancel gives up.
-                app.key(keys.down, keys.right, keys.enter)
+                -- And back to where it was asked for.
+                app.key(keys.backspace)
                 expect(app.line(2)):eq("Phone             No. 0042")
             end)
         end)
 
-        it("is edited like any text", function()
+        it("is asked for with N in the list, and may be a number there's a conversation with", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                app.key(keys.enter)
+                app.type("n")
+                expect(app.line(2)):eq("New message")
+                app.type("0100")
+                app.key(keys.enter)
+                expect(app.line(3)):eq("Meet at the station at")
+                app.key(keys.backspace)
+                expect(app.line(2)):eq("Messages")
+            end)
+        end)
+
+        it("is a number edited like any text, and left with Backspace once it's empty", function()
             local phone = fake_phone()
             run(phone, {}, function(app)
                 app.key(keys.down, keys.enter)
@@ -1100,54 +1113,20 @@ describe("The cell program's GUI", function()
                 app.type("0")
                 app.key(keys.home, keys.delete, keys["end"])
                 app.type("3")
-                expect(app.line(3)):eq("To: 023")
+                expect(app.line(4)):eq("To: 023")
                 -- A number is short.
                 app.type(("9"):rep(30))
-                expect(app.line(3)):eq("To: 023" .. ("9"):rep(17))
+                expect(app.line(4)):eq("To: 023" .. ("9"):rep(17))
 
-                app.key(keys.tab)
-                app.event("paste", "One\nTwo")
-                expect(app.lines(4, 5)):same { "Message:            7/1000", "One Two" }
-                -- A message is no longer than the network takes, and the end of a long one stays in sight.
-                app.event("paste", (" abcd"):rep(300))
-                expect(app.line(4)):eq("Message:         1000/1000")
-                expect(app.lines(17, 19)):same { "abcd abcd abcd abcd abcd", "ab", "" }
-                expect({ term.getCursorPos() }):same { 3, 18 }
-                app.type("x")
-                expect(app.line(18)):eq("ab")
-            end)
-        end)
-
-        it("is left with Backspace in an empty number, or with Cancel", function()
-            local phone = fake_phone()
-            run(phone, {}, function(app)
-                app.key(keys.down, keys.enter)
-                app.type("1")
-                app.key(keys.enter)
-                -- From an empty text, Backspace goes back to the number.
-                app.key(keys.backspace)
-                app.key(keys.backspace)
-                expect(app.line(3)):eq("To:")
+                for _ = 1, 20 do app.key(keys.backspace) end
+                expect(app.line(4)):eq("To:")
                 expect(app.line(2)):eq("New message")
                 -- Holding it doesn't leave.
                 app.event("key", keys.backspace, true)
                 expect(app.line(2)):eq("New message")
                 app.key(keys.backspace)
                 expect(app.line(2)):eq("Phone             No. 0042")
-
-                app.key(keys.enter)
-                app.type("0007")
-                app.event("mouse_click", 1, 10, 20)
-                expect(app.line(2)):eq("Phone             No. 0042")
                 expect(phone.sent):same {}
-
-                -- The mouse sends too.
-                app.key(keys.enter)
-                app.type("0007")
-                app.event("mouse_click", 1, 3, 8)
-                app.type("Hi")
-                app.event("mouse_click", 1, 3, 20)
-                expect(phone.sent):same { { "0007", "Hi" } }
             end)
         end)
     end)

@@ -301,6 +301,11 @@ elseif command == "send" and #args >= 3 then
         printError(id)
         return
     end
+    -- Without service, it waits until the phone has some.
+    if net.cell.info().state ~= "attached" then
+        print("No service. The message is sent once there is.")
+        return
+    end
     -- Wait for the network to say it has it.
     local timer = os.startTimer(20)
     while true do

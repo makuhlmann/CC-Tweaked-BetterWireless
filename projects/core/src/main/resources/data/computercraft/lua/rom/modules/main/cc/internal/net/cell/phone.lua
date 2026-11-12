@@ -698,27 +698,55 @@ function Phone:activation_failed(reason)
     self:enter("inactive")
 end
 
+--[[- Whether a message could be sent: a number, and not too long a text.
+
+@param to The number.
+@param text The message.
+@treturn[1] true If it could.
+@treturn[2] nil If it couldn't.
+@treturn[2] string Why not.
+]]
+local function check_message(to, text)
+    if type(to) ~= "string" or #to < 1 or #to > 32 then return nil, "Numbers are up to 32 characters" end
+    if type(text) ~= "string" or #text > 1000 then return nil, "Messages can be at most 1000 characters" end
+    return true
+end
+
 --[[- Send a message to another phone, by its number. It's sent until the network says it has it, which then keeps
-it until that phone is reachable.
+it until that phone is reachable. Without service, it waits until the phone has some: only tries while it has service
+count towards giving up.
 
 @tparam string to The number.
 @tparam string text The message, up to 1000 characters.
-@treturn[1] true If it's being sent. `on_sent` is called once the network has it, or if it won't take it.
+@tparam[opt] number id The message's ID, for one which was waiting to be sent when the phone last stopped. The network
+knows it again if it took it then, so it isn't delivered twice.
+@treturn[1] true If it's being sent, or waits to be. `on_sent` is called once the network has it, or if it won't take
+it.
 @treturn[1] number The message's ID, which `on_sent` is called with.
 @treturn[2] nil If it can't be sent.
 @treturn[2] string Why not.
 ]]
-function Phone:send_message(to, text)
-    if self.state ~= "attached" then return nil, "No service" end
-    if type(to) ~= "string" or #to < 1 or #to > 32 then return nil, "Numbers are up to 32 characters" end
-    if type(text) ~= "string" or #text > 1000 then return nil, "Messages can be at most 1000 characters" end
+function Phone:send_message(to, text, id)
+    if not self.operator then return nil, "No SIM" end
+    local ok, err = check_message(to, text)
+    if not ok then return nil, err end
     if #self.outbox >= MAX_OUTBOX then return nil, "Too many messages are waiting to be sent" end
 
-    self.next_message = self.next_message + 1
-    local waiting = { id = self.next_message, to = to, text = text, tries = 0 }
+    if id ~= nil then
+        if not common.is_id(id) then return nil, "Expected a message's ID" end
+        for _, waiting in ipairs(self.outbox) do
+            if waiting.id == id then return nil, "That message is being sent already" end
+        end
+        -- Messages the phone numbers itself come after it, so none has the same ID.
+        if id > self.next_message then self.next_message = id end
+    else
+        self.next_message = self.next_message + 1
+        id = self.next_message
+    end
+    local waiting = { id = id, to = to, text = text, tries = 0 }
     self.outbox[#self.outbox + 1] = waiting
-    self:send_one(waiting)
-    return true, waiting.id
+    if self.state == "attached" then self:send_one(waiting) end
+    return true, id
 end
 
 -- Send a message, while attached.
@@ -729,20 +757,19 @@ function Phone:send_one(waiting)
 end
 
 -- Send the messages the network hasn't said it has, again, while attached: all of them once we have service back, or
--- those which have waited a while. After enough tries, give up on one.
+-- those which haven't been sent yet or have waited a while. After enough tries, give up on one.
 function Phone:send_waiting(only_old)
     local now = self.stack.clock()
+    local function due(waiting) return not only_old or not waiting.sent or now - waiting.sent >= MESSAGE_RETRY end
     for i = #self.outbox, 1, -1 do
         local waiting = self.outbox[i]
-        if not only_old or now - waiting.sent >= MESSAGE_RETRY then
-            if waiting.tries >= MESSAGE_TRIES then
-                table.remove(self.outbox, i)
-                self.on_sent(waiting.id, false, "The network didn't answer")
-            end
+        if due(waiting) and waiting.tries >= MESSAGE_TRIES then
+            table.remove(self.outbox, i)
+            self.on_sent(waiting.id, false, "The network didn't answer")
         end
     end
     for _, waiting in ipairs(self.outbox) do
-        if not only_old or now - waiting.sent >= MESSAGE_RETRY then self:send_one(waiting) end
+        if due(waiting) then self:send_one(waiting) end
     end
 end
 
@@ -1007,4 +1034,5 @@ end
 
 return {
     new = new,
+    check_message = check_message,
 }

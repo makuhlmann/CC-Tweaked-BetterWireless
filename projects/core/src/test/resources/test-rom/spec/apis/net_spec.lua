@@ -292,6 +292,23 @@ describe("The net library", function()
             expect(net.cell.info().selection):eq("BETA")
         end)
 
+        it("keeps messages sent while cell service is off, to send once it's on", function()
+            expect({ net.cell.send("0007", "Hello") }):same { nil, "No SIM" }
+
+            write("/.net/sim", { network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32) })
+            write("/.net/phone", { off = true })
+            write("/.net/messages", { { to = "3", text = "earlier", time = 1000, n = 1, id = 41, status = "sent" } })
+            -- It's numbered after the phone's own, and waits.
+            expect({ net.cell.send("0007", "Later") }):same { true, 42 }
+            local list = net.cell.messages()
+            expect({ list[2].to, list[2].text, list[2].status }):same { "0007", "Later", "waiting" }
+            expect({ net.cell.send("", "x") }):same { nil, "Numbers are up to 32 characters" }
+
+            -- As many may wait as the phone keeps.
+            for i = 1, 19 do assert(net.cell.send("0007", "More " .. i)) end
+            expect({ net.cell.send("0007", "One too many") }):same { nil, "Too many messages are waiting to be sent" }
+        end)
+
         it("keeps messages, numbered, with whether they've been read and how sending went", function()
             -- An older version's messages have no numbers, and count as read.
             write("/.net/messages", {
@@ -380,7 +397,9 @@ describe("The net library", function()
             local info = net.cell.info()
             expect({ info.state, info.enabled, info.network, info.selection, info.roaming }):same { "off", false, "ACME", "auto", false }
             expect(info.subscriber):same { id = "ACME-1", number = "1" }
-            expect({ net.cell.send("1", "hello") }):same { nil, "Cell service is turned off" }
+            -- A message sent while it's off waits until it's on again.
+            expect((net.cell.send("1", "hello"))):eq(true)
+            expect(net.cell.messages()[1].status):eq("waiting")
 
             -- Its own network is always listed, in range or not.
             expect(net.cell.networks()):same {

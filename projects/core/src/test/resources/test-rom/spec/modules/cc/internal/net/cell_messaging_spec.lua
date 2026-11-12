@@ -76,6 +76,62 @@ describe("Messages between networks", function()
         expect(net.errors):same {}
     end)
 
+    it("keeps a message sent without service, and sends it once the phone has service", function()
+        math.randomseed(57)
+        local acme, beta, net = operators()
+        -- Out of reach of every cell.
+        local a, _, a_sent = phone(acme, 1, -500)
+        local _, b_inbox = phone(beta, 2, 310)
+        net.advance(5)
+        expect(a.state):eq("searching")
+        local _, id = assert(a:send_message("6662", "Sent from nowhere"))
+        net.advance(60)
+        expect(b_inbox):same {}
+        expect(a_sent[id]):eq(nil)
+
+        -- In reach, it attaches, and sends the message: once.
+        acme.positions[1] = 10
+        net.advance(10)
+        expect(a.state):eq("attached")
+        expect(a_sent[id]):same { true }
+        expect(b_inbox):same { { "5551", "Sent from nowhere" } }
+        net.advance(20)
+        expect(#b_inbox):eq(1)
+        expect(net.errors):same {}
+    end)
+
+    it("doesn't deliver a message twice when a phone which restarted sends it again", function()
+        math.randomseed(58)
+        local acme, beta, net = operators()
+        local a, _, a_sent = phone(acme, 1, 10)
+        local _, b_inbox = phone(beta, 2, 310)
+        net.advance(5)
+        local _, id = assert(a:send_message("6662", "Only once"))
+        net.advance(3)
+        expect(a_sent[id]):same { true }
+
+        -- The phone restarts (as if it hadn't heard the network had the message) and sends it again, with its ID.
+        a:stop()
+        local again_sent = {}
+        local again = acme.add_phone(3, 10, false, {
+            sim = a.sim, on_sent = function(message, ok) again_sent[message] = ok end,
+        })
+        net.advance(5)
+        expect(again.state):eq("attached")
+        assert(again:send_message("6662", "Only once", id))
+        expect({ again:send_message("6662", "Only once", id) }):same { nil, "That message is being sent already" }
+        net.advance(5)
+        expect(again_sent[id]):eq(true)
+        expect(b_inbox):same { { "5551", "Only once" } }
+
+        -- The messages it numbers itself come after it.
+        local _, next_id = assert(again:send_message("6662", "And this"))
+        expect(next_id > id):eq(true)
+        net.advance(5)
+        expect(b_inbox):same { { "5551", "Only once" }, { "5551", "And this" } }
+        expect(net.errors):same {}
+    end)
+
     it("keeps a message for a phone of the other network until it's reachable", function()
         math.randomseed(52)
         local acme, beta, net = operators()
