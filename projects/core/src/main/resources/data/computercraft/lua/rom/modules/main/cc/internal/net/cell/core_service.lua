@@ -336,6 +336,10 @@ function Service:serve(connection)
     if not key or not ROLES[role] then return connection:abort() end
     -- Computers' IDs are whole numbers, and small enough to write out.
     local id = common.is_id(hello.id) and hello.id < 2 ^ 31 and hello.id or nil
+    -- Another network's core says which network it is before anything else, so that what's allowed has a name.
+    if NETWORK_ROLES[role] and not common.is_network(hello.network) then
+        return refuse(connection, "Another network's core must say which network it is.")
+    end
 
     if not self:allows(key, role) then
         local entry = self.allowed[key]
@@ -373,8 +377,8 @@ function Service:wait(connection, key, role, id, hello)
     local fingerprint = self.options.fingerprint(key)
     local entry = {
         key = key, id = id, role = role, fingerprint = fingerprint, since = self.options.clock(), connection = connection,
-        -- Another network's core says which it is.
-        network = NETWORK_ROLES[role] and common.is_network(hello.network) and hello.network or nil,
+        -- Another network's core says which it is (`serve` checked it's a name).
+        network = NETWORK_ROLES[role] and hello.network or nil,
     }
     self.waiting[key] = entry
     self:log(("%s #%s%s wants %s. Fingerprint %s. Allow it with 'cellcore allow %s'"):format(

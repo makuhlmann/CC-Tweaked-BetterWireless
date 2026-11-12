@@ -128,6 +128,8 @@ the code named, or by a test. Paths are relative to
 - **Seen:** when a handler raises an error, the packets queued behind it stay queued until some later packet arrives
   for this computer.
 - **Change:** log the error and carry on through the queue, as `tick` does for timers. **Small.**
+- **Done:** `deliver` logs a handler's error and carries on through the queue, as `tick` does for timers. Tested in
+  `stack_spec.lua`.
 
 ### 1.9 The wiring trace can generate chunks (suspected)
 
@@ -165,6 +167,8 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
   after a shared cell loses a core, a phone of that network is attached as a visitor to the other, then notices and
   attaches again.
 - **Change:** only fall back to the only network when the phone named none. **Small.**
+- **Done:** `link_for` takes a phone which names a network only to that network, and falls back to the only one only for
+  a phone which names none (ours always name one). Tested in `cell_sharing_spec.lua`.
 
 ### 1.13 Another network's core may introduce itself with no name
 
@@ -173,6 +177,8 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
   shown to the administrator without one. If it's allowed, the name it gives the first time it connects after that is
   the one it keeps.
 - **Change:** refuse such a hello before it waits, so what the administrator allows always has a name. **Small.**
+- **Done:** `serve` refuses a hello for another network's roles which has no network name, before it can wait, with
+  "Another network's core must say which network it is." Tested in `cell_service_spec.lua`.
 
 ### 1.14 RIP updates can be replayed (suspected)
 

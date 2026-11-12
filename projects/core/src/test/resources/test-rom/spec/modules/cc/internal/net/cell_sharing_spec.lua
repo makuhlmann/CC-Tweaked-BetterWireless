@@ -170,4 +170,31 @@ describe("Shared cells", function()
         expect(event_kinds(a)):same { "attached" }
         expect(net.errors):same {}
     end)
+
+    it("takes a phone to the network it names, and to its only one only if it names none", function()
+        local cell_tower = require "cc.internal.net.cell.tower"
+        -- The cell only needs a stack to start, here.
+        local stack = { id = 7, log = function() end, clock = function() return 0 end }
+        function stack:on_frame() return {} end
+        function stack:udp_open() return {} end
+        function stack:schedule() return {} end
+        function stack:send_frame() end
+
+        local tower = cell_tower.new {
+            stack = stack, crypto = crypto, interface = "radio", sign = function() return "" end, epoch = function() return 0 end,
+        }
+        local function serve(name)
+            return tower:add_network(name, { certificate = "c", core = 1, tunnel_key = ("k"):rep(32), control = function() end })
+        end
+
+        local acme = serve("ACME")
+        expect(tower:link_for("ACME")):eq(acme)
+        expect(tower:link_for(nil)):eq(acme)
+        -- One it doesn't serve (any longer) isn't taken to ACME.
+        expect(tower:link_for("BETA")):eq(nil)
+
+        local beta = serve("BETA")
+        expect(tower:link_for("BETA")):eq(beta)
+        expect(tower:link_for(nil)):eq(nil)
+    end)
 end)

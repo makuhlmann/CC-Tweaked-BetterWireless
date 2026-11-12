@@ -603,6 +603,20 @@ describe("Cellular services", function()
             end, }, 600)
         end)
 
+        it("makes another network's core say which network it is, before it waits to be allowed", function()
+            local env = setup()
+            run(env.net, { env.service }, { function()
+                for _, role in ipairs { "roam", "peer" } do
+                    for _, network in ipairs { false, "", "two words", ("X"):rep(33), 51 } do
+                        expect(hello(env.connect(new_key()), role, 51, { network = network or nil })):same {
+                            error = "Another network's core must say which network it is.",
+                        }
+                    end
+                end
+                expect(next(env.service.waiting)):eq(nil)
+            end, })
+        end)
+
         it("turns away computers which introduce themselves oddly", function()
             local env = setup()
             local cell_key, admin_key, partner_key, peer_key = new_key(), new_key(), new_key(), new_key()

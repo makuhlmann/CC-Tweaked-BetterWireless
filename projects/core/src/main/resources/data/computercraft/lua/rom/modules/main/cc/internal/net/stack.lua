@@ -765,14 +765,12 @@ function Stack:deliver(packet, interface)
     inbox[#inbox + 1] = { packet, interface }
     if self.delivering then return end
 
+    -- A handler which fails doesn't stop the packets behind it, as a timer which fails doesn't stop the others.
     self.delivering = true
     while #inbox > 0 do
         local item = table.remove(inbox, 1)
         local ok, err = pcall(self.dispatch, self, item[1], item[2])
-        if not ok then
-            self.delivering = false
-            error(err, 0)
-        end
+        if not ok then self.log(err) end
     end
     self.delivering = false
 end

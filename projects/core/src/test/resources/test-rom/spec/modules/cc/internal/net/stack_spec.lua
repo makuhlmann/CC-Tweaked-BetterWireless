@@ -70,6 +70,25 @@ describe("cc.internal.net.stack", function()
         expect(a:echo_result(id).error):eq("Host unreachable")
     end)
 
+    it("carries on through the packets it has for itself when a handler fails", function()
+        local net = network()
+        local a = net.add(1, "10.0.0.1/24")
+        local got, logged = {}, {}
+        a.log = function(message) logged[#logged + 1] = message end
+        a.protocols.test = function(packet)
+            got[#got + 1] = packet.body
+            if packet.body == 1 then
+                -- This one waits behind the packet being handled.
+                a:send(ip("10.0.0.1"), "test", 2)
+                error("The handler failed", 0)
+            end
+        end
+        a:send(ip("10.0.0.1"), "test", 1)
+        expect(got):same { 1, 2 }
+        expect(logged):same { "The handler failed" }
+        expect(a.delivering):eq(false)
+    end)
+
     it("reports networks it isn't on", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

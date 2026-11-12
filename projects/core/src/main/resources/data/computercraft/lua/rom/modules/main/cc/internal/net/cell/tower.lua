@@ -123,10 +123,10 @@ function Link:stop()
     if next(tower.links) == nil then tower:stop() end
 end
 
--- The network a phone chose here, by name: or, if it names none we serve (or none at all), our only one.
+-- The network a phone chose here, by name: or, if it names none, our only one. A phone which names a network we don't
+-- serve (one we stopped serving a moment ago, say) isn't taken to another, as its own network's core couldn't answer.
 function Tower:link_for(network)
-    local link = network ~= nil and self.links[network]
-    if link then return link end
+    if network ~= nil then return self.links[network] end
     local only, count = nil, 0
     for _, other in pairs(self.links) do only, count = other, count + 1 end
     if count == 1 then return only end
