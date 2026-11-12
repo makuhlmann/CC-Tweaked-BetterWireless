@@ -446,6 +446,9 @@ None of these was measured in the game. They're ordered by how often the code ru
 - **Seen:** each call reads and parses the SIM's file, the phone's settings and up to 100 messages. The status bar
   calls it every two seconds and on every phone event, and each menu calls it on every event it gets.
 - **Change:** keep the three in memory, and read them again only when this computer wrote them. **Small.**
+- **Done:** `net.cell.info` keeps what it read of the SIM's file, the phone's settings and the count of unread messages,
+  and reads a file again only once its modification time or size has changed; writes through the net API forget it at
+  once. Tested in `net_spec.lua`, with files changed by another program.
 
 ### 4.5 Smaller ones
 

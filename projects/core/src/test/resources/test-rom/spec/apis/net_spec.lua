@@ -264,6 +264,21 @@ describe("The net library", function()
             expect.error(net.cell.send, "1"):eq("bad argument #2 (string expected, got nil)")
         end)
 
+        it("sees files changed by another program, though it keeps what it read", function()
+            write("/.net/messages", { { from = "1", text = "new", time = 1000, read = false, n = 1 } })
+            expect(net.cell.info().unread):eq(1)
+            expect(net.cell.info().unread):eq(1)
+            write("/.net/messages", {
+                { from = "1", text = "new", time = 1000, read = false, n = 1 },
+                { from = "2", text = "newer", time = 2000, read = false, n = 2 },
+            })
+            expect(net.cell.info().unread):eq(2)
+            fs.delete("/.net/messages")
+            expect(net.cell.info().unread):eq(0)
+            write("/.net/phone", { network = "BETA" })
+            expect(net.cell.info().selection):eq("BETA")
+        end)
+
         it("keeps messages, numbered, with whether they've been read and how sending went", function()
             -- An older version's messages have no numbers, and count as read.
             write("/.net/messages", {

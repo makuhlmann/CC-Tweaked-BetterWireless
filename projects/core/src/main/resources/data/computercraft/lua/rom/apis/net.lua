@@ -1215,10 +1215,29 @@ local function read_table(path)
     return type(value) == "table" and value or {}
 end
 
+-- What's been read from files which are read often (see `read_cached`), by key.
+local file_cache = {}
+
 local function write_table(path, value)
     local file = assert(fs.open(path, "w"))
     file.write(textutils.serialise(value))
     file.close()
+    for key, entry in pairs(file_cache) do
+        if entry.path == path then file_cache[key] = nil end
+    end
+end
+
+-- Read something from a file, or give what was read last time if the file hasn't changed since (by its modification
+-- time and size). Our own writes forget it at once. `net.cell.info`, which the status bar and the menus call often,
+-- reads its files so.
+local function read_cached(key, path, read)
+    local ok, attributes = pcall(fs.attributes, path)
+    local stamp = ok and type(attributes) == "table" and ("%s:%s"):format(attributes.modified, attributes.size) or "none"
+    local entry = file_cache[key]
+    if entry and entry.stamp == stamp then return entry.value end
+    local value = read()
+    file_cache[key] = { path = path, stamp = stamp, value = value }
+    return value
 end
 
 local function require_crypto()
@@ -2092,8 +2111,8 @@ cell = {
     ]]
     info = function()
         load()
-        local sim = read_table(SIM_FILE)
-        local chosen = read_table(PHONE_FILE)
+        local sim = read_cached(SIM_FILE, SIM_FILE, function() return read_table(SIM_FILE) end)
+        local chosen = read_cached(PHONE_FILE, PHONE_FILE, function() return read_table(PHONE_FILE) end)
         local off = chosen.off == true and type(sim.network) == "string"
         local info
         if phone_instance then
@@ -2115,10 +2134,13 @@ cell = {
         info.selection = type(chosen.network) == "string" and chosen.network or "auto"
         info.roaming = info.roaming == true
         info.newer = info.newer == true
-        info.unread = 0
-        for _, message in ipairs(read_messages()) do
-            if message.from and message.read == false then info.unread = info.unread + 1 end
-        end
+        info.unread = read_cached("unread", INBOX_FILE, function()
+            local unread = 0
+            for _, message in ipairs(read_messages()) do
+                if message.from and message.read == false then unread = unread + 1 end
+            end
+            return unread
+        end)
         for _, cell in ipairs(info.heard or {}) do
             if cell.serving then info.signal, info.serving_network = cell.signal, cell.network end
         end
