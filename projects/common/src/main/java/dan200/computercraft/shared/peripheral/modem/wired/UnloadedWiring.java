@@ -16,8 +16,11 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ServerLevel;
@@ -26,6 +29,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.storage.SerializableChunkData;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +40,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.function.Consumer;
 import java.util.function.LongPredicate;
 import java.util.zip.GZIPInputStream;
@@ -54,7 +61,8 @@ import java.util.zip.GZIPOutputStream;
  * as for a chunk which has loaded.
  * <p>
  * Chunks which cables lead into, but which have never been loaded since, aren't known at all. {@link #startTrace} loads
- * them one at a time, following the cables, so they are.
+ * them one at a time, following the cables, so they are: but only those which exist, as loading one which doesn't would
+ * make it. Chunks next to wired ones which have no wiring are remembered as such, so they're known too.
  * <p>
  * The wiring is saved to a file of its own, every minute or so when it has changed, and when the server stops. That
  * includes the wiring of loaded chunks, so networks come back after a restart before any chunk loads, and after a crash
@@ -63,7 +71,11 @@ import java.util.zip.GZIPOutputStream;
 public final class UnloadedWiring {
     private static final Logger LOG = LoggerFactory.getLogger(UnloadedWiring.class);
 
-    private static final int VERSION = 1;
+    /** The version of the file: 2 has the chunks with no wiring too. Version 1 is still read. */
+    private static final int VERSION = 2;
+
+    /** The most chunks with no wiring the file may have for one dimension. */
+    private static final int MAX_EMPTY = 1 << 20;
 
     /** How often to save the wiring when it has changed, in ticks. */
     private static final int SAVE_INTERVAL = 20 * 60;
@@ -81,6 +93,15 @@ public final class UnloadedWiring {
         /** Loaded chunks which have (or have had) wired blocks, whose wiring is saved as it is. */
         final LongSet live = new LongOpenHashSet();
 
+        /**
+         * Chunks next to wired ones which have no wiring: a trace looked, or they unloaded with none. They're known, so
+         * aren't looked at again.
+         */
+        final LongSet empty = new LongOpenHashSet();
+
+        /** The trace running in this level, if one is: see {@link #startTrace}. */
+        @Nullable Trace trace;
+
         LevelWiring(ServerLevel level) {
             this.level = level;
             wiring = new DormantWiring(level);
@@ -97,6 +118,10 @@ public final class UnloadedWiring {
         final LongSet seen = new LongOpenHashSet();
         int looked;
         int wired;
+
+        /** The chunk we're finding out about (whether it exists), and what's saved of it, once that's read. */
+        long reading;
+        @Nullable CompletableFuture<Optional<CompoundTag>> stored;
 
         Trace(LevelWiring state, Consumer<Component> report) {
             this.state = state;
@@ -116,16 +141,27 @@ public final class UnloadedWiring {
     public record Status(int remembered, int unknown, int looked, int toLook, boolean tracing) {
     }
 
+    /**
+     * What a file holds: each dimension's pieces of wiring, and its chunks next to wired ones which have none.
+     *
+     * @param pieces Each dimension's pieces, by name.
+     * @param empty  Each dimension's chunks with no wiring, by name.
+     */
+    record Contents(Map<String, List<DormantWiring.Ports>> pieces, Map<String, LongSet> empty) {
+    }
+
     private final Path file;
     private final Map<String, List<DormantWiring.Ports>> saved;
+    private final Map<String, LongSet> savedEmpty;
     private final IdentityHashMap<ServerLevel, LevelWiring> levels = new IdentityHashMap<>();
     private boolean dirty;
     private int sinceSave;
-    private @Nullable Trace trace;
 
     public UnloadedWiring(Path file) {
         this.file = file;
-        saved = read(file);
+        var contents = readAll(file);
+        saved = contents.pieces();
+        savedEmpty = contents.empty();
     }
 
     private static @Nullable UnloadedWiring of(@Nullable Level level) {
@@ -143,7 +179,10 @@ public final class UnloadedWiring {
 
         // The wiring as it was when last saved. Its chunks join their networks as they load (and those already loaded,
         // straight away).
-        var pieces = saved.remove(level.dimension().identifier().toString());
+        var name = level.dimension().identifier().toString();
+        var empty = savedEmpty.remove(name);
+        if (empty != null) state.empty.addAll(empty);
+        var pieces = saved.remove(name);
         if (pieces != null) {
             state.wiring.restore(pieces, (pos, side) -> liveNode(level, pos, side));
             for (var piece : pieces) {
@@ -215,10 +254,25 @@ public final class UnloadedWiring {
 
         state.loading.remove(pos);
         state.live.remove(pos);
-        if (blocks.isEmpty() && !state.wiring.has(pos)) return;
+        if (blocks.isEmpty()) {
+            // Next to wiring, remember there's none here, so a cable or modem at the edge doesn't leave it unknown.
+            if (nextToWiring(state, pos) && state.empty.add(pos)) dirty = true;
+            if (!state.wiring.has(pos)) return;
+        } else if (state.empty.remove(pos)) {
+            dirty = true;
+        }
 
         state.wiring.unload(pos, blocks, (other, side) -> liveNode(level, other, side));
         dirty = true;
+    }
+
+    // Whether a chunk is next to one with wiring we know of.
+    private static boolean nextToWiring(LevelWiring state, long pos) {
+        int x = ChunkPos.getX(pos), z = ChunkPos.getZ(pos);
+        for (var other : new long[]{ ChunkPos.pack(x + 1, z), ChunkPos.pack(x - 1, z), ChunkPos.pack(x, z + 1), ChunkPos.pack(x, z - 1) }) {
+            if (state.wiring.has(other) || state.live.contains(other) || state.loading.contains(other)) return true;
+        }
+        return false;
     }
 
     /**
@@ -266,7 +320,7 @@ public final class UnloadedWiring {
     public void tick() {
         // Joining a chunk may load others (and so add to the chunks loading, possibly in another level): see drain.
         for (var state : List.copyOf(levels.values())) drain(state.loading, pos -> join(state, pos));
-        tickTrace();
+        for (var state : List.copyOf(levels.values())) tickTrace(state);
 
         sinceSave++;
         if (dirty && sinceSave >= SAVE_INTERVAL) save();
@@ -380,7 +434,18 @@ public final class UnloadedWiring {
      * as they are now.
      */
     public void save() {
+        // Dimensions which haven't been used since the server started are kept as they were read, if they still exist.
+        var server = levels.isEmpty() ? null : levels.keySet().iterator().next().getServer();
+        for (var name : new ArrayList<>(saved.keySet())) {
+            if (!dimensionExists(server, name)) {
+                LOG.info("Forgetting the wiring of {}, which no longer exists", name);
+                saved.remove(name);
+            }
+        }
+        savedEmpty.keySet().removeIf(name -> !dimensionExists(server, name));
+
         var result = new TreeMap<String, List<DormantWiring.Ports>>(saved);
+        var empty = new TreeMap<String, LongSet>(savedEmpty);
         for (var state : levels.values()) {
             List<DormantWiring.Ports> pieces = new ArrayList<>();
 
@@ -408,12 +473,23 @@ public final class UnloadedWiring {
                 pieces.addAll(DormantWiring.findPieces(pos, blocks));
             }
 
-            result.put(state.level.dimension().identifier().toString(), pieces);
+            var name = state.level.dimension().identifier().toString();
+            result.put(name, pieces);
+            // Chunks with no wiring which are no longer next to any needn't be kept.
+            state.empty.removeIf(pos -> !nextToWiring(state, pos));
+            if (!state.empty.isEmpty()) empty.put(name, new LongOpenHashSet(state.empty));
         }
 
-        write(file, result);
-        dirty = false;
+        // If it couldn't be written, try again later.
+        if (write(file, result, empty)) dirty = false;
         sinceSave = 0;
+    }
+
+    // Whether a dimension still exists, if we can tell.
+    private static boolean dimensionExists(@Nullable MinecraftServer server, String name) {
+        if (server == null) return true;
+        var id = Identifier.tryParse(name);
+        return id != null && server.getLevel(ResourceKey.create(Registries.DIMENSION, id)) != null;
     }
 
     /**
@@ -421,30 +497,37 @@ public final class UnloadedWiring {
      * remembered (they haven't been loaded since the wiring was first remembered). Each tick, one such chunk is loaded,
      * for a moment, which is enough for its wiring to be remembered, and cables are followed on through it. Once done,
      * networks crossing those chunks are whole, without anyone going there.
+     * <p>
+     * Only chunks which exist are loaded: loading one which doesn't would make it. Whether one does is read from the
+     * level's files first, without loading it.
      *
      * @param level  The level.
      * @param report What to call with how it went, once it's done.
-     * @return How many chunks there are to look at, to start with, or {@code -1} if a trace is running already.
+     * @return How many chunks there are to look at, to start with, or {@code -1} if a trace is running in this level
+     * already.
      */
     public int startTrace(ServerLevel level, Consumer<Component> report) {
-        if (trace != null) return -1;
         var state = get(level);
+        if (state.trace != null) return -1;
         var trace = new Trace(state, report);
         enqueue(trace, knownPorts(state));
         if (trace.queue.isEmpty()) return 0;
-        this.trace = trace;
+        state.trace = trace;
         return trace.queue.size();
     }
 
     /**
-     * Stop looking for wiring in chunks we know nothing of.
+     * Stop looking for wiring in chunks we know nothing of, in a level.
      *
-     * @return How many chunks the trace had looked at, or {@code -1} if none was running.
+     * @param level The level.
+     * @return How many chunks the trace had looked at, or {@code -1} if none was running there.
      */
-    public int stopTrace() {
-        var trace = this.trace;
+    public int stopTrace(ServerLevel level) {
+        var state = levels.get(level);
+        if (state == null) return -1;
+        var trace = state.trace;
         if (trace == null) return -1;
-        this.trace = null;
+        state.trace = null;
         return trace.looked;
     }
 
@@ -457,7 +540,7 @@ public final class UnloadedWiring {
     public Status status(ServerLevel level) {
         var state = get(level);
         var unknown = DormantWiring.frontier(knownPorts(state), pos -> known(state, pos)).size();
-        var trace = this.trace;
+        var trace = state.trace;
         return new Status(
             state.wiring.chunkCount(), unknown, trace == null ? 0 : trace.looked, trace == null ? 0 : trace.queue.size(), trace != null
         );
@@ -477,9 +560,9 @@ public final class UnloadedWiring {
         return ports;
     }
 
-    // Whether we know a chunk: it's loaded, or we remember its wiring.
+    // Whether we know a chunk: it's loaded, or we remember its wiring, or that it has none.
     private static boolean known(LevelWiring state, long pos) {
-        return state.wiring.has(pos) || state.level.hasChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos));
+        return state.wiring.has(pos) || state.empty.contains(pos) || state.level.hasChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos));
     }
 
     private static void enqueue(Trace trace, Collection<DormantWiring.Ports> ports) {
@@ -491,36 +574,65 @@ public final class UnloadedWiring {
         }
     }
 
-    // Look at the next chunk of the trace, if one is running.
-    private void tickTrace() {
-        var trace = this.trace;
+    // Look at the next chunk of a level's trace, if one is running there.
+    private void tickTrace(LevelWiring state) {
+        var trace = state.trace;
         if (trace == null) return;
-        var state = trace.state;
         var level = state.level;
-        while (!trace.queue.isEmpty() && trace.looked < MAX_TRACE) {
-            var pos = trace.queue.dequeueLong();
-            // It may have loaded, or been remembered, since.
-            if (known(state, pos)) continue;
 
-            // This loads it for a moment only (the ticket lasts a tick), after which its wiring would be remembered.
-            // Remember it now, so the cables can be followed on through it.
+        var stored = trace.stored;
+        if (stored != null) {
+            // Wait to find out whether the chunk was ever made.
+            if (!stored.isDone()) return;
+            trace.stored = null;
+            var pos = trace.reading;
+            // It may have loaded, or been remembered, since.
+            if (known(state, pos)) return;
+
             trace.looked++;
-            var chunk = level.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos));
-            var blocks = wiredBlocks(chunk);
-            if (!blocks.isEmpty()) {
+            List<DormantWiring.Block> blocks = List.of();
+            if (isFull(stored)) {
+                // This loads it from its file for a moment only (the ticket lasts a tick), after which its wiring would
+                // be remembered. Remember it now, so the cables can be followed on through it.
+                blocks = wiredBlocks(level.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
+            }
+            if (blocks.isEmpty()) {
+                // It doesn't exist (or was never finished, so nobody built in it), or has no wiring.
+                state.empty.add(pos);
+            } else {
                 trace.wired++;
                 state.wiring.unload(pos, blocks, (other, side) -> liveNode(level, other, side));
-                dirty = true;
                 enqueue(trace, DormantWiring.findPieces(pos, blocks));
             }
+            dirty = true;
             return;
         }
 
-        this.trace = null;
+        while (!trace.queue.isEmpty() && trace.looked < MAX_TRACE) {
+            var pos = trace.queue.dequeueLong();
+            if (known(state, pos)) continue;
+            // Find out whether it exists, from the level's files, without loading it.
+            trace.reading = pos;
+            trace.stored = level.getChunkSource().chunkMap.read(new ChunkPos(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
+            return;
+        }
+
+        state.trace = null;
         trace.report.accept(Component.translatable(
             trace.queue.isEmpty() ? "commands.computercraft.wiring.trace.done" : "commands.computercraft.wiring.trace.limit",
             trace.looked, trace.wired, trace.queue.size()
         ));
+    }
+
+    // Whether what's saved of a chunk says it was finished: only then may it have anything built in it.
+    private static boolean isFull(CompletableFuture<Optional<CompoundTag>> stored) {
+        try {
+            var tag = stored.join().orElse(null);
+            return tag != null && SerializableChunkData.getChunkStatusFromTag(tag) == ChunkStatus.FULL;
+        } catch (CompletionException | CancellationException e) {
+            LOG.warn("Cannot read a chunk, so the wiring trace passes it by", e);
+            return false;
+        }
     }
 
     /**
@@ -538,8 +650,23 @@ public final class UnloadedWiring {
      *
      * @param file       The file.
      * @param dimensions Each dimension's pieces of wiring, by name.
+     * @return Whether it was written.
      */
-    static void write(Path file, Map<String, List<DormantWiring.Ports>> dimensions) {
+    static boolean write(Path file, Map<String, List<DormantWiring.Ports>> dimensions) {
+        return write(file, dimensions, Map.of());
+    }
+
+    /**
+     * Write the wiring of each dimension to a file, with the chunks next to wired ones which have none.
+     *
+     * @param file       The file.
+     * @param dimensions Each dimension's pieces of wiring, by name.
+     * @param empty      Each dimension's chunks with no wiring, by name.
+     * @return Whether it was written.
+     */
+    static boolean write(Path file, Map<String, List<DormantWiring.Ports>> dimensions, Map<String, LongSet> empty) {
+        var names = new TreeSet<>(dimensions.keySet());
+        names.addAll(empty.keySet());
         // As with ComputerChunkLoader, write to a temporary file and move it over the original, so we're less likely to
         // corrupt it if the game is stopped.
         var newFile = file.resolveSibling(file.getFileName() + ".new");
@@ -547,11 +674,12 @@ public final class UnloadedWiring {
             Files.createDirectories(Objects.requireNonNull(file.getParent()));
             try (var output = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(Files.newOutputStream(newFile))))) {
                 output.writeInt(VERSION);
-                output.writeInt(dimensions.size());
-                for (var dimension : dimensions.entrySet()) {
-                    output.writeUTF(dimension.getKey());
-                    output.writeInt(dimension.getValue().size());
-                    for (var piece : dimension.getValue()) {
+                output.writeInt(names.size());
+                for (var name : names) {
+                    output.writeUTF(name);
+                    var pieces = dimensions.getOrDefault(name, List.of());
+                    output.writeInt(pieces.size());
+                    for (var piece : pieces) {
                         output.writeLong(piece.chunk());
                         output.writeInt(piece.positions().length);
                         for (var i = 0; i < piece.positions().length; i++) {
@@ -559,6 +687,9 @@ public final class UnloadedWiring {
                             output.writeByte(piece.sides()[i]);
                         }
                     }
+                    var chunks = empty.getOrDefault(name, LongSet.of());
+                    output.writeInt(chunks.size());
+                    for (var it = chunks.iterator(); it.hasNext(); ) output.writeLong(it.nextLong());
                 }
             }
 
@@ -569,7 +700,9 @@ public final class UnloadedWiring {
             }
         } catch (IOException e) {
             LOG.error("Cannot save '{}'", file, e);
+            return false;
         }
+        return true;
     }
 
     /**
@@ -579,16 +712,27 @@ public final class UnloadedWiring {
      * @return Each dimension's pieces of wiring, by name, or nothing if the file is missing or can't be read.
      */
     static Map<String, List<DormantWiring.Ports>> read(Path file) {
-        if (!Files.exists(file)) return new HashMap<>();
+        return readAll(file).pieces();
+    }
+
+    /**
+     * Read the wiring of each dimension from a file, with the chunks next to wired ones which have none.
+     *
+     * @param file The file.
+     * @return What's in it, or nothing if the file is missing or can't be read.
+     */
+    static Contents readAll(Path file) {
+        if (!Files.exists(file)) return new Contents(new HashMap<>(), new HashMap<>());
         try (var input = new DataInputStream(new BufferedInputStream(new GZIPInputStream(Files.newInputStream(file))))) {
             var version = input.readInt();
-            if (version != VERSION) {
+            if (version != VERSION && version != 1) {
                 LOG.warn("Cannot read '{}' (version {}), so wired networks will only reconnect as their chunks load.", file, version);
-                return new HashMap<>();
+                return new Contents(new HashMap<>(), new HashMap<>());
             }
 
             var dimensionCount = input.readInt();
             Map<String, List<DormantWiring.Ports>> result = new HashMap<>();
+            Map<String, LongSet> empty = new HashMap<>();
             for (var d = 0; d < dimensionCount; d++) {
                 var dimension = input.readUTF();
                 var pieceCount = input.readInt();
@@ -602,20 +746,35 @@ public final class UnloadedWiring {
                     for (var i = 0; i < portCount; i++) {
                         positions[i] = input.readLong();
                         sides[i] = input.readByte();
+                        // A file made by hand might have a port elsewhere, which would connect things which aren't.
+                        if (chunkOf(positions[i]) != chunk) throw new IOException("A port isn't in its piece's chunk");
                     }
                     pieces.add(new DormantWiring.Ports(chunk, positions, sides));
                 }
-                // Only keep dimensions which (still) exist.
-                if (Identifier.tryParse(dimension) != null) result.put(dimension, pieces);
+                var chunks = new LongOpenHashSet();
+                if (version >= 2) {
+                    var emptyCount = input.readInt();
+                    if (emptyCount < 0 || emptyCount > MAX_EMPTY) throw new IOException("Bad number of chunks " + emptyCount);
+                    for (var i = 0; i < emptyCount; i++) chunks.add(input.readLong());
+                }
+                // Only keep dimensions which could exist.
+                if (Identifier.tryParse(dimension) != null) {
+                    result.put(dimension, pieces);
+                    if (!chunks.isEmpty()) empty.put(dimension, chunks);
+                }
             }
 
             // Read on to the end of the file, which checks it against its checksum. Wiring from a damaged file could
             // connect networks which aren't connected, so it must not be used.
             if (input.read() != -1) throw new IOException("There is more in the file than the wiring");
-            return result;
+            return new Contents(result, empty);
         } catch (IOException | RuntimeException e) {
             LOG.error("Cannot read '{}', so wired networks will only reconnect as their chunks load.", file, e);
-            return new HashMap<>();
+            return new Contents(new HashMap<>(), new HashMap<>());
         }
+    }
+
+    private static long chunkOf(long pos) {
+        return ChunkPos.pack(SectionPos.blockToSectionCoord(BlockPos.getX(pos)), SectionPos.blockToSectionCoord(BlockPos.getZ(pos)));
     }
 }

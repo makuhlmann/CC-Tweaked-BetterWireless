@@ -144,6 +144,10 @@ the code named, or by a test. Paths are relative to
 - **Seen:** the trace loads the chunks cables lead into with `level.getChunk`, which generates a chunk which doesn't
   exist yet: up to 4,096 for each run.
 - **Change:** only load chunks which exist on disk, and count the others as known and empty. **Small to medium.**
+- **Done:** before loading a chunk, the trace reads what's saved of it (`chunkMap.read`, without loading it) and loads
+  it only if it was finished (`SerializableChunkData.getChunkStatusFromTag` is `FULL`). One which was never made, or
+  never finished (so nobody built in it), counts as known with no wiring. Tested by the game tests running, and not in a
+  world yet: nothing tests the trace itself (see 5.5).
 
 ### 1.10 Chunks with no wiring are never known (suspected)
 
@@ -152,6 +156,9 @@ the code named, or by a test. Paths are relative to
   a port outwards, so a neighbouring chunk with no wiring counts as unknown for good: `wiring status` over-reports,
   and each `wiring trace` loads those chunks again.
 - **Change:** remember chunks which were looked at and had nothing, in the file too (a new version of it). **Medium.**
+- **Done:** chunks next to wired ones which turn out to have no wiring (a trace looked, or they unloaded with none) are
+  remembered as such, and count as known. They're saved in the wiring file, which is now version 2 (version 1 is still
+  read). At each save, those no longer next to any wiring are dropped. File format tested in `UnloadedWiringFileTest`.
 
 ### 1.11 Smaller things in the wiring (suspected)
 
@@ -165,6 +172,11 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
 - `WiredNodeImpl.acquireReadLock` reads the node's network once, outside its retry loop. If the network changed
   between the read and the lock, it would spin. Seen in passing, and not looked into.
 - Wiring remembered for a dimension which no longer exists is kept and written again for good.
+- **Done:** a save which fails stays pending, and is tried again a minute later; each dimension has its own trace, and
+  `wiring status` and `stop` are about the dimension they're run in; reading the file checks every port is in its
+  piece's chunk (the file tests' random wiring had ports anywhere, and now doesn't); `acquireReadLock` reads the node's
+  network again on each try, so it can't spin; and wiring of a dimension which no longer exists is dropped at the next
+  save, with a line in the log.
 
 ### 1.12 A phone which names a network its cell doesn't serve
 

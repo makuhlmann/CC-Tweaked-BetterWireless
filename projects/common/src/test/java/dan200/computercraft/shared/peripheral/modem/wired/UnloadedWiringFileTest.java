@@ -5,6 +5,10 @@
 package dan200.computercraft.shared.peripheral.modem.wired;
 
 import dan200.computercraft.impl.network.wired.DormantWiring;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -59,17 +63,19 @@ public class UnloadedWiringFileTest {
         return result;
     }
 
+    // Pieces in chunks anywhere in a world, with ports anywhere in their chunks.
     private static List<DormantWiring.Ports> randomPieces(Random random, int pieces, int maxPorts) {
         var list = new ArrayList<DormantWiring.Ports>();
         for (var p = 0; p < pieces; p++) {
+            int chunkX = random.nextInt(2 * 1_800_000) - 1_800_000, chunkZ = random.nextInt(2 * 1_800_000) - 1_800_000;
             var ports = 1 + random.nextInt(maxPorts);
             var positions = new long[ports];
             var sides = new byte[ports];
             for (var i = 0; i < ports; i++) {
-                positions[i] = random.nextLong();
+                positions[i] = BlockPos.asLong(chunkX * 16 + random.nextInt(16), random.nextInt(4096) - 2048, chunkZ * 16 + random.nextInt(16));
                 sides[i] = (byte) random.nextInt(256);
             }
-            list.add(new DormantWiring.Ports(random.nextLong(), positions, sides));
+            list.add(new DormantWiring.Ports(ChunkPos.pack(chunkX, chunkZ), positions, sides));
         }
         return list;
     }
@@ -90,7 +96,9 @@ public class UnloadedWiringFileTest {
         wiring.put("test:large", randomPieces(random, 3, 100_000));
         wiring.put("test:empty", List.of());
         wiring.put("test:extremes", List.of(
-            new DormantWiring.Ports(Long.MIN_VALUE, new long[]{ Long.MIN_VALUE, Long.MAX_VALUE, 0, -1 }, new byte[]{ -128, 127, 0, -1 })
+            new DormantWiring.Ports(ChunkPos.pack(-2097152, -2097152), new long[]{ BlockPos.asLong(-33554432, -2048, -33554432) }, new byte[]{ -128 }),
+            new DormantWiring.Ports(ChunkPos.pack(2097151, 2097151), new long[]{ BlockPos.asLong(33554431, 2047, 33554431) }, new byte[]{ 127 }),
+            new DormantWiring.Ports(0, new long[]{ 0, BlockPos.asLong(15, -1, 15) }, new byte[]{ 0, -1 })
         ));
 
         UnloadedWiring.write(file, wiring);
@@ -137,7 +145,7 @@ public class UnloadedWiringFileTest {
 
     @Test
     public void readsNothingFromFilesOfOtherVersions(@TempDir Path dir) throws IOException {
-        for (var version : new int[]{ 0, 2, -1, Integer.MAX_VALUE }) {
+        for (var version : new int[]{ 0, 3, -1, Integer.MAX_VALUE }) {
             assertEquals(Map.of(), read(dir, gzip(output -> {
                 output.writeInt(version);
                 output.writeInt(1);
@@ -201,9 +209,9 @@ public class UnloadedWiringFileTest {
                 output.writeUTF(name);
                 output.writeInt(2);
                 for (var i = 0; i < 2; i++) {
-                    output.writeLong(i);
+                    output.writeLong(0);
                     output.writeInt(1);
-                    output.writeLong(i);
+                    output.writeLong(BlockPos.asLong(i, 64, i));
                     output.writeByte(4);
                 }
             }
@@ -256,14 +264,65 @@ public class UnloadedWiringFileTest {
             for (var name : new String[]{ "Not A Dimension", "minecraft:overworld", "a:b:c" }) {
                 output.writeUTF(name);
                 output.writeInt(1);
-                output.writeLong(7);
+                output.writeLong(ChunkPos.pack(7, 0));
                 output.writeInt(1);
-                output.writeLong(9);
+                output.writeLong(BlockPos.asLong(7 * 16 + 9, 64, 0));
                 output.writeByte(4);
             }
         }));
         assertEquals(Set.of("minecraft:overworld"), read.keySet());
-        assertEquals(7, read.get("minecraft:overworld").get(0).chunk());
+        assertEquals(ChunkPos.pack(7, 0), read.get("minecraft:overworld").get(0).chunk());
+    }
+
+    @Test
+    public void readsNothingFromFilesWithAPortOutsideItsChunk(@TempDir Path dir) throws IOException {
+        // A port one block past the chunk's edge: only a file made by hand has one, and it would join what isn't joined.
+        assertEquals(Map.of(), read(dir, gzip(output -> {
+            output.writeInt(1);
+            output.writeInt(1);
+            output.writeUTF("minecraft:overworld");
+            output.writeInt(1);
+            output.writeLong(ChunkPos.pack(0, 0));
+            output.writeInt(2);
+            output.writeLong(BlockPos.asLong(15, 64, 0));
+            output.writeByte(4);
+            output.writeLong(BlockPos.asLong(16, 64, 0));
+            output.writeByte(4);
+        })));
+    }
+
+    @Test
+    public void readsBackChunksWithNoWiring(@TempDir Path dir) {
+        var file = dir.resolve("wiring.dat");
+        var random = new Random(7);
+        var wiring = randomWiring(random, 2, 5, 3);
+        var empty = new TreeMap<String, LongSet>();
+        empty.put("test:dimension_0", new LongOpenHashSet(new long[]{ ChunkPos.pack(1, 2), ChunkPos.pack(-3, 4) }));
+        // A dimension may have chunks with no wiring, and no wiring.
+        empty.put("test:only_empty", new LongOpenHashSet(new long[]{ 0 }));
+
+        assertTrue(UnloadedWiring.write(file, wiring, empty));
+        var contents = UnloadedWiring.readAll(file);
+        var pieces = new TreeMap<>(wiring);
+        pieces.put("test:only_empty", List.of());
+        assertEquals(plain(pieces), plain(contents.pieces()));
+        assertEquals(empty, new TreeMap<>(contents.empty()));
+    }
+
+    @Test
+    public void readsFilesOfTheFirstVersion(@TempDir Path dir) throws IOException {
+        var read = read(dir, gzip(output -> {
+            output.writeInt(1);
+            output.writeInt(1);
+            output.writeUTF("minecraft:overworld");
+            output.writeInt(1);
+            output.writeLong(0);
+            output.writeInt(1);
+            output.writeLong(BlockPos.asLong(3, 64, 4));
+            output.writeByte(4);
+        }));
+        assertEquals(Set.of("minecraft:overworld"), read.keySet());
+        assertEquals(1, read.get("minecraft:overworld").size());
     }
 
     @Test
@@ -273,7 +332,7 @@ public class UnloadedWiringFileTest {
         // The folder the file should be in is a file.
         var notAFolder = dir.resolve("computercraft");
         Files.writeString(notAFolder, "in the way");
-        UnloadedWiring.write(notAFolder.resolve("wiring.dat"), wiring);
+        assertFalse(UnloadedWiring.write(notAFolder.resolve("wiring.dat"), wiring), "Says it wasn't written");
         assertEquals("in the way", Files.readString(notAFolder));
 
         // The file is a folder, with something in it: what's there stays.

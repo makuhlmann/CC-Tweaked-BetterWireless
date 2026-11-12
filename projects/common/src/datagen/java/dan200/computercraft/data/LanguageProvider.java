@@ -176,14 +176,14 @@ public final class LanguageProvider implements DataProvider {
         add("commands.computercraft.wiring.status.desc", "Show how many chunks' wiring is remembered in this dimension, and how many chunks cables lead into whose wiring isn't known.");
         add("commands.computercraft.wiring.status.result", "Wiring is remembered in %s chunks. Cables lead into %s chunks whose wiring isn't known, which /computercraft wiring trace finds.");
         add("commands.computercraft.wiring.trace.synopsis", "Find the wiring in chunks which cables lead into, but which aren't known.");
-        add("commands.computercraft.wiring.trace.desc", "Load each chunk in this dimension which a cable leads into, but whose wiring isn't known (it hasn't been loaded since), one each tick, and follow the cables on through it. Once done, networks crossing those chunks stay connected without anyone going there.");
+        add("commands.computercraft.wiring.trace.desc", "Load each chunk in this dimension which a cable leads into, but whose wiring isn't known (it hasn't been loaded since), one each tick, and follow the cables on through it. Chunks which were never made aren't loaded, as that would make them. Once done, networks crossing those chunks stay connected without anyone going there.");
         add("commands.computercraft.wiring.trace.started", "Following cables into %s chunks whose wiring isn't known, one each tick.");
         add("commands.computercraft.wiring.trace.none", "The wiring of every chunk cables lead into is known.");
         add("commands.computercraft.wiring.trace.running", "Following cables already: looked at %s chunks, %s to go.");
         add("commands.computercraft.wiring.trace.done", "Done following cables: looked at %s chunks, %s of them with wiring.");
         add("commands.computercraft.wiring.trace.limit", "Stopped following cables after %s chunks (%s of them with wiring), with %s still to go. Run it again to carry on.");
         add("commands.computercraft.wiring.stop.synopsis", "Stop finding wiring in chunks which aren't known.");
-        add("commands.computercraft.wiring.stop.desc", "Stop following cables into chunks whose wiring isn't known.");
+        add("commands.computercraft.wiring.stop.desc", "Stop following cables into chunks whose wiring isn't known, in this dimension.");
         add("commands.computercraft.wiring.stop.done", "Stopped following cables after %s chunks.");
         add("commands.computercraft.wiring.stop.not_tracing", "Not following cables.");
         add("commands.computercraft.queue.synopsis", "Send a computer_command event to a command computer");

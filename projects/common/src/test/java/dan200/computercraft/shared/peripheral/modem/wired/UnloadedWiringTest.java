@@ -8,6 +8,8 @@ import dan200.computercraft.impl.network.wired.DormantWiring;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,8 +26,8 @@ public class UnloadedWiringTest {
     public void savesAndReadsWiring(@TempDir Path dir) {
         var file = dir.resolve("computercraft").resolve("wiring.dat");
         var overworld = List.of(
-            new DormantWiring.Ports(12345L, new long[]{ 1L, -2L }, new byte[]{ 4, 8 }),
-            new DormantWiring.Ports(-7L, new long[]{ Long.MAX_VALUE }, new byte[]{ 48 })
+            new DormantWiring.Ports(ChunkPos.pack(3, -5), new long[]{ BlockPos.asLong(49, 64, -78), BlockPos.asLong(63, -10, -80) }, new byte[]{ 4, 8 }),
+            new DormantWiring.Ports(ChunkPos.pack(-1, 0), new long[]{ BlockPos.asLong(-1, 300, 15) }, new byte[]{ 48 })
         );
         UnloadedWiring.write(file, Map.of("minecraft:overworld", overworld, "minecraft:the_nether", List.of()));
 

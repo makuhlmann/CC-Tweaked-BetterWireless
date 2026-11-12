@@ -149,7 +149,7 @@ public final class CommandComputerCraft {
      * @return How many chunks were looked at.
      */
     private static int wiringStop(CommandSourceStack source) {
-        var looked = ServerContext.get(source.getServer()).unloadedWiring().stopTrace();
+        var looked = ServerContext.get(source.getServer()).unloadedWiring().stopTrace(source.getLevel());
         if (looked < 0) {
             source.sendFailure(Component.translatable("commands.computercraft.wiring.stop.not_tracing"));
             return 0;

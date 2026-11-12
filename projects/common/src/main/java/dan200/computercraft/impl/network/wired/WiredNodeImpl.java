@@ -140,8 +140,10 @@ public final class WiredNodeImpl implements WiredNode {
 
     @SuppressWarnings("LockNotBeforeTry")
     private void acquireReadLock() {
-        var currentNetwork = network;
         while (true) {
+            // The node may move to another network between reading which it's in and locking that: then try again,
+            // with the one it's in now.
+            var currentNetwork = network;
             var lock = currentNetwork.lock.readLock();
             lock.lock();
             if (currentNetwork == network) return;
