@@ -67,9 +67,8 @@ end
 -- @param prefix The network's prefix length, which may be anything.
 -- @treturn boolean Whether it may be used.
 local function assignable(addr, prefix)
-    if not address.is_valid(addr) or not is_integer(prefix, 1, 32) or addr == 0 or addr >= 0xE0000000 then return false end
-    if address.is_loopback(addr) or address.is_link_local(addr) then return false end
-    return prefix > 30 or (addr ~= address.network(addr, prefix) and addr ~= address.broadcast(addr, prefix))
+    if not address.is_valid(addr) or not is_integer(prefix, 1, 32) or address.is_link_local(addr) then return false end
+    return (address.check_host(addr, prefix))
 end
 
 --- Make a hostname safe: lower case letters, digits and hyphens only.

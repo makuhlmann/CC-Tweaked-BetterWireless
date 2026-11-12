@@ -53,4 +53,17 @@ describe("cc.net.address", function()
         expect(address.is_loopback(address.parse("127.0.0.1"))):eq(true)
         expect(address.is_loopback(address.parse("10.0.0.1"))):eq(false)
     end)
+
+    it("checks whether an address can be a computer's", function()
+        local function check(text, prefix) return { address.check_host(address.parse(text), prefix) } end
+        expect(check("10.0.0.5", 24)):same { true }
+        expect(check("10.0.0.0", 31)):same { true }
+        expect(check("10.0.0.255", 32)):same { true }
+        expect(check("169.254.3.4", 16)):same { true }
+        expect(check("10.0.0.0", 24)):same { false, "10.0.0.0/24 is the address of the network itself, or its broadcast address" }
+        expect(check("10.0.0.255", 24)):same { false, "10.0.0.255/24 is the address of the network itself, or its broadcast address" }
+        for _, text in ipairs { "0.0.0.0", "127.0.0.1", "224.0.0.1", "255.255.255.255" } do
+            expect(check(text, 8)):same { false, text .. " can't be a computer's address" }
+        end
+    end)
 end)

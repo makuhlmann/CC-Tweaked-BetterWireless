@@ -80,6 +80,8 @@ the code named, or by a test. Paths are relative to
   address, a broadcast address, loopback). The user sees a Lua error, and the setting stays, logged as a bad address
   at every start.
 - **Change:** set the address first, and save only if that worked. **Small.**
+- **Done:** `ifconfig` checks the address first (with `address.check_host`, now shared by the net API and DHCP), uses it
+  if the interface is there, and saves it only if that worked. `ifconfig_spec.lua` tests it.
 
 ### 1.5 `ping` and `traceroute` mishandle bad arguments and bad names
 
@@ -90,6 +92,8 @@ the code named, or by a test. Paths are relative to
 - **Change:** stop on "Name not found" and "No DNS server", and check the hop limit. **Small.**
 - **Since:** `ping` was rewritten to ping as Unix systems do (on `net.pinger`). It looks the name up once and stops
   with the reason when that fails, and checks its count. `traceroute`'s half is still to do.
+- **Done:** `traceroute` checks its hop limit (a whole number from 1 to 255); it already stopped on a name which doesn't
+  resolve. `traceroute_spec.lua` tests both, and a route to the computer itself.
 
 ### 1.6 Timeouts and ports are checked in some calls and not others
 
@@ -207,6 +211,7 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
 - **Seen:** `partner`, `numbers`, `peers`, `peer` and `unpeer` aren't in the list, so the shell doesn't complete them,
   alone or after `remote`.
 - **Change:** add them. **Small.**
+- **Done:** the five commands are in the list, so they complete alone and after `remote`.
 
 ## 2. Streamlining
 

@@ -8,7 +8,14 @@ if #args < 1 or #args > 2 then
     return
 end
 
-local target, max_hops = args[1], tonumber(args[2] or 16)
+local target, max_hops = args[1], 16
+if args[2] then
+    max_hops = tonumber(args[2])
+    if not max_hops or max_hops % 1 ~= 0 or max_hops < 1 or max_hops > 255 then
+        printError("The hop limit must be a whole number from 1 to 255.")
+        return
+    end
+end
 local addr, err = net.resolve(target)
 if not addr then
     printError(target .. ": " .. err)

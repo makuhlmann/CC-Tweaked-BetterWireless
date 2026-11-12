@@ -316,12 +316,8 @@ local function apply_mode(name, mode)
     if not addr then return nil, prefix end
     prefix = prefix or DEFAULT_PREFIX
     if prefix < 1 then return nil, "The prefix length must be from 1 to 32" end
-    if addr == 0 or addr >= 0xE0000000 or address.is_loopback(addr) then
-        return nil, address.format(addr) .. " can't be a computer's address"
-    end
-    if prefix <= 30 and (addr == address.network(addr, prefix) or addr == address.broadcast(addr, prefix)) then
-        return nil, ("%s is the address of the network itself, or its broadcast address"):format(address.format(addr, prefix))
-    end
+    local usable, why = address.check_host(addr, prefix)
+    if not usable then return nil, why end
     stop_dhcp(name, true)
     stack:set_address(name, addr, prefix)
     return true

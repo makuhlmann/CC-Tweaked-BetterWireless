@@ -140,6 +140,34 @@ local function is_link_local(address)
     return extract(address, 16, 16) == 0xA9FE
 end
 
+--[[- Check whether an address can be a computer's, on a network with this prefix length: not the unspecified address,
+nor a loopback, multicast or reserved one, nor (on a network with more than two addresses) the network's own address
+or its broadcast address.
+
+@tparam number address The address.
+@tparam number prefix The network's prefix length, from 1 to 32.
+@treturn[1] true If it can.
+@treturn[2] false If it can't.
+@treturn[2] string Why not.
+@usage Check an address before using it.
+
+```lua
+local address = require "cc.net.address"
+print(address.check_host(address.parse("10.0.0.0"), 24)) -- false, and why
+```
+]]
+local function check_host(address, prefix)
+    expect(1, address, "number")
+    expect(2, prefix, "number")
+    if address == ANY or address >= 0xE0000000 or is_loopback(address) then
+        return false, format(address) .. " can't be a computer's address"
+    end
+    if prefix <= 30 and (address == network(address, prefix) or address == broadcast(address, prefix)) then
+        return false, ("%s is the address of the network itself, or its broadcast address"):format(format(address, prefix))
+    end
+    return true
+end
+
 return {
     BROADCAST = BROADCAST,
     ANY = ANY,
@@ -152,4 +180,5 @@ return {
     is_loopback = is_loopback,
     is_valid = is_valid,
     is_link_local = is_link_local,
+    check_host = check_host,
 }

@@ -130,14 +130,29 @@ else
         printError(prefix)
         return
     end
-    text = address.format(addr, prefix or 24)
+    prefix = prefix or 24
+    local usable, why = false, "The prefix length must be from 1 to 32"
+    if prefix >= 1 then usable, why = address.check_host(addr, prefix) end
+    if not usable then
+        printError(why)
+        return
+    end
+    text = address.format(addr, prefix)
     setting = text
 end
 
+-- Use it first, and keep it only if that worked: a setting which can't be used would be refused at every start.
+local interface = find(name)
+if interface then
+    local ok, err = pcall(net.setAddress, name, text)
+    if not ok then
+        printError(err)
+        return
+    end
+end
 save("net." .. name .. ".address", setting)
 
-if find(name) then
-    net.setAddress(name, text)
+if interface then
     if value == "dhcp" then
         print(name .. ": asking for an address")
     else
