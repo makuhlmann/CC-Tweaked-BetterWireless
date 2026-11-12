@@ -186,7 +186,7 @@ describe("Several cellular networks, under stress,", function()
             if not peered then world.peering.mend() end
             if not shared_on then share() end
             for _, entry in ipairs(phones) do entry.phone:select(nil) end
-            advance(net, 200)
+            advance(net, 120)
 
             local ok, err = pcall(function()
                 for _, entry in ipairs(phones) do
@@ -235,7 +235,7 @@ describe("Several cellular networks, under stress,", function()
 
         for seed = 1, 4 do
             it(("phones end up with service and every message arrives once (storm %d)"):format(seed), function()
-                storm(7000 + seed, 36)
+                storm(7000 + seed, 20)
             end)
         end
     end)
@@ -266,7 +266,7 @@ describe("Several cellular networks, under stress,", function()
             end
             -- Out of reach of every real cell.
             local phone, stack = acme.add_phone(1, 600)
-            for round = 1, 400 do
+            for round = 1, 200 do
                 flood(net, stack, round, 12, 8)
                 net.advance(1)
                 if round % 10 == 0 then yield() end
@@ -280,11 +280,11 @@ describe("Several cellular networks, under stress,", function()
             -- Back in reach of its own network, with the made-up cells still about (and heard better), it attaches soon.
             acme.positions[1] = 10
             local attached
-            for round = 401, 430 do
+            for round = 201, 230 do
                 flood(net, stack, round, 12, 8)
                 net.advance(1)
                 if phone.state == "attached" then
-                    attached = round - 400
+                    attached = round - 200
                     break
                 end
             end

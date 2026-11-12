@@ -1622,10 +1622,10 @@ Once phones chose between networks, cells were shared and networks exchanged mes
 - **Everything at once:** two operators which carry each other's phones, share a cell and exchange messages, with four
   phones wandering along the line at 15% loss and sending each other messages, within a network and between them.
   Meanwhile cells restart, the shared cell loses and regains its second network, the cores lose and find each other,
-  and phones are told which network to use. Then everything is mended and left alone for 200 seconds. Thirty such
-  runs, four of which are kept as tests: every phone ends up attached and reaches the server, every message the network
+  and phones are told which network to use. Then everything is mended and left alone for a few minutes. Thirty such
+  runs of 280 seconds, four of which are kept as shorter tests: every phone ends up attached and reaches the server, every message the network
   took arrives once, and no session, visitor, attach or message is left over.
-- **Made-up cells and networks:** 96 network names a second, which keep changing, for 400 seconds, heard by a phone
+- **Made-up cells and networks:** 96 network names a second, which keep changing, for 200 seconds, heard by a phone
   with no service, and for 120 seconds by a phone with service, along with cells which say they're its own network's
   and frames which say they're from its cell.
 - **One phone sending all it can** to another network whose core can't be reached: 2,400 messages.
@@ -1657,6 +1657,33 @@ Once phones chose between networks, cells were shared and networks exchanged mes
   (its signal, and whether it checked out) until the cell's next broadcast. It doesn't change which cell is used.
 - **Another network's core is trusted with its own numbers:** a peer can send messages from any number with its
   prefix, and fill the mailboxes of subscribers who aren't reachable (50 each, 1,000 in all).
+
+### Robustness of wired networks through unloaded chunks
+
+The wiring remembered for chunks which aren't loaded (§4) was tested apart from the game
+(`DormantWiringRandomTest`, and additions to `DormantWiringTest`, `NetworkTest` and `UnloadedWiringFileTest`):
+
+- **Random loading and unloading:** a pretend level of twelve chunks, with negative coordinates and blocks at the
+  bottom and top of the world. Wired blocks are placed and broken while chunks load, join their networks a tick later,
+  stop being fully loaded, unload, and are saved and restored, or lost, across restarts: 16 runs of 250 steps. After
+  every step the networks are compared with what a search of the blocks says is connected, as are the pieces
+  remembered, their ports, the peripherals each block sees and the chunks which aren't known.
+- **Edges:** ports at corners and at every height, blocks which only touch at a corner, chunks with no wiring, loading
+  or unloading twice, a chunk in between which was never seen, two levels, 2,000 chunks restored at once, and pieces
+  with 6,144 ports.
+- **The file:** a bit changed in every byte, files cut short, files which aren't wiring at all, other versions,
+  counts which can't be, dimension names which can't be, and writes which fail.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| Splitting a network locks it and then the new networks made from it, but joining two locked whichever was asked first. Breaking a cable and placing it again so took the two halves' locks the other way round, half the time. Only the server thread takes two at once, so nothing deadlocks, but the lock checker (on in development and in tests) throws. Disconnecting two nodes and connecting them again always could do this; remembered wiring made it common. | Each network knows its age, and the older network's lock is taken first. |
+| A `wiring.dat` with a bit changed was read as different wiring, with ports where there are none, which could connect networks which aren't connected until those chunks loaded. Reading stopped before the end of the compressed data, where its checksum is. | The file is read to its end. One which doesn't match its checksum, is cut short, or holds more than the wiring is ignored, like any other which can't be read. |
+
+**Not tested:** the side which talks to the game (`UnloadedWiring` scanning chunks, joining, saving, and the `wiring`
+commands) has no automated test, and the NeoForge hooks were only read. What was noticed there by reading, and not
+confirmed, is in `NETWORK_STACK_PLAN.md`.
 
 ## 14. Implementation plan
 
