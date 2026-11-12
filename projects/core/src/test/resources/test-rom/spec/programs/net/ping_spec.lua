@@ -7,9 +7,15 @@ describe("The ping program", function()
 
     -- A pinger which gives what the script says each time it's waited on: a reply; "wait", for nothing until the time
     -- given has passed (on a pretend clock); or "terminate", as Ctrl+T does.
+    --
+    -- The pretend clock starts at the real one and only goes forward: everything else on this computer sees it too
+    -- (the network stack's loop, for one), and would wait far too long for a time which had gone back.
     local function fake_pinger(script, failures)
-        local clock = 0
+        local start = os.clock()
+        local clock = start
         stub(os, "clock", function() return clock end)
+        -- Times since the start, in whole thousandths, as adding to the real clock's time isn't exact.
+        local function round(time) return math.floor(time * 1000 + 0.5) / 1000 end
         local pinger = { sends = {}, waits = {}, closed = false }
         stub(net, "pinger", function(target)
             if target == "nowhere" then return nil, "Name not found" end
@@ -17,12 +23,12 @@ describe("The ping program", function()
             return {
                 getAddress = function() return "10.0.0.2" end,
                 send = function()
-                    pinger.sends[#pinger.sends + 1] = clock
+                    pinger.sends[#pinger.sends + 1] = round(clock - start)
                     local seq = #pinger.sends
                     return seq, failures and failures[seq] or nil
                 end,
                 receive = function(_, timeout)
-                    pinger.waits[#pinger.waits + 1] = timeout
+                    pinger.waits[#pinger.waits + 1] = round(timeout)
                     local step = table.remove(script, 1)
                     if step == "wait" then
                         clock = clock + timeout
