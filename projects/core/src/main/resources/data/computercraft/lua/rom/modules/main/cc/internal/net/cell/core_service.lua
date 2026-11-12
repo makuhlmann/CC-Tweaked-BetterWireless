@@ -39,6 +39,7 @@ are kept for it, rather than refused.
 local address = require "cc.net.address"
 local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
+local files = require "cc.internal.net.files"
 local tasks = require "cc.internal.net.tasks"
 
 --- How many computers may wait to be allowed at once.
@@ -83,28 +84,8 @@ local FIRST_DELAY, MAX_DELAY = 2, 60
 local Service = {}
 Service.__index = Service
 
-local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-
-local function from_hex(text)
-    if type(text) ~= "string" or #text % 2 ~= 0 or text:find("[^%x]") then return nil end
-    return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end))
-end
-
-local function is_key(text) return type(text) == "string" and #text == 64 and not text:find("[^%x]") end
-
-local function read_table(path)
-    local file = fs.open(path, "r")
-    if not file then return {} end
-    local value = textutils.unserialise(file.readAll() or "")
-    file.close()
-    return type(value) == "table" and value or {}
-end
-
-local function write_table(path, value)
-    local file = assert(fs.open(path, "w"))
-    file.write(textutils.serialise(value))
-    file.close()
-end
+local to_hex, from_hex, is_key = files.hex.encode, files.hex.decode, files.hex.is_key
+local read_table, write_table = files.read_table, files.write_table
 
 -- Subscribers' IDs and numbers: short, and printable.
 local function is_name(text) return type(text) == "string" and #text >= 1 and #text <= 32 and not text:find("[^%w%-%._+]") end

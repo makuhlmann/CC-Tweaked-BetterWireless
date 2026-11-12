@@ -4,6 +4,7 @@
 
 local address = require "cc.net.address"
 local dhcp = require "cc.internal.net.dhcp"
+local files = require "cc.internal.net.files"
 
 local args = { ... }
 if #args < 1 or #args > 3 then
@@ -46,17 +47,11 @@ end
 
 -- Leases are kept in a file, so clients keep their addresses when the server restarts.
 local lease_file = fs.combine("/.dhcpd", interface .. ".leases")
-local leases = {}
-if fs.exists(lease_file) then
-    local handle = fs.open(lease_file, "r")
-    leases = textutils.unserialise(handle.readAll()) or {}
-    handle.close()
-end
+local leases = files.read_table(lease_file)
 
 local function save()
-    local handle = fs.open(lease_file, "w")
-    handle.write(textutils.serialise(leases))
-    handle.close()
+    local ok, err = pcall(files.write_table, lease_file, leases)
+    if not ok then printError("Cannot save the leases: " .. tostring(err)) end
 end
 
 local server = dhcp.server {

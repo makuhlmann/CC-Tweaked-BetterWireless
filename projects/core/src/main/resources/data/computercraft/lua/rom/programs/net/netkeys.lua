@@ -4,8 +4,8 @@
 
 local certificate = require "cc.internal.net.certificate"
 
-local TRUSTED = "/.net/trust"
-local CERTIFICATE = "/.net/certificate"
+local files = require "cc.internal.net.files"
+local TRUSTED, CERTIFICATE = files.TRUSTED, files.CERTIFICATE
 local DAY = 24 * 60 * 60 * 1000
 
 local args = { ... }
@@ -29,11 +29,9 @@ if not crypto or not enclave then
     return
 end
 
-local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-local function from_hex(text)
-    if type(text) ~= "string" or #text ~= 64 or text:find("[^%x]") then return nil end
-    return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end))
-end
+local to_hex = files.hex.encode
+-- A key, as 64 hexadecimal digits.
+local function from_hex(text) return files.hex.decode(text, 32) end
 
 local function read_file(path, binary)
     local file = fs.open(shell.resolve(path), binary and "rb" or "r")
@@ -60,11 +58,7 @@ local function read_key(text)
     return key
 end
 
-local function read_table(path)
-    local contents = read_file(path)
-    local value = contents and textutils.unserialise(contents)
-    return type(value) == "table" and value or {}
-end
+local read_table = files.read_table
 
 -- This computer's certificate authority key, made the first time it's needed.
 local function authority()

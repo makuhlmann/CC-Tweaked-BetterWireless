@@ -21,21 +21,8 @@ local function usage()
     print(name .. " deny <key|label>")
 end
 
-local function read_table(path)
-    local file = fs.open(path, "r")
-    if not file then return {} end
-    local value = textutils.unserialise(file.readAll() or "")
-    file.close()
-    return type(value) == "table" and value or {}
-end
-
-local function write_table(path, value)
-    local file = assert(fs.open(path, "w"))
-    file.write(textutils.serialise(value))
-    file.close()
-end
-
-local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
+local files = require "cc.internal.net.files"
+local read_table, write_table, to_hex = files.read_table, files.write_table, files.hex.encode
 
 local function hash_password(password, salt)
     return to_hex(crypto.pbkdf2(password, salt, 20000, 32))

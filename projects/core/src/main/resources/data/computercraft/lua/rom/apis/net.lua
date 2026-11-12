@@ -49,6 +49,7 @@ socket:close()
 ]]
 
 local expect = dofile("rom/modules/main/cc/expect.lua").expect
+local files = dofile("rom/modules/main/cc/internal/net/files.lua")
 
 local DEFAULT_PREFIX = 24
 local CHANNEL_CHECK_INTERVAL = 5
@@ -59,9 +60,7 @@ local CONNECT_TIMEOUT = 5
 local HANDSHAKE_TIMEOUT = 5
 
 -- Where secure connections keep what they know.
-local KNOWN_HOSTS = "/.net/known_hosts"
-local TRUSTED = "/.net/trust"
-local CERTIFICATE = "/.net/certificate"
+local KNOWN_HOSTS, TRUSTED, CERTIFICATE = files.KNOWN_HOSTS, files.TRUSTED, files.CERTIFICATE
 
 local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, running
 local rip_instance, rip_config
@@ -1197,31 +1196,14 @@ tcp = {
     end,
 }
 
-local function to_hex(bytes)
-    return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end))
-end
-
-local function from_hex(text)
-    if type(text) ~= "string" or #text % 2 ~= 0 or text:find("[^%x]") then return nil end
-    return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end))
-end
-
--- Read and write the small tables secure connections keep in /.net.
-local function read_table(path)
-    local file = fs.open(path, "r")
-    if not file then return {} end
-    local value = textutils.unserialise(file.readAll() or "")
-    file.close()
-    return type(value) == "table" and value or {}
-end
+local to_hex, from_hex, read_table = files.hex.encode, files.hex.decode, files.read_table
 
 -- What's been read from files which are read often (see `read_cached`), by key.
 local file_cache = {}
 
+-- Write one of the small tables kept in /.net, and forget what was read of it.
 local function write_table(path, value)
-    local file = assert(fs.open(path, "w"))
-    file.write(textutils.serialise(value))
-    file.close()
+    files.write_table(path, value)
     for key, entry in pairs(file_cache) do
         if entry.path == path then file_cache[key] = nil end
     end

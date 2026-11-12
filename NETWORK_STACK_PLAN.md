@@ -263,6 +263,12 @@ cover the replacement.
   and `netkeys.lua`.
 - **Change:** `cc.internal.net.files` with `hex.encode`, `hex.decode(text, length)`, `read_table`, `write_table` and
   the paths. **Small to medium.**
+- **Done:** `cc.internal.net.files` has `hex.encode`, `hex.decode(text, length)`, `hex.is_key`, `read_table`,
+  `write_table` (which raises an error naming the file when it can't be opened), and the paths of the trust store, the
+  certificate and the known hosts. The net API (which loads it with `dofile`, as it can't use `require` yet), the core
+  and its service, `cellcore`, `netkeys`, `rshd` and `dhcpd` use it, and `dhcpd` says when it can't save its leases
+  rather than failing. `dnsd` reads its files only when they change (4.5), so keeps its own reading. Tested in
+  `files_spec.lua`.
 
 ### 2.2 One send loop for control connections
 

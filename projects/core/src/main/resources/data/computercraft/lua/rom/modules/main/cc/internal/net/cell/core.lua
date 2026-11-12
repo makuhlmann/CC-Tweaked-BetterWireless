@@ -94,7 +94,7 @@ local is_id = common.is_id
 local Core = {}
 Core.__index = Core
 
-local function to_hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
+local to_hex = require "cc.internal.net.files".hex.encode
 
 --[[- Start a cellular core on a network stack.
 

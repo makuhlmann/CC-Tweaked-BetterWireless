@@ -39,19 +39,8 @@ if not crypto or not enclave then
     return
 end
 
-local function read_table(path)
-    local file = fs.open(path, "r")
-    if not file then return {} end
-    local value = textutils.unserialise(file.readAll() or "")
-    file.close()
-    return type(value) == "table" and value or {}
-end
-
-local function write_table(path, value)
-    local file = assert(fs.open(path, "w"))
-    file.write(textutils.serialise(value))
-    file.close()
-end
+local files = require "cc.internal.net.files"
+local read_table, write_table = files.read_table, files.write_table
 
 -- Commands which only work on the core's own computer.
 local command = args[1] or "status"
