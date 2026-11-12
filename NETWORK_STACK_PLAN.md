@@ -312,6 +312,13 @@ cover the replacement.
   in the setting, which may have been edited by hand.
 - **Change:** export each from one place, have the phone's `info()` say which cells are fresh rather than leaving
   callers to compare ages, and check firewall rules where they're read. **Small.**
+- **Done:** `cc.internal.net.checks` has `is_integer`, `is_port`, `is_protocol` and the port error, used by the net API
+  (with `dofile`), TCP, RIP, DHCP and `firewall`; the stack exports `usable`, `INFINITY` and the ephemeral ports, which
+  RIP, TCP and `route` use; the address module has the link-local network, which DHCP uses; `remote_term.PORT` is
+  `rsh`'s and `rshd`'s port; and `ncp` uses the stream's chunk size. The phone's `info()` says which cells it heard
+  lately enough to use (`fresh`), which the `cell` monitor and the net API use rather than comparing ages with their own
+  copy of 4 seconds, and the monitor uses the status bar's bars. The net API checks firewall rules as it reads them
+  (protocol, port, interface), as `firewall` does, since the setting may have been changed by hand.
 
 ### 2.5 One way to say what a computer is allowed to be
 

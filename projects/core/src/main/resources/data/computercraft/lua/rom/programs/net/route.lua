@@ -3,6 +3,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 local address = require "cc.net.address"
+local INFINITY = require "cc.internal.net.stack".INFINITY
 
 local args = { ... }
 
@@ -41,7 +42,7 @@ if command == nil then
         local line = ("%-18s %s"):format(route.network, via)
         if route.interface then line = line .. " on " .. route.interface end
         local detail = ("%s, cost %d"):format(route.source, route.metric)
-        if route.metric >= 16 then detail = route.source .. ", unreachable" end
+        if route.metric >= INFINITY then detail = route.source .. ", unreachable" end
         if #line + #detail + 3 > width then
             print(line)
             print("  " .. detail)

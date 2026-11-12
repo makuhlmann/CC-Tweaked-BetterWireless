@@ -205,6 +205,8 @@ local function apply(target, operations)
 end
 
 return {
+    --- The port remote shells are served on.
+    PORT = 22,
     new = new,
     apply = apply,
 }

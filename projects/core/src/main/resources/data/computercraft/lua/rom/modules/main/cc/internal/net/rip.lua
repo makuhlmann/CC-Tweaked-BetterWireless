@@ -25,11 +25,13 @@ sent again later to bring back a route which was withdrawn.
 ]]
 
 local address = require "cc.net.address"
+local checks = require "cc.internal.net.checks"
+local stack_module = require "cc.internal.net.stack"
 
 --- The port routers talk on.
 local PORT = 520
 
-local INFINITY = 16
+local INFINITY = stack_module.INFINITY
 -- The most routes a router learns. More than this is probably a misbehaving neighbour, and would slow down every packet.
 local MAX_ROUTES = 1024
 local UPDATE_INTERVAL, UPDATE_JITTER = 15, 3
@@ -60,9 +62,7 @@ local function signed_text(routes, time, from)
     return ("%s|%d|%d"):format(canonical(routes), time, from)
 end
 
-local function usable(interface)
-    return interface ~= nil and interface.address ~= nil and not interface.duplicate
-end
+local usable = stack_module.usable
 
 --- Whether a network may be routed: not loopback, link-local or multicast addresses, which only mean something on
 -- this computer or this link.
@@ -234,9 +234,7 @@ local function connected(stack)
     return result
 end
 
-local function is_integer(value, min, max)
-    return type(value) == "number" and value % 1 == 0 and value >= min and value <= max
-end
+local is_integer = checks.is_integer
 
 --- Handle an update from a neighbour.
 --

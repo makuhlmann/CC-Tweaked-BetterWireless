@@ -43,8 +43,10 @@ ID, reason) when it's gone.
 ]]
 
 local address = require "cc.net.address"
-local describe_error = require "cc.internal.net.stack".describe_error
+local stack_module = require "cc.internal.net.stack"
+local describe_error = stack_module.describe_error
 local sendable = require "cc.internal.net.message"
+local checks = require "cc.internal.net.checks"
 
 --- How many messages a receiver holds (waiting to be received, or arrived early).
 local WINDOW = 16
@@ -70,15 +72,12 @@ local KEEPALIVE_IDLE, KEEPALIVE_INTERVAL, KEEPALIVE_PROBES = 60, 10, 5
 -- How long a closed connection lingers, answering stray segments.
 local TIME_WAIT = 5
 
-local EPHEMERAL_FIRST, EPHEMERAL_LAST = 49152, 65535
+local EPHEMERAL_FIRST, EPHEMERAL_LAST = stack_module.EPHEMERAL_FIRST, stack_module.EPHEMERAL_LAST
 
-local function is_integer(value, min, max)
-    return type(value) == "number" and value % 1 == 0 and value >= min and value <= max
-end
+local is_integer, is_port = checks.is_integer, checks.is_port
 
 local function is_seq(value) return is_integer(value, 0, 2 ^ 53) end
 local function is_finite(value) return type(value) == "number" and value == value and value > -math.huge and value < math.huge end
-local function is_port(value) return is_integer(value, 1, 65535) end
 
 local function key(local_addr, local_port, remote_addr, remote_port)
     return ("%d:%d>%d:%d"):format(local_addr, local_port, remote_addr, remote_port)

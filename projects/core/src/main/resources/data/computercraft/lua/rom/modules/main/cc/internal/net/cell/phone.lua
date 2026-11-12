@@ -912,6 +912,8 @@ function Phone:info()
                 local age = now - entry.heard
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
+                    -- Heard lately enough to use.
+                    fresh = age <= SILENCE,
                     verified = entry.verified, serving = id == self.cell and name == self.via and self.state == "attached",
                 }
                 if age <= SILENCE and not names[name] then

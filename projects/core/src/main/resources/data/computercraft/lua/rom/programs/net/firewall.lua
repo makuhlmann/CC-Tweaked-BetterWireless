@@ -3,6 +3,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 local address = require "cc.net.address"
+local checks = require "cc.internal.net.checks"
 
 local args = { ... }
 
@@ -53,11 +54,11 @@ elseif command == "allow" or command == "deny" then
         end
         if field == "port" then
             value = tonumber(value)
-            if not value then
-                printError("Expected a port number")
+            if not checks.is_port(value) then
+                printError(checks.PORT_ERROR)
                 return
             end
-        elseif field == "proto" and value ~= "udp" and value ~= "tcp" and value ~= "icmp" then
+        elseif field == "proto" and not checks.is_protocol(value) then
             printError("Expected a protocol of udp, tcp or icmp")
             return
         elseif (field == "from" or field == "to") and not address.parse(value) then

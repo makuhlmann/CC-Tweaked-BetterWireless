@@ -60,7 +60,10 @@ local CAPTURE_LIFETIME = 30
 local INFINITY = 16
 
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
-local EPHEMERAL_FIRST, EPHEMERAL_LAST = 49152, 65535
+--- The first of the ports picked for sockets which don't ask for one.
+local EPHEMERAL_FIRST = 49152
+--- The last of them.
+local EPHEMERAL_LAST = 65535
 local MAX_QUEUED_DATAGRAMS = 32
 
 -- Channels: low band channels are 0-1023, high band channels are above that. Wired modems use the high band plan,
@@ -557,6 +560,10 @@ local function is_broadcast(interface, addr)
     return addr == address.BROADCAST or (interface ~= nil and addr == interface.broadcast_address)
 end
 
+--- Whether an interface can be used: it has an address, which no other computer on its link has too.
+--
+-- @tparam table|nil interface The interface.
+-- @treturn boolean Whether it can be used.
 local function usable(interface)
     return interface ~= nil and interface.address ~= nil and not interface.duplicate
 end
@@ -1341,6 +1348,9 @@ return {
     channels = channels,
     describe_error = describe_error,
     INFINITY = INFINITY,
+    EPHEMERAL_FIRST = EPHEMERAL_FIRST,
+    EPHEMERAL_LAST = EPHEMERAL_LAST,
+    usable = usable,
     VERSION = VERSION,
     BROADCAST_ID = BROADCAST_ID,
 }

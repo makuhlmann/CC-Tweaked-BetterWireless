@@ -18,6 +18,7 @@ Clients run inside the network stack. The server's logic is here too, but a serv
 ]]
 
 local address = require "cc.net.address"
+local is_integer = require "cc.internal.net.checks".is_integer
 
 --- The port DHCP clients listen on.
 local CLIENT_PORT = 68
@@ -39,9 +40,9 @@ local MIN_LEASE, MAX_LEASE = 30, 7 * 24 * 3600
 local CONFLICT_CHECK = 1
 local DECLINE_TIME = 600
 
-local LINK_LOCAL_NETWORK = 0xA9FE0000 -- 169.254.0.0
+local LINK_LOCAL_NETWORK = address.LINK_LOCAL
 --- The prefix length of link-local addresses.
-local LINK_LOCAL_PREFIX = 16
+local LINK_LOCAL_PREFIX = address.LINK_LOCAL_PREFIX
 local LINK_LOCAL_TRIES = 8
 
 --- Pick a link-local address for a computer. The first attempt depends on the computer's ID, so it usually gets the
@@ -56,9 +57,6 @@ local function link_local(id, attempt)
     return LINK_LOCAL_NETWORK + (1 + math.floor(n / 256)) * 256 + n % 256
 end
 
-local function is_integer(value, min, max)
-    return type(value) == "number" and value % 1 == 0 and value >= min and value <= max
-end
 
 --- Whether an address may be given to a computer: not the network's own address or its broadcast address, nor a
 -- loopback, link-local or multicast address.

@@ -36,11 +36,11 @@ describe("The cell program", function()
                 state = "attached", network = "ACME", subscriber = { id = "ACME-0042", number = "0042" },
                 address = "10.64.0.2", cell = 12,
                 heard = {
-                    { id = 12, network = "ACME", signal = -71.6, age = 0.5, verified = true, serving = true, area = 1 },
-                    { id = 11, network = "ACME", signal = -83, age = 1, verified = true, serving = false },
-                    { id = 66, network = "ACME", signal = -60, age = 1, verified = false, serving = false },
-                    { id = 77, network = "BETA-NETWORK-WITH-A-LONG-NAME", signal = -95, age = 2, serving = false },
-                    { id = 13, network = "ACME", signal = -99, age = 10, verified = true, serving = false },
+                    { id = 12, network = "ACME", signal = -71.6, age = 0.5, fresh = true, verified = true, serving = true, area = 1 },
+                    { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, serving = false },
+                    { id = 66, network = "ACME", signal = -60, age = 1, fresh = true, verified = false, serving = false },
+                    { id = 77, network = "BETA-NETWORK-WITH-A-LONG-NAME", signal = -95, age = 2, fresh = true, serving = false },
+                    { id = 13, network = "ACME", signal = -99, age = 10, fresh = false, verified = true, serving = false },
                 },
                 events = {
                     { kind = "attached", cell = 11, time = now - 60000 },
@@ -83,7 +83,7 @@ describe("The cell program", function()
             local now = os.epoch("utc")
             local info = { state = "searching", network = "ACME", heard = {}, events = {} }
             for i = 1, 12 do
-                info.heard[i] = { id = i, network = "ACME", signal = -60 - i, age = 1, verified = true, serving = false }
+                info.heard[i] = { id = i, network = "ACME", signal = -60 - i, age = 1, fresh = true, verified = true, serving = false }
                 info.events[i] = { kind = "lost", cell = i, time = now }
             end
             local lines = show(info)
@@ -119,7 +119,7 @@ describe("The cell program", function()
             local lines = show {
                 state = "attached", network = "ACME", subscriber = { id = "ACME-0042", number = "0042" },
                 address = "10.64.0.2", cell = 31, roaming = true, serving_network = "OTHER",
-                heard = { { id = 31, network = "OTHER", signal = -75, age = 0, serving = true } },
+                heard = { { id = 31, network = "OTHER", signal = -75, age = 0, fresh = true, serving = true } },
                 events = {
                     { kind = "attached", cell = 31, roaming = "OTHER", time = now },
                     { kind = "home", from = 31, time = now },

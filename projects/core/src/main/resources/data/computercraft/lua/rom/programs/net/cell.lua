@@ -35,9 +35,6 @@ local STATES = {
     rejected = "Rejected",
 }
 
--- How long a cell may be quiet before the monitor shows it as gone, in seconds (as the phone does).
-local SILENCE = 4
-
 -- Everything about the phone's service on one screen, which fits a pocket computer: its state, the cells it hears (of
 -- any network), and what has happened lately. It's redrawn every second, and whenever the state changes. Q or
 -- Backspace leaves it, as in the menus. This returns false if it was terminated.
@@ -73,11 +70,8 @@ local function monitor()
     end
     local function round(x) return math.floor(x + 0.5) end
 
-    -- How many of four bars a signal gets.
-    local function bars(signal)
-        if signal >= -70 then return 4 elseif signal >= -80 then return 3 elseif signal >= -90 then return 2
-        elseif signal >= -100 then return 1 else return 0 end
-    end
+    -- How many of four bars a signal gets, as the status bar shows it.
+    local bars = require "cc.internal.net.cell.bar".signal_bars
 
     local function describe(event)
         local kind = event.kind
@@ -179,7 +173,7 @@ local function monitor()
             elseif own then
                 fg = colours.white
             end
-            if cell.age > SILENCE then fg = colours.grey end
+            if not cell.fresh then fg = colours.grey end
             local id, signal = fit("#" .. cell.id, 5), ("%4d"):format(round(cell.signal))
             line(mark .. id .. " " .. fit(cell.network, math.max(1, w - 8 - #signal)) .. " " .. signal, fg)
         end

@@ -50,12 +50,13 @@ socket:close()
 
 local expect = dofile("rom/modules/main/cc/expect.lua").expect
 local files = dofile("rom/modules/main/cc/internal/net/files.lua")
+local checks = dofile("rom/modules/main/cc/internal/net/checks.lua")
 
 local DEFAULT_PREFIX = 24
 local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
-local PORT_ERROR = "Ports must be whole numbers from 1 to 65535"
+local PORT_ERROR = checks.PORT_ERROR
 local CONNECT_TIMEOUT = 5
 local HANDSHAKE_TIMEOUT = 5
 
@@ -218,10 +219,15 @@ local function firewall_rules()
             if type(rule) ~= "table" or (rule.action ~= "allow" and rule.action ~= "deny") then
                 error("expected an action of allow or deny", 0)
             end
+            -- The setting may have been changed by hand, so check what the firewall program would.
+            if rule.proto ~= nil and not checks.is_protocol(rule.proto) then error("expected a protocol of udp, tcp or icmp", 0) end
+            local port = rule.port ~= nil and tonumber(rule.port) or nil
+            if rule.port ~= nil and not checks.is_port(port) then error(PORT_ERROR, 0) end
+            if rule.on ~= nil and type(rule.on) ~= "string" then error("expected an interface's name", 0) end
             local src, src_prefix = parse_network(rule.from)
             local dst, dst_prefix = parse_network(rule.to)
             rules[#rules + 1] = {
-                action = rule.action, proto = rule.proto, port = tonumber(rule.port), interface = rule.on,
+                action = rule.action, proto = rule.proto, port = port, interface = rule.on,
                 src = src, src_prefix = src_prefix, dst = dst, dst_prefix = dst_prefix,
             }
         end)
@@ -278,8 +284,7 @@ local function check_timeout(index, timeout)
     end
 end
 
--- Whether a number is a port: a whole number from 1 to 65535.
-local function is_port(port) return port % 1 == 0 and port >= 1 and port <= 65535 end
+local is_port = checks.is_port
 
 -- Apply an address setting to an interface: "dhcp", "none", or an address. Without a setting, wired interfaces use
 -- DHCP, and radios (wireless and ender modems) stay quiet.
@@ -2331,7 +2336,7 @@ cell = {
         if info.selection ~= "auto" then entry(info.selection) end
         for _, heard in ipairs(info.heard or {}) do
             -- Cells which have gone quiet don't count, nor do ones which only claim to be a network's.
-            if heard.age <= 4 and heard.verified ~= false then
+            if heard.fresh and heard.verified ~= false then
                 local network = entry(heard.network)
                 if not network.signal or heard.signal > network.signal then network.signal = heard.signal end
                 if heard.serving then network.serving = true end

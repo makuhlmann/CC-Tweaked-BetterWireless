@@ -3,7 +3,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 local PORT = 115
-local CHUNK = 16 * 1024
+local CHUNK = require "cc.internal.net.stream".CHUNK
 
 local args = { ... }
 

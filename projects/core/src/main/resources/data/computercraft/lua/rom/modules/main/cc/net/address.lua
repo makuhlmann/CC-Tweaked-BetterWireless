@@ -28,6 +28,11 @@ local BROADCAST = 0xFFFFFFFF
 --- The unspecified address, used by computers which don't have an address yet.
 local ANY = 0
 
+--- The link-local network (`169.254.0.0/16`), whose addresses computers give themselves when there's no DHCP server.
+local LINK_LOCAL = 0xA9FE0000
+--- The link-local network's prefix length.
+local LINK_LOCAL_PREFIX = 16
+
 --- Get the network mask for a prefix length.
 --
 -- @tparam number prefix The prefix length, from 0 to 32.
@@ -137,7 +142,7 @@ end
 -- @treturn boolean Whether it is a link-local address.
 local function is_link_local(address)
     expect(1, address, "number")
-    return extract(address, 16, 16) == 0xA9FE
+    return band(address, mask(LINK_LOCAL_PREFIX)) == LINK_LOCAL
 end
 
 --[[- Check whether an address can be a computer's, on a network with this prefix length: not the unspecified address,
@@ -171,6 +176,8 @@ end
 return {
     BROADCAST = BROADCAST,
     ANY = ANY,
+    LINK_LOCAL = LINK_LOCAL,
+    LINK_LOCAL_PREFIX = LINK_LOCAL_PREFIX,
     mask = mask,
     parse = parse,
     format = format,

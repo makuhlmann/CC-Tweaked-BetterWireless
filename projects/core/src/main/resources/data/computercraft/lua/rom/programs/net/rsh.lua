@@ -4,7 +4,7 @@
 
 local remote_term = require "cc.internal.net.remote_term"
 
-local PORT = 22
+local PORT = remote_term.PORT
 
 local args = { ... }
 if #args < 1 then

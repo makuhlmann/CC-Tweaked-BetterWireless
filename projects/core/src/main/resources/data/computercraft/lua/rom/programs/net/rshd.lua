@@ -4,7 +4,7 @@
 
 local remote_term = require "cc.internal.net.remote_term"
 
-local PORT = 22
+local PORT = require "cc.internal.net.remote_term".PORT
 local AUTHORIZED = "/.net/authorized_keys"
 local PASSWORD = "/.net/rshd_password"
 local MAX_TRIES = 3
