@@ -6,10 +6,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Network stack: what to improve next
 
-This is a plan, not a record: nothing in it has been done. It lists what could be improved, tweaked, reworked or
-streamlined in the network stack as it stands after the ender modem rework, from reading the code and from what the
-robustness tests showed. `NETWORK_STACK.md` says what the stack is and how it was built; this says what to do to it
-next.
+This is a plan, not a record: nothing in it has been done, except the items marked **Done**. It lists what could be
+improved, tweaked, reworked or streamlined in the network stack as it stands after the ender modem rework, from reading
+the code and from what the robustness tests showed. `NETWORK_STACK.md` says what the stack is and how it was built;
+this says what to do to it next.
 
 Each item says what was seen and where, why it matters, what to change, and roughly how big the change is:
 
@@ -182,6 +182,10 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
   fetch. The two files were edited to match `RecipeProvider` and `LanguageProvider`.
 - **Change:** run `./gradlew :fabric:runData` once and commit whatever differs. Have CI run it and fail when the
   output differs from what's committed, if it doesn't already. **Small.**
+- **Done:** `./gradlew :common:runData` (which runs both loaders' generators and merges what they make into
+  `projects/common/src/generated`; `:fabric:runData` alone writes only to `projects/fabric/build`) makes exactly what's
+  committed, so the hand edits were right. CI didn't check this. It now runs that after downloading the game's assets,
+  and fails when anything in `projects/common/src/generated` differs.
 
 ### 1.17 `cellcore`'s completion doesn't know its newer commands
 

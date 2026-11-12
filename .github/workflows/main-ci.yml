@@ -52,6 +52,18 @@ jobs:
     - name: 📥 Download assets for game tests
       run: ./gradlew downloadAssets || ./gradlew downloadAssets
 
+    # The generated files are committed, so check they're what the data generator makes now. It needs the game's
+    # assets, as the game tests do.
+    - name: 🧪 Check generated files
+      run: |
+        ./gradlew :common:runData
+        if [ -n "$(git status --porcelain -- projects/common/src/generated)" ]; then
+          git status --short -- projects/common/src/generated
+          git diff -- projects/common/src/generated
+          echo "::error::The generated files are out of date. Run ./gradlew :common:runData and commit the changes."
+          exit 1
+        fi
+
     - name: 🧪 Run integration tests
       run: ./gradlew runGametest
 
