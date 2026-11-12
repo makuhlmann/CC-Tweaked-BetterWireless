@@ -22,8 +22,8 @@ determine a computer's position.
 You will need:
 
  - Four computers.
- - Four Ender Modems. Normal Wireless Modems may be used, but the range of the GPS constellation will be severely
-   limited.
+ - Four Wireless Modems. Place them high up and in the open: like any radio, they reach much further from there. Ender
+   Modems may be used too, but they are weaker radios, so the constellation will not reach as far.
 
 Additionally, you will need another computer and a wireless modem, in order to test that GPS works!
 

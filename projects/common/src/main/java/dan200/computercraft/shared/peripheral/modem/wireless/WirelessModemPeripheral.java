@@ -28,13 +28,28 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
         return advanced;
     }
 
+    /**
+     * How much weaker this modem transmits for being an ender modem, in dB. Devices which are weaker themselves add
+     * this to their own offset.
+     *
+     * @return The offset, which is zero for wireless modems.
+     */
+    protected final double getEnderTransmitOffset() {
+        return advanced ? Config.radioEnderPowerOffset : 0;
+    }
+
+    @Override
+    public double getTransmitOffset() {
+        return getEnderTransmitOffset();
+    }
+
     @Override
     public double getRange() {
-        if (advanced) {
-            return Integer.MAX_VALUE;
-        } else if (Config.radioEnabled) {
-            // Range is decided by the propagation model; this is just an upper bound.
+        if (Config.radioEnabled) {
+            // Range is decided by the propagation model, for ender modems too; this is just an upper bound.
             return Config.radioMaxRange;
+        } else if (advanced) {
+            return Integer.MAX_VALUE;
         } else {
             var world = getLevel();
             if (world != null) {

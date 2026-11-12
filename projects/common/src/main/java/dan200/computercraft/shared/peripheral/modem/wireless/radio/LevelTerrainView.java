@@ -20,6 +20,7 @@ final class LevelTerrainView implements TerrainView {
     private final ServerLevel level;
     private final LevelHeights heights;
     private final int minY, maxY;
+    private final int ceiling;
 
     private long lastPos = Long.MAX_VALUE;
     private @Nullable LevelChunk lastChunk;
@@ -30,6 +31,14 @@ final class LevelTerrainView implements TerrainView {
         this.heights = heights;
         minY = level.getMinY();
         maxY = level.getMaxY();
+        // The Nether is 256 blocks tall, with its ceiling halfway up, at its logical height.
+        var type = level.dimensionType();
+        ceiling = type.hasCeiling() ? type.minY() + type.logicalHeight() : UNKNOWN;
+    }
+
+    @Override
+    public int ceilingHeight() {
+        return ceiling;
     }
 
     private void select(int x, int z) {

@@ -18,6 +18,8 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
  * @param voxelRadius            How far from each end of the link, in blocks, we look for the signal to leave any
  *                               enclosure, so it can go over the terrain.
  * @param maxProfileSamples      The maximum number of points we sample along the terrain profile.
+ * @param ceilingUnknownFill     In dimensions with a ceiling, how much of the space beneath it we take to be rock
+ *                               where we only have heightmaps, between 0 and 1.
  */
 public record RadioEnvironment(
     double metresPerBlock,
@@ -27,9 +29,10 @@ public record RadioEnvironment(
     double minAntennaHeight,
     double materialLossScale,
     int voxelRadius,
-    int maxProfileSamples
+    int maxProfileSamples,
+    double ceilingUnknownFill
 ) {
-    public static final RadioEnvironment DEFAULT = new RadioEnvironment(1, 1, 0, true, 2, 1, 64, 512);
+    public static final RadioEnvironment DEFAULT = new RadioEnvironment(1, 1, 0, true, 2, 1, 64, 512, 0.02);
 
     /**
      * The total path loss two antennas at the minimum height experience over flat, open ground. This is used to derive a

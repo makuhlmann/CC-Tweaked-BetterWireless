@@ -56,6 +56,7 @@ public interface PacketReceiver {
      * Determine whether this receiver can receive packets from other dimensions.
      * <p>
      * A device will receive an inter-dimensional packet if either it or the sending device is inter-dimensional.
+     * When radio propagation is enabled, both must be, and the packet's signal must be strong enough.
      *
      * @return Whether this receiver receives packets from other dimensions.
      * @see #getRange()
@@ -103,4 +104,19 @@ public interface PacketReceiver {
      * @see #isInterdimensional()
      */
     void receiveDifferentDimension(Packet packet);
+
+    /**
+     * Receive a network packet from a different dimension, with the strength of the signal it arrived with.
+     * <p>
+     * When radio propagation is enabled, inter-dimensional devices are radios too: a packet only crosses into another
+     * dimension between two of them, and only if its signal is strong enough once it gets there. This is called
+     * instead of {@link #receiveDifferentDimension(Packet)}. By default it ignores the signal strength.
+     *
+     * @param packet         The packet to receive.
+     * @param signalStrength The strength of the received signal, in dBm. Larger (less negative) is stronger.
+     * @see #receiveDifferentDimension(Packet)
+     */
+    default void receiveDifferentDimension(Packet packet, double signalStrength) {
+        receiveDifferentDimension(packet);
+    }
 }

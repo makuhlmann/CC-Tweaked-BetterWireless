@@ -3,5 +3,5 @@
   "category": "redstone",
   "key": {"#": "minecraft:stone", "R": "#c:dusts/redstone"},
   "pattern": [" # ", "#R#", " # "],
-  "result": {"count": 6, "id": "computercraft:cable"}
+  "result": {"count": 32, "id": "computercraft:cable"}
 }

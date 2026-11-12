@@ -18,7 +18,8 @@ The [`modem_message`] event is fired when a message is received on an open chann
 5. [`any`]: The message as sent by the sender.
 6. <span class="type">[`number`]|[`nil`]</span>: The distance between the sender and the receiver in blocks, or [`nil`] if the message was sent between dimensions.
 7. <span class="type">[`number`]|[`nil`]</span>: The strength of the received signal in dBm (for instance, `-72.5`), or [`nil`] if the
-   message was not received by radio (it was sent over a cable, by an ender modem, or radio propagation is disabled).
+   message was not received by radio (it was sent over a cable, or radio propagation is disabled). Messages between
+   ender modems in different dimensions have a signal strength, but no distance.
    Messages are received down to about -100dBm; anything above -70dBm is a strong signal.
 
 ## Example

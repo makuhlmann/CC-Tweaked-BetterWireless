@@ -45,4 +45,17 @@ public interface TerrainView {
      */
     @Nullable
     BlockRadioInfo block(int x, int y, int z);
+
+    /**
+     * The height of this world's ceiling, if it has one, as the Nether does: the first Y position above it.
+     * <p>
+     * The heights of such a world are those of its ceiling, and say nothing of the space beneath it: every column looks
+     * like solid rock. So where blocks aren't loaded, the model takes that space to be mostly open, rather than going
+     * by the heights. Above the ceiling is open ground, as anywhere else.
+     *
+     * @return The ceiling's height, or {@link #UNKNOWN} if the world is open to the sky.
+     */
+    default int ceilingHeight() {
+        return UNKNOWN;
+    }
 }

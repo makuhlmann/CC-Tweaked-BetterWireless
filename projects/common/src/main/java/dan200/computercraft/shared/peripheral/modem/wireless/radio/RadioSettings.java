@@ -6,6 +6,8 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
 import dan200.computercraft.shared.config.Config;
 
+import java.util.Map;
+
 /**
  * A snapshot of the radio configuration.
  *
@@ -17,6 +19,8 @@ import dan200.computercraft.shared.config.Config;
  * @param stormPenalty        How much noise thunderstorms add, in dB.
  * @param tickBudgetNanos     How long we may spend evaluating links each tick.
  * @param cacheTicks          How long evaluated links are remembered for.
+ * @param crossCacheTicks     How long links evaluated for a packet from another dimension are remembered for.
+ * @param dimensionHeights    The heights signals from other dimensions may appear at in each dimension, by its ID.
  * @param lookupTimeoutTicks  How long to wait for terrain data before guessing.
  * @param useGenerator        Whether to ask the chunk generator about terrain we have no other data for.
  * @param useDistantHorizons  Whether to read terrain from Distant Horizons.
@@ -30,6 +34,8 @@ public record RadioSettings(
     double stormPenalty,
     long tickBudgetNanos,
     int cacheTicks,
+    int crossCacheTicks,
+    Map<String, DimensionHeights> dimensionHeights,
     int lookupTimeoutTicks,
     boolean useGenerator,
     boolean useDistantHorizons
@@ -46,7 +52,8 @@ public record RadioSettings(
             Config.radioMinAntennaHeight,
             Config.radioMaterialLossScale,
             Config.radioVoxelRadius,
-            Config.radioProfileSamples
+            Config.radioProfileSamples,
+            Config.radioCeilingUnknownFill
         );
 
         var lowBudget = environment.flatGroundLoss(Config.radioReferenceRange, Config.radioLowBandFrequency);
@@ -59,6 +66,8 @@ public record RadioSettings(
             Config.radioStormPenalty,
             Config.radioTickBudgetMicros * 1000L,
             Config.radioCacheTicks,
+            Config.radioEnderCacheTicks,
+            Config.radioEnderYRanges,
             Config.radioLookupTimeoutTicks,
             Config.radioUseGenerator,
             Config.radioUseDistantHorizons
@@ -77,6 +86,20 @@ public record RadioSettings(
      * @return Whether the link is worth evaluating.
      */
     public boolean isPossible(double distance, RadioBand band) {
-        return distance <= maxRange && RadioMath.freeSpaceLoss(distance * environment.metresPerBlock(), band.frequencyMHz()) <= band.linkBudget();
+        return isPossible(distance, band, 0);
+    }
+
+    /**
+     * Whether a link between two particular devices could possibly work, even in perfect conditions.
+     *
+     * @param distance The distance between the two antennas, in blocks.
+     * @param band     The band the link uses.
+     * @param offset   How much weaker the two devices are than the strongest, in dB: the sum of the sender's transmit
+     *                 offset and the receiver's receive offset, zero or negative.
+     * @return Whether the link is worth evaluating.
+     */
+    public boolean isPossible(double distance, RadioBand band, double offset) {
+        return distance <= maxRange
+            && RadioMath.freeSpaceLoss(distance * environment.metresPerBlock(), band.frequencyMHz()) <= band.linkBudget() + Math.min(0, offset);
     }
 }

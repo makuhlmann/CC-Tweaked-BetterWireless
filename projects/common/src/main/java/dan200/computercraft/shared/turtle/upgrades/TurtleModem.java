@@ -57,7 +57,7 @@ public class TurtleModem extends AbstractTurtleUpgrade {
 
         @Override
         public double getTransmitOffset() {
-            return Config.radioTurtleTransmitOffset;
+            return Config.radioTurtleTransmitOffset + getEnderTransmitOffset();
         }
 
         @Override

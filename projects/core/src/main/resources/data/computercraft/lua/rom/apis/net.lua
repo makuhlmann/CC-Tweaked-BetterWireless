@@ -24,7 +24,7 @@ Computers on different networks reach each other through routers: computers with
 setting). Routers learn routes from each other with `net.rip`, or are given them with `net.routes`; the `route` program
 sets these. `net.firewall` holds rules for which packets a router forwards.
 
-Wired and ender modems are one interface each. A wireless modem is one interface on the short-range high band by default
+A wired modem is one interface. A wireless or ender modem is one interface on the short-range high band by default
 (channels 1024 and up). Set `net.<name>.band` to `"low"` to use the long-range low band instead (channels below 1024).
 An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
 `net.<name>:high.address`).
@@ -346,15 +346,16 @@ local function setup_modem(name)
 
     if not peripheral.call(name, "isWireless") then return add_interface(name, name, "wired", "high") end
 
+    -- Ender modems are radios with both bands too, whose signal also appears in other dimensions.
     local ok, ender = pcall(peripheral.call, name, "isInterdimensional")
-    if ok and ender then return add_interface(name, name, "ender", "high") end
+    local kind = ok and ender and "ender" or "wireless"
 
     local primary = settings.get("net." .. name .. ".band") == "low" and "low" or "high"
-    add_interface(name, name, "wireless", primary)
+    add_interface(name, name, kind, primary)
 
     local other = primary == "low" and "high" or "low"
     if settings.get("net." .. name .. ":" .. other .. ".address") ~= nil then
-        add_interface(name .. ":" .. other, name, "wireless", other)
+        add_interface(name .. ":" .. other, name, kind, other)
     end
 end
 
@@ -1453,19 +1454,21 @@ local function sim_key()
     return { public = public, exchange = function(peer) return enclave.exchange("sim", peer) end }
 end
 
--- Cellular radio uses a wireless modem's low band, for range: find (or make) an interface on it.
+-- Cellular radio uses a wireless modem's low band, for range: find (or make) an interface on it. An ender modem will
+-- do too: it's a weaker radio, which also reaches cells and phones where its signal appears in other dimensions.
+local RADIO_KINDS = { wireless = true, ender = true }
 local function cell_interface()
     local names = {}
     for name in pairs(stack.interfaces) do names[#names + 1] = name end
     table.sort(names)
     for _, name in ipairs(names) do
         local interface = stack.interfaces[name]
-        if interface.kind == "wireless" and interface.band == "low" then return name end
+        if RADIO_KINDS[interface.kind] and interface.band == "low" then return name end
     end
     for _, name in ipairs(names) do
         local interface = stack.interfaces[name]
-        if interface.kind == "wireless" and interface.band == "high" and not stack.interfaces[interface.modem .. ":low"] then
-            add_interface(interface.modem .. ":low", interface.modem, "wireless", "low")
+        if RADIO_KINDS[interface.kind] and interface.band == "high" and not stack.interfaces[interface.modem .. ":low"] then
+            add_interface(interface.modem .. ":low", interface.modem, interface.kind, "low")
             return interface.modem .. ":low"
         end
     end

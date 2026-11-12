@@ -4,6 +4,10 @@
 
 package dan200.computercraft.shared.config;
 
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.DimensionHeights;
+
+import java.util.Map;
+
 /**
  * ComputerCraft's global config.
  *
@@ -41,6 +45,11 @@ public final class Config {
     public static double radioPocketReceiveOffset = -7;
     public static double radioTurtleTransmitOffset = -10;
     public static double radioTurtleReceiveOffset = -7;
+    public static double radioEnderPowerOffset = -10;
+    public static boolean radioEnderCrossDimension = true;
+    public static Map<String, DimensionHeights> radioEnderYRanges = DimensionHeights.DEFAULTS;
+    public static int radioEnderCacheTicks = 1200;
+    public static double radioCeilingUnknownFill = 0.02;
     public static int radioTickBudgetMicros = 2000;
     public static int radioCacheTicks = 100;
     public static int radioLookupTimeoutTicks = 40;

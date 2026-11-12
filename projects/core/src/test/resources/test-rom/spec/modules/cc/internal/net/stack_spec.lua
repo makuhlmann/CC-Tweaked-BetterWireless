@@ -15,6 +15,15 @@ describe("cc.internal.net.stack", function()
         expect({ Stack.channels(5, "high") }):same { 1029, 61024 }
     end)
 
+    it("gives radios either band, and wired modems the high band's channels", function()
+        local stack = network().stack(5)
+        -- Ender modems are radios too.
+        expect(stack:add_interface("a", "a", "wireless", "low")):matches { band = "low", unicast = 5, broadcast = 1000 }
+        expect(stack:add_interface("b", "b", "ender", "low")):matches { band = "low", unicast = 5, broadcast = 1000 }
+        expect(stack:add_interface("c", "c", "ender", "high")):matches { band = "high", unicast = 1029, broadcast = 61024 }
+        expect(stack:add_interface("d", "d", "wired", "low")):matches { band = "high", unicast = 1029, broadcast = 61024 }
+    end)
+
     it("answers pings", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

@@ -62,7 +62,8 @@ if #args == 0 then
 
     print("Hostname: " .. net.getHostname())
     for _, interface in ipairs(interfaces) do
-        local kind = interface.kind == "wireless" and ("wireless, " .. interface.band .. " band") or interface.kind
+        local kind = interface.kind
+        if kind == "wireless" or kind == "ender" then kind = ("%s, %s band"):format(kind, interface.band) end
         heading(("%s (%s)"):format(interface.name, kind))
         print("  " .. describe(interface))
         if interface.unicast then
@@ -95,8 +96,8 @@ if value == "band" then
     end
 
     local interface = find(name)
-    if not interface or interface.kind ~= "wireless" then
-        printError("Only wireless modems have bands.")
+    if not interface or (interface.kind ~= "wireless" and interface.kind ~= "ender") then
+        printError("Only wireless and ender modems have bands.")
         return
     end
 

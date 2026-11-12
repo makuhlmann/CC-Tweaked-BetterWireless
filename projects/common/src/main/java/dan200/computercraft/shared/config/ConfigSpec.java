@@ -13,6 +13,7 @@ import dan200.computercraft.core.apis.http.options.ProxyType;
 import dan200.computercraft.core.computer.mainthread.MainThreadConfig;
 import dan200.computercraft.shared.computer.core.ServerContext;
 import dan200.computercraft.shared.computer.core.TerminalSize;
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.DimensionHeights;
 import dan200.computercraft.shared.platform.PlatformHelper;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.Filter;
@@ -85,6 +86,11 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Double> radioPocketReceiveOffset;
     public static final ConfigFile.Value<Double> radioTurtleTransmitOffset;
     public static final ConfigFile.Value<Double> radioTurtleReceiveOffset;
+    public static final ConfigFile.Value<Double> radioEnderPowerOffset;
+    public static final ConfigFile.Value<Boolean> radioEnderCrossDimension;
+    public static final ConfigFile.Value<List<? extends String>> radioEnderYRanges;
+    public static final ConfigFile.Value<Integer> radioEnderCacheTicks;
+    public static final ConfigFile.Value<Double> radioCeilingUnknownFill;
     public static final ConfigFile.Value<Integer> radioTickBudgetMicros;
     public static final ConfigFile.Value<Integer> radioCacheTicks;
     public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
@@ -456,6 +462,37 @@ public final class ConfigSpec {
                 .comment("How much worse turtles' modems receive than placed computers', in dB.")
                 .defineInRange("turtle_receive_offset", Config.radioTurtleReceiveOffset, -100, 0);
 
+            radioEnderPowerOffset = builder
+                .comment("""
+                    How much weaker ender modems transmit than wireless modems, in dB. On a pocket
+                    computer or turtle, this adds to their own offset.""")
+                .defineInRange("ender_power_offset", Config.radioEnderPowerOffset, -100, 0);
+
+            radioEnderCrossDimension = builder
+                .comment("""
+                    Whether ender modems' signals also appear in other dimensions, at the corresponding
+                    position (an eighth of the coordinates in the Nether, say), where other ender modems
+                    hear them if they're in range.""")
+                .define("ender_cross_dimension", Config.radioEnderCrossDimension);
+
+            radioEnderYRanges = builder
+                .comment("""
+                    The heights at which signals from other dimensions may appear in a dimension, as
+                    "dimension=min..max". A signal keeps its height, moved into this range. Dimensions
+                    which aren't listed use their whole build height.""")
+                .defineList("ender_y_ranges", DimensionHeights.DEFAULT_ENTRIES, () -> "minecraft:overworld=-64..320", DimensionHeights::isValid);
+
+            radioEnderCacheTicks = builder
+                .comment("How long to remember the strength of a link between dimensions, in ticks.")
+                .defineInRange("ender_cache_ticks", Config.radioEnderCacheTicks, 0, 72_000);
+
+            radioCeilingUnknownFill = builder
+                .comment("""
+                    In dimensions with a ceiling (the Nether), how much of the space beneath it is taken
+                    to be rock where chunks aren't loaded, from 0 to 1. Heights only say where the
+                    ceiling is there, not where the caverns are.""")
+                .defineInRange("nether_unknown_fill", Config.radioCeilingUnknownFill, 0, 1);
+
             radioTickBudgetMicros = builder
                 .comment("How long the server may spend evaluating radio links each tick, in microseconds.")
                 .defineInRange("tick_budget", Config.radioTickBudgetMicros, 100, 50_000);
@@ -628,6 +665,11 @@ public final class ConfigSpec {
         Config.radioPocketReceiveOffset = radioPocketReceiveOffset.get();
         Config.radioTurtleTransmitOffset = radioTurtleTransmitOffset.get();
         Config.radioTurtleReceiveOffset = radioTurtleReceiveOffset.get();
+        Config.radioEnderPowerOffset = radioEnderPowerOffset.get();
+        Config.radioEnderCrossDimension = radioEnderCrossDimension.get();
+        Config.radioEnderYRanges = DimensionHeights.parse(radioEnderYRanges.get());
+        Config.radioEnderCacheTicks = radioEnderCacheTicks.get();
+        Config.radioCeilingUnknownFill = radioCeilingUnknownFill.get();
         Config.radioTickBudgetMicros = radioTickBudgetMicros.get();
         Config.radioCacheTicks = radioCacheTicks.get();
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();

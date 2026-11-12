@@ -171,6 +171,75 @@ public class PropagationModelTest {
         assertEquals(forward.loss(), backward.loss(), 1.0);
     }
 
+    /** The Nether, more or less: a ceiling whose top is at Y 128, five blocks thick, with open space beneath it. */
+    private static FakeTerrain cavern() {
+        var terrain = new FakeTerrain((x, z) -> 128);
+        terrain.ceiling = 128;
+        terrain.solid = (x, y, z) -> y >= 123 && y < 128 ? BlockRadioInfo.full(RadioMaterial.ROCK) : BlockRadioInfo.AIR;
+        return terrain;
+    }
+
+    @Test
+    public void unloadedSpaceBeneathACeilingIsMostlyOpen() {
+        // Heights beneath a ceiling are the ceiling's, so say nothing about what's in the 800 blocks we can't see.
+        var terrain = cavern();
+        terrain.loaded = (x, z) -> x < 100 || x >= 900;
+        var link = PropagationModel.evaluate(0.5, 60.5, 0.5, 1000.5, 60.5, 0.5, VHF, BUDGET + 200, ENV, terrain);
+
+        var expected = RadioMaterial.ROCK.attenuation(VHF) * ENV.ceilingUnknownFill() * 800;
+        assertEquals(expected, link.through(), expected * 0.02, "Unloaded space should cost a little for each block");
+        assertFalse(link.diffracted(), "There's nothing to go over");
+
+        // Seen as it is, it's open.
+        terrain.loaded = (x, z) -> true;
+        var open = PropagationModel.evaluate(0.5, 60.5, 0.5, 1000.5, 60.5, 0.5, VHF, BUDGET + 200, ENV, terrain);
+        assertEquals(0, open.through(), 1e-9);
+        assertEquals(open.baseLoss(), link.baseLoss(), 1e-9);
+
+        // Without a ceiling, the same heights mean solid rock all the way.
+        terrain.ceiling = TerrainView.UNKNOWN;
+        terrain.loaded = (x, z) -> x < 100 || x >= 900;
+        var buried = PropagationModel.evaluate(0.5, 60.5, 0.5, 1000.5, 60.5, 0.5, VHF, BUDGET + 200, ENV, terrain);
+        assertTrue(link.loss() < BUDGET + 200, "The signal should get through unloaded space: " + link.loss());
+        assertTrue(buried.loss() > BUDGET + 200, "But not through that much rock: " + buried.loss());
+    }
+
+    @Test
+    public void nothingGoesOverACeiling() {
+        // A wall from floor to ceiling. In the open, the signal would go over it.
+        var terrain = cavern();
+        var wall = terrain.solid;
+        terrain.solid = (x, y, z) -> x >= 450 && x < 550 ? BlockRadioInfo.full(RadioMaterial.ROCK) : wall.get(x, y, z);
+        var link = PropagationModel.evaluate(0.5, 60.5, 0.5, 1000.5, 60.5, 0.5, VHF, BUDGET + 200, ENV, terrain);
+
+        assertFalse(link.diffracted());
+        assertEquals(Double.POSITIVE_INFINITY, link.over());
+        assertTrue(link.loss() > BUDGET + 200, "A hundred blocks of rock should block the signal: " + link.loss());
+    }
+
+    @Test
+    public void aboveACeilingIsOpenGround() {
+        var terrain = cavern();
+        terrain.loaded = (x, z) -> x < 100 || x >= 900;
+        var link = PropagationModel.evaluate(0.5, 129, 0.5, 1024.5, 129, 0.5, VHF, BUDGET + 200, ENV, terrain);
+
+        assertEquals(BUDGET, link.loss(), 0.5, "Antennas on the ceiling reach as far as on any flat ground");
+        assertEquals(0, link.through(), 1e-9);
+    }
+
+    @Test
+    public void anUnloadedCeilingStillBlocks() {
+        // From beneath the ceiling to above it, through chunks which aren't loaded.
+        var terrain = cavern();
+        terrain.loaded = (x, z) -> false;
+        var link = PropagationModel.evaluate(0.5, 100.5, 0.5, 40.5, 140.5, 0.5, VHF, BUDGET + 200, ENV, terrain);
+
+        // The ray climbs a block for each block along, so is in the ceiling's five blocks for about seven.
+        var rock = RadioMaterial.ROCK.attenuation(VHF);
+        assertTrue(link.through() > rock * 5, "The ceiling should cost as much as rock: " + link.through());
+        assertTrue(link.through() < rock * 12, "The space beneath it shouldn't: " + link.through());
+    }
+
     private static LinkResult evaluate(TerrainView terrain, int fromX, int fromZ, int toX, double frequency) {
         return PropagationModel.evaluate(fromX + 0.5, GROUND + 1, fromZ + 0.5, toX + 0.5, GROUND + 1, fromZ + 0.5, frequency, BUDGET + 200, ENV, terrain);
     }
@@ -180,6 +249,7 @@ public class PropagationModelTest {
         private final Map<Long, BlockRadioInfo> overrides = new HashMap<>();
         BlockLookup solid = (x, y, z) -> null;
         ColumnTest loaded = (x, z) -> true;
+        int ceiling = UNKNOWN;
 
         FakeTerrain(IntBinaryOperator height) {
             this.height = height;
@@ -193,6 +263,11 @@ public class PropagationModelTest {
         @Override
         public int surfaceHeight(int x, int z) {
             return height.applyAsInt(x, z);
+        }
+
+        @Override
+        public int ceilingHeight() {
+            return ceiling;
         }
 
         @Override

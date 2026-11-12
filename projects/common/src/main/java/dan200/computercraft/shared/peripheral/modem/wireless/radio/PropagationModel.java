@@ -29,6 +29,11 @@ import java.util.Arrays;
  * </ol>
  * The signal takes whichever of the through and over paths is better.
  * <p>
+ * Worlds with a ceiling (the Nether) are a special case. Their heightmaps are those of the ceiling, so say nothing of
+ * the space beneath it. Where chunks aren't loaded, that space is taken to be mostly open, with a small fixed loss:
+ * rock, at a small fraction of its attenuation. There's no path over the terrain from beneath a ceiling, as there's
+ * nothing to go over, while above it is open ground like any other.
+ * <p>
  * Evaluating a link costs one walk along the ray (which stops as soon as the signal is lost), a short walk at each end
  * to find where the signal leaves any enclosure, and one profile of a bounded size. The model never loads chunks:
  * anything not exposed by the {@link TerrainView} is guessed.
@@ -49,6 +54,12 @@ public final class PropagationModel {
      * The material we assume the ground to be made of, when we only have heightmaps.
      */
     private static final RadioMaterial TERRAIN = RadioMaterial.ROCK;
+
+    /**
+     * How thick we take a world's ceiling to be, in blocks, when we only have heightmaps: the Nether's is bedrock mixed
+     * with netherrack, five blocks deep.
+     */
+    private static final int CEILING_THICKNESS = 5;
 
     private PropagationModel() {
     }
@@ -156,10 +167,11 @@ public final class PropagationModel {
         var txThrough = walkLength;
         var rxThrough = Math.min(env.voxelRadius(), rayBlocks - txThrough);
 
-        var fromTx = new Walk(terrain, frequencyMHz, lossScale, headroom, txThrough, rayBlocks - MOUNT_CLEARANCE);
+        var cavern = Cavern.of(terrain, env, frequencyMHz);
+        var fromTx = new Walk(terrain, cavern, frequencyMHz, lossScale, headroom, txThrough, rayBlocks - MOUNT_CLEARANCE);
         fromTx.start(tx, ty, tz);
         VoxelRay.traverse(tx, ty, tz, rx, ry, rz, walkLength, fromTx);
-        var fromRx = new Walk(terrain, frequencyMHz, lossScale, headroom, rxThrough, rayBlocks - MOUNT_CLEARANCE);
+        var fromRx = new Walk(terrain, cavern, frequencyMHz, lossScale, headroom, rxThrough, rayBlocks - MOUNT_CLEARANCE);
         fromRx.start(rx, ry, rz);
         VoxelRay.traverse(rx, ry, rz, tx, ty, tz, walkLength, fromRx);
 
@@ -169,7 +181,7 @@ public final class PropagationModel {
         if (middleLength > 0 && through <= headroom) {
             var start = txThrough / rayBlocks;
             var end = 1 - rxThrough / rayBlocks;
-            var middle = new MiddleWalk(terrain, frequencyMHz, lossScale, headroom - through, ground, surface, start, 1 / rayBlocks);
+            var middle = new MiddleWalk(terrain, cavern, frequencyMHz, lossScale, headroom - through, ground, surface, start, 1 / rayBlocks);
             VoxelRay.traverse(
                 tx + (rx - tx) * start, ty + dy * start, tz + (rz - tz) * start,
                 tx + (rx - tx) * end, ty + dy * end, tz + (rz - tz) * end,
@@ -179,8 +191,8 @@ public final class PropagationModel {
         }
 
         // Over the top: escape any enclosure around each antenna, then diffract over the terrain.
-        var txEscape = escape(fromTx, terrain, tx, ty, tz, frequencyMHz, headroom, env);
-        var rxEscape = escape(fromRx, terrain, rx, ry, rz, frequencyMHz, headroom, env);
+        var txEscape = escape(fromTx, terrain, cavern, tx, ty, tz, frequencyMHz, headroom, env);
+        var rxEscape = escape(fromRx, terrain, cavern, rx, ry, rz, frequencyMHz, headroom, env);
         var over = Double.POSITIVE_INFINITY;
         var diffraction = 0.0;
         if (txEscape != null && rxEscape != null) {
@@ -225,15 +237,50 @@ public final class PropagationModel {
     }
 
     private static @Nullable Escape escape(
-        Walk walk, TerrainView terrain, double x, double y, double z, double frequencyMHz, double cap, RadioEnvironment env
+        Walk walk, TerrainView terrain, @Nullable Cavern cavern, double x, double y, double z, double frequencyMHz, double cap, RadioEnvironment env
     ) {
         if (!Double.isNaN(walk.exit)) return new Escape(walk.escape, walk.exit, y);
 
+        // Beneath a world's ceiling, there's nothing above to go over.
+        if (cavern != null && y < cavern.ceiling) return null;
+
         // The ray towards the other antenna stays enclosed, so try going straight up instead. This handles antennas in
         // basements and bunkers: they reach the surface through the ceiling, then propagate from there.
-        var up = new Walk(terrain, frequencyMHz, env.materialLossScale() * env.metresPerBlockVertical(), cap, 0, Double.MAX_VALUE);
+        var up = new Walk(terrain, cavern, frequencyMHz, env.materialLossScale() * env.metresPerBlockVertical(), cap, 0, Double.MAX_VALUE);
         VoxelRay.traverse(x, y, z, x, y + env.voxelRadius(), z, env.voxelRadius(), up);
         return Double.isNaN(up.exit) ? null : new Escape(up.escape, 0, y + up.exit);
+    }
+
+    /**
+     * The space beneath a world's ceiling, where we only have heightmaps.
+     *
+     * @param ceiling     The ceiling's height: the first Y position above it.
+     * @param rock        The attenuation of the ceiling itself, in dB per metre.
+     * @param attenuation The attenuation of the space beneath it, in dB per metre.
+     */
+    private record Cavern(int ceiling, double rock, double attenuation) {
+        static @Nullable Cavern of(TerrainView terrain, RadioEnvironment env, double frequencyMHz) {
+            var ceiling = terrain.ceilingHeight();
+            if (ceiling == TerrainView.UNKNOWN) return null;
+            var rock = TERRAIN.attenuation(frequencyMHz);
+            return new Cavern(ceiling, rock, rock * env.ceilingUnknownFill());
+        }
+
+        /**
+         * Guess how much a block we know nothing else about attenuates the signal.
+         *
+         * @param y      The block's Y position.
+         * @param ground The ground height of its column (which is the top of the ceiling, or of whatever was built on
+         *               it), or {@link TerrainView#UNKNOWN}.
+         * @return The attenuation in dB per metre, or {@link Double#NaN} if the block is above the ceiling, and so
+         * should be treated as in any other world.
+         */
+        double guess(int y, int ground) {
+            if (y >= ceiling) return Double.NaN;
+            // Where something is built on the ceiling, the ceiling is still where it always is.
+            var top = ground == TerrainView.UNKNOWN ? ceiling : Math.min(ground, ceiling);
+            return y >= top - CEILING_THICKNESS ? rock : attenuation;
+        }
     }
 
     /**
@@ -272,6 +319,7 @@ public final class PropagationModel {
      */
     private static final class MiddleWalk implements VoxelRay.Visitor {
         private final TerrainView terrain;
+        private final @Nullable Cavern cavern;
         private final double frequencyMHz;
         private final double lossScale;
         private final double cap;
@@ -287,6 +335,7 @@ public final class PropagationModel {
          * Create a new walk.
          *
          * @param terrain      The terrain to walk through.
+         * @param cavern       The space beneath the world's ceiling, if it has one.
          * @param frequencyMHz The frequency, in MHz.
          * @param lossScale    A multiplier for material attenuation.
          * @param cap          The loss at which to give up.
@@ -296,10 +345,11 @@ public final class PropagationModel {
          * @param scale        The fraction of the whole link covered by one block.
          */
         MiddleWalk(
-            TerrainView terrain, double frequencyMHz, double lossScale, double cap,
+            TerrainView terrain, @Nullable Cavern cavern, double frequencyMHz, double lossScale, double cap,
             double[] ground, double[] surface, double start, double scale
         ) {
             this.terrain = terrain;
+            this.cavern = cavern;
             this.frequencyMHz = frequencyMHz;
             this.lossScale = lossScale;
             this.cap = cap;
@@ -318,7 +368,8 @@ public final class PropagationModel {
                 if (info.fill() == 0) return true;
                 blockAttenuation = attenuation(info.material()) * info.fill();
             } else {
-                blockAttenuation = attenuation(guessMaterial(x, y, z, (enter + exit) / 2));
+                blockAttenuation = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
+                if (Double.isNaN(blockAttenuation)) blockAttenuation = attenuation(guessMaterial(x, y, z, (enter + exit) / 2));
             }
 
             loss += blockAttenuation * lossScale * (exit - enter);
@@ -361,6 +412,7 @@ public final class PropagationModel {
      */
     private static final class Walk implements VoxelRay.Visitor {
         private final TerrainView terrain;
+        private final @Nullable Cavern cavern;
         private final double frequencyMHz;
         private final double lossScale;
         private final double cap;
@@ -372,8 +424,12 @@ public final class PropagationModel {
         double escape = Double.POSITIVE_INFINITY;
         double exit = Double.NaN;
 
-        Walk(TerrainView terrain, double frequencyMHz, double lossScale, double cap, double throughLength, double farLimit) {
+        Walk(
+            TerrainView terrain, @Nullable Cavern cavern, double frequencyMHz, double lossScale, double cap,
+            double throughLength, double farLimit
+        ) {
             this.terrain = terrain;
+            this.cavern = cavern;
             this.frequencyMHz = frequencyMHz;
             this.lossScale = lossScale;
             this.cap = cap;
@@ -412,9 +468,13 @@ public final class PropagationModel {
             var end = Math.min(exit, farLimit);
             if (end > start) {
                 var info = terrain.block(x, y, z);
-                var attenuation = info == null
-                    ? guessMaterial(x, y, z).attenuation(frequencyMHz)
-                    : info.material().attenuation(frequencyMHz) * info.fill();
+                double attenuation;
+                if (info != null) {
+                    attenuation = info.material().attenuation(frequencyMHz) * info.fill();
+                } else {
+                    attenuation = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
+                    if (Double.isNaN(attenuation)) attenuation = guessMaterial(x, y, z).attenuation(frequencyMHz);
+                }
                 attenuation *= lossScale;
 
                 loss += attenuation * (end - start);

@@ -47,6 +47,10 @@ public interface PacketNetwork {
     /**
      * Submit a packet for transmitting across the network. This will route the packet through the network, sending it
      * to all receivers across all dimensions.
+     * <p>
+     * When radio propagation is enabled, the packet is a radio signal like any other, from a weaker transmitter. It
+     * also appears at the corresponding position in each other dimension, where only inter-dimensional receivers hear
+     * it.
      *
      * @param packet The packet to send.
      * @see #transmitSameDimension(Packet, double)

@@ -52,8 +52,14 @@ import java.util.Set;
  * <p>
  * Channels 1024 and above use a higher frequency than lower channels (and rednet and GPS), so have a shorter range
  * and are blocked more easily by walls. Servers can configure all of this, or switch back to a simple fixed range.</li>
- * <li><strong>Ender modems:</strong> These are upgraded versions of normal wireless modems. They do not have a distance
- * limit, and can send messages between dimensions.</li>
+ * <li><strong>Ender modems:</strong> These are wireless modems which also reach other dimensions. They are radios like
+ * wireless modems, though weaker ones, so don't reach as far. Their signal also appears at the corresponding place in
+ * every other dimension (an eighth of the coordinates in the Nether, for instance), where other ender modems within
+ * range hear it. So two ender modems far apart in the Overworld can be linked through the Nether, where the same
+ * distance is an eighth as long. Wireless modems never hear another dimension.
+ * <p>
+ * On servers which switch radio propagation off, ender modems have no distance limit, and reach every modem in every
+ * dimension.</li>
  * <li><strong>Wired modems:</strong> These send messages to other any other wired modems connected to the same network
  * (using <em>Networking Cable</em>). They also can be used to attach additional peripherals to a computer.</li></ul>
  *
@@ -151,6 +157,19 @@ public abstract class ModemPeripheral implements IPeripheral, PacketSender, Pack
             for (var computer : computers) {
                 computer.queueEvent("modem_message",
                     computer.getAttachmentName(), packet.channel(), packet.replyChannel(), packet.payload());
+            }
+        }
+    }
+
+    @Override
+    public void receiveDifferentDimension(Packet packet, double signalStrength) {
+        if (packet.sender() == this || !state.isOpen(packet.channel())) return;
+
+        // There's no distance between dimensions, so its place is empty.
+        synchronized (computers) {
+            for (var computer : computers) {
+                computer.queueEvent("modem_message",
+                    computer.getAttachmentName(), packet.channel(), packet.replyChannel(), packet.payload(), null, signalStrength);
             }
         }
     }

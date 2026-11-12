@@ -4,17 +4,23 @@
 
 package dan200.computercraft.gametest
 
+import dan200.computercraft.api.ComputerCraftAPI
 import dan200.computercraft.api.lua.LuaException
 import dan200.computercraft.api.lua.ObjectArguments
+import dan200.computercraft.api.network.Packet
+import dan200.computercraft.api.network.PacketReceiver
+import dan200.computercraft.api.network.PacketSender
 import dan200.computercraft.core.apis.PeripheralAPI
 import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.gametest.api.GameTest
 import dan200.computercraft.impl.network.wired.WiredNodeImpl
 import dan200.computercraft.shared.ModRegistry
+import dan200.computercraft.shared.config.Config
 import dan200.computercraft.shared.peripheral.modem.wired.CableBlock
 import dan200.computercraft.shared.peripheral.modem.wired.CableModemVariant
 import dan200.computercraft.shared.peripheral.modem.wired.WiredModemFullBlockEntity
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.DimensionMapping
 import dan200.computercraft.test.core.assertArrayEquals
 import dan200.computercraft.test.core.computer.LuaTaskContext
 import dan200.computercraft.test.core.computer.getApi
@@ -23,8 +29,11 @@ import net.minecraft.core.Direction
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration.Companion.milliseconds
 
 class Modem_Test {
@@ -119,6 +128,91 @@ class Modem_Test {
             } catch (e: LuaException) {
                 assertEquals("Message too large (at most 65536 bytes)", e.message)
             }
+        }
+    }
+
+    /**
+     * Ender modems are radios too, if weaker ones, whose signal also appears at the corresponding place in other
+     * dimensions, where only other ender modems hear it.
+     */
+    @GameTest(template = Structures.DEFAULT, timeoutTicks = Timeouts.SECOND * 15)
+    fun Ender_signals_cross_dimensions(helper: GameTestHelper) = helper.sequence {
+        class Heard(val message: Any?, val distance: Double?, val signal: Double?)
+
+        class Sender(private val level: Level, private val position: Vec3, private val offset: Double) : PacketSender {
+            override fun getLevel(): Level = level
+            override fun getPosition(): Vec3 = position
+            override fun getSenderID(): String = "test"
+            override fun getTransmitOffset(): Double = offset
+        }
+
+        class Receiver(private val level: Level, private val position: Vec3, private val ender: Boolean) : PacketReceiver {
+            val heard = CopyOnWriteArrayList<Heard>()
+            override fun getLevel(): Level = level
+            override fun getPosition(): Vec3 = position
+            override fun getRange(): Double = 0.0
+            override fun isInterdimensional(): Boolean = ender
+
+            // Other tests' computers are on the air too: only this test's packets count.
+            private fun hear(packet: Packet, distance: Double?, signal: Double?) {
+                if (packet.sender is Sender) heard.add(Heard(packet.payload, distance, signal))
+            }
+
+            override fun receiveSameDimension(packet: Packet, distance: Double) = hear(packet, distance, null)
+            override fun receiveSameDimension(packet: Packet, distance: Double, signalStrength: Double) = hear(packet, distance, signalStrength)
+            override fun receiveDifferentDimension(packet: Packet) = hear(packet, null, null)
+            override fun receiveDifferentDimension(packet: Packet, signalStrength: Double) = hear(packet, null, signalStrength)
+
+            fun messages() = heard.map { it.message }
+        }
+
+        val server = helper.level.server
+        val network = ComputerCraftAPI.getWirelessNetwork(server)
+        val overworld = helper.level
+        val nether = server.getLevel(Level.NETHER) ?: throw IllegalStateException("There's no Nether")
+
+        // Somewhere in the test, and the place in the Nether which corresponds to it.
+        val here = Vec3.atCenterOf(helper.absolutePos(BlockPos(2, 3, 2)))
+        val there = DimensionMapping.map(here, overworld, nether, Config.radioEnderYRanges)
+        assertEquals(here.x / 8, there.x, 1e-6, "The Nether is an eighth of the size")
+        assertEquals(here.z / 8, there.z, 1e-6, "The Nether is an eighth of the size")
+
+        val beside = Receiver(overworld, here.add(0.0, 2.0, 0.0), false)
+        val across = Receiver(nether, there, true)
+        val acrossWireless = Receiver(nether, there, false)
+        // Too far whichever way: 2,000 blocks of the Nether we know nothing of, or 16,000 across the Overworld.
+        val acrossFar = Receiver(nether, there.add(2000.0, 0.0, 0.0), true)
+        val receivers = listOf(beside, across, acrossWireless, acrossFar)
+        val ender = Sender(overworld, here, Config.radioEnderPowerOffset)
+        val wireless = Sender(overworld, here, 0.0)
+
+        thenExecute {
+            for (receiver in receivers) network.addReceiver(receiver)
+            // As ender and wireless modems send them.
+            network.transmitInterdimensional(Packet(977, 977, "ender", ender))
+            network.transmitSameDimension(Packet(977, 977, "wireless", wireless), 64.0)
+        }
+        // The link through the Nether crosses chunks which aren't loaded, whose heights are looked up first.
+        thenWaitUntil {
+            if (across.heard.isEmpty() || beside.heard.size < 2) helper.fail("Nothing heard yet")
+        }
+        thenIdle(60)
+        thenExecute {
+            for (receiver in receivers) network.removeReceiver(receiver)
+
+            // A receiver in the same dimension hears both, the ender modem 10 dB weaker.
+            assertEquals(setOf("ender", "wireless"), beside.messages().toSet())
+            val enderSignal = beside.heard.first { it.message == "ender" }.signal!!
+            val wirelessSignal = beside.heard.first { it.message == "wireless" }.signal!!
+            assertEquals(-Config.radioEnderPowerOffset, wirelessSignal - enderSignal, 0.11, "Ender modems are weaker")
+
+            // In the Nether, only the ender modem hears, only the ender modem, and only where its signal appears.
+            assertEquals(listOf("ender"), across.messages())
+            assertEquals(null, across.heard[0].distance, "There's no distance between dimensions")
+            val signal = across.heard[0].signal ?: throw AssertionError("There should be a signal strength")
+            if (signal <= -100 || signal >= 0) throw AssertionError("Unexpected signal strength $signal")
+            assertEquals(listOf<Any?>(), acrossWireless.messages())
+            assertEquals(listOf<Any?>(), acrossFar.messages())
         }
     }
 

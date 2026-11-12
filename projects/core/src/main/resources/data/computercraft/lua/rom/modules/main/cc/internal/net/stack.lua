@@ -63,8 +63,8 @@ local INFINITY = 16
 local EPHEMERAL_FIRST, EPHEMERAL_LAST = 49152, 65535
 local MAX_QUEUED_DATAGRAMS = 32
 
--- Channels: low band channels are 0-1023, high band channels are above that. Wired and ender modems use the high band
--- plan, though bands mean nothing to them.
+-- Channels: low band channels are 0-1023, high band channels are above that. Wired modems use the high band plan,
+-- though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
 local LOW_UNICAST, LOW_BROADCAST = 1000, 1000
 local HIGH_BASE, HIGH_UNICAST, HIGH_BROADCAST = 1024, 60000, 61024
 
@@ -172,7 +172,7 @@ end
 -- @tparam string band `"low"` or `"high"`.
 -- @treturn table The interface. Its `unicast` and `broadcast` channels must be opened on the modem.
 function Stack:add_interface(name, modem, kind, band)
-    if kind ~= "wireless" then band = "high" end
+    if kind ~= "wireless" and kind ~= "ender" then band = "high" end
     local unicast, broadcast = channels(self.id, band)
     local interface = {
         name = name, modem = modem, kind = kind, band = band,

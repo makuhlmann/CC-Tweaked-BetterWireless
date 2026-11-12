@@ -93,7 +93,8 @@ function Rip:stop()
 end
 
 function Rip:link_cost(interface, neighbour)
-    if interface.kind ~= "wireless" then return 1 end
+    -- Radio links: wireless modems', and ender modems', which are radios too.
+    if interface.kind ~= "wireless" and interface.kind ~= "ender" then return 1 end
     local known = interface.neighbours[neighbour]
     local signal = known and known.signal
     if not signal then return 1 end

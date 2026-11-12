@@ -346,6 +346,19 @@ describe("Routing", function()
             expect(find_route(r2, "10.1.0.0/24").metric):eq(3)
         end)
 
+        it("makes weak links between ender modems cost more too, as they're radios", function()
+            local net = network()
+            net.signals.w = -85
+            local r1 = router(net, 11, { { "a", "10.1.0.1/24" }, { "w", "10.12.0.1/24", "ender" } })
+            local r2 = router(net, 12, { { "w", "10.12.0.2/24", "ender" }, { "b", "10.2.0.1/24" } })
+            rip.start(r1)
+            rip.start(r2)
+            net.advance(60)
+
+            expect(find_route(r1, "10.2.0.0/24").metric):eq(3)
+            expect(find_route(r2, "10.1.0.0/24").metric):eq(3)
+        end)
+
         it("ignores updates without the right key", function()
             local function hmac(key, data) return key .. ":" .. data end
             local net, _, _, routers = line {

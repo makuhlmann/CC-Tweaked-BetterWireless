@@ -305,6 +305,11 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioPocketReceiveOffset, "Pocket computer receive offset (dB)");
         addConfigEntry(ConfigSpec.radioTurtleTransmitOffset, "Turtle transmit offset (dB)");
         addConfigEntry(ConfigSpec.radioTurtleReceiveOffset, "Turtle receive offset (dB)");
+        addConfigEntry(ConfigSpec.radioEnderPowerOffset, "Ender modem power offset (dB)");
+        addConfigEntry(ConfigSpec.radioEnderCrossDimension, "Ender modems reach other dimensions");
+        addConfigEntry(ConfigSpec.radioEnderYRanges, "Heights for signals from other dimensions");
+        addConfigEntry(ConfigSpec.radioEnderCacheTicks, "Cross-dimension link cache duration (ticks)");
+        addConfigEntry(ConfigSpec.radioCeilingUnknownFill, "Unloaded Nether fill");
         addConfigEntry(ConfigSpec.radioTickBudgetMicros, "Tick budget (microseconds)");
         addConfigEntry(ConfigSpec.radioCacheTicks, "Link cache duration (ticks)");
         addConfigEntry(ConfigSpec.radioLookupTimeoutTicks, "Terrain lookup timeout (ticks)");

@@ -192,10 +192,12 @@ An interface is a modem on one band:
 - **Wireless modems** are one interface on their configured band, by default the high band (short range, like Wi-Fi).
   The same modem can also be a second interface on the other band (`top:low`), so one modem can serve both a local
   network and a long-range link.
-- **Ender modems** currently reach everything, in every dimension. After their rework (§12) they are weak radios whose
-  signal also appears in other dimensions. Either way the stack needs to recognise them, but from Lua they look like
-  any other wireless modem: all three kinds of modem have the peripheral type `modem`, wired ones add `peripheral_hub`,
-  and `isWireless()` is true for both wireless and ender modems. So the mod adds `modem.isInterdimensional()` (§12).
+- **Ender modems** are weak radios whose signal also appears in other dimensions (§12). To the stack they're radios
+  like wireless modems: an interface of the kind `ender` on either band, or both, set the same way. It needs to
+  recognise them, but from Lua they look like any other wireless modem: all three kinds of modem have the peripheral
+  type `modem`, wired ones add `peripheral_hub`, and `isWireless()` is true for both wireless and ender modems. So
+  the mod adds `modem.isInterdimensional()` (§12). On a server with radio propagation turned off, they reach
+  everything, in every dimension, as they used to.
 
 Interfaces come and go as modems are attached and removed, and the stack reports this with a `net_interface` event.
 
@@ -350,9 +352,9 @@ link-state protocol like OSPF, and that suits Lua:
 - Static routes are advertised too, so a router with a fixed route to a network without routers shares it.
 - Updates can be authenticated with a shared key (an HMAC over the update, §9), so nobody can inject routes.
 
-**Link cost** is 1 on wired and ender links. On wireless links it comes from the neighbour's last signal strength: 1 at
-−60 dBm or better, plus 1 for every 10 dB weaker, at most 8. Routes prefer strong links over marginal ones, which lose
-fewer packets. (Ender modems will need the same once they are radios, §12.)
+**Link cost** is 1 on wired links. On radio links (wireless and ender modems') it comes from the neighbour's last
+signal strength: 1 at −60 dBm or better, plus 1 for every 10 dB weaker, at most 8. Routes prefer strong links over
+marginal ones, which lose fewer packets.
 
 `traceroute` sends packets with increasing TTL and lists the routers that answer with "time exceeded".
 
@@ -952,7 +954,7 @@ that area. The phone reconnects with a fresh one-round-trip handshake. This save
 Cells are ordinary hosts on the network stack. Backhaul can be:
 - wired, where cells are close
 - point-to-point low-band radio links between tall towers, which the radio model rewards for height and line of sight
-- ender modems, which after their rework (§12) can hop through the Nether, covering eight times the distance
+- ender modems, which can hop through the Nether, covering eight times the distance (§12)
 
 Backhaul traffic uses secure connections or an encrypted link, because it may cross radio.
 
@@ -1275,7 +1277,7 @@ Most of the stack is Lua. These changes to the mod are planned:
 | `modem.isInterdimensional()` | Lets the stack recognise ender modems (§4) | Phase 1 |
 | Wireless message size limit | Stops anyone broadcasting huge messages to everything in range | Phase 1 |
 | Transmit and receive power by device | Phones are weaker than fixed computers, in both directions | Phase 6 (done) |
-| Ender modem rework and cable recipe | Ender modems are too strong for their cost, and make cables pointless | Independent |
+| Ender modem rework and cable recipe | Ender modems are too strong for their cost, and make cables pointless | Independent (done) |
 
 ### Transmit and receive power by device
 
@@ -1314,8 +1316,8 @@ chunks, so no fragmentation layer is needed.
 
 ### Ender modems
 
-Today ender modems hear, and are heard by, every modem in every dimension, with no propagation at all. For the price of
-an ender pearl they make cables, relays and towers pointless.
+Ender modems used to hear, and be heard by, every modem in every dimension, with no propagation at all. For the price
+of an ender pearl they made cables, relays and towers pointless.
 
 **New behaviour:**
 
@@ -1373,6 +1375,52 @@ so every unloaded column looks like solid rock, every antenna looks buried, and 
   accurate, but isn't worth the code.
 - **Above the roof** is open ground, as in the Overworld.
 - **No path over the terrain** in dimensions with a ceiling. There's nothing to go over.
+
+**As built:**
+
+- **Sending.** With radio propagation on, `WirelessNetwork` treats an ender modem's packet as any other radio packet in
+  its own dimension, with the modem's transmit offset (`ender_power_offset`, −10 dB, added to a pocket computer's or
+  turtle's own). Receivers in other dimensions which are ender modems, with the channel open, go to
+  `RadioPropagationService.submitCrossDimension`. A wireless modem's packet never leaves its dimension, and an ender
+  modem hears a wireless modem in its own dimension as any radio would. With radio propagation off, nothing changes:
+  ender modems reach everything.
+- **Across dimensions.** `DimensionMapping` gives the corresponding position: X and Z by
+  `DimensionType.getTeleportationScale`, Y clamped to the dimension's range (`ender_y_ranges`, read once when the
+  config loads) or its build height. For each receiver, the service works out both links: in the receiver's dimension
+  from where the sender's signal appears, and in the sender's dimension to where the receiver's would. One which can't
+  work whatever is in the way (too far for the two devices' power, as free space loss) isn't evaluated. The others are
+  ordinary links in one dimension: same cache, same queue, same tick budget. The packet is delivered once both are
+  known, with the smaller loss. As a link is the same pair of positions whichever modem sends, it's the same both ways.
+- **Kept for longer.** A link evaluated for a packet from another dimension is remembered for `ender_cache_ticks`
+  (1,200 ticks, a minute) rather than `cache_ticks` (5 seconds). The cache is keyed by position, so a modem which
+  moves gets a new link at once. What isn't noticed for that minute is a change to the terrain between two modems
+  which stay where they are.
+- **The first packet waits.** Where a signal appears in another dimension is usually not loaded. The heights there are
+  looked up in the background, as for any link across unloaded chunks, so the first packet between two modems may
+  take up to `lookup_timeout` (2 seconds) longer.
+- **What programs see.** `modem_message` has no distance for a packet from another dimension, as before, and now has
+  its signal strength after it. Thunderstorms count where the receiver is. The API has
+  `PacketReceiver.receiveDifferentDimension(Packet, double)`, which other mods' receivers get by default as the old
+  call without the signal.
+- **Ceilings.** `TerrainView.ceilingHeight()` is the dimension's logical height where it has a ceiling (128 in the
+  Nether). Beneath it, a block in a chunk which isn't loaded is rock at `nether_unknown_fill` (2%) of its attenuation,
+  but the five blocks under the ceiling's top are rock: a link from beneath the roof to above it still has to get
+  through it. An antenna beneath the ceiling has no path straight up and over. This goes for every radio link in such
+  a dimension, wireless modems' too: before, any link across unloaded Nether chunks was through solid rock.
+- **In the stack.** Ender interfaces have bands like wireless ones (`ifconfig top band low`, and a second interface
+  on the other band), their link cost follows the signal (§6), and a phone or a cell can use an ender modem: the
+  cellular layer takes any radio's low band.
+- **GPS** hosts with ender modems no longer cover a whole world, or other dimensions: they're radios with a range, and
+  a weaker one than wireless modems'. The guide now says to use wireless modems, placed high up.
+- **Cable recipe:** 32 cables per craft.
+- **Tested** with unit tests for the mapping, the height ranges and the ceiling (unloaded space beneath it is mostly
+  open, the ceiling itself isn't, nothing goes over it, and above it is open ground), and a game test: an ender
+  modem's packet is heard 10 dB weaker than a wireless modem's in its own dimension, and in the Nether only by an
+  ender modem where the signal appears, with a signal strength and no distance; not by a wireless modem there, nor by
+  an ender modem 2,000 blocks from there.
+- **Not done:** results aren't kept "until either end changes", only for the time above. And the generated files
+  (the recipe and the config screen's texts) were changed by hand to match their providers, as the data generator
+  needs the game's assets: run it once to confirm.
 - **Buried positions:** a corresponding position inside netherrack is like a buried antenna. It could be moved to the
   nearest open space within a few blocks, as portals are.
 
@@ -1665,7 +1713,7 @@ Each phase is usable on its own.
 | 5 | Codec, Noise sessions with enclave keys, known hosts, certificates, encrypted wireless links, `rsh` | A remote shell works securely. Tampered or replayed messages are rejected. |
 | 6 | In the mod: transmit and receive power by device. Cellular: system information, activation, attach, tunnels, handover, messages. | A connection stays open while walking across the eight test cells |
 | 7 | Move the stack from the datapack into the ROM | Every computer has it with no setup |
-| — | Ender modem rework and cable recipe, at any point | Ender links work across dimensions within the tick budget |
+| — | Ender modem rework and cable recipe, at any point (done) | Ender links work across dimensions within the tick budget |
 | Later | Airtime and interference (§12) | |
 
 ## 15. Decisions and open questions

@@ -5,6 +5,6 @@ ex:
 "ifconfig top 10.0.0.1/24" gives the interface "top" the fixed address 10.0.0.1, on network 10.0.0.0/24.
 "ifconfig top dhcp" makes "top" ask a DHCP server again.
 "ifconfig top none" gives "top" no address at all.
-"ifconfig top band low" makes a wireless modem use the long-range low band after the computer restarts.
+"ifconfig top band low" makes a wireless or ender modem use the long-range low band after the computer restarts.
 "ifconfig top psk correct horse" encrypts everything on "top" with the passphrase "correct horse". Every computer on the same network needs the same passphrase, and others can't read or join it. Anyone with the passphrase can read everything, so use secure connections for anything sensitive.
 "ifconfig top psk none" stops encrypting "top".

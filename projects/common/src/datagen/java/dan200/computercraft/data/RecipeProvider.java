@@ -212,7 +212,7 @@ final class RecipeProvider extends net.minecraft.data.recipes.RecipeProvider {
 
 
     private void basicRecipes() {
-        shaped(RecipeCategory.REDSTONE, ModRegistry.Items.CABLE.get(), 6)
+        shaped(RecipeCategory.REDSTONE, ModRegistry.Items.CABLE.get(), 32)
             .pattern(" # ")
             .pattern("#R#")
             .pattern(" # ")
