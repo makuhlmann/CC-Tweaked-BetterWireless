@@ -1213,6 +1213,7 @@ the design above:
   - **The same from the shell:** `cell networks`, `cell network <name>|auto`, `cell on` and `cell off`.
   - **What it's built on.** The menus only use `net.cell`: `info` (which also has `enabled`, `signal`,
     `serving_network`, `roaming`, `selection` and `unread`), `messages`, `markRead`, `deleteMessage`, `send`,
+    Every screen is left with Q or Backspace (the first quits), and a key held down never leaves two at once.
     `networks`, `setNetwork` and `setEnabled`, so other programs can do all they do. They redraw on the events
     `cell_state`, `cell_message`, `cell_sent`, and `cell_messages`, which is queued when the kept messages change in
     another way (one was read or deleted), so a bar in one tab follows messages read in another.

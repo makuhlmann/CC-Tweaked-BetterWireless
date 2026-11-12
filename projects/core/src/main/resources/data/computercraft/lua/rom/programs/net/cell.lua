@@ -39,8 +39,8 @@ local STATES = {
 local SILENCE = 4
 
 -- Everything about the phone's service on one screen, which fits a pocket computer: its state, the cells it hears (of
--- any network), and what has happened lately. It's redrawn every second, and whenever the state changes. This returns
--- false if it was terminated.
+-- any network), and what has happened lately. It's redrawn every second, and whenever the state changes. Q or
+-- Backspace leaves it, as in the menus. This returns false if it was terminated.
 local function monitor()
     local ok, err = net.cell.listen()
     if not ok then
@@ -201,14 +201,19 @@ local function monitor()
     term.setCursorBlink(false)
     local ran, failure = pcall(function()
         local timer = os.startTimer(0)
+        -- Whether the last key was held down: then neither it nor the character it typed leaves, as in the menus.
+        local held = false
         while true do
-            local event, value = os.pullEvent()
+            local event, value, is_held = os.pullEvent()
             if event == "timer" and value == timer then
                 draw()
                 timer = os.startTimer(1)
             elseif event == "cell_state" then
                 draw()
-            elseif event == "char" and (value == "q" or value == "Q") then
+            elseif event == "key" then
+                held = is_held
+                if value == keys.backspace and not held then return end
+            elseif event == "char" and (value == "q" or value == "Q") and not held then
                 return
             elseif event == "term_resize" then
                 resize()

@@ -155,8 +155,8 @@ local function is_enter(key) return key == keys.enter or key == keys.numPadEnter
 --[[ Show a list to choose from, until something is chosen which ends it, or the user goes back.
 
 The screen has a title, the list, a note and some hints. Up and Down (or the mouse wheel) move along the list, Enter
-or a click chooses, and Backspace or Left goes back. Keys which are held down don't choose or go back, so holding one
-a moment too long doesn't go through several screens.
+or a click chooses, and Q, Backspace or Left goes back. Keys which are held down don't choose or go back, so holding
+one a moment too long doesn't go through several screens.
 
 `options` has:
  - `title`: a function which returns the title, and what to put to its right;
@@ -168,7 +168,8 @@ a moment too long doesn't go through several screens.
  - `hint`: short reminders for the bottom of the screen;
  - `keys`: what to call for other characters, by character;
  - `refresh`: how often to get the list again, in seconds;
- - `back`: false if there's nowhere to go back to.
+ - `back`: `"quit"` if there's nowhere to go back to, so Q and Backspace quit (and Left does nothing). The list then
+   returns `"quit"`.
 ]]
 local function list_screen(options)
     local items, selected, scroll, first, visible = {}, 1, 0, 2, 0
@@ -257,7 +258,8 @@ local function list_screen(options)
         return result
     end
 
-    local dirty = true
+    -- Whether the last key was held down. The character it typed, which comes next, is then ignored too.
+    local dirty, held = true, false
     while true do
         if dirty then draw() end
         dirty = true
@@ -265,6 +267,7 @@ local function list_screen(options)
         local result
         local event, a, b, y = os.pullEvent()
         if event == "key" then
+            held = b
             if a == keys.up and #items > 0 then
                 selected = (selected - 2) % #items + 1
             elseif a == keys.down and #items > 0 then
@@ -275,14 +278,23 @@ local function list_screen(options)
                 selected = math.max(1, #items)
             elseif is_enter(a) and not b and items[selected] then
                 result = act(options.choose, items[selected])
-            elseif (a == keys.backspace or a == keys.left) and not b and options.back ~= false then
-                return nil
+            elseif (a == keys.backspace or (a == keys.left and options.back ~= "quit")) and not b then
+                return options.back
             else
                 dirty = false
             end
         elseif event == "char" then
-            local handler = options.keys and options.keys[a:lower()]
-            if handler then result = act(handler) else dirty = false end
+            local key = a:lower()
+            local handler = options.keys and options.keys[key]
+            if held then
+                dirty = false
+            elseif handler then
+                result = act(handler)
+            elseif key == "q" then
+                return options.back
+            else
+                dirty = false
+            end
         elseif event == "mouse_click" then
             local index = scroll + y - first + 1
             if a == 1 and y >= first and y < first + visible and items[index] then
@@ -497,8 +509,8 @@ local function compose_screen(number)
     term.setCursorBlink(false)
 end
 
--- Show one message, all of it. Left and Right choose between the buttons, and Up and Down move a long message.
--- Opening a message marks it as read.
+-- Show one message, all of it. Left and Right choose between the buttons, Up and Down move a long message, and Q or
+-- Backspace goes back. Opening a message marks it as read.
 local function message_screen(n)
     local function find()
         for _, message in ipairs(net.cell.messages()) do
@@ -582,11 +594,14 @@ local function message_screen(n)
         return false
     end
 
+    -- Whether the last key was held down, as for lists: the character it typed is then ignored too.
+    local held = false
     while true do
         draw()
         local event, a, b, y = os.pullEvent()
         local label
         if event == "key" then
+            held = b
             if a == keys.left then
                 selected = math.max(1, selected - 1)
             elseif a == keys.right or a == keys.tab then
@@ -604,9 +619,15 @@ local function message_screen(n)
             elseif a == keys.backspace and not b then
                 label = confirming and "Keep" or "Back"
             end
-        elseif event == "char" and not confirming then
-            if a:lower() == "r" and message.from then label = "Reply" end
-            if a:lower() == "d" then label = "Delete" end
+        elseif event == "char" and not held then
+            local key = a:lower()
+            if key == "q" then
+                label = confirming and "Keep" or "Back"
+            elseif key == "r" and message.from and not confirming then
+                label = "Reply"
+            elseif key == "d" and not confirming then
+                label = "Delete"
+            end
         elseif event == "mouse_click" and a == 1 then
             local _, h = term.getSize()
             if y == h then label = labels[button_at(places, b)] end
@@ -625,7 +646,7 @@ end
 local function messages_screen()
     local unread = 0
     return list_screen {
-        hint = { "* new", "> sent", "! failed", "Backspace: back" },
+        hint = { "* new", "> sent", "! failed", "Q/Backspace: back" },
         empty = "No messages.",
         title = function() return "Messages", unread > 0 and unread .. " new" or nil end,
         items = function()
@@ -673,7 +694,7 @@ local function networks_screen()
     local result, result_fg
     return list_screen {
         refresh = NETWORKS_REFRESH,
-        hint = { "> in use", "* chosen", "Backspace: back" },
+        hint = { "> in use", "* chosen", "Q/Backspace: back" },
         title = function() return "Networks" end,
         note = function() return result, result_fg end,
         items = function()
@@ -733,9 +754,8 @@ end
 local function home_screen(monitor)
     local info, problem
     return list_screen {
-        back = false,
+        back = "quit",
         hint = { "Enter: choose", "Q: quit" },
-        keys = { q = function() return "quit" end },
         title = function()
             local number = info.subscriber and info.subscriber.number
             return "Phone", number and "No. " .. tostring(number) or nil

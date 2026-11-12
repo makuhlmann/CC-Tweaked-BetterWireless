@@ -599,8 +599,8 @@ describe("The cell program's GUI", function()
                 app.key(keys.down)
                 expect(app.bg(4)):eq(("0"):rep(26))
 
-                -- There's nowhere to go back to.
-                app.key(keys.backspace, keys.left)
+                -- There's nowhere to go back to, so Left does nothing.
+                app.key(keys.left)
                 expect(app.line(2)):eq("Phone             No. 0042")
 
                 -- Enter opens what is chosen, and Backspace or Left comes back.
@@ -663,6 +663,95 @@ describe("The cell program's GUI", function()
             end)
         end)
 
+        it("quits with Backspace too", function()
+            run(fake_phone(), {}, function(app)
+                app.event("key", keys.backspace, true)
+                expect(app.finished()):eq(false)
+                app.key(keys.backspace)
+                expect(app.finished()):eq(true)
+            end)
+        end)
+
+        it("goes back with Q or Backspace from every screen", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                -- The messages, and one message.
+                app.key(keys.enter)
+                expect(app.line(2)):eq("Messages             1 new")
+                app.key(keys.enter)
+                expect(app.line(2)):eq("From 0100")
+                app.type("q")
+                expect(app.line(2)):eq("Messages")
+                app.key(keys.enter)
+                app.key(keys.backspace)
+                expect(app.line(2)):eq("Messages")
+                app.type("Q")
+                expect(app.line(2)):eq("Phone             No. 0042")
+
+                -- Asked whether to delete a message, Q keeps it, as Backspace does.
+                app.key(keys.enter, keys.enter)
+                app.type("d")
+                expect(app.line(19)):eq("Delete this message?")
+                app.type("q")
+                expect(app.lines(19, 20)):same { "", " Reply   Delete   Back" }
+                app.type("d")
+                app.key(keys.backspace)
+                expect(app.lines(19, 20)):same { "", " Reply   Delete   Back" }
+                expect(phone.deleted):same {}
+                app.key(keys.backspace, keys.backspace)
+                expect(app.line(2)):eq("Phone             No. 0042")
+
+                -- The networks.
+                app.key(keys.down, keys.down, keys.enter)
+                expect(app.line(2)):eq("Networks")
+                app.type("q")
+                expect(app.line(2)):eq("Phone             No. 0042")
+
+                -- And the monitor.
+                app.key(keys["end"], keys.up, keys.enter)
+                app.event("cell_state", "attached")
+                expect(app.line(2)):str_match("^ Cell monitor")
+                app.key(keys.backspace)
+                expect(app.line(2)):eq("Phone             No. 0042")
+                expect(app.finished()):eq(false)
+            end)
+        end)
+
+        it("doesn't go through screens while Q is held", function()
+            local phone = fake_phone()
+            phone.messages = message_fixture()
+            run(phone, {}, function(app)
+                -- A key which is held down types its character again after each key event.
+                local function press_q(held)
+                    app.event("key", keys.q, held)
+                    app.event("char", "q")
+                end
+
+                app.key(keys.enter, keys.enter)
+                expect(app.line(2)):eq("From 0100")
+                press_q(false)
+                expect(app.line(2)):eq("Messages")
+                press_q(true)
+                press_q(true)
+                expect(app.line(2)):eq("Messages")
+                press_q(false)
+                expect(app.line(2)):eq("Phone             No. 0042")
+                press_q(true)
+                expect(app.finished()):eq(false)
+
+                -- Nor out of the monitor and the menus.
+                app.key(keys["end"], keys.up, keys.enter)
+                app.event("cell_state", "attached")
+                press_q(true)
+                expect(app.line(2)):str_match("^ Cell monitor")
+                press_q(false)
+                press_q(true)
+                expect(app.line(2)):eq("Phone             No. 0042")
+                expect(app.finished()):eq(false)
+            end)
+        end)
+
         it("stops when it's terminated", function()
             run(fake_phone(), {}, function(app)
                 app.key(keys.enter)
@@ -693,7 +782,7 @@ describe("The cell program's GUI", function()
                 expect(app.line(4)):str_match("^%*0100 %d%d:%d%d  Meet at the s$")
                 expect(app.line(5)):str_match("^>0007 %d%d:%d%d  On my way$")
                 expect(app.line(6)):eq(" 0007 " .. os.date("%d %b", math.floor(phone.messages[1].time / 1000)) .. " Old news")
-                expect(app.lines(19, 20)):same { "* new  > sent  ! failed", "Backspace: back" }
+                expect(app.lines(19, 20)):same { "* new  > sent  ! failed", "Q/Backspace: back" }
                 -- Listing them doesn't read them.
                 expect(phone.read):same {}
                 expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
@@ -702,7 +791,7 @@ describe("The cell program's GUI", function()
             run(phone, { width = 51, height = 19 }, function(app)
                 app.key(keys.enter)
                 expect(app.line(4)):str_match("^%*0100 %d%d:%d%d  Meet at the station at noon, by the bi$")
-                expect(app.line(19)):eq("* new  > sent  ! failed  Backspace: back")
+                expect(app.line(19)):eq("* new  > sent  ! failed  Q/Backspace: back")
             end)
         end)
 
@@ -1074,14 +1163,14 @@ describe("The cell program's GUI", function()
                     "  GAMMA unknown          -",
                     "",
                 }
-                expect(app.lines(19, 20)):same { "> in use  * chosen", "Backspace: back" }
+                expect(app.lines(19, 20)):same { "> in use  * chosen", "Q/Backspace: back" }
             end)
 
             run(phone, { width = 51, height = 19 }, function(app)
                 app.key(keys.down, keys.down, keys.enter)
                 expect(app.line(5)):eq("> ACME  home" .. (" "):rep(35) .. "||||")
                 expect(app.line(7)):eq("  GAMMA unknown" .. (" "):rep(35) .. "-")
-                expect(app.line(19)):eq("> in use  * chosen  Backspace: back")
+                expect(app.line(19)):eq("> in use  * chosen  Q/Backspace: back")
             end)
         end)
 
