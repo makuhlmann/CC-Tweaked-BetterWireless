@@ -100,12 +100,14 @@ do
         local ok, problem = coroutine.resume(co, ...)
         if not ok then fail("The menus failed: " .. tostring(problem)) end
     end
-    local function shown(text)
+    local function count(text)
+        local found = 0
         for y = 2, 20 do
-            if line(y):find(text, 1, true) then return true end
+            if line(y):find(text, 1, true) then found = found + 1 end
         end
-        return false
+        return found
     end
+    local function shown(text) return count(text) > 0 end
 
     event()
     local bar = line(1)
@@ -115,9 +117,10 @@ do
     if not shown("Messages (1 new)") or not shown("No. 100") then fail("Wrong menu") end
 
     event("key", keys.enter, false)
-    if not shown("*100 ") or not shown(">100 ") or not shown("Hello from") then fail("The messages aren't listed") end
+    -- One conversation, with 100: the message sent to it, and the one from it.
+    if not shown("*100 ") or not shown("Hello from") then fail("The messages aren't listed") end
     event("key", keys.enter, false)
-    if not shown("From 100") or not shown("Reply") then fail("The message isn't shown") end
+    if count("Hello from abroad") ~= 2 or not shown(" Sent") then fail("The conversation isn't shown") end
     if line(1):find("new msg", 1, true) then fail("The message is still new") end
 
     event("key", keys.backspace, false)
