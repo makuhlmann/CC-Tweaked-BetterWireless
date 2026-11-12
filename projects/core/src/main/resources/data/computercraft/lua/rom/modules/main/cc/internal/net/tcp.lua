@@ -45,7 +45,7 @@ ID, reason) when it's gone.
 local address = require "cc.net.address"
 local stack_module = require "cc.internal.net.stack"
 local describe_error = stack_module.describe_error
-local sendable = require "cc.internal.net.message"
+local net_message = require "cc.internal.net.message"
 local checks = require "cc.internal.net.checks"
 
 --- How many messages a receiver holds (waiting to be received, or arrived early).
@@ -519,7 +519,7 @@ function Connection:send(value)
         self.waiting_to_send = true
         return nil, "Full"
     end
-    local ok, err = sendable.check(value)
+    local ok, err = net_message.check(value)
     if not ok then return nil, err end
 
     self.queue[#self.queue + 1] = { data = value }
@@ -833,5 +833,6 @@ return {
     get = get,
     info = info,
     attach = registry,
+    -- Only tests use this.
     WINDOW = WINDOW,
 }

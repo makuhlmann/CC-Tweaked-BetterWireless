@@ -16,7 +16,7 @@ to [`new`], so tests can connect several stacks together without any modems.
 local expect = require "cc.expect".expect
 local address = require "cc.net.address"
 local link = require "cc.internal.net.link"
-local sendable = require "cc.internal.net.message"
+local net_message = require "cc.internal.net.message"
 
 --- The version of the frame and packet formats. Frames from other versions are ignored.
 local VERSION = 1
@@ -143,6 +143,7 @@ local function new(options)
 
         next_packet = 0,
         next_echo = 0,
+        timer_count = 0,
         echoes = {},
         last_error = {},
         last_error_count = 0,
@@ -1058,7 +1059,7 @@ function Stack:schedule(delay, fn)
     if type(delay) ~= "number" or delay ~= delay or delay == math.huge or delay == -math.huge then
         error("Invalid delay " .. tostring(delay), 2)
     end
-    self.timer_count = (self.timer_count or 0) + 1
+    self.timer_count = self.timer_count + 1
     local timer = { time = self.clock() + math.max(0, delay), fn = fn, order = self.timer_count }
     self.timers[timer] = true
     self:request_wakeup()
@@ -1149,7 +1150,7 @@ end
 function Stack:udp_send(socket, dst, port, data, name)
     -- A datagram some link on its way can't carry would be lost every time, and nobody told. Say so now instead.
     if data ~= nil then
-        local ok, err = sendable.check(data, socket.limits)
+        local ok, err = net_message.check(data, socket.limits)
         if not ok then return nil, err end
     end
 
@@ -1310,8 +1311,11 @@ end
 function Stack:interface_info()
     local result = {}
     for _, interface in pairs(self.interfaces) do
-        local neighbours = 0
-        for _ in pairs(interface.neighbours) do neighbours = neighbours + 1 end
+        -- Those which haven't expired, as `neighbour_info` lists them.
+        local neighbours, now = 0, self.clock()
+        for _, neighbour in pairs(interface.neighbours) do
+            if neighbour.expires > now then neighbours = neighbours + 1 end
+        end
         result[#result + 1] = {
             name = interface.name, modem = interface.modem, kind = interface.kind, band = interface.band,
             id = self.id, unicast = interface.unicast, broadcast = interface.broadcast,
@@ -1345,6 +1349,7 @@ end
 
 return {
     new = new,
+    -- Only tests use this.
     channels = channels,
     describe_error = describe_error,
     INFINITY = INFINITY,

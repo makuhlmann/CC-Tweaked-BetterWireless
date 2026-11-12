@@ -75,7 +75,7 @@ function Tasks:stop()
     self.list = {}
 end
 
---- Count the tasks still running.
+--- Count the tasks still running. Only tests use this.
 --
 -- @treturn number How many.
 function Tasks:count()

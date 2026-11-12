@@ -314,5 +314,6 @@ end
 
 return {
     new = new,
+    -- Only tests use this.
     public_key = public_key,
 }

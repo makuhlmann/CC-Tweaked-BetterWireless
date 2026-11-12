@@ -442,7 +442,6 @@ end
 return {
     CLIENT_PORT = CLIENT_PORT,
     SERVER_PORT = SERVER_PORT,
-    LINK_LOCAL_PREFIX = LINK_LOCAL_PREFIX,
     link_local = link_local,
     clean_hostname = clean_hostname,
     start = start,

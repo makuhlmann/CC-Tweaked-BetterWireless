@@ -89,6 +89,22 @@ describe("cc.internal.net.stack", function()
         expect(a.delivering):eq(false)
     end)
 
+    it("counts the neighbours on an interface as it lists them, once they've expired too", function()
+        local net = network()
+        local a = net.add(1, "10.0.0.1/24")
+        local b = net.add(2, "10.0.0.2/24")
+        net.run()
+        a:echo(ip("10.0.0.2"))
+        net.run()
+        expect(#a:neighbour_info()):eq(1)
+        expect(a:interface_info()[1].neighbours):eq(1)
+
+        -- The other computer is gone, and in time it's forgotten.
+        net.remove(b)
+        net.advance(3600)
+        expect(a:interface_info()[1].neighbours):eq(#a:neighbour_info())
+    end)
+
     it("reports networks it isn't on", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

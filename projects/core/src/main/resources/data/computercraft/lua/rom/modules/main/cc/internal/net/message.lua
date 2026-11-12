@@ -120,6 +120,7 @@ end
 
 return {
     check = check_message,
+    -- Only tests use this.
     measure = measure,
     MAX_MESSAGE = MAX_MESSAGE,
     MAX_DEPTH = MAX_DEPTH,

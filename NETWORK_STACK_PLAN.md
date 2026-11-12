@@ -360,6 +360,10 @@ cover the replacement.
   neighbours which have expired (`stack.lua` 1219), and `net.neighbours()` doesn't (1240).
 - **Change:** say which exports are for tests, set the field, name the import after the module, and count neighbours
   one way. **Small.**
+- **Done:** the exports only tests use are marked so (`message.measure`, `tcp.WINDOW`, `Tasks:count`, `stack.channels`,
+  `noise.public_key`); `dhcp.LINK_LOCAL_PREFIX` is gone (the address module has it, 2.4); `timer_count` is set when a
+  stack is made; the message module is imported as `net_message`; and `interface_info` counts only neighbours which
+  haven't expired, as `neighbour_info` lists them. Tested in `stack_spec.lua`.
 
 ### 2.10 The design document
 
