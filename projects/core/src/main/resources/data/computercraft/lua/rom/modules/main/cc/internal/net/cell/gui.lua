@@ -491,8 +491,11 @@ local function conversation_screen(number)
         if choosing then choosing = #messages > 0 and math.max(1, math.min(choosing, #messages)) or nil end
     end
 
-    -- Every line of the conversation, oldest first: its text, column, colour, and which message it's part of.
+    -- Every line of the conversation, oldest first: its text, column, colour, and which message it's part of. It's only
+    -- worked out again once the messages or the screen's width change, not for each key.
+    local laid_out = {}
     local function lay_out(w)
+        if laid_out.width == w and laid_out.messages == messages then return laid_out.lines end
         local lines = {}
         local width = w > 8 and w - 3 or w
         for i, message in ipairs(messages) do
@@ -511,6 +514,7 @@ local function conversation_screen(number)
                 lines[#lines + 1] = { text = line, x = sent and w - #line + 1 or 1, fg = about_fg, index = i }
             end
         end
+        laid_out = { width = w, messages = messages, lines = lines }
         return lines
     end
 

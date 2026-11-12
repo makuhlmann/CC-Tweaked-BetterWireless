@@ -159,6 +159,12 @@ shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, 
             if network.allowed then choices[#choices + 1] = network.name end
         end
         return completion.choice(shell, text, previous, choices)
+    elseif index == 2 and previous[2] == "bar" then
+        local choices = completion.choice(shell, text, previous, { "on", "off" }) or {}
+        for _, choice in ipairs(completion.programWithArgs(shell, text, previous, 3) or {}) do
+            choices[#choices + 1] = choice
+        end
+        return choices
     elseif previous[2] == "bar" then
         return completion.programWithArgs(shell, text, previous, 3)
     end
@@ -228,29 +234,46 @@ local function findStartups(sBaseDir)
     return tStartups
 end
 
--- Show MOTD
-if settings.get("motd.enable") then
-    shell.run("/rom/programs/motd")
-end
+-- The rest of starting up: the message of the day, and the user's startup programs.
+local function finishStartup()
+    -- Show MOTD
+    if settings.get("motd.enable") then
+        shell.run("/rom/programs/motd")
+    end
 
--- Run the user created startup, either from disk drives or the root
-local tUserStartups = nil
-if settings.get("shell.allow_startup") then
-    tUserStartups = findStartups("/")
-end
-if settings.get("shell.allow_disk_startup") then
-    for _, sName in pairs(peripheral.getNames()) do
-        if disk.isPresent(sName) and disk.hasData(sName) then
-            local startups = findStartups(disk.getMountPath(sName))
-            if startups then
-                tUserStartups = startups
-                break
+    -- Run the user created startup, either from disk drives or the root
+    local tUserStartups = nil
+    if settings.get("shell.allow_startup") then
+        tUserStartups = findStartups("/")
+    end
+    if settings.get("shell.allow_disk_startup") then
+        for _, sName in pairs(peripheral.getNames()) do
+            if disk.isPresent(sName) and disk.hasData(sName) then
+                local startups = findStartups(disk.getMountPath(sName))
+                if startups then
+                    tUserStartups = startups
+                    break
+                end
             end
         end
     end
-end
-if tUserStartups then
-    for _, v in pairs(tUserStartups) do
-        shell.run(v)
+    if tUserStartups then
+        for _, v in pairs(tUserStartups) do
+            shell.run(v)
+        end
     end
+end
+
+-- A computer activated on a cellular network (a phone, say) has the cell status bar at the top of the screen, unless
+-- "cell bar off" turned it off. The rest of starting up, and the shell, run beneath it; leaving that shell leaves this
+-- one too, as it would have without the bar.
+local hasCellBar, cellBar = pcall(require, "cc.internal.net.cell.bar")
+if hasCellBar and cellBar.at_startup() then
+    cellBar.run(function()
+        finishStartup()
+        shell.run("/rom/programs/shell.lua")
+    end)
+    shell.exit()
+else
+    finishStartup()
 end

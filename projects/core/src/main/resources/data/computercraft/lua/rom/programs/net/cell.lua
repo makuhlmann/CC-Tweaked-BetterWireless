@@ -17,6 +17,7 @@ local function usage()
     print(name .. " monitor")
     print(name .. " gui")
     print(name .. " bar [program] [arguments]")
+    print(name .. " bar on|off")
 end
 
 if not crypto or not enclave then
@@ -229,6 +230,19 @@ if command == "monitor" and #args == 1 then
     monitor()
 elseif command == "gui" and #args == 1 then
     require("cc.internal.net.cell.gui").run(monitor)
+elseif command == "bar" and #args == 2 and (args[2] == "on" or args[2] == "off") then
+    -- Show the status bar or not, from when the computer starts too. A bar shown now comes or goes at once.
+    local on = args[2] == "on"
+    settings.set("cell.bar", on)
+    settings.save()
+    os.queueEvent("cell_state", net.cell.info().state)
+    if not on then
+        print("The status bar is off. 'cell bar on' turns it on again.")
+    elseif term.current().cell_bar then
+        print("The status bar is on.")
+    else
+        print("The status bar is on from when the computer starts. 'cell bar' shows it now.")
+    end
 elseif command == "bar" then
     -- Run a program beneath the status bar: a shell, if none is given.
     if #args == 1 then args[2] = "shell" end

@@ -1223,7 +1223,9 @@ the design above:
     note such as "1 new msg". The bar is dark grey, with colours or without. There's no bar while
     cell service is turned off or the phone has no SIM, and what runs beneath it gets the line back (as a
     `term_resize`). `cell bar [program]` runs any program beneath the bar (a shell, if none is given), in a window
-    one line shorter, so the bar can stay for good from a startup file. A program which is already beneath a bar
+    one line shorter. A computer with a SIM starts beneath it: the message of the day, the startup files and the
+    shell run there (leaving that shell turns the computer off, as it would anyway), unless `cell bar off` turned
+    it off (the setting `cell.bar`, which also hides a bar shown now; `cell bar on` shows it again). A program which is already beneath a bar
     doesn't get a second one.
   - **Menus:** messages, as a conversation with each number (the list has the newest first, and which have new
     messages or one which wasn't sent; a conversation has those from the number on the left and those sent to it on

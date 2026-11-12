@@ -45,9 +45,10 @@ local BAR_STATES = {
     activating = "Activating...",
 }
 
--- Whether there's something for the bar to show: cell service is on, and the phone has a SIM.
+-- Whether there's something for the bar to show: cell service is on, and the phone has a SIM; and whether it should
+-- be shown, as it is unless it was turned off ("cell bar off").
 local function wanted(info)
-    return info.state ~= "off" and info.state ~= "none" and info.network ~= nil
+    return info.state ~= "off" and info.state ~= "none" and info.network ~= nil and settings.get("cell.bar") ~= false
 end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
@@ -248,9 +249,21 @@ local function run(fn, ...)
     return table.unpack(result, 2, result.n)
 end
 
+--[[- Whether the computer should start beneath the status bar: it has a SIM, the bar hasn't been turned off, and
+nothing has given it one already.
+
+@treturn boolean Whether it should.
+]]
+local function at_startup()
+    if settings.get("cell.bar") == false or term.current().cell_bar or not (net and net.cell) then return false end
+    local ok, info = pcall(net.cell.info)
+    return ok and type(info) == "table" and info.network ~= nil
+end
+
 return {
     signal_bars = signal_bars,
     line = line,
     touch = touch,
     run = run,
+    at_startup = at_startup,
 }

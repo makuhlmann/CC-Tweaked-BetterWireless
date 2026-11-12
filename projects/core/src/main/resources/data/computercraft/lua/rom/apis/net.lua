@@ -153,6 +153,11 @@ local function load()
         description = "A key shared by every router, to sign routing updates and ignore unsigned ones.",
         type = "string",
     })
+    settings.define("cell.bar", {
+        description = "Show the cell status bar at the top of the screen, from when the computer starts, once it has a SIM.",
+        default = true,
+        type = "boolean",
+    })
     settings.define("net.firewall", {
         description = "Rules for which packets a router forwards. Use the firewall program to change them.",
         type = "table",

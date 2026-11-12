@@ -337,6 +337,8 @@ describe("The cell program's GUI", function()
                 -- Screens worth the name get more, as there's more to reach on them.
                 local usable = size[1] >= 26
                 for seed = 1, 6 do
+                    -- Each storm takes a while, and a computer which doesn't yield for long is stopped.
+                    if seed > 1 then require("support.yield")() end
                     local phone = storm(size[1], size[2], seed * 7919 + size[1], usable and 500 or 300)
                     for what, count in pairs(reached) do reached[what] = count + #phone[what] end
                 end
@@ -1401,9 +1403,46 @@ describe("The cell program's GUI", function()
             end)
         end)
 
+        it("is turned off and on, for when the computer starts too", function()
+            stub(settings, "save", function() return true end)
+            local ok, err = pcall(run, fake_phone(), { args = { "bar" } }, function(app)
+                expect(app.line(1)):eq(" ACME              [|||.]")
+                app.type("cell bar off")
+                app.key(keys.enter)
+                expect(settings.get("cell.bar")):eq(false)
+                -- The bar goes at once (the command says so with an event), and the shell has the whole screen.
+                app.event("cell_state", "attached")
+                expect(app.lines(1, 3)):same { os.version(), "> cell bar off", "The status bar is off." }
+
+                app.type("cell bar on")
+                app.key(keys.enter)
+                expect(settings.get("cell.bar")):eq(true)
+                app.event("cell_state", "attached")
+                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.find("The status bar is on.")):ne(nil)
+            end)
+            settings.unset("cell.bar")
+            if not ok then error(err, 0) end
+        end)
+
+        it("starts with the computer once it has a SIM, unless it's turned off", function()
+            local bar = require "cc.internal.net.cell.bar"
+            local phone = fake_phone()
+            expect(bar.at_startup()):eq(true)
+            phone.info.network = nil
+            expect(bar.at_startup()):eq(false)
+
+            phone.info.network = "ACME"
+            settings.set("cell.bar", false)
+            local off = bar.at_startup()
+            settings.unset("cell.bar")
+            expect(off):eq(false)
+        end)
+
         it("is completed, with the program to run", function()
             expect(shell.complete("cell g")):same { "ui" }
             expect(shell.complete("cell b")):same { "ar " }
+            expect(shell.complete("cell bar of")[1]):eq("f")
             expect(shell.complete("cell bar cellc")):same { "ore " }
             expect(shell.complete("cell bar cell m")):same { "essages", "onitor" }
             expect(shell.complete("cell gui ")):eq(nil)
