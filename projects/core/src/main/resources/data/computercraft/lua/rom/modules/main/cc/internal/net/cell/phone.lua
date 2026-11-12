@@ -361,6 +361,8 @@ function Phone:radio(src, message, signal)
     local op = message.op
 
     if op == "sib" then
+        -- A cell newer than we are may say things we can't read, and while there's nothing else, that's worth knowing.
+        if common.is_newer(message.v) then self.newer_heard = self.stack.clock() end
         -- Names are shown to people, so only take ones a network could have.
         local entries = common.sib_networks(message, src)
         if not entries then return end
@@ -407,6 +409,7 @@ function Phone:radio(src, message, signal)
         local payload = handshake:read(message.handshake)
         local info = payload and codec.decode(payload)
         if type(info) ~= "table" then return end
+        if common.is_newer(info.v) then self.newer_heard = self.stack.clock() end
         self.subscriber = { id = info.id, number = info.number }
         -- Other networks' phones reach ours at our network's number prefix followed by our number.
         if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
@@ -464,7 +467,7 @@ function Phone:radio(src, message, signal)
     elseif op == "activate_reply" and self.state == "activating" and self.handshake then
         local handshake = self.handshake:clone()
         if not handshake:read(message.handshake) then return end
-        local finish = handshake:write(codec.encode({ v = 1 }))
+        local finish = handshake:write(codec.encode({ v = common.VERSION }))
         if not finish then return end
         self.handshake, self.finished = handshake, true
         self:to_cell(self.cell, { op = "activate_finish", via = self.activation.via, handshake = finish })
@@ -734,7 +737,7 @@ function Phone:attach()
         crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
         static = self.sim, remote_static = self.operator.key,
     }
-    local message = self.handshake:write(codec.encode({ v = 1 }))
+    local message = self.handshake:write(codec.encode({ v = common.VERSION }))
     if not message then return self:give_up() end
     self:set_state("attaching")
     self:to_cell(best, { op = "attach", network = self.operator.network, via = via, handshake = message })
@@ -945,6 +948,8 @@ function Phone:info()
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
         heard = heard, events = events, network = self.operator and self.operator.network,
         roaming = self:roaming(), selection = self.selection, partners = partners, equivalent = equivalent,
+        -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
+        newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,
     }
 end
 

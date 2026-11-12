@@ -786,6 +786,8 @@ local function home_screen(monitor)
                 return "Cell service isn't running. Choose Cell service to start it."
             elseif info.state == "rejected" then
                 return "Rejected" .. (info.rejected and ": " .. tostring(info.rejected) or ""), c(colours.red)
+            elseif info.state == "searching" and info.newer then
+                return "The cells around run a newer version of the network than this phone. Update the phone's software (the mod, or the server's ROM).", c(colours.orange)
             end
             return nil
         end,

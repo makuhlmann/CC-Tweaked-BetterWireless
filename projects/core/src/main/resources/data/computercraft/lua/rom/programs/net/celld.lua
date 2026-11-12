@@ -35,6 +35,11 @@ local function show_link(info, link)
         printError(("%s can't be reached: %s"):format(link.core, tostring(link.error)))
         if link.retry then print(("Trying again in %d seconds."):format(link.retry)) end
     end
+    if link.newer then
+        print(("%s speaks a newer version of the network (%d). If they don't work together, update this cell's ROM."):format(
+            link.core, link.newer
+        ))
+    end
 end
 
 -- Say what the cell is doing.

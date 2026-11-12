@@ -45,6 +45,23 @@ local SIB_MAX_AGE = 30 * 1000
 --- How many networks one cell may serve (and name in its system information): several operators may share a cell.
 local MAX_SIB_NETWORKS = 8
 
+--[[- The version of the cellular network's protocols this computer speaks. System information, the hellos cells and
+cores send each other, and what a core tells a phone when it attaches each carry it.
+
+Version 2 is the first which says so (version 1 had system information for one network only). Whoever is newer knows
+whether it can still talk to the other, so a computer which hears a newer version only notes it: a phone says the
+network is newer than it is while it can't find a cell it can use, and a core logs it.
+]]
+local VERSION = 2
+
+--- Whether another computer says it speaks a newer version than we do.
+--
+-- @param version What it said its version was, which may be anything.
+-- @treturn boolean Whether it's newer.
+local function is_newer(version)
+    return type(version) == "number" and version % 1 == 0 and version > VERSION and version < 2 ^ 31
+end
+
 local SIB_PREFIX = "cc-net cell sib 1\0"
 local CELL_KEY_PREFIX = "cc-net cell key 1\0"
 local TUNNEL_KEY_PREFIX = "cc-net tunnel key 1\0"
@@ -119,7 +136,8 @@ local function make_sib(options)
     local networks = options.networks
         or { { network = options.network, certificate = options.certificate, path = options.path } }
     local sib = {
-        op = "sib", cell = options.cell, area = options.area, load = options.load, time = options.time, networks = {},
+        op = "sib", v = VERSION, cell = options.cell, area = options.area, load = options.load, time = options.time,
+        networks = {},
     }
     for i, entry in ipairs(networks) do
         local path = entry.path and #entry.path > 0 and entry.path or nil
@@ -322,6 +340,8 @@ function Sealer:open(sealed)
 end
 
 return {
+    VERSION = VERSION,
+    is_newer = is_newer,
     FRAME = FRAME,
     TUNNEL_PORT = TUNNEL_PORT,
     CELL_TUNNEL_PORT = CELL_TUNNEL_PORT,

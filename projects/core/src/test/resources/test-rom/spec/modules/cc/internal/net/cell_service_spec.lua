@@ -180,7 +180,7 @@ describe("Cellular services", function()
         -- Connect as the core's own computer, to manage it.
         function env.admin()
             local admin = env.connect(env.identity, "127.0.0.1")
-            expect(hello(admin, "admin", id)):same { ok = true, network = name }
+            expect(hello(admin, "admin", id)):same { ok = true, v = common.VERSION, network = name }
             return admin
         end
         return env
@@ -353,7 +353,7 @@ describe("Cellular services", function()
                     -- A computer which wants to manage the network waits too.
                     local remote = env.connect(admin_key)
                     expect(hello(remote, "admin", 15).waiting):eq(true)
-                    expect(remote:receive(60)):same { ok = true, network = "ACME" }
+                    expect(remote:receive(60)):same { ok = true, v = common.VERSION, network = "ACME" }
                     expect(ask(remote, { op = "status" }).network):eq("ACME")
                     remote:close()
 
@@ -1033,7 +1033,7 @@ describe("Cellular services", function()
             run(env.net, { env.service }, { function()
                 local core = env.connections[1]
                 expect(env.core_name):eq("core.acme")
-                expect(core:receive(5)):same { role = "cell", id = 11, signing = env.signing, area = 3 }
+                expect(core:receive(5)):same { role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 3 }
                 expect(env.service:info().state):eq("connecting")
 
                 core:send({ waiting = true, fingerprint = fingerprint(env.key) })

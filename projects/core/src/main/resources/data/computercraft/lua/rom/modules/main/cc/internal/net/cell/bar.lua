@@ -74,6 +74,9 @@ local function line(info, width, colour, quiet)
     if attached then
         -- A network the phone treats as its own goes by its own network's name.
         name = info.roaming and info.serving_network or info.network or info.serving_network or "?"
+    elseif info.state == "searching" and info.newer then
+        -- The cells around speak a newer version than this phone, which may be why it finds none.
+        name = "Phone too old"
     elseif info.state == "searching" and quiet then
         name = "No service"
     else

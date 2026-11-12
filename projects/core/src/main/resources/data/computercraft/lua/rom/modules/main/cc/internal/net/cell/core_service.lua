@@ -340,6 +340,7 @@ function Service:serve(connection)
     if NETWORK_ROLES[role] and not common.is_network(hello.network) then
         return refuse(connection, "Another network's core must say which network it is.")
     end
+    self:note_version(hello.v, ("%s #%s"):format(ROLES[role].name, tostring(id or "?")))
 
     if not self:allows(key, role) then
         local entry = self.allowed[key]
@@ -360,6 +361,14 @@ function Service:serve(connection)
     if role == "roam" then return self:serve_partner(connection, key, hello, id) end
     if role == "peer" then return self:serve_peer(connection, key, hello, id) end
     return self:serve_admin(connection, key)
+end
+
+-- Log that a computer speaks a newer version of the cellular network than we do, if it does.
+function Service:note_version(version, who)
+    if not common.is_newer(version) then return end
+    self:log(("%s speaks a newer version of the cellular network (%d) than this core (%d). If they don't work together, update this core's ROM."):format(
+        who, version, common.VERSION
+    ))
 end
 
 -- Keep a computer waiting until it's allowed. Returns whether it was.
@@ -430,7 +439,7 @@ function Service:serve_cell(connection, key, hello, id)
     end
     local peer = connection:getPeer()
     local tunnel_key = self.core:add_tower(id, address.parse(peer), send)
-    if not connection:send({ network = network, certificate = cert, tunnel_key = tunnel_key }) then
+    if not connection:send({ v = common.VERSION, network = network, certificate = cert, tunnel_key = tunnel_key }) then
         self.core:remove_tower(id, send)
         return connection:abort()
     end
@@ -507,7 +516,7 @@ function Service:serve_partner(connection, key, hello, id)
     end
     local peer = connection:getPeer()
     local tunnel_key = self.core:add_tower(id, address.parse(peer), send, network)
-    if not connection:send({ network = self.config.network, tunnel_key = tunnel_key }) then
+    if not connection:send({ v = common.VERSION, network = self.config.network, tunnel_key = tunnel_key }) then
         self.core:remove_tower(id, send)
         return connection:abort()
     end
@@ -682,7 +691,9 @@ function Service:serve_peer(connection, key, hello, id)
     end
     local taken = self:prefix_taken(prefix, network)
     if taken then return refuse(connection, ("%s has the number prefix %s already."):format(taken, prefix)) end
-    if not connection:send({ network = self.config.network, number_prefix = own }) then return connection:abort() end
+    if not connection:send({ v = common.VERSION, network = self.config.network, number_prefix = own }) then
+        return connection:abort()
+    end
     if known and (known.id ~= id or known.network ~= network or known.prefix ~= prefix) then
         known.id, known.network, known.prefix = id, network, prefix
         self:save_allowed()
@@ -702,12 +713,13 @@ function Service:exchange(entry, connection)
         entry.state, entry.error = "refused", "This network has no number prefix yet: set one with 'cellcore numbers'"
         return
     end
-    connection:send({ role = "peer", id = options.id, network = self.config.network, number_prefix = own })
+    connection:send({ role = "peer", v = common.VERSION, id = options.id, network = self.config.network, number_prefix = own })
     local reply, err = connection:receive(HELLO_TIMEOUT)
     if type(reply) == "table" and reply.waiting then
         entry.state = "waiting"
         reply, err = connection:receive(WAIT_TIMEOUT + 60)
     end
+    if type(reply) == "table" then self:note_version(reply.v, "The core of " .. network) end
     if type(reply) == "table" and type(reply.error) == "string" then
         entry.state, entry.error = "refused", reply.error
         return
@@ -747,12 +759,15 @@ end
 -- One connection to the core of a network whose phones we carry. Returns why it ended.
 function Service:carry(entry, connection)
     local options, network = self.options, entry.network
-    connection:send({ role = "roam", id = options.id, network = self.config.network, signing = to_hex(options.signing) })
+    connection:send({
+        role = "roam", v = common.VERSION, id = options.id, network = self.config.network, signing = to_hex(options.signing),
+    })
     local reply, err = connection:receive(HELLO_TIMEOUT)
     if type(reply) == "table" and reply.waiting then
         entry.state = "waiting"
         reply, err = connection:receive(WAIT_TIMEOUT + 60)
     end
+    if type(reply) == "table" then self:note_version(reply.v, "The core of " .. network) end
     if type(reply) == "table" and type(reply.error) == "string" then
         entry.state, entry.error = "refused", reply.error
         return
@@ -810,7 +825,7 @@ local requests = {}
 
 function Service:serve_admin(connection, key)
     self.admins[connection] = key
-    if connection:send({ ok = true, network = self.config.network }) then
+    if connection:send({ ok = true, v = common.VERSION, network = self.config.network }) then
         while true do
             local request = connection:receive(ADMIN_TIMEOUT)
             if type(request) ~= "table" then break end

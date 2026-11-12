@@ -92,7 +92,7 @@ end
 
 function Service:serve(link, connection)
     local options = self.options
-    connection:send({ role = "cell", id = options.id, signing = options.signing, area = options.area or 0 })
+    connection:send({ role = "cell", v = common.VERSION, id = options.id, signing = options.signing, area = options.area or 0 })
     local reply, err = connection:receive(HELLO_TIMEOUT)
     if type(reply) == "table" and reply.waiting then
         link.state = "waiting"
@@ -103,6 +103,8 @@ function Service:serve(link, connection)
         return
     end
     if type(reply) ~= "table" then return err or "The core didn't answer" end
+    -- A core newer than we are: shown in the cell's status, in case they don't work together.
+    link.newer = common.is_newer(reply.v) and reply.v or nil
     -- What the core says is broadcast, and used as a key. A cell may serve other networks too, which a core that
     -- says something unfit mustn't spoil.
     if not common.is_network(reply.network) or type(reply.certificate) ~= "string" or #reply.certificate > MAX_CERTIFICATE
@@ -170,7 +172,10 @@ function Service:info()
     local options = self.options
     local links, best = {}, nil
     for i, link in ipairs(self.links) do
-        links[i] = { core = link.core, state = link.state, error = link.error, retry = link.retry, network = link.network }
+        links[i] = {
+            core = link.core, state = link.state, error = link.error, retry = link.retry, network = link.network,
+            newer = link.newer,
+        }
         if not best or STATE_ORDER[link.state] < STATE_ORDER[best.state] then best = link end
     end
     best = best or {}

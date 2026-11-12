@@ -51,6 +51,36 @@ describe("Cellular networks", function()
         expect(phone.address):eq(nil)
     end)
 
+    it("says when the cells around speak a newer version of the network than it does", function()
+        -- Its own network's cell is out of reach: there's only a newer one, which says things this phone can't read.
+        local setup = operator { 1000 }
+        local newer = setup.net.stack(66)
+        setup.net.connect(newer, "air", nil, "wireless")
+        setup.positions[66] = 0
+        for t = 0, 4 do
+            newer:schedule(t, function()
+                newer:send_frame("air", -1, common.FRAME, { op = "sib", v = common.VERSION + 1, cell = 66, layout = "new" })
+            end)
+        end
+        local phone = setup.add_phone(1, 0)
+        setup.net.advance(5)
+        expect(phone.state):eq("searching")
+        expect(phone:info().newer):eq(true)
+
+        -- It forgets, once it no longer hears it.
+        setup.net.advance(35)
+        expect(phone:info().newer):eq(false)
+
+        -- Cells say which version they speak.
+        local sib = common.make_sib {
+            network = "ACME", cell = 1, area = 0, load = 0, time = 0, certificate = "c", sign = function() return "" end,
+        }
+        expect(sib.v):eq(common.VERSION)
+        expect({ common.is_newer(common.VERSION), common.is_newer(common.VERSION + 1), common.is_newer("3") }):same {
+            false, true, false,
+        }
+    end)
+
     it("ignores cells without a certificate from the operator", function()
         local setup = operator { 80 }
         -- A rogue tower, closer, with a certificate it made itself.

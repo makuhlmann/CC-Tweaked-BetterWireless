@@ -204,6 +204,12 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
   written and never read.
 - **Change:** a version number in system information and in the control hello, and a state for the phone which says
   the network is newer than it is. **Medium.**
+- **Done:** `common.VERSION` (2, the first version which says so) is in system information, in the hellos cells and
+  cores send each other and their answers, and in what a core tells a phone when it attaches (the `v` fields, which were
+  always 1 and never read). Whoever is newer knows whether it can talk to the other, so the older side only notes it: a
+  phone which heard a newer cell or core lately says so in `net.cell.info().newer`, and while it's searching the status
+  bar says "Phone too old", and the menus and `cell` say why; a core logs a newer cell or core, and `celld` shows a
+  newer core. Tested in `cell_spec.lua` and `cell_gui_spec.lua`.
 
 ### 1.16 The generated files were changed by hand
 

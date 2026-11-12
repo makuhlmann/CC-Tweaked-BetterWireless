@@ -242,6 +242,9 @@ elseif command == "bar" then
 elseif command == nil then
     local info = net.cell.info()
     print(STATES[info.state] or info.state)
+    if info.state == "searching" and info.newer then
+        print("The cells around run a newer version of the network than this phone. Update its software.")
+    end
     if info.network then print("Network:  " .. info.network) end
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
     if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end

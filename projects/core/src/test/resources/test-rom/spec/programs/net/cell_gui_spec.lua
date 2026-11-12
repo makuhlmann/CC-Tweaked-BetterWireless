@@ -404,6 +404,10 @@ describe("The cell program's GUI", function()
             local info = { state = "searching", network = "ACME", unread = 0 }
             expect((bar.line(info, 26, true, false))):eq(" Searching...      [....] ")
             expect((bar.line(info, 26, true, true))):eq(" No service        [....] ")
+            -- The cells around are newer than the phone.
+            info.newer = true
+            expect((bar.line(info, 26, true, true))):eq(" Phone too old     [....] ")
+            info.newer = nil
             info.state = "rejected"
             expect((bar.line(info, 26, false))):eq(" Rejected          [....] ")
             info.state = "attaching"

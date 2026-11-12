@@ -2073,6 +2073,8 @@ cell = {
      - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
        the phone treats as its own network (it isn't roaming there);
      - `selection`: `"auto"`, or the only network it has been told to use (see `net.cell.setNetwork`);
+     - `newer`: whether it heard a cell (or core) lately which speaks a newer version of the network than it does,
+       which may be why a phone which is searching finds no cell it can use;
      - `unread`: how many messages haven't been read;
 
      - `heard`: every cell it has heard in the last 30 seconds, of any network, the ones heard in the last few seconds
@@ -2110,6 +2112,7 @@ cell = {
         info.enabled = not off
         info.selection = type(chosen.network) == "string" and chosen.network or "auto"
         info.roaming = info.roaming == true
+        info.newer = info.newer == true
         info.unread = 0
         for _, message in ipairs(read_messages()) do
             if message.from and message.read == false then info.unread = info.unread + 1 end

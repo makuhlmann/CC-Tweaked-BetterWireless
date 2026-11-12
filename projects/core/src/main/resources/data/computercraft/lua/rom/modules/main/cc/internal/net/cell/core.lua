@@ -428,7 +428,7 @@ function Core:activate(tower, phone, tag, message)
         static = self.operator, psk = code.key,
     }
     if not handshake:read(message) then return end
-    local reply = handshake:write(codec.encode({ v = 1 }))
+    local reply = handshake:write(codec.encode({ v = common.VERSION }))
     if not reply then return end
 
     local key = tower.id .. ":" .. phone
@@ -875,7 +875,8 @@ function Core:attach(tower, phone, message, visited_cell)
     -- Tell the phone which other networks it may use, and the keys their cells are certified with. Only the phone
     -- can read this, and only we could have written it.
     local reply = handshake:write(codec.encode({
-        v = 1, id = subscriber.id, number = subscriber.number, partners = self:partner_list(), numbers = self.number_prefix,
+        v = common.VERSION, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
+        numbers = self.number_prefix,
     }))
     if not reply then return end
     local _, receive = handshake:split()
