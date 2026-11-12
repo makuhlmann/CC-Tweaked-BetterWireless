@@ -198,8 +198,8 @@ describe("Several cellular networks, under stress,", function()
                     expect(#phone.outbox):describe(("Messages phone %d is still sending"):format(entry.id)):eq(0)
                     -- What it remembers is bounded by what's around.
                     expect(count(phone.heard) <= 5):describe(("Cells phone %d heard"):format(entry.id)):eq(true)
-                    expect(count(phone.failed) <= 5):describe(("Cells phone %d gave up on"):format(entry.id)):eq(true)
-                    expect(count(phone.forbidden) <= 2):describe(("Networks phone %d leaves alone"):format(entry.id)):eq(true)
+                    expect(phone.failed:count() <= 5):describe(("Cells phone %d gave up on"):format(entry.id)):eq(true)
+                    expect(phone.forbidden:count() <= 2):describe(("Networks phone %d leaves alone"):format(entry.id)):eq(true)
                 end
                 for text, message in pairs(messages) do
                     local got = message.to.got[text] or 0
@@ -274,8 +274,8 @@ describe("Several cellular networks, under stress,", function()
             expect(phone.state ~= "attached"):eq(true)
             expect(count(phone.heard) <= 32):describe(count(phone.heard) .. " cells heard"):eq(true)
             expect(count(phone.cells) <= 32):describe(count(phone.cells) .. " cells to use"):eq(true)
-            expect(count(phone.failed) <= 64):describe(count(phone.failed) .. " cells given up on"):eq(true)
-            expect(count(phone.forbidden) <= 32):describe(count(phone.forbidden) .. " networks left alone"):eq(true)
+            expect(phone.failed:count() <= 64):describe(phone.failed:count() .. " cells given up on"):eq(true)
+            expect(phone.forbidden:count() <= 32):describe(phone.forbidden:count() .. " networks left alone"):eq(true)
 
             -- Back in reach of its own network, with the made-up cells still about (and heard better), it attaches soon.
             acme.positions[1] = 10

@@ -61,6 +61,7 @@ handshake message which doesn't read) never stops the phone waiting for the real
 local codec = require "cc.net.codec"
 local noise = require "cc.internal.net.noise"
 local common = require "cc.internal.net.cell.common"
+local recent = require "cc.internal.net.recent"
 local core = require "cc.internal.net.cell.core"
 local PROLOGUE, ACTIVATE_PROLOGUE = core.PROLOGUE, core.ACTIVATE_PROLOGUE
 
@@ -97,6 +98,8 @@ local MAX_PARTNERS = 16
 local HOME_TIME = 5
 -- How long to leave a network alone after it turned the phone away (or didn't answer), in seconds.
 local FORBIDDEN_TIME = 60
+-- How many networks which turned us away, and cells which didn't answer, to remember. Anyone can make them up.
+local MAX_FORBIDDEN, MAX_FAILED = 64, 64
 -- How long a phone must search without finding a cell of its own network or a partner's before it tries other
 -- networks, in seconds: long enough to hear every cell around.
 local SCAN_TIME = 3
@@ -139,9 +142,11 @@ local function new(options)
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
         partners = options.partners or {}, equivalent = options.equivalent or {}, selection = options.selection,
         relay = options.relay or function() return false end,
-        cells = {}, heard = {}, events = {}, forbidden = {}, failed = {}, certificates = common.new_certificates(),
+        cells = {}, heard = {}, events = {}, certificates = common.new_certificates(),
+        forbidden = recent.new(MAX_FORBIDDEN, FORBIDDEN_TIME, stack.clock),
+        failed = recent.new(MAX_FAILED, MAX_FAILED_TIME, stack.clock),
         state = options.operator and "searching" or "inactive", retry = 2,
-        seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
+        seen_messages = recent.new(MAX_SEEN), outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
         unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(), started = stack.clock(),
     }, Phone)
 
@@ -250,7 +255,7 @@ end
 
 -- Whether an attach through a cell got no answer lately: it may not hear us.
 function Phone:failed_lately(id, now)
-    local failed = self.failed[id]
+    local failed = self.failed:get(id)
     return failed ~= nil and now - failed.time < math.min(FAILED_TIME * 2 ^ (failed.count - 1), MAX_FAILED_TIME)
 end
 
@@ -305,9 +310,8 @@ function Phone:other_cell()
     for id, cell in pairs(self.heard) do
         if now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and id ~= self.stack.id then
             for name, entry in pairs(cell.networks) do
-                local refused = self.forbidden[name]
                 if name ~= self.operator.network and not self.partners[name] and (chosen == nil or name == chosen)
-                    and (chosen ~= nil or not (refused and now - refused < FORBIDDEN_TIME))
+                    and (chosen ~= nil or not self.forbidden:get(name))
                     and now - entry.heard <= SILENCE and self:path_ok(entry.path)
                     and (not best or cell.signal > best_signal or (cell.signal == best_signal and name < best_network)) then
                     best, best_signal, best_network = id, cell.signal, name
@@ -429,7 +433,8 @@ function Phone:radio(src, message, signal)
         end
         self.sealer = sealer
         self:set_address(value.address)
-        self.retry, self.failed[self.cell] = 2, nil
+        self.retry = 2
+        self.failed:remove(self.cell)
         self:heard_from_cell()
         self.confirming = nil
         self:set_state("attached")
@@ -446,10 +451,8 @@ function Phone:radio(src, message, signal)
             -- Say we have it, even if we've seen it before (our last acknowledgement may have been lost).
             local id = value.sms.id
             self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms_ack = id }) })
-            if not self.seen_messages[id] then
-                self.seen_messages[id] = true
-                self.seen_order[#self.seen_order + 1] = id
-                if #self.seen_order > MAX_SEEN then self.seen_messages[table.remove(self.seen_order, 1)] = nil end
+            if not self.seen_messages:get(id) then
+                self.seen_messages:add(id)
                 self.on_message(value.sms.from:sub(1, 32), value.sms.text:sub(1, 1000))
             end
         elseif type(value.sms_sent) == "table" then
@@ -565,7 +568,7 @@ function Phone:set_partners(list)
         end
         if next(cell.networks) == nil then self.cells[id] = nil end
     end
-    for network in pairs(partners) do self.forbidden[network] = nil end
+    for network in pairs(partners) do self.forbidden:remove(network) end
     self.on_partners(partners, equivalent)
 end
 
@@ -762,20 +765,13 @@ function Phone:give_up(unanswered)
     local cell = self.cells[self.cell]
     local entry = cell and cell.networks[self.via]
     if entry and entry.unverified then
-        -- Anyone can make up networks, so forget those whose time is up, rather than only on trying them again.
-        for network, since in pairs(self.forbidden) do
-            if now - since >= FORBIDDEN_TIME then self.forbidden[network] = nil end
-        end
-        self.forbidden[self.via] = now
+        self.forbidden:add(self.via)
         cell.networks[self.via] = nil
         if next(cell.networks) == nil then self.cells[self.cell] = nil end
     elseif cell and unanswered then
-        for id, failed in pairs(self.failed) do
-            if now - failed.time >= MAX_FAILED_TIME then self.failed[id] = nil end
-        end
-        local failed = self.failed[self.cell] or { count = 0 }
+        local failed = self.failed:get(self.cell) or { count = 0 }
         failed.count, failed.time = failed.count + 1, now
-        self.failed[self.cell] = failed
+        self.failed:add(self.cell, failed)
     end
     self:set_state(self.rejected and "rejected" or "searching")
     local delay = self.retry

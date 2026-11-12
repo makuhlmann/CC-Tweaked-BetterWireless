@@ -21,6 +21,7 @@ cell carries on serving the others.
 ]]
 
 local common = require "cc.internal.net.cell.common"
+local recent = require "cc.internal.net.recent"
 
 -- How long to keep a handed-over phone's confirmation which came before the core's word, in seconds, and how many.
 local EARLY_CONFIRM_TIME, MAX_EARLY_CONFIRMS = 5, 16
@@ -59,7 +60,8 @@ local function new(options)
         stack = stack, crypto = options.crypto, interface = options.interface, area = options.area or 0,
         sign = options.sign, epoch = options.epoch, id = stack.id,
         can_serve = options.can_serve or function() return true end,
-        links = {}, phones = {}, early_confirms = {}, unknown = {}, unknown_count = 0, asked = {}, asked_count = 0,
+        links = {}, phones = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
+        unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
     }, Tower)
 
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
@@ -78,11 +80,8 @@ local function drop(tower, link)
     for phone, context in pairs(tower.phones) do
         if context.link == link then tower.phones[phone] = nil end
     end
-    for phone, asked in pairs(tower.asked) do
-        if asked == link then
-            tower.asked[phone] = nil
-            tower.asked_count = tower.asked_count - 1
-        end
+    for phone, asked in tower.asked:each() do
+        if asked == link then tower.asked:remove(phone) end
     end
 end
 
@@ -213,38 +212,22 @@ function Tower:radio(phone, message)
         -- A phone handed over to us. The core's word about it comes over the backhaul, which may be slower than the
         -- phone over the air (through a relay's own phone, say), so keep the phone's confirmation until it does.
         if self.phones[phone] then return self:confirm(phone, message.sealed) end
-        local count = 0
-        for id, early in pairs(self.early_confirms) do
-            if self.stack.clock() - early.time > EARLY_CONFIRM_TIME then self.early_confirms[id] = nil else count = count + 1 end
-        end
-        if self.early_confirms[phone] or count < MAX_EARLY_CONFIRMS then
-            self.early_confirms[phone] = { sealed = message.sealed, time = self.stack.clock() }
-        end
+        self.early_confirms:add(phone, message.sealed)
     end
 end
 
 -- Remember which network a phone asked to attach through. A cell which serves several networks only lets a network's
 -- core take over a phone from another's when the phone asked for that network.
 function Tower:ask(phone, link)
-    if self.asked[phone] == nil then
-        -- Anyone can send an attach, as from any phone. Forgetting only costs a phone moving between two networks
-        -- here another try.
-        if self.asked_count >= MAX_ASKED then self.asked, self.asked_count = {}, 0 end
-        self.asked_count = self.asked_count + 1
-    end
-    self.asked[phone] = link
+    -- Anyone can send an attach, as from any phone. Forgetting only costs a phone moving between two networks here
+    -- another try.
+    self.asked:add(phone, link)
 end
 
 -- Tell a computer which thinks it's one of our phones that we don't know it.
 function Tower:say_unknown(phone)
-    local now = self.stack.clock()
-    local last = self.unknown[phone]
-    if last and now - last < UNKNOWN_INTERVAL then return end
-    if not last then
-        if self.unknown_count >= MAX_UNKNOWN then self.unknown, self.unknown_count = {}, 0 end
-        self.unknown_count = self.unknown_count + 1
-    end
-    self.unknown[phone] = now
+    if self.unknown:get(phone) then return end
+    self.unknown:add(phone)
     self:to_phone(phone, { op = "unknown" })
 end
 
@@ -303,7 +286,7 @@ function Tower:control(message, link)
         -- A phone is attached (or handed over) through one network at a time. One network's core doesn't get to take
         -- a phone which is here through another, unless the phone asked to attach through it.
         local old = self.phones[message.phone]
-        if old and old.link ~= link and self.asked[message.phone] ~= link then return end
+        if old and old.link ~= link and self.asked:get(message.phone) ~= link then return end
         if old then forget(self, old) end
         local context = {
             phone = message.phone, teid = message.teid, link = link, active = not message.handover,
@@ -316,11 +299,9 @@ function Tower:control(message, link)
             if sealed then self:to_phone(message.phone, { op = "accept", sealed = sealed }) end
         end
         -- The phone may have arrived already.
-        local early = self.early_confirms[message.phone]
-        self.early_confirms[message.phone] = nil
-        if early and not context.active and self.stack.clock() - early.time <= EARLY_CONFIRM_TIME then
-            self:confirm(message.phone, early.sealed)
-        end
+        local early = self.early_confirms:get(message.phone)
+        self.early_confirms:remove(message.phone)
+        if early and not context.active then self:confirm(message.phone, early) end
     elseif op == "handover_go" and is_id(message.teid) and is_id(message.target) then
         local context = link.by_teid[message.teid]
         if context then
@@ -359,7 +340,7 @@ function Tower:stop()
     self.stack:cancel(self.beacon_timer)
     self.stack:udp_close(self.socket)
     self.stack:off_frame(common.FRAME, self.frame_handler)
-    self.links, self.phones, self.asked, self.asked_count = {}, {}, {}, 0
+    self.links, self.phones, self.asked = {}, {}, recent.new(MAX_ASKED)
 end
 
 return {

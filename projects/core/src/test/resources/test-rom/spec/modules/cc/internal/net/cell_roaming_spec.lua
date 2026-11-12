@@ -255,7 +255,7 @@ describe("Roaming", function()
         net.advance(10)
         expect(phone.rejected):eq("BETA doesn't carry phones of that network")
         expect(phone.state):eq("searching")
-        expect(phone.forbidden.BETA ~= nil):eq(true)
+        expect(phone.forbidden:get("BETA") ~= nil):eq(true)
 
         -- It doesn't ask again for a minute, though it hears BETA all the while.
         net.advance(40)
@@ -266,7 +266,7 @@ describe("Roaming", function()
         wait_until(net, function() return phone.state == "attached" end, 30, "Trying BETA again")
         expect(phone.cell):eq(21)
         expect(phone.partners.BETA):eq(beta.signing_public)
-        expect(phone.forbidden.BETA):eq(nil)
+        expect(phone.forbidden:get("BETA")):eq(nil)
         expect(reaches_server(net, stack)):eq(true)
         expect(event_kinds(phone)):same { "rejected", "attached roaming" }
     end)

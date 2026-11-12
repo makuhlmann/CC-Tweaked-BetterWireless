@@ -289,6 +289,14 @@ cover the replacement.
 - **Change:** `cc.internal.net.recent` with `new(max, lifetime)`, `add`, `get`, `remove` and `count`, which forgets the
   oldest when full and what's too old when asked. **Medium.** The link layer's replay window (`link.lua` 136–145) may
   fit too: see 4.5.
+- **Done:** `cc.internal.net.recent` (`new(max, lifetime, clock)`, `add`, `get`, `remove`, `count`, `each`) forgets the
+  oldest when full and what's too old when asked, and is used for the messages a phone has seen, the networks which
+  turned it away and the cells which didn't answer, the messages a peer core sent us, and a cell's early confirmations,
+  the computers it told it doesn't know, and the networks phones asked for. Two of these behave a little differently: a
+  cell keeping early confirmations now forgets the oldest when full, rather than refusing new ones, and every store
+  forgets the oldest one at a time, rather than all at once. The core's attaches under way stay as they are (several for
+  each key), as does the link layer's replay window (counters, not keys). Tested in `recent_spec.lua`, and by the
+  cellular specs.
 
 ### 2.4 Constants and checks which are written more than once
 

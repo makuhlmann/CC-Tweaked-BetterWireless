@@ -44,6 +44,7 @@ local address = require "cc.net.address"
 local codec = require "cc.net.codec"
 local noise = require "cc.internal.net.noise"
 local common = require "cc.internal.net.cell.common"
+local recent = require "cc.internal.net.recent"
 
 --- What both sides of an attach agree on, followed by the network's name.
 local PROLOGUE = "cc-net cell attach 1\0"
@@ -786,10 +787,11 @@ function Core:peer_control(network, message, send)
         -- That core sends a message until we answer, so it may come more than once.
         local seen = peer.seen
         if not seen then
-            seen = { order = {} }
+            seen = recent.new(MAX_PEER_SEEN)
             peer.seen = seen
         end
-        if seen[id] ~= nil then return reply(seen[id] == true, seen[id] ~= true and seen[id] or nil) end
+        local answered = seen:get(id)
+        if answered ~= nil then return reply(answered == true, answered ~= true and answered or nil) end
 
         local ok, reason
         -- A network only speaks for its own phones.
@@ -802,9 +804,7 @@ function Core:peer_control(network, message, send)
             kept, reason = self:keep_message(from, to, text, (self.number_prefix or "") .. to)
             ok = kept ~= nil
         end
-        seen[id] = ok or reason
-        seen.order[#seen.order + 1] = id
-        if #seen.order > MAX_PEER_SEEN then seen[table.remove(seen.order, 1)] = nil end
+        seen:add(id, ok or reason)
         reply(ok, reason)
         if kept then self:deliver(kept) end
     elseif message.op == "sms_reply" then
