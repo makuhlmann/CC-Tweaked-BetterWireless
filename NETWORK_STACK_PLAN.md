@@ -49,6 +49,8 @@ the code named, or by a test. Paths are relative to
   other events are dropped, `modem_message` and the stack's timer among them.
 - **Change:** try `address.parse` first in `resolve_number`, and only queue `net_done` if the callback runs after
   `start` has returned. **Small.**
+- **Done:** `resolve_number` takes an address as it is, without reading the resolver's settings, and `await` only queues
+  `net_done` when the answer comes after it started waiting. A test sends datagrams and checks no `net_done` is left.
 
 ### 1.2 `rshd` drops screen updates without saying, and may eat the session's events
 
@@ -67,6 +69,9 @@ the code named, or by a test. Paths are relative to
 - **Seen:** `net_interface` with `"address"` is only queued when DHCP changes an address. `net.setAddress` and
   `ifconfig` change one without it, though the design promises the event.
 - **Change:** queue it in `apply`. **Small.**
+- **Done:** `apply` queues `net_interface` with `"address"` whenever it changes an interface's address or prefix (not
+  when it changes nothing, nor for a modem which is only being added, which says `"up"`). Tested with a pretend wired
+  modem.
 
 ### 1.4 `ifconfig` saves an address before it's checked
 
@@ -96,6 +101,10 @@ the code named, or by a test. Paths are relative to
   `nil, "Timed out"`.
 - **Change:** one `check_timeout` and one `is_port`, used everywhere, and the same two results from every `receive`.
   **Small**, though the second is a change of behaviour: `dhcpd`, `dnsd` and `nc` should be checked.
+- **Done:** `check_timeout` and `is_port` in `net.lua`, used by every call which takes a timeout or a port
+  (`secure.connect` checks its `timeout` option too). A datagram socket's `receive` says `"Timed out"` or `"Socket is
+  closed"`, as a connection's does. `dhcpd`, `dnsd` and `nc` wait without a timeout and only look at the first result,
+  so nothing changes for them.
 
 ### 1.7 The trust store's functions don't agree with each other
 
@@ -105,6 +114,9 @@ the code named, or by a test. Paths are relative to
   ones which are spelling mistakes.
 - **Change:** clean both lists the same way, refuse keys which aren't keys, and refuse unknown `trust` values.
   **Small.**
+- **Done:** `knownHosts()` leaves out what isn't a name and a key, as `trusted()` does; `fingerprint` raises an error
+  for anything which isn't 64 hexadecimal digits (the core's status leaves out a SIM's fingerprint if its key in the
+  file isn't one); `secure.connect` refuses a `trust` other than `"certificate"`.
 
 ### 1.8 A handler which fails leaves packets queued
 

@@ -54,6 +54,7 @@ local DEFAULT_PREFIX = 24
 local CHANNEL_CHECK_INTERVAL = 5
 local MAX_ERRORS = 16
 local DEFAULT_TIMEOUT = 2
+local PORT_ERROR = "Ports must be whole numbers from 1 to 65535"
 local CONNECT_TIMEOUT = 5
 local HANDSHAKE_TIMEOUT = 5
 
@@ -268,9 +269,20 @@ function apply_routing()
     stack:set_firewall(firewall_rules())
 end
 
+-- Check that a timeout, if there is one, can be waited for: a number of seconds which isn't negative, infinite or NaN.
+-- Call it after `expect`, from the function the timeout was given to.
+local function check_timeout(index, timeout)
+    if timeout ~= nil and not (timeout >= 0 and timeout < math.huge) then
+        error(("bad argument #%d (invalid timeout)"):format(index), 3)
+    end
+end
+
+-- Whether a number is a port: a whole number from 1 to 65535.
+local function is_port(port) return port % 1 == 0 and port >= 1 and port <= 65535 end
+
 -- Apply an address setting to an interface: "dhcp", "none", or an address. Without a setting, wired interfaces use
 -- DHCP, and radios (wireless and ender modems) stay quiet.
-local function apply(name, mode)
+local function apply_mode(name, mode)
     if mode == nil then
         local interface = stack.interfaces[name]
         mode = interface and interface.kind == "wired" and "dhcp" or "none"
@@ -313,6 +325,18 @@ local function apply(name, mode)
     stop_dhcp(name, true)
     stack:set_address(name, addr, prefix)
     return true
+end
+
+-- Apply an address setting (see `apply_mode`), and say so with a `net_interface` event if the address changed. DHCP
+-- says so itself when it gets one.
+local function apply(name, mode)
+    local interface = stack.interfaces[name]
+    local before, before_prefix = interface and interface.address, interface and interface.prefix
+    local ok, err = apply_mode(name, mode)
+    if ok and interface and (interface.address ~= before or interface.prefix ~= before_prefix) then
+        os.queueEvent("net_interface", name, "address")
+    end
+    return ok, err
 end
 
 -- Encrypt an interface with its passphrase, if it has one. If it should be encrypted but can't be, it sends and accepts
@@ -382,13 +406,15 @@ function add_modem(name)
 end
 
 -- Start something which finishes by calling a callback, then wait for it. The stack's background process does the
--- work, so this just waits for the callback to be called.
+-- work, so this just waits for the callback to be called. If it's called at once, there's nothing to wait for, and no
+-- event is queued: one which nobody pulled would take a place in the event queue.
 local function await(start)
-    local done, results = false, nil
+    local done, waiting, results = false, false, nil
     start(function(...)
         done, results = true, table.pack(...)
-        os.queueEvent("net_done")
+        if waiting then os.queueEvent("net_done") end
     end)
+    waiting = true
     while not done do os.pullEvent("net_done") end
     return table.unpack(results, 1, results.n)
 end
@@ -414,9 +440,12 @@ local function resolver_options()
     return { hosts = hosts, servers = servers, domain = domain, hostname = hostname(), cache = cache }
 end
 
--- Resolve a name (or address) to a number.
+-- Resolve a name (or address) to a number. An address needs no looking up, which matters for datagrams: each one sent
+-- to an address would otherwise read the settings and every DHCP lease first.
 local function resolve_number(name)
     local s = load()
+    local literal = address.parse(dns.normalise(name))
+    if literal then return literal end
     return await(function(callback) dns.resolve(s, name, resolver_options(), callback) end)
 end
 
@@ -637,6 +666,7 @@ end
 function host(service, port)
     expect(1, service, "string")
     expect(2, port, "number")
+    if not is_port(port) then error("bad argument #2 (" .. PORT_ERROR .. ")", 2) end
     load()
     services[dns.normalise(service)] = port
 end
@@ -665,6 +695,7 @@ for _, server in ipairs(net.lookup("chat")) do print(server.host, server.address
 function lookup(service, timeout)
     expect(1, service, "string")
     expect(2, timeout, "number", "nil")
+    check_timeout(2, timeout)
     local s = load()
     local results = await(function(callback) dns.lookup(s, service, timeout or 1, callback) end)
     for _, result in ipairs(results) do result.address = address.format(result.address) end
@@ -720,7 +751,7 @@ function ping(target, timeout, ttl)
     expect(1, target, "string")
     expect(2, timeout, "number", "nil")
     expect(3, ttl, "number", "nil")
-    if timeout and not (timeout >= 0 and timeout < math.huge) then error("bad argument #2 (invalid timeout)", 2) end
+    check_timeout(2, timeout)
     if ttl and not (ttl % 1 == 0 and ttl >= 1 and ttl <= 255) then
         error("bad argument #3 (TTL must be a whole number from 1 to 255)", 2)
     end
@@ -776,7 +807,7 @@ request was answered before), or `error`, such as `"Host unreachable"` or `"TTL 
 ]]
 function Pinger:receive(timeout)
     expect(1, timeout, "number", "nil")
-    if timeout and not (timeout >= 0 and timeout < math.huge) then error("bad argument #1 (invalid timeout)", 2) end
+    check_timeout(1, timeout)
     local s = load()
     local timer = timeout and os.startTimer(timeout)
     while true do
@@ -870,6 +901,7 @@ function Socket:send(target, port, data, interface)
     expect(2, port, "number")
     expect(4, interface, "string", "nil")
     if self.socket.closed then return nil, "Socket is closed" end
+    if not is_port(port) then return nil, PORT_ERROR end
 
     local dst, err = resolve_number(target)
     if not dst then return nil, err end
@@ -884,9 +916,11 @@ end
 @treturn[1] number The port it came from.
 @treturn[1] string The interface it arrived on.
 @treturn[2] nil If nothing arrived in time, or the socket is closed.
+@treturn[2] string Why not: `"Timed out"` or `"Socket is closed"`.
 ]]
 function Socket:receive(timeout)
     expect(1, timeout, "number", "nil")
+    check_timeout(1, timeout)
     local queue = self.socket.queue
     local timer = timeout and os.startTimer(timeout)
     while true do
@@ -895,10 +929,13 @@ function Socket:receive(timeout)
             if timer then os.cancelTimer(timer) end
             return item.data, address.format(item.from), item.port, item.interface
         end
-        if self.socket.closed then return nil end
+        if self.socket.closed then
+            if timer then os.cancelTimer(timer) end
+            return nil, "Socket is closed"
+        end
 
         local event, arg = os.pullEvent()
-        if event == "timer" and arg == timer then return nil end
+        if event == "timer" and arg == timer then return nil, "Timed out" end
     end
 end
 
@@ -933,11 +970,12 @@ udp = {
     @tparam[opt] number port The port to listen on, or `nil` for any free port. Servers usually pick a port; clients
     usually don't.
     @treturn[1] table The socket, with `send`, `receive`, `getPort` and `close` methods.
-    @treturn[2] nil If the port is already in use.
+    @treturn[2] nil If the port is already in use, or isn't a port.
     @treturn[2] string An error message.
     ]]
     open = function(port)
         expect(1, port, "number", "nil")
+        if port ~= nil and not is_port(port) then return nil, PORT_ERROR end
         local socket, err = load():udp_open(port)
         if not socket then return nil, err end
         return setmetatable({ socket = socket }, Socket)
@@ -980,6 +1018,7 @@ end
 ]]
 function Connection:receive(timeout)
     expect(1, timeout, "number", "nil")
+    check_timeout(1, timeout)
     local timer = timeout and os.startTimer(timeout)
     while true do
         local ok, value = self.connection:take()
@@ -1048,6 +1087,7 @@ Listener.__index = Listener
 ]]
 function Listener:accept(timeout)
     expect(1, timeout, "number", "nil")
+    check_timeout(1, timeout)
     local timer = timeout and os.startTimer(timeout)
     while true do
         local connection = self.listener:accept()
@@ -1118,6 +1158,8 @@ tcp = {
         expect(1, target, "string")
         expect(2, port, "number")
         expect(3, timeout, "number", "nil")
+        check_timeout(3, timeout)
+        if not is_port(port) then return nil, PORT_ERROR end
         local s = load()
 
         local dst, err = resolve_number(target)
@@ -1204,13 +1246,15 @@ end
 
 --[[- Get a short fingerprint of a key, for people to compare.
 
-@tparam string key The key, as hexadecimal digits.
+@tparam string key The key, as 64 hexadecimal digits.
 @treturn string The fingerprint, such as `"3f9a 0c41 77d2 e810 5b6e"`.
+@throws If the key isn't a key.
 ]]
 function fingerprint(key)
     expect(1, key, "string")
+    local bytes = #key == 64 and from_hex(key)
+    if not bytes then error("bad argument #1 (expected a key: 64 hexadecimal digits)", 2) end
     require_crypto()
-    local bytes = from_hex(key) or key
     return to_hex(crypto.sha256(bytes)):sub(1, 20):gsub("(....)", "%1 "):sub(1, -2)
 end
 
@@ -1228,10 +1272,17 @@ end
 
 --[[- Get the keys this computer has seen for other computers, when connecting securely (in `/.net/known_hosts`).
 
-@treturn { [string] = string } Each name, and its key as hexadecimal digits.
+@treturn { [string] = string } Each name, and its key as hexadecimal digits. Entries which aren't a name and a key
+(in a file which was changed by hand, say) are left out, as [`net.trusted`] does.
 ]]
 function knownHosts()
-    return read_table(KNOWN_HOSTS)
+    local result = {}
+    for name, key in pairs(read_table(KNOWN_HOSTS)) do
+        if type(name) == "string" and type(key) == "string" and #key == 64 and from_hex(key) then
+            result[name] = key:lower()
+        end
+    end
+    return result
 end
 
 --[[- Forget the key this computer has seen for a name, so the next secure connection to it learns a new one. Use this
@@ -1276,6 +1327,7 @@ have cut it short), or what went wrong with the connection.
 ]]
 function SecureConnection:receive(timeout)
     expect(1, timeout, "number", "nil")
+    check_timeout(1, timeout)
     return self.session:receive(timeout)
 end
 
@@ -1333,6 +1385,7 @@ While a client does its handshake, others wait: one which stalls holds them up f
 ]]
 function SecureListener:accept(timeout)
     expect(1, timeout, "number", "nil")
+    check_timeout(1, timeout)
     local deadline = timeout and os.clock() + timeout
     while true do
         local remaining = deadline and math.max(0, deadline - os.clock())
@@ -1404,6 +1457,14 @@ secure = {
         expect(2, port, "number")
         expect(3, options, "table", "nil")
         options = options or {}
+        local timeout = options.timeout
+        if timeout ~= nil and (type(timeout) ~= "number" or not (timeout >= 0 and timeout < math.huge)) then
+            error("bad option timeout (invalid timeout)", 2)
+        end
+        if options.trust ~= nil and options.trust ~= "certificate" then
+            error("bad option trust (expected \"certificate\" or nothing)", 2)
+        end
+        if not is_port(port) then return nil, PORT_ERROR end
         require_crypto()
         load()
 
@@ -1782,6 +1843,7 @@ Manager.__index = Manager
 function Manager:request(request, timeout)
     expect(1, request, "table")
     expect(2, timeout, "number", "nil")
+    check_timeout(2, timeout)
     if self.closed then return nil, "Closed" end
     local sent, err = self.connection:send(request)
     if not sent then return nil, "Lost the core: " .. tostring(err) end

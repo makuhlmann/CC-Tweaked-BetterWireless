@@ -917,7 +917,7 @@ function requests.status(self)
         local session = sessions[sim]
         local attached = session and session.attached
         result.subscribers[#result.subscribers + 1] = {
-            id = subscriber.id, number = subscriber.number, fingerprint = fingerprint(sim),
+            id = subscriber.id, number = subscriber.number, fingerprint = is_key(sim) and fingerprint(sim) or nil,
             address = session and session.address, cell = attached and session.cell or nil,
             roaming = attached and session.roaming or nil, barred = subscriber.barred or nil,
             may_roam = subscriber.roaming ~= false,

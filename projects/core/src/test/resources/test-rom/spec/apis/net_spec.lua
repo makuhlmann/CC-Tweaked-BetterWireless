@@ -9,6 +9,17 @@ describe("The net library", function()
             expect.error(net.tcp.listen, "x"):eq("bad argument #1 (number expected, got string)")
             expect.error(net.stream, {}):eq("bad argument #1 (expected a connection)")
             expect({ net.tcp.listen(0) }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            expect({ net.tcp.connect("127.0.0.1", 0) }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            expect({ net.tcp.connect("127.0.0.1", 1.5) }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            for _, timeout in ipairs { -1, math.huge, 0 / 0 } do
+                expect.error(net.tcp.connect, "127.0.0.1", 80, timeout):eq("bad argument #3 (invalid timeout)")
+                expect.error(net.lookup, "chat", timeout):eq("bad argument #2 (invalid timeout)")
+            end
+            expect.error(net.host, "chat", 70000):eq("bad argument #2 (Ports must be whole numbers from 1 to 65535)")
+
+            local listener = assert(net.tcp.listen(4324))
+            expect.error(listener.accept, listener, -1):eq("bad argument #1 (invalid timeout)")
+            listener:close()
         end)
 
         it("connects to this computer, and carries messages and streams", function()
@@ -60,6 +71,75 @@ describe("The net library", function()
             expect(server:receive(0.1)):eq(nil)
             server:close()
             client:close()
+        end)
+    end)
+
+    describe("net.udp's sockets", function()
+        it("check ports and timeouts, and say why nothing was received", function()
+            expect({ net.udp.open(0) }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            expect({ net.udp.open(65536) }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            local socket = assert(net.udp.open())
+            expect({ socket:send("127.0.0.1", 0, "x") }):same { nil, "Ports must be whole numbers from 1 to 65535" }
+            expect.error(socket.receive, socket, 0 / 0):eq("bad argument #1 (invalid timeout)")
+            expect({ socket:receive(0.05) }):same { nil, "Timed out" }
+            socket:close()
+            expect({ socket:receive(1) }):same { nil, "Socket is closed" }
+        end)
+
+        it("leave no event behind for each datagram sent to an address", function()
+            local server, client = assert(net.udp.open(4325)), assert(net.udp.open())
+            for i = 1, 5 do assert(client:send("127.0.0.1", 4325, i)) end
+            os.queueEvent("net_spec_marker")
+            while true do
+                local event = os.pullEvent()
+                expect(event):ne("net_done")
+                if event == "net_spec_marker" then break end
+            end
+            for i = 1, 5 do expect(server:receive(1)):eq(i) end
+            server:close()
+            client:close()
+        end)
+    end)
+
+    describe("addresses", function()
+        it("say when an interface's address is changed by hand", function()
+            -- A wired modem which is only pretend: what's sent on it goes nowhere.
+            local name = "net_spec_modem"
+            local has_type, call = peripheral.hasType, peripheral.call
+            stub(peripheral, "hasType", function(side, kind)
+                if side == name then return kind == "modem" end
+                return has_type(side, kind)
+            end)
+            stub(peripheral, "call", function(side, method, ...)
+                if side == name then return method ~= "isWireless" and nil or false end
+                return call(side, method, ...)
+            end)
+            -- Attach it, and let the network stack see it come.
+            os.queueEvent("peripheral", name)
+            local _, up, what
+            repeat _, up, what = os.pullEvent("net_interface") until up == name and what == "up"
+
+            local ok, err = pcall(function()
+                expect(net.interfaces()):matches { { name = name } }
+                expect(net.getAddress(name)):eq(nil)
+                net.setAddress(name, "10.123.0.5/24")
+                expect(net.getAddress(name)):eq("10.123.0.5/24")
+                local _, changed, how
+                repeat _, changed, how = os.pullEvent("net_interface") until changed == name
+                expect(how):eq("address")
+
+                -- Setting the same again changes nothing, and says nothing.
+                net.setAddress(name, "10.123.0.5/24")
+                os.queueEvent("net_spec_marker")
+                expect(os.pullEvent()):eq("net_spec_marker")
+            end)
+
+            -- Take the pretend modem away again, and let the network stack see it go.
+            os.queueEvent("peripheral_detach", name)
+            os.queueEvent("net_spec_marker")
+            os.pullEvent("net_spec_marker")
+            expect(net.getAddress(name)):eq(nil)
+            if not ok then error(err, 0) end
         end)
     end)
 
@@ -136,6 +216,27 @@ describe("The net library", function()
 
                 listener:close()
             end)
+        end)
+
+        it("validates its options, and keys", function()
+            expect.error(net.secure.connect, "127.0.0.1", 4400, { timeout = -1 }):eq("bad option timeout (invalid timeout)")
+            expect.error(net.secure.connect, "127.0.0.1", 4400, { trust = "tofu" })
+                :eq('bad option trust (expected "certificate" or nothing)')
+            expect.error(net.fingerprint, "not a key"):eq("bad argument #1 (expected a key: 64 hexadecimal digits)")
+            expect.error(net.fingerprint, ("ab"):rep(31)):eq("bad argument #1 (expected a key: 64 hexadecimal digits)")
+        end)
+
+        it("lists known hosts as it lists trusted authorities: only what's a name and a key", function()
+            local file = fs.open("/.net/known_hosts", "w")
+            file.write(textutils.serialise({
+                ["good.home"] = ("AB"):rep(32), short = "abcd", [1] = ("ab"):rep(32), notkey = ("zz"):rep(32),
+            }))
+            file.close()
+            local ok, err = pcall(function()
+                expect(net.knownHosts()):same { ["good.home"] = ("ab"):rep(32) }
+            end)
+            fs.delete("/.net")
+            if not ok then error(err, 0) end
         end)
 
         it("needs the enclave", function()
