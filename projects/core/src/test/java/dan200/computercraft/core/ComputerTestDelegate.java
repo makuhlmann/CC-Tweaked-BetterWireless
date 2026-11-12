@@ -76,6 +76,12 @@ public class ComputerTestDelegate {
 
     private static final long TIMEOUT = TimeUnit.SECONDS.toNanos(10);
 
+    /**
+     * How many tests which time out show the computer's screen. The first few say where it was stuck; when every test
+     * after one times out, the rest only repeat it.
+     */
+    private static final int TIMEOUT_SCREENS = 3;
+
     private static final Set<String> SKIP_KEYWORDS = new HashSet<>(
         Arrays.asList(System.getProperty("cc.skip_keywords", "").split(","))
     );
@@ -101,6 +107,7 @@ public class ComputerTestDelegate {
     private String currentTest;
     private boolean runFinished;
     private Throwable runResult;
+    private int timeoutScreens;
 
     private final Condition hasFinished = lock.newCondition();
     private boolean finished = false;
@@ -284,14 +291,17 @@ public class ComputerTestDelegate {
     private String dump() {
         if (!computer.isOn()) return "Computer is currently off.";
 
-        var term = computer.getAPIEnvironment().getTerminal();
-        var builder = new StringBuilder().append("Computer is currently on.\n");
+        var text = "Computer is currently on.\n" + screen();
+        computer.shutdown();
+        return text;
+    }
 
+    private String screen() {
+        var term = computer.getAPIEnvironment().getTerminal();
+        var builder = new StringBuilder();
         for (var line = 0; line < term.getHeight(); line++) {
             builder.append(String.format("%2d | %" + term.getWidth() + "s |\n", line + 1, term.getLine(line)));
         }
-
-        computer.shutdown();
         return builder.toString();
     }
 
@@ -413,7 +423,12 @@ public class ComputerTestDelegate {
                         LOG.debug("Finished '{}'", formatName(name));
 
                         if (remaining <= 0) {
-                            throw new IllegalStateException("Timed out waiting for test");
+                            var message = "Timed out waiting for test";
+                            if (timeoutScreens < TIMEOUT_SCREENS) {
+                                timeoutScreens++;
+                                message += ". The computer's screen:\n" + screen();
+                            }
+                            throw new IllegalStateException(message);
                         } else if (!computer.isOn()) {
                             throw new IllegalStateException("Computer turned off mid-execution");
                         }
