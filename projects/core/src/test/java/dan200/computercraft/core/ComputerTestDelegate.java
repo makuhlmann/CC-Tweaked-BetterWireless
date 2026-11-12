@@ -82,6 +82,14 @@ public class ComputerTestDelegate {
 
     private static final Pattern KEYWORD = Pattern.compile(":([a-z_]+)");
 
+    /**
+     * Run only the spec files whose paths contain one of these words (separated by commas), such as
+     * {@code cell_roaming,stack}. Gradle passes it on from {@code -Pcc.test.spec=...}.
+     */
+    private static final String SPEC_FILTER = System.getProperty("cc.test.spec", "");
+
+    private static final Pattern SAFE_FILTER = Pattern.compile("[A-Za-z0-9_./,-]*");
+
     private final ReentrantLock lock = ThreadUtils.newReentrantLock("ComputerTestDelegate.lock");
     private ComputerContext context;
     private Computer computer;
@@ -113,7 +121,10 @@ public class ComputerTestDelegate {
         // And add our startup file
         try (var channel = mount.openFile("startup.lua", MountConstants.WRITE_OPTIONS);
              var writer = Channels.newWriter(channel, StandardCharsets.UTF_8.newEncoder(), -1)) {
-            writer.write("loadfile('test-rom/mcfly.lua', nil, _ENV)('test-rom/spec') cct_test.finish()");
+            if (!SAFE_FILTER.matcher(SPEC_FILTER).matches()) {
+                throw new IllegalArgumentException("cc.test.spec may only have letters, digits, _ . / , and -");
+            }
+            writer.write("loadfile('test-rom/mcfly.lua', nil, _ENV)('test-rom/spec', '" + SPEC_FILTER + "') cct_test.finish()");
         }
 
         var environment = new BasicEnvironment(mount);

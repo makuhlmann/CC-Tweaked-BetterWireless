@@ -410,6 +410,8 @@ None of these was measured in the game. They're ordered by how often the code ru
   run one file. Every change to the Lua stack pays for all of it, each time.
 - **Change:** a system property (say `cc.test.spec=cell_roaming`) which `ComputerTestDelegate` passes to `mcfly.lua`,
   to run the spec files whose names match. **Small**, and it pays for itself the same day.
+- **Done:** `-Pcc.test.spec=cell_roaming,stack` runs the spec files whose paths contain any of the words given (see
+  `CONTRIBUTING.md`). Two specs take about thirty seconds, most of it Gradle starting.
 
 ### 5.2 The whole of `:core:test` stalls
 
@@ -425,6 +427,8 @@ None of these was measured in the game. They're ordered by how often the code ru
 - **Seen too:** two Gradle builds at once ran a machine with 15 GB out of memory (each daemon may take 3 GB, plus
   the tests' own processes and the game test server).
 - **Change:** say both in the contributing notes. **Small.**
+- **Done:** both are in `CONTRIBUTING.md`, with how to run some of the specs, and that the slow ones need a machine
+  which isn't busy.
 
 ### 5.4 Shared test helpers
 

@@ -534,12 +534,22 @@ end
 
 local line_counts = {}
 
-local arg = ...
+local arg, filter = ...
 if arg == "--help" or arg == "-h" then
-    io.write("Usage: mcfly [DIR]\n")
+    io.write("Usage: mcfly [DIR] [FILTER]\n")
     io.write("\n")
-    io.write("Run tests in the provided DIRectory, or `spec` if not given.")
+    io.write("Run tests in the provided DIRectory, or `spec` if not given. With a FILTER (words separated by commas),\n")
+    io.write("run only the spec files whose paths contain one of them.")
     return
+end
+
+-- Whether to run a spec file, by its path within the directory.
+local function wanted(path)
+    if filter == nil or filter == "" then return true end
+    for word in filter:gmatch("[^,]+") do
+        if path:find(word, 1, true) then return true end
+    end
+    return false
 end
 
 local root_dir = shell.resolve(arg or "spec")
@@ -564,7 +574,7 @@ do
             local file = fs.combine(sub_dir, name)
             if fs.isDir(file) then
                 run_in(file)
-            elseif file:sub(-#suffix) == suffix then
+            elseif file:sub(-#suffix) == suffix and wanted(file:sub(#root_dir + 2)) then
                 local fun, err = loadfile(file, nil, _ENV)
                 if not fun then
                     do_test { name = file:sub(#root_dir + 2), error = { message = err } }
@@ -584,7 +594,8 @@ end
 
 -- Error if we've found no tests
 if test_count == 0 then
-    io.stderr:write(("Could not find any tests in %q\n"):format(root_dir))
+    local matching = filter and filter ~= "" and (" matching %q"):format(filter) or ""
+    io.stderr:write(("Could not find any tests in %q%s\n"):format(root_dir, matching))
     error()
 end
 

@@ -43,6 +43,10 @@ tasks.processResources {
 
 tasks.test {
     systemProperty("cct.test-files", layout.buildDirectory.dir("tmp/testFiles").getAbsolutePath())
+
+    // Run only some of the Lua specs: -Pcc.test.spec=cell_roaming,stack runs the spec files whose paths contain either.
+    val specFilter = providers.gradleProperty("cc.test.spec")
+    if (specFilter.isPresent) systemProperty("cc.test.spec", specFilter.get())
 }
 
 val checkChangelog = tasks.register<cc.tweaked.gradle.CheckChangelog>("checkChangelog") {

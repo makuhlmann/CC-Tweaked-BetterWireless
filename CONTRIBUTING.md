@@ -72,7 +72,12 @@ CC: Tweaked has several test suites, each designed to test something different:
    Hamcrest and the like). For instance, `expect(foo):eq("bar")` asserts that your variable `foo` is equal to the
    expected value `"bar"`.
 
-   These tests can be run with `./gradlew :core:test`.
+   These tests can be run with `./gradlew :core:test`. To run only some spec files, give words their paths contain:
+   `./gradlew :core:test --tests '*ComputerTestDelegate' -Pcc.test.spec=cell_roaming,stack` runs
+   `cell_roaming_spec.lua` and every spec with `stack` in its path.
+
+   Some specs (the network stress tests, for instance) run for several seconds each, against a limit of ten. Run them
+   on a machine which isn't busy with something else, or they may run out of time, and the ones after them with them.
 
  - In-game functionality, such as the behaviour of blocks and items, is tested using [Minecraft's gametest
    system][mc-test] (`projects/common/src/testMod`). These tests spin up a server, spawn a structure for each test, and
@@ -80,6 +85,10 @@ CC: Tweaked has several test suites, each designed to test something different:
 
    These tests can be run with `./gradlew runGametest` (or `./gradle :forge:runGametest`/`./gradlew :fabric:runGametest`
    for a single loader).
+
+A test run which is killed may leave a half-written file in a project's `build/test-results` or `build/jacoco`, and the
+next run then fails with `java.io.EOFException` until that folder is deleted. Also, run one Gradle build at a time: each
+daemon may take 3 GB, on top of the tests' own processes and the game test server.
 
 For more information, [see the architecture document][architecture].
 
