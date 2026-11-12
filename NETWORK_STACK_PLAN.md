@@ -183,6 +183,13 @@ All in `UnloadedWiring.java` unless they say otherwise. Each is **small**.
 - **Change:** run `./gradlew :fabric:runData` once and commit whatever differs. Have CI run it and fail when the
   output differs from what's committed, if it doesn't already. **Small.**
 
+### 1.17 `cellcore`'s completion doesn't know its newer commands
+
+- **Where:** `startup.lua` 137–140 (`cellcore_commands`).
+- **Seen:** `partner`, `numbers`, `peers`, `peer` and `unpeer` aren't in the list, so the shell doesn't complete them,
+  alone or after `remote`.
+- **Change:** add them. **Small.**
+
 ## 2. Streamlining
 
 Each of these replaces copies with one thing. None changes what the stack does, and the tests which cover the copies
@@ -299,7 +306,7 @@ cover the replacement.
   partner's key.
 - **Why:** this is the part of the cellular layer with the most ways to be half set up: allowed for one role and
   waiting for the other, connected one way and not the other, a prefix known from last time and a connection which
-  isn't there. The four faults found between networks so far were all in how these fit together.
+  isn't there.
 - **Change:** one agreement for each other network, with what it covers: whether we carry their phones, whether they
   carry ours (and as home or not), whether we exchange messages, their signing key and their number prefix. One
   secure connection between the two cores, which either may open, carrying all of it, with a field in each message
@@ -394,7 +401,7 @@ None of these was measured in the game. They're ordered by how often the code ru
 ### 5.1 Run one spec
 
 - **Seen:** `ComputerTestDelegate` runs every Lua spec: 1,904 tests, about two and a half minutes. There's no way to
-  run one file. Every change to the stack this week paid for all of it, each time.
+  run one file. Every change to the Lua stack pays for all of it, each time.
 - **Change:** a system property (say `cc.test.spec=cell_roaming`) which `ComputerTestDelegate` passes to `mcfly.lua`,
   to run the spec files whose names match. **Small**, and it pays for itself the same day.
 
