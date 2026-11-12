@@ -107,6 +107,10 @@ local SCAN_TIME = 3
 -- happens again, up to the most.
 local FAILED_TIME, MAX_FAILED_TIME = 30, 300
 
+-- What a network is to us, best first: our own (or one we treat as home), a partner, or one we don't know to carry us.
+-- Cells an attach through which got no answer lately come after all of those, whatever their network.
+local HOME, PARTNER, OTHER, FAILED = 1, 2, 3, 4
+
 local Phone = {}
 Phone.__index = Phone
 
@@ -145,9 +149,10 @@ local function new(options)
         cells = {}, heard = {}, events = {}, certificates = common.new_certificates(),
         forbidden = recent.new(MAX_FORBIDDEN, FORBIDDEN_TIME, stack.clock),
         failed = recent.new(MAX_FAILED, MAX_FAILED_TIME, stack.clock),
-        state = options.operator and "searching" or "inactive", retry = 2,
+        state = options.operator and "searching" or "inactive", here = {},
+        search = options.operator and { since = stack.clock(), retry = 2 } or nil,
         seen_messages = recent.new(MAX_SEEN), outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
-        unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(), started = stack.clock(),
+        started = stack.clock(),
     }, Phone)
 
     -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
@@ -159,14 +164,32 @@ local function new(options)
     return self
 end
 
-function Phone:set_state(state)
+--[[ Go into a state. The phone is in one at a time: `inactive`, `activating`, `searching`, `attaching`, `attached` or
+`rejected`. Each has a table of what belongs to it (`here`), which is made on entering and dropped on leaving, so
+nothing of an attach which is over can be read by the next; anything which waits (a timer) checks that the table is
+still the phone's before it acts.
+
+A search (`search`) lasts from losing service (or starting, or being activated) until the phone is attached again,
+through every attach which doesn't work: it keeps when it started, how long to wait before trying again, and why the
+last attach was refused, if it was.
+
+The phone's `cell`, `via` (the network it uses the cell through) and `rejected` say what it's doing, for whoever looks:
+nothing here decides by them.
+]]
+function Phone:enter(state, here)
     local old = self.state
+    here = here or {}
+    self.state, self.here = state, here
+    if state == "searching" then
+        self.search = self.search or { since = self.stack.clock(), retry = 2 }
+    elseif state ~= "attaching" and state ~= "rejected" then
+        self.search = nil
+    end
+    self.cell, self.via = here.cell, here.via
+    self.rejected = self.search and self.search.rejected or nil
     if old == state then return end
-    self.state = state
-    -- An attach which didn't work is part of the same search.
-    if state == "searching" and old ~= "attaching" and old ~= "rejected" then self.searching_since = self.stack.clock() end
     if state == "attached" then
-        self:event("attached", { cell = self.cell, roaming = self:roaming() and self.via or nil })
+        self:event("attached", { cell = here.cell, roaming = self:roaming() and here.via or nil })
     elseif state == "rejected" then
         self:event("rejected", { reason = self.rejected })
     end
@@ -264,62 +287,61 @@ function Phone:home_class(network)
     return network == self.operator.network or self.equivalent[network] == true
 end
 
---[[ The best cell we can hear, its signal, and the network to use it through.
-
-Left to choose, that's the strongest of our own network (or of one we treat as home), and only without one, the
-strongest of a partner's. A shared cell may offer several: our own network comes before one we treat as home, and
-otherwise the one first by name. `network` limits the choice to one network (the one we're on, when looking for a
-cell to be handed over to), and `fresh` to cells attaches through which haven't gone unanswered lately.
+--[[ Whether one way to use a cell is better than another: by what its network is to us (`tier`, which puts cells which
+didn't answer lately last, and then `class`), then the stronger, then our own network before one we treat as home, and
+otherwise the one first by network and cell.
 ]]
-function Phone:best_cell(except, network, fresh)
-    local best, best_signal, best_network, best_home
-    local now = self.stack.clock()
+local function before(a, b)
+    if a.tier ~= b.tier then return a.tier < b.tier end
+    if a.class ~= b.class then return a.class < b.class end
+    if a.signal ~= b.signal then return a.signal > b.signal end
+    if a.own ~= b.own then return a.own end
+    if a.network ~= b.network then return a.network < b.network end
+    return a.id < b.id
+end
+
+--[[ The best way to use a cell we hear now, of those `fits` allows (any, without it): each cell, through each network
+it serves which we may use. With `others`, through networks we don't know to carry us too (neither ours nor a
+partner's), leaving out those which turned us away lately, unless we've been told to use one.
+
+Each way is `{ id, network, signal, class, tier, own }`, and [`before`] says which is better. Attaching, going home and
+being handed over each take the best of those they may use.
+]]
+function Phone:best(now, fits, others)
+    local own = self.operator.network
+    -- Each way in turn, in `choice`; the best so far is kept, and its table used for the next.
+    local found, choice = nil, {}
+    local function consider(id, network, signal, class, tier)
+        choice.id, choice.network, choice.signal, choice.class, choice.tier = id, network, signal, class, tier
+        choice.own = network == own
+        if (not fits or fits(choice)) and (not found or before(choice, found)) then found, choice = choice, found or {} end
+    end
+
     for id, cell in pairs(self.cells) do
-        if id ~= except and not (fresh and self:failed_lately(id, now)) then
-            for name in pairs(cell.networks) do
-                if (network == nil or name == network) and self:usable(id, cell, name, now) then
-                    local home = self:home_class(name)
-                    local better
-                    if not best or home ~= best_home then
-                        better = not best or home
-                    elseif cell.signal ~= best_signal then
-                        better = cell.signal > best_signal
-                    elseif (name == self.operator.network) ~= (best_network == self.operator.network) then
-                        better = name == self.operator.network
-                    else
-                        better = name < best_network or (name == best_network and id < best)
-                    end
-                    if better then best, best_signal, best_network, best_home = id, cell.signal, name, home end
-                end
+        for name in pairs(cell.networks) do
+            if self:usable(id, cell, name, now) then
+                local class = self:home_class(name) and HOME or PARTNER
+                consider(id, name, cell.signal, class, self:failed_lately(id, now) and FAILED or class)
             end
         end
     end
-    return best, best_signal, best_network
-end
 
---[[ The strongest cell of a network we don't know to carry us (neither ours nor a partner's), to try when there's
-nothing else, once we've searched long enough to have heard every cell around. Networks which turned us away lately are
-left alone. Told to use such a network, we try it at once, and keep trying, as we were told to.
-]]
-function Phone:other_cell()
-    local now = self.stack.clock()
+    -- Networks we don't know only come before cells which didn't answer lately, so they're only worth looking for when
+    -- there's nothing better.
+    if not others or (found and found.tier ~= FAILED) then return found end
     local chosen = self.selection
-    if chosen and (chosen == self.operator.network or self.partners[chosen]) then return nil end
-    if not chosen and now - self.searching_since < SCAN_TIME then return nil end
-    local best, best_signal, best_network
     for id, cell in pairs(self.heard) do
         if now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and id ~= self.stack.id then
             for name, entry in pairs(cell.networks) do
-                if name ~= self.operator.network and not self.partners[name] and (chosen == nil or name == chosen)
+                if name ~= own and not self.partners[name] and (chosen == nil or name == chosen)
                     and (chosen ~= nil or not self.forbidden:get(name))
-                    and now - entry.heard <= SILENCE and self:path_ok(entry.path)
-                    and (not best or cell.signal > best_signal or (cell.signal == best_signal and name < best_network)) then
-                    best, best_signal, best_network = id, cell.signal, name
+                    and now - entry.heard <= SILENCE and self:path_ok(entry.path) then
+                    consider(id, name, cell.signal, OTHER, OTHER)
                 end
             end
         end
     end
-    return best, best_network
+    return found
 end
 
 -- Average a cell's last few signals, so one strong or weak broadcast doesn't move us.
@@ -346,19 +368,23 @@ may be a network we don't know has an agreement with ours: we try it.
 function Phone:select(network)
     if self.selection == network then return end
     self.selection = network
-    self.home_since = nil
+    if self.state == "attached" then self.here.home_since = nil end
     if not self.operator then return end
     -- If we're on a network we may no longer use, or attaching to one, look again.
-    if (self.state == "attached" or self.state == "attaching") and network and self.via ~= network then
-        if self.state == "attached" then self:event("lost", { cell = self.cell }) end
-        self.handshake, self.attempt = nil, nil
-        self:set_state("searching")
+    local state = self.state
+    if (state == "attached" or state == "attaching") and network and self.via ~= network then
+        if state == "attached" then self:event("lost", { cell = self.cell }) end
+        self:enter("searching")
         self:attach()
-    elseif self.state == "searching" or self.state == "rejected" then
-        self:set_state("searching")
+    elseif state == "searching" or state == "rejected" then
+        self:enter("searching")
         self:attach()
     end
 end
+
+-- What each state does with what comes from its cell (or says it does), by state, then by `op`. Each is given the
+-- state's table.
+local from_cell = { activating = {}, attaching = {}, attached = {} }
 
 function Phone:radio(src, message, signal)
     if type(message) ~= "table" then return end
@@ -405,138 +431,157 @@ function Phone:radio(src, message, signal)
         return
     end
 
-    -- Everything else comes from the cell we're attaching through, or attached to: or says it does. Until a message
-    -- has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
-    if src ~= self.cell then return end
-    if op == "attach_reply" and self.state == "attaching" and self.handshake then
-        local handshake = self.handshake:clone()
-        local payload = handshake:read(message.handshake)
-        local info = payload and codec.decode(payload)
-        if type(info) ~= "table" then return end
-        if common.is_newer(info.v) then self.newer_heard = self.stack.clock() end
-        self.subscriber = { id = info.id, number = info.number }
-        -- Other networks' phones reach ours at our network's number prefix followed by our number.
-        if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
-            self.subscriber.full = info.numbers .. info.number
-        end
-        self:set_partners(info.partners)
-        local send = handshake:split()
-        self.secret = handshake.ck
-        self.handshake = nil
-        self:to_cell(self.cell, { op = "attach_complete", via = self.via, data = send:encrypt(codec.encode({ complete = true })) })
-    elseif op == "accept" and self.state == "attaching" and self.secret then
-        local sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, self.cell), common.UPLINK, common.DOWNLINK)
-        local value = sealer:open(message.sealed)
-        if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
-            or value.address < 1 or value.address >= 0xFFFFFFFF then
-            return
-        end
-        self.sealer = sealer
-        self:set_address(value.address)
-        self.retry = 2
-        self.failed:remove(self.cell)
-        self:heard_from_cell()
-        self.confirming = nil
-        self:set_state("attached")
-        self:send_waiting()
-    elseif op == "data" and self.state == "attached" then
-        local value = self.sealer:open(message.sealed)
-        if type(value) ~= "table" then return end
-        self:heard_from_cell()
-        local packet = type(value.p) == "string" and codec.decode(value.p)
-        if type(packet) == "table" then
-            self.stack:inject("cell", packet)
-        elseif type(value.sms) == "table" and common.is_id(value.sms.id) and type(value.sms.from) == "string"
-            and type(value.sms.text) == "string" then
-            -- Say we have it, even if we've seen it before (our last acknowledgement may have been lost).
-            local id = value.sms.id
-            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms_ack = id }) })
-            if not self.seen_messages:get(id) then
-                self.seen_messages:add(id)
-                self.on_message(value.sms.from:sub(1, 32), value.sms.text:sub(1, 1000))
-            end
-        elseif type(value.sms_sent) == "table" then
-            -- The network has one of our messages (or won't take it).
-            local reply = value.sms_sent
-            for i, waiting in ipairs(self.outbox) do
-                if waiting.id == reply.id then
-                    table.remove(self.outbox, i)
-                    local ok = reply.ok == true
-                    self.on_sent(waiting.id, ok, not ok and (type(reply.error) == "string" and reply.error:sub(1, 100) or "Not sent") or nil)
-                    break
-                end
-            end
-        end
-    elseif op == "activate_reply" and self.state == "activating" and self.handshake then
-        local handshake = self.handshake:clone()
-        if not handshake:read(message.handshake) then return end
-        local finish = handshake:write(codec.encode({ v = common.VERSION }))
-        if not finish then return end
-        self.handshake, self.finished = handshake, true
-        self:to_cell(self.cell, { op = "activate_finish", via = self.activation.via, handshake = finish })
-    elseif op == "activate_accept" and self.state == "activating" and self.handshake and self.finished then
-        local _, receive = self.handshake:split()
-        local plaintext = type(message.data) == "string" and receive:decrypt(message.data)
-        local info = plaintext and codec.decode(plaintext)
-        -- Only someone who knew the code could have sent something which decrypts, so these keys are the operator's.
-        if type(info) ~= "table" then return end
-        if type(info.network) ~= "string" or type(info.key) ~= "string" or #info.key ~= 32
-            or type(info.signing) ~= "string" or #info.signing ~= 32 then
-            return self:activation_failed("The network's answer was garbled")
-        end
-        self.handshake, self.finished = nil, nil
-        self.operator = { network = info.network, key = info.key, signing = info.signing }
-        self.subscriber = { id = info.id, number = info.number }
-        self:event("activated", { network = info.network })
-        self.on_activated(info)
-        self.activation, self.started = nil, self.stack.clock()
-        -- Which networks we may use (or treat as home), so we can use them at once: a network may have no cells.
-        self:set_partners(info.partners)
-        self.retry = 2
-        self:set_state("searching")
-        self:attach()
-    elseif op == "handover" and self.state == "attached" then
-        local value = self.sealer:open(message.sealed)
-        local target = type(value) == "table" and value.target
-        -- Within the network we're on, to a cell which serves it.
-        if not common.is_id(target) or not self.cells[target] or target == self.cell
-            or not self.cells[target].networks[self.via] then
-            return
-        end
-        -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
-        self:event("handover", { from = self.cell, to = target })
-        self.cell, self.candidate = target, nil
-        self.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, self.secret, target), common.UPLINK, common.DOWNLINK)
-        -- The new cell may not hear us the first time, so we say so until it answers.
-        self:heard_from_cell()
-        self.confirming = { tries = 0, last = self.stack.clock() }
-        self:to_cell(target, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
-        self.on_change(self)
-    elseif op == "reject" and self.state == "activating" and self.handshake and not self.finished and not self.refusal then
-        -- Another network's cell, whose core doesn't carry our network's phones: try the next. Anyone can send this,
-        -- so the real answer still counts if it comes soon.
-        self.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
-        local attempt = self.attempt
-        self.stack:schedule(REJECT_GRACE, function()
-            if self.attempt == attempt and self.state == "activating" and not self.finished then
-                self.activation.refusal = self.refusal
-                self:try_activation()
-            end
-        end)
-    elseif op == "reject" and self.state == "attaching" and not self.secret and not self.refusal then
-        -- Anyone can send this, so the real answer still counts if it comes soon.
-        self.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
-        local attempt = self.attempt
-        self.stack:schedule(REJECT_GRACE, function()
-            if self.attempt == attempt and self.state == "attaching" and not self.secret then
-                self.rejected = self.refusal
-                self:give_up()
-            end
-        end)
-    elseif op == "unknown" and self.state == "attached" and not self.fast_check then
-        -- The cell says it doesn't know us (or someone says so for it): find out.
-        self.fast_check, self.unanswered, self.last_check = true, 0, -math.huge
+    -- Everything else comes from the cell we're activating or attaching through, or attached to: or says it does. Until
+    -- a message has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
+    local handlers, here = from_cell[self.state], self.here
+    local handle = handlers and handlers[op]
+    if handle and src == here.cell then handle(self, here, message) end
+end
+
+function from_cell.attaching.attach_reply(self, here, message)
+    if not here.handshake then return end
+    local handshake = here.handshake:clone()
+    local payload = handshake:read(message.handshake)
+    local info = payload and codec.decode(payload)
+    if type(info) ~= "table" then return end
+    if common.is_newer(info.v) then self.newer_heard = self.stack.clock() end
+    self.subscriber = { id = info.id, number = info.number }
+    -- Other networks' phones reach ours at our network's number prefix followed by our number.
+    if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
+        self.subscriber.full = info.numbers .. info.number
     end
+    self:set_partners(info.partners)
+    local send = handshake:split()
+    here.secret, here.handshake = handshake.ck, nil
+    self:to_cell(here.cell, { op = "attach_complete", via = here.via, data = send:encrypt(codec.encode({ complete = true })) })
+end
+
+function from_cell.attaching.accept(self, here, message)
+    if not here.secret then return end
+    local sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, here.cell), common.UPLINK, common.DOWNLINK)
+    local value = sealer:open(message.sealed)
+    if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
+        or value.address < 1 or value.address >= 0xFFFFFFFF then
+        return
+    end
+    self:set_address(value.address)
+    self.failed:remove(here.cell)
+    -- What we keep while attached: the cell and the key we share with it; whether it still knows us (`last_heard`,
+    -- `last_check`, `unanswered`, `fast_check`), and whether it knows we've arrived, after a handover (`confirming`);
+    -- a cell to be handed over to (`candidate`); and how long our own network has been stronger (`home_since`).
+    self:enter("attached", {
+        cell = here.cell, via = here.via, secret = here.secret, sealer = sealer,
+        last_heard = self.stack.clock(), last_check = 0, unanswered = 0, fast_check = false,
+    })
+    self:send_waiting()
+end
+
+function from_cell.attaching.reject(self, here, message)
+    if here.secret or here.refusal then return end
+    -- Anyone can send this, so the real answer still counts if it comes soon.
+    here.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
+    self.stack:schedule(REJECT_GRACE, function()
+        if self.here == here and not here.secret then self:give_up(here, here.refusal) end
+    end)
+end
+
+function from_cell.attached.data(self, here, message)
+    local value = here.sealer:open(message.sealed)
+    if type(value) ~= "table" then return end
+    self:heard_from_cell(here)
+    local packet = type(value.p) == "string" and codec.decode(value.p)
+    if type(packet) == "table" then
+        self.stack:inject("cell", packet)
+    elseif type(value.sms) == "table" and common.is_id(value.sms.id) and type(value.sms.from) == "string"
+        and type(value.sms.text) == "string" then
+        -- Say we have it, even if we've seen it before (our last acknowledgement may have been lost).
+        local id = value.sms.id
+        self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ sms_ack = id }) })
+        if not self.seen_messages:get(id) then
+            self.seen_messages:add(id)
+            self.on_message(value.sms.from:sub(1, 32), value.sms.text:sub(1, 1000))
+        end
+    elseif type(value.sms_sent) == "table" then
+        -- The network has one of our messages (or won't take it).
+        local reply = value.sms_sent
+        for i, waiting in ipairs(self.outbox) do
+            if waiting.id == reply.id then
+                table.remove(self.outbox, i)
+                local ok = reply.ok == true
+                self.on_sent(waiting.id, ok, not ok and (type(reply.error) == "string" and reply.error:sub(1, 100) or "Not sent") or nil)
+                break
+            end
+        end
+    end
+end
+
+function from_cell.attached.handover(self, here, message)
+    local value = here.sealer:open(message.sealed)
+    local target = type(value) == "table" and value.target
+    -- Within the network we're on, to a cell which serves it.
+    if not common.is_id(target) or not self.cells[target] or target == here.cell
+        or not self.cells[target].networks[here.via] then
+        return
+    end
+    -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
+    self:event("handover", { from = here.cell, to = target })
+    here.cell, here.candidate, self.cell = target, nil, target
+    here.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, target), common.UPLINK, common.DOWNLINK)
+    -- The new cell may not hear us the first time, so we say so until it answers.
+    self:heard_from_cell(here)
+    here.confirming = { tries = 0, last = self.stack.clock() }
+    self:to_cell(target, { op = "confirm", sealed = here.sealer:seal({ confirm = true }) })
+    self.on_change(self)
+end
+
+function from_cell.attached.unknown(_, here)
+    -- The cell says it doesn't know us (or someone says so for it): find out.
+    if here.fast_check then return end
+    here.fast_check, here.unanswered, here.last_check = true, 0, -math.huge
+end
+
+function from_cell.activating.activate_reply(self, here, message)
+    local handshake = here.handshake:clone()
+    if not handshake:read(message.handshake) then return end
+    local finish = handshake:write(codec.encode({ v = common.VERSION }))
+    if not finish then return end
+    here.handshake, here.finished = handshake, true
+    self:to_cell(here.cell, { op = "activate_finish", via = here.via, handshake = finish })
+end
+
+function from_cell.activating.activate_accept(self, here, message)
+    if not here.finished then return end
+    local _, receive = here.handshake:split()
+    local plaintext = type(message.data) == "string" and receive:decrypt(message.data)
+    local info = plaintext and codec.decode(plaintext)
+    -- Only someone who knew the code could have sent something which decrypts, so these keys are the operator's.
+    if type(info) ~= "table" then return end
+    if type(info.network) ~= "string" or type(info.key) ~= "string" or #info.key ~= 32
+        or type(info.signing) ~= "string" or #info.signing ~= 32 then
+        return self:activation_failed("The network's answer was garbled")
+    end
+    self.operator = { network = info.network, key = info.key, signing = info.signing }
+    self.subscriber = { id = info.id, number = info.number }
+    self:event("activated", { network = info.network })
+    self.on_activated(info)
+    self.started = self.stack.clock()
+    -- Which networks we may use (or treat as home), so we can use them at once: a network may have no cells.
+    self:set_partners(info.partners)
+    self:enter("searching")
+    self:attach()
+end
+
+function from_cell.activating.reject(self, here, message)
+    if here.finished or here.refusal then return end
+    -- Another network's cell, whose core doesn't carry our network's phones: try the next. Anyone can send this, so
+    -- the real answer still counts if it comes soon.
+    here.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
+    self.stack:schedule(REJECT_GRACE, function()
+        if self.here == here and not here.finished then
+            here.activation.refusal = here.refusal
+            self:try_activation(here.activation)
+        end
+    end)
 end
 
 -- Our operator says which other networks we may use (and which we treat as home), each time we attach.
@@ -573,9 +618,8 @@ function Phone:set_partners(list)
 end
 
 -- Something came from our cell which only it could have sent: it knows us.
-function Phone:heard_from_cell()
-    self.last_heard, self.unanswered, self.fast_check = self.stack.clock(), 0, false
-    self.confirming = nil
+function Phone:heard_from_cell(here)
+    here.last_heard, here.unanswered, here.fast_check, here.confirming = self.stack.clock(), 0, false, nil
 end
 
 --[[- Activate with a code from the network's administrator, through the strongest cell of the network. Where the
@@ -613,20 +657,16 @@ function Phone:activate(network, code)
     end
     if not candidates[1] then return nil, "No cell of " .. network .. " in range" end
 
-    self.activation = {
+    self.activation_error = nil
+    local activation = {
         network = network, tag = tag, key = common.activation_key(self.crypto, secret), candidates = candidates, next = 1,
     }
-    self.activation_error = nil
-    if not self:try_activation() then
-        self.activation = nil
-        return nil, "The SIM can't be used"
-    end
+    if not self:try_activation(activation) then return nil, "The SIM can't be used" end
     return true
 end
 
 -- Ask the next cell to pass our activation on, or give up if none is left. Returns false if the SIM can't be used.
-function Phone:try_activation()
-    local activation = self.activation
+function Phone:try_activation(activation)
     local candidate = activation.candidates[activation.next]
     if not candidate then
         self:activation_failed(activation.refusal or "No answer: check the code")
@@ -639,26 +679,23 @@ function Phone:try_activation()
     }
     local message = handshake:write("")
     if not message then return false end
-    self.cell, self.handshake, self.finished, self.refusal = candidate.id, handshake, nil, nil
-    activation.via = candidate.network
-    self:set_state("activating")
-    self:to_cell(candidate.id, {
-        op = "activate", network = activation.network, via = candidate.network, tag = activation.tag, handshake = message,
+    -- What we keep while activating through one cell: the activation, the cell and the network we asked through, and
+    -- the handshake; then whether we've finished it, and a refusal, which may not be the real answer.
+    local here = { activation = activation, cell = candidate.id, via = candidate.network, handshake = handshake }
+    self:enter("activating", here)
+    self:to_cell(here.cell, {
+        op = "activate", network = activation.network, via = here.via, tag = activation.tag, handshake = message,
     })
-
-    local attempt = {}
-    self.attempt = attempt
     self.stack:schedule(ATTACH_TIMEOUT * 2, function()
-        if self.attempt == attempt and self.state == "activating" then self:activation_failed("No answer: check the code") end
+        if self.here == here then self:activation_failed("No answer: check the code") end
     end)
     return true
 end
 
 function Phone:activation_failed(reason)
-    self.handshake, self.attempt, self.activation_error, self.finished = nil, nil, reason, nil
-    self.activation = nil
+    self.activation_error = reason
     self:event("activation_failed", { reason = reason })
-    self:set_state("inactive")
+    self:enter("inactive")
 end
 
 --[[- Send a message to another phone, by its number. It's sent until the network says it has it, which then keeps
@@ -684,13 +721,15 @@ function Phone:send_message(to, text)
     return true, waiting.id
 end
 
+-- Send a message, while attached.
 function Phone:send_one(waiting)
+    local here = self.here
     waiting.tries, waiting.sent = waiting.tries + 1, self.stack.clock()
-    self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ sms = { id = waiting.id, to = waiting.to, text = waiting.text } }) })
+    self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ sms = { id = waiting.id, to = waiting.to, text = waiting.text } }) })
 end
 
--- Send the messages the network hasn't said it has, again: all of them once we have service back, or those which
--- have waited a while. After enough tries, give up on one.
+-- Send the messages the network hasn't said it has, again, while attached: all of them once we have service back, or
+-- those which have waited a while. After enough tries, give up on one.
 function Phone:send_waiting(only_old)
     local now = self.stack.clock()
     for i = #self.outbox, 1, -1 do
@@ -710,75 +749,75 @@ end
 -- Start attaching through the best cell: of our own network, else a partner's, else one of another network, which
 -- may have an agreement with ours we don't know of yet. Cells which didn't answer lately come last.
 function Phone:attach()
-    local best, _, via = self:best_cell(nil, nil, true)
+    local now, search = self.stack.clock(), self.search
+    -- Other networks only once we've searched long enough to have heard every cell around, unless we were told to use
+    -- one.
+    local scanned = self.selection ~= nil or now - search.since >= SCAN_TIME
+    local choice = self:best(now, nil, scanned)
+    if not choice then return end
     -- Just started (or activated), we may not have heard our own network's cells yet, only a partner's. Don't settle
     -- for that, and stay there, until we've listened for long enough to hear every cell around.
-    if best and not self:home_class(via) and self.stack.clock() - self.started < SCAN_TIME then return end
-    if not best then
-        best, via = self:other_cell()
-        if best then
-            -- We can't check its cell's part for that network until (and unless) our operator gives us the network's
-            -- key, so go by what we heard.
-            local heard = self.heard[best]
-            local cell = self.cells[best]
-            if not cell then
-                cell = {
-                    samples = { table.unpack(heard.samples) }, signal = heard.signal, heard = heard.heard, area = heard.area,
-                    networks = {},
-                }
-                self.cells[best] = cell
-            end
-            local entry = heard.networks[via]
-            cell.networks[via] = { heard = entry.heard, path = entry.path, unverified = true }
-        else
-            best, _, via = self:best_cell()
-            if not best then return end
+    if choice.tier == PARTNER and now - self.started < SCAN_TIME then return end
+
+    if choice.class == OTHER then
+        -- We can't check its cell's part for that network until (and unless) our operator gives us the network's key,
+        -- so go by what we heard.
+        local heard, cell = self.heard[choice.id], self.cells[choice.id]
+        if not cell then
+            cell = {
+                samples = { table.unpack(heard.samples) }, signal = heard.signal, heard = heard.heard, area = heard.area,
+                networks = {},
+            }
+            self.cells[choice.id] = cell
         end
+        local entry = heard.networks[choice.network]
+        cell.networks[choice.network] = { heard = entry.heard, path = entry.path, unverified = true }
     end
-    self.cell, self.via, self.secret, self.rejected, self.refusal, self.home_since = best, via, nil, nil, nil, nil
-    self.handshake = noise.new {
+
+    -- What we keep while attaching: the cell and the network we use it through, and the handshake; then the secret it
+    -- gave us, and a refusal, which may not be the real answer.
+    search.rejected = nil
+    local here = { cell = choice.id, via = choice.network }
+    here.handshake = noise.new {
         crypto = self.crypto, pattern = "IK", initiator = true, prologue = PROLOGUE .. self.operator.network,
         static = self.sim, remote_static = self.operator.key,
     }
-    local message = self.handshake:write(codec.encode({ v = common.VERSION }))
-    if not message then return self:give_up() end
-    self:set_state("attaching")
-    self:to_cell(best, { op = "attach", network = self.operator.network, via = via, handshake = message })
+    local message = here.handshake:write(codec.encode({ v = common.VERSION }))
+    if not message then return self:give_up(here) end
+    self:enter("attaching", here)
+    self:to_cell(here.cell, { op = "attach", network = self.operator.network, via = here.via, handshake = message })
 
-    local attempt = {}
-    self.attempt = attempt
     self.stack:schedule(ATTACH_TIMEOUT, function()
-        if self.attempt == attempt and self.state == "attaching" then
-            -- A refusal which nothing else followed was the answer. Otherwise there was none: the cell may not hear us.
-            if not self.secret then self.rejected = self.refusal end
-            self:give_up(not self.rejected)
-        end
+        if self.here ~= here then return end
+        -- A refusal which nothing else followed was the answer. Otherwise there was none: the cell may not hear us.
+        local rejected = not here.secret and here.refusal or nil
+        self:give_up(here, rejected, not rejected)
     end)
 end
 
--- Attaching didn't work: try again later, less often each time. A network we tried without knowing whether it would
--- carry us is left alone for a while, so we try the others (or it again, once its agreement may have changed). A cell
--- which didn't answer is left alone for a while too, while there are others.
-function Phone:give_up(unanswered)
-    self.handshake, self.attempt = nil, nil
-    local now = self.stack.clock()
-    local cell = self.cells[self.cell]
-    local entry = cell and cell.networks[self.via]
+-- Attaching (`here`) didn't work, as it was refused or got no answer: try again later, less often each time. A network
+-- we tried without knowing whether it would carry us is left alone for a while, so we try the others (or it again, once
+-- its agreement may have changed). A cell which didn't answer is left alone for a while too, while there are others.
+function Phone:give_up(here, rejected, unanswered)
+    local search = self.search
+    local cell = self.cells[here.cell]
+    local entry = cell and cell.networks[here.via]
     if entry and entry.unverified then
-        self.forbidden:add(self.via)
-        cell.networks[self.via] = nil
-        if next(cell.networks) == nil then self.cells[self.cell] = nil end
+        self.forbidden:add(here.via)
+        cell.networks[here.via] = nil
+        if next(cell.networks) == nil then self.cells[here.cell] = nil end
     elseif cell and unanswered then
-        local failed = self.failed:get(self.cell) or { count = 0 }
-        failed.count, failed.time = failed.count + 1, now
-        self.failed:add(self.cell, failed)
+        local failed = self.failed:get(here.cell) or { count = 0 }
+        failed.count, failed.time = failed.count + 1, self.stack.clock()
+        self.failed:add(here.cell, failed)
     end
-    self:set_state(self.rejected and "rejected" or "searching")
-    local delay = self.retry
-    self.retry = math.min(self.retry * 2, MAX_RETRY)
+    search.rejected = rejected
+    self:enter(rejected and "rejected" or "searching")
+    local delay = search.retry
+    search.retry = math.min(search.retry * 2, MAX_RETRY)
     self.stack:schedule(delay, function()
-        if self.state == "searching" or self.state == "rejected" then
-            self:set_state("searching")
+        if self.search == search and (self.state == "searching" or self.state == "rejected") then
+            self:enter("searching")
             self:attach()
         end
     end)
@@ -798,45 +837,50 @@ end
 
 function Phone:uplink(packet)
     if self.state ~= "attached" then return end
-    local sealed = self.sealer:seal({ p = codec.encode(packet) })
-    if sealed then self:to_cell(self.cell, { op = "data", sealed = sealed }) end
+    local here = self.here
+    local sealed = here.sealer:seal({ p = codec.encode(packet) })
+    if sealed then self:to_cell(here.cell, { op = "data", sealed = sealed }) end
 end
 
 -- Compare our cell with the others, every second.
 function Phone:measure()
     self.timer = self.stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
-    if self.state ~= "attached" then return end
+    if self.state == "attached" then self:check(self.here) end
+end
 
+-- While attached (`here`): see that our cell is still there, and knows us; whether to go home; and whether another cell
+-- is better.
+function Phone:check(here)
     local now = self.stack.clock()
-    local serving = self.cells[self.cell]
-    local entry = serving and serving.networks[self.via]
+    local serving = self.cells[here.cell]
+    local entry = serving and serving.networks[here.via]
     if not entry or now - entry.heard > SILENCE or serving.signal < NO_SERVICE then
         -- Our cell has gone (or stopped serving our network): attach again through another, keeping our address.
-        self:event("lost", { cell = self.cell })
-        self:set_state("searching")
+        self:event("lost", { cell = here.cell })
+        self:enter("searching")
         if serving then
-            serving.networks[self.via] = nil
-            if next(serving.networks) == nil then self.cells[self.cell] = nil end
+            serving.networks[here.via] = nil
+            if next(serving.networks) == nil then self.cells[here.cell] = nil end
         end
         return self:attach()
     end
 
     -- A cell we've moved to may not have heard that we arrived: say so again, until it answers.
-    local confirming = self.confirming
+    local confirming = here.confirming
     if confirming and now - confirming.last >= 1 then
-        if confirming.tries >= CONFIRM_TRIES then return self:forgotten() end
+        if confirming.tries >= CONFIRM_TRIES then return self:forgotten(here) end
         confirming.tries, confirming.last = confirming.tries + 1, now
-        self:to_cell(self.cell, { op = "confirm", sealed = self.sealer:seal({ confirm = true }) })
+        self:to_cell(here.cell, { op = "confirm", sealed = here.sealer:seal({ confirm = true }) })
     end
 
     -- The cell may have forgotten us without going quiet (it restarted, or the core did). When nothing has come from
     -- it for a while, ask. If it doesn't answer several times running, attach again.
     local interval, misses = CHECK_INTERVAL, CHECK_MISSES
-    if self.fast_check then interval, misses = FAST_INTERVAL, FAST_MISSES end
-    if not confirming and now - self.last_heard >= interval and now - self.last_check >= interval then
-        if self.unanswered >= misses then return self:forgotten() end
-        self.unanswered, self.last_check = self.unanswered + 1, now
-        self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ ping = self.unanswered }) })
+    if here.fast_check then interval, misses = FAST_INTERVAL, FAST_MISSES end
+    if not confirming and now - here.last_heard >= interval and now - here.last_check >= interval then
+        if here.unanswered >= misses then return self:forgotten(here) end
+        here.unanswered, here.last_check = here.unanswered + 1, now
+        self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ ping = here.unanswered }) })
     end
 
     self:send_waiting(true)
@@ -845,42 +889,44 @@ function Phone:measure()
     -- stronger than ours for a while, or at once if ours serves it too (it's shared). We attach again, through its
     -- cell, rather than being handed over, and keep our address. On a network we treat as home, we stay until we lose
     -- it, as on our own.
-    if not self:home_class(self.via) and not self.selection and not confirming then
-        local home, home_signal, home_network = self:best_cell(nil, nil, true)
-        if home and self:home_class(home_network) and (home_signal >= serving.signal + HYSTERESIS or home == self.cell) then
-            self.home_since = self.home_since or now
-            if now - self.home_since >= HOME_TIME then
-                self:event("home", { from = self.cell })
-                self:set_state("searching")
+    if not self:home_class(here.via) and not self.selection and not confirming then
+        local home = self:best(now)
+        if home and home.tier == HOME and (home.signal >= serving.signal + HYSTERESIS or home.id == here.cell) then
+            here.home_since = here.home_since or now
+            if now - here.home_since >= HOME_TIME then
+                self:event("home", { from = here.cell })
+                self:enter("searching")
                 return self:attach()
             end
         else
-            self.home_since = nil
+            here.home_since = nil
         end
     end
 
-    -- Handovers stay within the network we're on.
-    local best, best_signal = self:best_cell(self.cell, self.via)
-    if best and best_signal >= serving.signal + HYSTERESIS then
-        if self.candidate ~= best then
-            self.candidate, self.candidate_since = best, now
-        elseif now - self.candidate_since >= TIME_TO_TRIGGER and not self.reported then
-            self.reported = best
-            self:to_cell(self.cell, { op = "data", sealed = self.sealer:seal({ target = best }) })
+    -- Handovers stay within the network we're on, to the best cell which is stronger enough than ours. One which didn't
+    -- answer an attach lately comes after any other which will do.
+    local target = self:best(now, function(choice)
+        return choice.network == here.via and choice.id ~= here.cell and choice.signal >= serving.signal + HYSTERESIS
+    end)
+    if target then
+        if here.candidate ~= target.id then
+            here.candidate, here.candidate_since = target.id, now
+        elseif now - here.candidate_since >= TIME_TO_TRIGGER and not here.reported then
+            here.reported = target.id
+            self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ target = target.id }) })
             -- If the handover doesn't happen, ask again later.
-            self.stack:schedule(TIME_TO_TRIGGER * 2, function() self.reported = nil end)
+            self.stack:schedule(TIME_TO_TRIGGER * 2, function() here.reported = nil end)
         end
     else
-        self.candidate = nil
+        here.candidate = nil
     end
 end
 
--- Our cell is there, but doesn't answer as a cell which knows us would: attach again, to it or another, keeping our
--- address.
-function Phone:forgotten()
-    self:event("lost", { cell = self.cell })
-    self.confirming, self.fast_check, self.unanswered = nil, false, 0
-    self:set_state("searching")
+-- Our cell (`here`'s) is there, but doesn't answer as a cell which knows us would: attach again, to it or another,
+-- keeping our address.
+function Phone:forgotten(here)
+    self:event("lost", { cell = here.cell })
+    self:enter("searching")
     return self:attach()
 end
 

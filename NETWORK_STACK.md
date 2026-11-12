@@ -1124,7 +1124,8 @@ the design above:
     partner's strong cell. Now, when an attach through a cell gets no answer at all (a refusal doesn't count), the
     phone leaves that cell alone for 30 seconds, then twice as long each time it happens again, up to five minutes,
     and attaches through the next best cell, a partner's if need be. It only tries such a cell sooner when there's
-    nothing else, and doesn't go home to one. An attach which works forgets the cell's failures.
+    nothing else, doesn't go home to one, and asks to be handed over to one only when no other cell will do. An
+    attach which works forgets the cell's failures.
   - **Networks it doesn't know.** A phone only hears of new agreements when it attaches, so one which made its way
     out of its home network's coverage before an agreement was made wouldn't know it may roam. Where it can hear
     neither its home network nor a partner's, a phone left to choose tries other networks' cells too, strongest

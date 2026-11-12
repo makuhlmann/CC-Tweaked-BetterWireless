@@ -447,6 +447,23 @@ cover the replacement.
   own network or as good as home, partner, unknown; less those which failed lately or turned it away; then by
   signal. `attach`, going home and handover each take the best of that list which they may use. **Large.** The storm
   tests (`cell_networks_stress_spec.lua`) and the roaming specs are the safety net for it.
+- **Done:** the phone is in one state at a time (`inactive`, `activating`, `searching`, `attaching`, `attached`,
+  `rejected`), each with a table of what belongs to it (`here`), made by `Phone:enter` and dropped on leaving: the
+  attach's handshake, secret and refusal; while attached, the cell's key, whether it still knows us, a handover
+  candidate and how long home has been stronger; the activation and the try under way. Timers check the table is still
+  the phone's, rather than an attempt token. A search (`search`) lasts from losing service (or starting, or being
+  activated) through every attach which doesn't work until the phone is attached, and keeps when it started, how long to
+  wait before trying again, and the last refusal. What comes from the cell goes to a handler for the state and message
+  (`from_cell`), so a message for another state can't be acted on. One function (`Phone:best`, ordered by `before`)
+  ranks every way to use a cell the phone hears: own network or as good as home, then partners, then networks it doesn't
+  know to carry it, then cells which didn't answer lately (by class, then signal); within each, the strongest.
+  Attaching, going home and handovers each take the best they may use. The one change in behaviour: a handover now goes
+  to a cell which will do before a stronger one which didn't answer an attach lately (it went to the strongest before),
+  pinned in `cell_spec.lua`. `phone.cell`, `via` and `rejected` stay for whoever looks, set as the state changes;
+  nothing in the phone decides by them. The storm specs take as long as before (about 3 seconds each, alone): a first
+  version which made a list of every cell each second was four times slower, so the ranking is one pass which only looks
+  at other networks when nothing better will do. Activation still picks its cells its own way, as it has no operator to
+  rank them by.
 
 ### 3.3 A test harness which uses the services
 

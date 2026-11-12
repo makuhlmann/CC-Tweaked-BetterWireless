@@ -242,7 +242,7 @@ describe("Cellular networks, under stress,", function()
             end
             for i, value in ipairs(values) do
                 for _, op in ipairs { "data", "confirm" } do
-                    stack:send_frame("air", 11, common.FRAME, { op = op, sealed = phone.sealer:seal(value) })
+                    stack:send_frame("air", 11, common.FRAME, { op = op, sealed = phone.here.sealer:seal(value) })
                 end
                 if i % 20 == 0 then setup.net.advance(0.2) end
             end

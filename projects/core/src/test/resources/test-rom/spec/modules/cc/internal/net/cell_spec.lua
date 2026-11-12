@@ -238,6 +238,21 @@ describe("Cellular networks", function()
         }
     end)
 
+    it("is handed over to a cell which will do, before a stronger one which didn't answer it lately", function()
+        math.randomseed(3)
+        local setup = operator { 0, 120, 150 }
+        local phone = setup.add_phone(1, 0)
+        setup.net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+
+        -- An attach through cell 12 got no answer a moment ago: it may not hear the phone. Now the phone hears both 12
+        -- and 13 far better than its own cell, 12 the better of the two.
+        phone.failed:add(12, { count = 1, time = phone.stack.clock() })
+        setup.positions[1] = 95
+        setup.net.advance(10)
+        expect(event_kinds(phone)[2]):same { kind = "handover", from = 11, to = 13 }
+    end)
+
     it("attaches again through another cell when its cell fails, keeping its address", function()
         math.randomseed(3)
         local setup = operator { 0, 60 }
@@ -617,7 +632,7 @@ describe("Cellular networks", function()
             setup.positions[31] = 65
             setup.net.advance(10)
             expect(first.phone.cell):eq(11)
-            expect(first.phone.candidate):eq(nil)
+            expect(first.phone.here.candidate):eq(nil)
             expect(second.phone.cell):eq(30)
             -- Nor would the core allow it.
             expect(setup.core:would_loop(30, 31)):eq(true)

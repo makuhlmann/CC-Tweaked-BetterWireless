@@ -239,7 +239,7 @@ describe("Roaming", function()
         net.advance(2)
         local heard = phone:info().heard[1]
         expect({ heard.id, heard.verified }):same { 21, true }
-        expect(phone.cells[21].unverified):eq(nil)
+        expect(phone.cells[21].networks.BETA.unverified):eq(nil)
         for position = 310, 400, 2 do
             acme.positions[1] = position
             net.advance(0.5)
