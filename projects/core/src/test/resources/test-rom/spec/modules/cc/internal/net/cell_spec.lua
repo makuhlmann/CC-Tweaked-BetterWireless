@@ -81,6 +81,48 @@ describe("Cellular networks", function()
         }
     end)
 
+    it("checks a cell's certificate once, until it expires", function()
+        local operator_private, operator_public = crypto.generateKeyPair("ed25519")
+        local cell_private, cell_public = crypto.generateKeyPair("ed25519")
+        local now = 1.7e12
+        local cert = certificate.encode(certificate.issue {
+            name = common.cell_name("ACME", 5), key = cell_public, expires = now + 60000, issuer = operator_public,
+            sign = function(data) return crypto.sign(operator_private, data) end,
+        })
+        local function sib(time, load)
+            return common.make_sib {
+                network = "ACME", cell = 5, area = 1, load = load or 0, time = time, certificate = cert,
+                sign = function(data) return crypto.sign(cell_private, data) end,
+            }
+        end
+
+        local verified = 0
+        local counting = setmetatable({
+            verify = function(...)
+                verified = verified + 1
+                return crypto.verify(...)
+            end,
+        }, { __index = crypto })
+        local store = common.new_certificates()
+        local function check(message, at)
+            return common.check_sib(counting, message, message.networks[1], {
+                network = "ACME", signing = operator_public, now = at, sender = 5, certificates = store,
+            })
+        end
+
+        -- The certificate, then the signature: and from then on, only the signature.
+        expect(check(sib(now), now)):eq(true)
+        expect(verified):eq(2)
+        expect(check(sib(now + 1000), now + 1000)):eq(true)
+        expect(verified):eq(3)
+        -- A signature which doesn't match still doesn't.
+        local forged = sib(now + 2000)
+        forged.load = 1
+        expect({ check(forged, now + 2000) }):same { nil, "bad signature" }
+        -- Once the certificate has expired, it's checked again, and refused.
+        expect({ check(sib(now + 61000), now + 61000) }):same { nil, "certificate has expired" }
+    end)
+
     it("ignores cells without a certificate from the operator", function()
         local setup = operator { 80 }
         -- A rogue tower, closer, with a certificate it made itself.

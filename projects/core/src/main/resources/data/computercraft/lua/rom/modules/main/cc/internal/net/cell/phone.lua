@@ -139,7 +139,7 @@ local function new(options)
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
         partners = options.partners or {}, equivalent = options.equivalent or {}, selection = options.selection,
         relay = options.relay or function() return false end,
-        cells = {}, heard = {}, events = {}, forbidden = {}, failed = {},
+        cells = {}, heard = {}, events = {}, forbidden = {}, failed = {}, certificates = common.new_certificates(),
         state = options.operator and "searching" or "inactive", retry = 2,
         seen_messages = {}, seen_order = {}, outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
         unanswered = 0, last_heard = 0, last_check = 0, searching_since = stack.clock(), started = stack.clock(),
@@ -375,7 +375,7 @@ function Phone:radio(src, message, signal)
             local verified
             if signing then
                 verified = common.check_sib(self.crypto, message, entry, {
-                    network = name, signing = signing, now = epoch, sender = src,
+                    network = name, signing = signing, now = epoch, sender = src, certificates = self.certificates,
                 }) == true
             end
             networks[i] = { network = name, verified = verified, path = entry.path }

@@ -435,6 +435,10 @@ None of these was measured in the game. They're ordered by how often the code ru
 - **Change:** remember the certificates which checked out, by cell and network, until they expire, and only check
   the signature. That halves the cryptography a phone does, and what the test suite spends in the cellular specs.
   **Small.**
+- **Done:** `check_sib` takes a store of certificates which checked out (`common.new_certificates()`), by network, cell,
+  operator key and the certificate itself, and checks one again only once it has expired. Each phone has one, of up to
+  256. A cell's system information then costs one signature to check rather than two. Tested in `cell_spec.lua`,
+  counting the signatures checked.
 
 ### 4.4 `net.cell.info()` reads three files
 

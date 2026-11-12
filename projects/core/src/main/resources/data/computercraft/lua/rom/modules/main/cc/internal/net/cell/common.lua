@@ -45,6 +45,9 @@ local SIB_MAX_AGE = 30 * 1000
 --- How many networks one cell may serve (and name in its system information): several operators may share a cell.
 local MAX_SIB_NETWORKS = 8
 
+-- How many cells' certificates a phone keeps once they've checked out.
+local MAX_CERTIFICATES = 256
+
 --[[- The version of the cellular network's protocols this computer speaks. System information, the hellos cells and
 cores send each other, and what a core tells a phone when it attaches each carry it.
 
@@ -184,8 +187,10 @@ end
 @tparam table sib The system information, as [`sib_networks`] took it.
 @tparam table entry The network's part of it, from what [`sib_networks`] gave.
 @tparam {
-    network = string, signing = string, now = number, sender = number,
-} options The network we want; its operator's Ed25519 key; the time; and the ID of the computer which sent it.
+    network = string, signing = string, now = number, sender = number, certificates? = table,
+} options The network we want; its operator's Ed25519 key; the time; the ID of the computer which sent it; and
+certificates which checked out before, to check again only once they've expired (a cell sends the same one every
+second, and checking it is one of the two signatures to check).
 @treturn[1] true If it's good.
 @treturn[2] nil If it isn't.
 @treturn[2] string Why not.
@@ -198,19 +203,42 @@ local function check_sib(crypto, sib, entry, options)
     end
     if math.abs(sib.time - options.now) > SIB_MAX_AGE then return nil, "too old" end
 
-    local cert = certificate.decode(entry.cert)
-    if not cert then return nil, "no certificate" end
-    local name = cell_name(options.network, options.sender)
-    local ok, reason = certificate.verify(crypto, cert, {
-        name = name, key = cert.key, now = options.now, trusted = { [options.signing] = true },
-    })
-    if not ok then return nil, "certificate " .. reason end
+    -- The same certificate, from the same cell, for the same network and operator, checked out before.
+    local certificates, signer = options.certificates, nil
+    local cache_key = certificates and type(entry.cert) == "string"
+        and ("%s\0%d\0%s\0%s"):format(options.network, options.sender, options.signing, entry.cert)
+    local known = cache_key and certificates.checked[cache_key]
+    if known and known.expires > options.now then
+        signer = known.key
+    else
+        local cert = certificate.decode(entry.cert)
+        if not cert then return nil, "no certificate" end
+        local name = cell_name(options.network, options.sender)
+        local ok, reason = certificate.verify(crypto, cert, {
+            name = name, key = cert.key, now = options.now, trusted = { [options.signing] = true },
+        })
+        if not ok then return nil, "certificate " .. reason end
+        signer = cert.key
+        if cache_key then
+            -- Only so many: a phone hears a few dozen cells at most, so this many is someone making them up.
+            if certificates.count >= MAX_CERTIFICATES then certificates.checked, certificates.count = {}, 0 end
+            if not certificates.checked[cache_key] then certificates.count = certificates.count + 1 end
+            certificates.checked[cache_key] = { key = cert.key, expires = cert.expires }
+        end
+    end
 
     local fields = {
         network = entry.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time, path = entry.path,
     }
-    if not crypto.verify(cert.key, SIB_PREFIX .. codec.encode(fields), entry.sig) then return nil, "bad signature" end
+    if not crypto.verify(signer, SIB_PREFIX .. codec.encode(fields), entry.sig) then return nil, "bad signature" end
     return true
+end
+
+--- Make a store of certificates which checked out, for [`check_sib`].
+--
+-- @treturn table The store.
+local function new_certificates()
+    return { checked = {}, count = 0 }
 end
 
 --- The key a phone and a cell share, from the phone's attach: both the phone and the core can work it out, for any
@@ -363,6 +391,7 @@ return {
     make_sib = make_sib,
     sib_networks = sib_networks,
     check_sib = check_sib,
+    new_certificates = new_certificates,
     cell_key = cell_key,
     tunnel_key = tunnel_key,
     new_sealer = new_sealer,
