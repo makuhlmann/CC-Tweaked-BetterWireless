@@ -55,7 +55,7 @@ describe("Connections, under stress,", function()
     local function check_idle(stack)
         check_registry(stack)
         expect(stack.tcp.count):describe("Connections left"):eq(0)
-        expect(count(stack.timers)):describe("Timers left"):eq(0)
+        expect(stack:timer_count()):describe("Timers left"):eq(0)
     end
 
     -- A segment from `src` (which computer `id` sends), put on the link for `target`.
@@ -371,7 +371,7 @@ describe("Connections, under stress,", function()
             expect(a.tcp.count):eq(128)
             expect(b.tcp.count):eq(128)
             -- Each connection needs at most a timer for resending and one for checking the other side is there.
-            expect(count(b.timers) <= 2 * 128):eq(true)
+            expect(b:timer_count() <= 2 * 128):eq(true)
 
             -- A third computer can't get in while the server is full, but can as soon as there's room.
             local c = net.add(3, "10.0.0.3/24")
@@ -425,8 +425,8 @@ describe("Connections, under stress,", function()
                 net.advance(0.1)
                 expect(client.state):ne("established")
                 -- Connections linger for 5 seconds once closed, so at most a few dozen exist at once.
-                if a.tcp.count > 40 or count(a.timers) > 80 or count(b.timers) > 80 then
-                    error(("%d connections and %d timers after %d connections"):format(a.tcp.count, count(a.timers), i), 0)
+                if a.tcp.count > 40 or a:timer_count() > 80 or b:timer_count() > 80 then
+                    error(("%d connections and %d timers after %d connections"):format(a.tcp.count, a:timer_count(), i), 0)
                 end
             end
             net.advance(10)

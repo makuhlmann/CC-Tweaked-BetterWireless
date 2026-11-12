@@ -38,6 +38,31 @@ describe("Routing", function()
         return net, h1, r, h3
     end
 
+    it("takes the longest prefix which matches, whatever order routes were added in", function()
+        local net = network()
+        local s = net.stack(1)
+        net.connect(s, "a", "10.1.0.2/24")
+        net.connect(s, "b", "10.2.0.2/24")
+        net.run()
+        s:add_route { network = 0, prefix = 0, gateway = ip("10.1.0.1"), source = "static" }
+        s:add_route { network = ip("10.9.0.0"), prefix = 16, gateway = ip("10.1.0.1"), source = "static" }
+        s:add_route { network = ip("10.9.9.0"), prefix = 24, gateway = ip("10.2.0.1"), source = "static", metric = 5 }
+        s:add_route { network = ip("10.9.9.0"), prefix = 24, gateway = ip("10.1.0.1"), source = "static", metric = 2 }
+
+        local function via(addr)
+            local interface, hop = s:route(ip(addr))
+            return interface and interface.name, hop and address.format(hop)
+        end
+        -- The cheaper of the two /24s, then the /16, then the default, then our own network.
+        expect({ via("10.9.9.7") }):same { "a", "10.1.0.1" }
+        expect({ via("10.9.1.7") }):same { "a", "10.1.0.1" }
+        expect({ via("8.8.8.8") }):same { "a", "10.1.0.1" }
+        expect({ via("10.2.0.9") }):same { "b", "10.2.0.9" }
+        local prefixes = {}
+        for i, route in ipairs(s.routes) do prefixes[i] = route.prefix end
+        expect(prefixes):same { 24, 24, 16, 0 }
+    end)
+
     describe("forwarding", function()
         it("passes packets between networks", function()
             local net, h1, r = one_router()

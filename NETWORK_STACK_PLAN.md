@@ -343,6 +343,10 @@ cover the replacement.
   (736–1027), timers (880–937 and 1029–1050), datagram sockets (1072–1166) and echo (1168–1211).
 - **Change:** `timers.lua`, `udp.lua` and `routing.lua`. The first and last are where 4.1 and 4.2 would go, so do them
   together. **Medium.**
+- **Done:** `stack.lua` (now about 1,100 lines) keeps interfaces, neighbours, packets, ICMP and echo. Routes and the
+  firewall are in `routing.lua`, datagram sockets in `udp.lua` (each gives the stack's class its methods), and timers in
+  `timers.lua`. The stack still exports `INFINITY`, `usable` and the ephemeral ports. `Stack:timer_count()` counts the
+  timers waiting, which the TCP stress tests use. Done with 4.1 and 4.2.
 
 ### 2.8 `cellcore`'s commands
 
@@ -441,6 +445,11 @@ None of these was measured in the game. They're ordered by how often the code ru
   made again for each acknowledgement (`tcp.lua` 198–204). With 128 connections that's some 300 entries for each
   event.
 - **Change:** a heap, or at least the earliest deadline kept up to date by `schedule` and `tick`. **Medium.**
+- **Done:** timers are a heap (`timers.lua`), ordered by when they're due and then the order they were set, so the next
+  deadline is found at once. A cancelled timer stays until it comes up, and the heap is made again without them once
+  they outnumber the others. Timers set while others run still wait for the next tick. Pending neighbour lookups are
+  still walked, but there are at most 64 of them on an interface. Tested in `timers_spec.lua`, and by the TCP stress
+  tests, which count the timers left.
 
 ### 4.2 Routes are scanned for every packet
 
@@ -450,6 +459,11 @@ None of these was measured in the game. They're ordered by how often the code ru
 - **Change:** keep routes longest prefix first and stop at the first match of that length, or remember the answer for
   each destination until routes or addresses change. Use versions of `contains` and `mask` which don't check, inside
   the stack. **Medium.**
+- **Done:** routes are kept longest prefix first (prefixes never change once added, though RIP changes metrics in place,
+  so the order holds), and a lookup stops once the routes left can't match more of the address. Matching is one AND with
+  the prefix's mask and a compare, rather than `address.contains` with its argument checks. Remembering the answer for
+  each destination was left out: it would have to be forgotten wherever RIP changes a route in place. Tested in
+  `routing_spec.lua`.
 
 ### 4.3 What a phone does every second
 

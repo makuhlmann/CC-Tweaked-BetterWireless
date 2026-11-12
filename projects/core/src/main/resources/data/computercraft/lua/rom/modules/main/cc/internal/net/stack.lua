@@ -16,7 +16,9 @@ to [`new`], so tests can connect several stacks together without any modems.
 local expect = require "cc.expect".expect
 local address = require "cc.net.address"
 local link = require "cc.internal.net.link"
-local net_message = require "cc.internal.net.message"
+local routing = require "cc.internal.net.routing"
+local udp = require "cc.internal.net.udp"
+local timers = require "cc.internal.net.timers"
 
 --- The version of the frame and packet formats. Frames from other versions are ignored.
 local VERSION = 1
@@ -56,15 +58,11 @@ local ECHO_LIFETIME, MAX_ECHO_REPLIES = 60, 64
 -- How long frame capture lasts unless renewed, in seconds.
 local CAPTURE_LIFETIME = 30
 
---- A route metric meaning "can't get there".
-local INFINITY = 16
+-- Routes and the firewall are in their own module (as are datagram sockets and timers).
+local INFINITY, usable, is_broadcast = routing.INFINITY, routing.usable, routing.is_broadcast
 
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
---- The first of the ports picked for sockets which don't ask for one.
-local EPHEMERAL_FIRST = 49152
---- The last of them.
-local EPHEMERAL_LAST = 65535
-local MAX_QUEUED_DATAGRAMS = 32
+local EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST
 
 -- Channels: low band channels are 0-1023, high band channels are above that. Wired modems use the high band plan,
 -- though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
@@ -143,7 +141,6 @@ local function new(options)
 
         next_packet = 0,
         next_echo = 0,
-        timer_count = 0,
         echoes = {},
         last_error = {},
         last_error_count = 0,
@@ -153,7 +150,7 @@ local function new(options)
         inbox = {},
         delivering = false,
 
-        timers = {},
+        timers = timers.new(),
         udp = {},
         next_port = EPHEMERAL_FIRST,
 
@@ -557,163 +554,6 @@ function Stack:is_local(addr)
     return false
 end
 
-local function is_broadcast(interface, addr)
-    return addr == address.BROADCAST or (interface ~= nil and addr == interface.broadcast_address)
-end
-
---- Whether an interface can be used: it has an address, which no other computer on its link has too.
---
--- @tparam table|nil interface The interface.
--- @treturn boolean Whether it can be used.
-local function usable(interface)
-    return interface ~= nil and interface.address ~= nil and not interface.duplicate
-end
-
---- Find the interface on whose network an address is.
---
--- @tparam number addr The address.
--- @treturn table|nil The interface, or `nil` if the address isn't on any of our networks.
-function Stack:on_link(addr)
-    local best
-    for _, interface in pairs(self.interfaces) do
-        if usable(interface) and address.contains(interface.network, interface.prefix, addr)
-            and (not best or interface.prefix > best.prefix or (interface.prefix == best.prefix and interface.name < best.name)) then
-            best = interface
-        end
-    end
-    return best
-end
-
---- Find how to reach an address: the most specific route, then the cheapest. Our own networks cost nothing.
---
--- @tparam number addr The address.
--- @treturn table|nil The interface to send on, or `nil` if there's no route.
--- @treturn number The next hop: the address itself, or the router to hand it to.
--- @treturn table|nil The route used, or `nil` for one of our own networks.
-function Stack:route(addr)
-    local best, best_hop, best_route, best_prefix, best_metric
-    local function consider(interface, hop, route, prefix, metric)
-        if not best or prefix > best_prefix or (prefix == best_prefix and (metric < best_metric
-            or (metric == best_metric and interface.name < best.name))) then
-            best, best_hop, best_route, best_prefix, best_metric = interface, hop, route, prefix, metric
-        end
-    end
-
-    local direct = self:on_link(addr)
-    if direct then consider(direct, addr, nil, direct.prefix, 0) end
-
-    for _, route in ipairs(self.routes) do
-        if route.metric < INFINITY and address.contains(route.network, route.prefix, addr) then
-            if route.gateway then
-                -- A router must be on one of our own networks.
-                local interface = route.interface and self.interfaces[route.interface] or self:on_link(route.gateway)
-                if usable(interface) and address.contains(interface.network, interface.prefix, route.gateway) then
-                    consider(interface, route.gateway, route, route.prefix, route.metric)
-                end
-            elseif usable(self.interfaces[route.interface]) then
-                consider(self.interfaces[route.interface], addr, route, route.prefix, route.metric)
-            end
-        end
-    end
-
-    return best, best_hop, best_route
-end
-
---[[- Add a route.
-
-@tparam {
-    network = number, prefix = number, gateway? = number, interface? = string, metric? = number,
-    source = string, expires? = number,
-} route Where the route goes; the router to hand packets to (or the interface, for a network reached directly); its
-cost (1 by default); and where it came from, such as `"static"`, `"dhcp"` or `"rip"`.
-@treturn table The route, which may be changed in place.
-]]
-function Stack:add_route(route)
-    route.network = address.network(route.network, route.prefix)
-    route.metric = route.metric or 1
-    self.routes[#self.routes + 1] = route
-    return route
-end
-
---- Remove every route matching a test.
---
--- @tparam function(route:table):boolean test Whether to remove a route.
--- @treturn number How many were removed.
-function Stack:remove_routes(test)
-    local kept, removed = {}, 0
-    for _, route in ipairs(self.routes) do
-        if test(route) then removed = removed + 1 else kept[#kept + 1] = route end
-    end
-    self.routes = kept
-    return removed
-end
-
---- Describe every route, including our own networks.
---
--- @treturn { table... } Each route's `network` and `prefix`; `gateway` and `interface`; `metric`; `source`; and, for
--- learned routes, `expires` (seconds left).
-function Stack:route_info()
-    local result, now = {}, self.clock()
-    for _, interface in pairs(self.interfaces) do
-        if usable(interface) then
-            result[#result + 1] = {
-                network = interface.network, prefix = interface.prefix, interface = interface.name, metric = 0,
-                source = "connected",
-            }
-        end
-    end
-    for _, route in ipairs(self.routes) do
-        result[#result + 1] = {
-            network = route.network, prefix = route.prefix, gateway = route.gateway, metric = route.metric,
-            interface = route.interface or (route.gateway and self:on_link(route.gateway) or {}).name,
-            source = route.source, expires = route.expires and route.expires - now,
-        }
-    end
-    table.sort(result, function(a, b)
-        if a.prefix ~= b.prefix then return a.prefix > b.prefix end
-        if a.network ~= b.network then return a.network < b.network end
-        return a.metric < b.metric
-    end)
-    return result
-end
-
---[[- Set the rules for which packets this computer forwards. Rules are tried in order, and the first which matches a
-packet decides. Packets which match no rule are forwarded.
-
-@tparam { {
-    action = string, proto? = string, src? = number, src_prefix? = number, dst? = number, dst_prefix? = number,
-    port? = number, interface? = string,
-}... } rules Each rule's action (`"allow"` or `"deny"`), and what it matches: the protocol, source and destination
-networks, destination port, and the interface the packet arrived on.
-]]
-function Stack:set_firewall(rules)
-    self.firewall = #rules > 0 and rules or nil
-end
-
-local function firewall_matches(rule, packet, interface)
-    if rule.proto and rule.proto ~= packet.proto then return false end
-    if rule.src and not address.contains(rule.src, rule.src_prefix, packet.src) then return false end
-    if rule.dst and not address.contains(rule.dst, rule.dst_prefix, packet.dst) then return false end
-    if rule.interface and rule.interface ~= interface.name then return false end
-    if rule.port then
-        local body = packet.body
-        if type(body) ~= "table" or body.dp ~= rule.port then return false end
-    end
-    return true
-end
-
---- Check whether the firewall lets a packet through.
---
--- @tparam table packet The packet.
--- @tparam table interface The interface it arrived on.
--- @treturn boolean Whether to forward it.
-function Stack:firewall_allows(packet, interface)
-    for _, rule in ipairs(self.firewall or {}) do
-        if firewall_matches(rule, packet, interface) then return rule.action ~= "deny" end
-    end
-    return true
-end
-
 --- Forward a packet which isn't for us, if we're a router.
 --
 -- @tparam table packet The packet.
@@ -897,10 +737,8 @@ end
 -- @treturn number|nil The time, or `nil` if nothing is waiting.
 function Stack:next_deadline()
     self.wake_pending = false
-    local deadline
-    for timer in pairs(self.timers) do
-        if not deadline or timer.time < deadline then deadline = timer.time end
-    end
+    local next_timer = self.timers:peek()
+    local deadline = next_timer and next_timer.time
     for _, interface in pairs(self.interfaces) do
         for _, waiting in pairs(interface.waiting) do
             if not deadline or waiting.deadline < deadline then deadline = waiting.deadline end
@@ -913,19 +751,14 @@ end
 function Stack:tick()
     local now = self.clock()
 
-    local due = {}
-    for timer in pairs(self.timers) do
-        if timer.time <= now then due[#due + 1] = timer end
-    end
-    -- Timers due at the same time run in the order they were set, so things which were queued stay in order.
-    table.sort(due, function(a, b) return a.time < b.time or (a.time == b.time and a.order < b.order) end)
-    for _, timer in ipairs(due) do
-        -- A timer may have been cancelled by an earlier one.
-        if self.timers[timer] then
-            self.timers[timer] = nil
-            local ok, err = pcall(timer.fn)
-            if not ok then self.log(err) end
-        end
+    -- Timers due at the same time run in the order they were set, so things which were queued stay in order. Those
+    -- set while this runs wait for the next tick, even if they're due now.
+    local last = self.timers:last_set()
+    while true do
+        local timer = self.timers:pop_due(now, last)
+        if not timer then break end
+        local ok, err = pcall(timer.fn)
+        if not ok then self.log(err) end
     end
     for _, interface in pairs(self.interfaces) do
         for addr, waiting in pairs(interface.waiting) do
@@ -1059,18 +892,23 @@ function Stack:schedule(delay, fn)
     if type(delay) ~= "number" or delay ~= delay or delay == math.huge or delay == -math.huge then
         error("Invalid delay " .. tostring(delay), 2)
     end
-    self.timer_count = self.timer_count + 1
-    local timer = { time = self.clock() + math.max(0, delay), fn = fn, order = self.timer_count }
-    self.timers[timer] = true
+    local timer = self.timers:add(self.clock() + math.max(0, delay), fn)
     self:request_wakeup()
     return timer
+end
+
+--- Count the timers waiting to run.
+--
+-- @treturn number How many.
+function Stack:timer_count()
+    return self.timers:count()
 end
 
 --- Cancel a timer.
 --
 -- @tparam table|nil timer The timer, or `nil` to do nothing.
 function Stack:cancel(timer)
-    if timer then self.timers[timer] = nil end
+    if timer then self.timers:cancel(timer) end
 end
 
 --[[- Send a packet to everyone on one interface's link. Unlike [`Stack:send`], this works on interfaces without an
@@ -1091,102 +929,6 @@ function Stack:send_broadcast(name, proto, body)
         proto = proto, id = self.next_packet, body = body,
     })
     return true
-end
-
---[[- Open a datagram socket.
-
-Datagrams sent to the socket's port are queued on the socket (at most 32, after which more are dropped), and a
-`net_datagram` event is queued with the port when the queue stops being empty. Alternatively, a handler is called
-straight away, which the stack's own services use.
-
-@tparam[opt] number port The port, or `nil` for any free port from 49152 up.
-@tparam[opt] function(data:any, from:number, port:number, interface:string|nil) handler Called for each datagram.
-@tparam[opt] { size = number, encoded = number } limits How big datagrams sent from the socket may be: as big as
-programs may send, by default. The stack's own tunnels carry programs' messages, so need more room
-([`cc.internal.net.message`]'s `TUNNEL`).
-@treturn[1] table The socket.
-@treturn[2] nil If the port is in use.
-@treturn[2] string An error message.
-]]
-function Stack:udp_open(port, handler, limits)
-    if port then
-        if self.udp[port] then return nil, "Port " .. port .. " is in use" end
-    else
-        for _ = EPHEMERAL_FIRST, EPHEMERAL_LAST do
-            local candidate = self.next_port
-            self.next_port = candidate >= EPHEMERAL_LAST and EPHEMERAL_FIRST or candidate + 1
-            if not self.udp[candidate] then
-                port = candidate
-                break
-            end
-        end
-        if not port then return nil, "No free ports" end
-    end
-
-    local socket = { port = port, queue = {}, handler = handler, limits = limits }
-    self.udp[port] = socket
-    return socket
-end
-
---- Close a datagram socket.
---
--- @tparam table socket The socket.
-function Stack:udp_close(socket)
-    if self.udp[socket.port] == socket then self.udp[socket.port] = nil end
-    socket.closed = true
-end
-
---[[- Send a datagram.
-
-@tparam table socket The socket to send from.
-@tparam number dst Where to send it. The broadcast address reaches everyone on every interface, or with `name`, on one.
-@tparam number port The port to send it to.
-@param data The data: nothing, or a value which crosses every kind of link (see [`cc.internal.net.message`]).
-@tparam[opt] string name For broadcasts, the interface to send on.
-@treturn[1] true If it was sent.
-@treturn[2] nil If it couldn't be.
-@treturn[2] string Why not.
-]]
-function Stack:udp_send(socket, dst, port, data, name)
-    -- A datagram some link on its way can't carry would be lost every time, and nobody told. Say so now instead.
-    if data ~= nil then
-        local ok, err = net_message.check(data, socket.limits)
-        if not ok then return nil, err end
-    end
-
-    local body = { sp = socket.port, dp = port, data = data }
-    if dst == address.BROADCAST and name then
-        if not self:send_broadcast(name, "udp", body) then return nil, "No interface named '" .. name .. "'" end
-        return true
-    end
-
-    local ok, err = self:send(dst, "udp", body)
-    if not ok then return nil, err end
-    return true
-end
-
-function Stack:receive_udp(packet, interface)
-    local body = packet.body
-    if type(body) ~= "table" or type(body.sp) ~= "number" or type(body.dp) ~= "number" then return end
-
-    local socket = self.udp[body.dp]
-    if not socket then
-        if not is_broadcast(interface, packet.dst) then self:send_error(packet, "unreachable", "port") end
-        return
-    end
-
-    local name = interface and interface.name
-    if socket.handler then return socket.handler(body.data, packet.src, body.sp, name) end
-
-    local queue = socket.queue
-    if #queue >= MAX_QUEUED_DATAGRAMS then return end
-    queue[#queue + 1] = { data = body.data, from = packet.src, port = body.sp, interface = name }
-    if #queue == 1 then self.wake("net_datagram", socket.port) end
-end
-
-function Stack:udp_error(orig, message)
-    local socket = type(orig.sp) == "number" and self.udp[orig.sp]
-    if socket and socket.on_error then socket.on_error(describe_error(message), orig.dst) end
 end
 
 --[[- Send an echo request (a ping).
@@ -1347,14 +1089,21 @@ function Stack:neighbour_info()
     return result
 end
 
+routing.install(Stack)
+udp.install(Stack, describe_error)
+
 return {
     new = new,
     -- Only tests use this.
     channels = channels,
     describe_error = describe_error,
+    --- A route metric meaning "can't get there" (from [`cc.internal.net.routing`]).
     INFINITY = INFINITY,
-    EPHEMERAL_FIRST = EPHEMERAL_FIRST,
-    EPHEMERAL_LAST = EPHEMERAL_LAST,
+    --- The first of the ports picked for sockets which don't ask for one (from [`cc.internal.net.udp`]).
+    EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST,
+    --- The last of them.
+    EPHEMERAL_LAST = udp.EPHEMERAL_LAST,
+    --- Whether an interface can be used (from [`cc.internal.net.routing`]).
     usable = usable,
     VERSION = VERSION,
     BROADCAST_ID = BROADCAST_ID,
