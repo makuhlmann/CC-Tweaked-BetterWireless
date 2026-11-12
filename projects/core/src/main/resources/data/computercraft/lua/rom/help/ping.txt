@@ -1,6 +1,6 @@
-ping checks whether another computer can be reached, by sending it echo requests and showing how long each reply took. Computers can be given by name or address.
+ping checks whether another computer can be reached, by sending it an echo request every second and showing each reply as it comes, with how long it took. Computers can be given by name or address. Each request is numbered (seq), and each reply says which request it answers, so replies which are lost, come out of order, come twice (marked DUP!) or take very long can all be seen. It goes on until it's terminated (hold Ctrl+T), or until it has sent as many requests as asked, and then sums up how many came back and how long they took.
 
 ex:
-"ping 10.0.0.2" sends four echo requests to 10.0.0.2.
-"ping bank.home 10" sends ten to the computer named bank.home.
-"ping 10.0.0.255" asks every computer on the network 10.0.0.0/24, and shows the first reply.
+"ping 10.0.0.2" pings 10.0.0.2 until it's terminated.
+"ping bank.home 10" sends ten requests to the computer named bank.home.
+"ping 10.0.0.255" asks every computer on the network 10.0.0.0/24, and shows every reply.

@@ -282,4 +282,32 @@ describe("The net library", function()
             end
         end)
     end)
+
+    describe("net.pinger", function()
+        it("validates its arguments", function()
+            expect.error(net.pinger, nil):eq("bad argument #1 (string expected, got nil)")
+            for _, ttl in ipairs { 0, 256, 1.5, 0 / 0, math.huge } do
+                expect.error(net.pinger, "127.0.0.1", ttl):eq("bad argument #2 (TTL must be a whole number from 1 to 255)")
+            end
+            local pinger = assert(net.pinger("127.0.0.1"))
+            expect.error(pinger.receive, pinger, 0 / 0):eq("bad argument #1 (invalid timeout)")
+            pinger:close()
+        end)
+
+        it("pings this computer, numbering each request", function()
+            local pinger = assert(net.pinger("127.0.0.1"))
+            expect(pinger:getAddress()):eq("127.0.0.1")
+            expect({ pinger:send() }):same { 1 }
+            expect({ pinger:send() }):same { 2 }
+            expect(pinger:receive(1)):matches { seq = 1, from = "127.0.0.1", duplicate = false }
+            local reply = pinger:receive(1)
+            expect(reply):matches { seq = 2, from = "127.0.0.1", duplicate = false }
+            expect(type(reply.time)):eq("number")
+            expect(pinger:receive(0.1)):eq(nil)
+
+            pinger:close()
+            expect({ pinger:send() }):same { nil, "Pinger is closed" }
+            expect(pinger:receive()):eq(nil)
+        end)
+    end)
 end)

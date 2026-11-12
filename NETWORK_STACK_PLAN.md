@@ -83,6 +83,8 @@ the code named, or by a test. Paths are relative to
   tried as many times as asked. `traceroute` takes its hop limit with `tonumber`, so text or a number over 255 raises
   an error.
 - **Change:** stop on "Name not found" and "No DNS server", and check the hop limit. **Small.**
+- **Since:** `ping` was rewritten to ping as Unix systems do (on `net.pinger`). It looks the name up once and stops
+  with the reason when that fails, and checks its count. `traceroute`'s half is still to do.
 
 ### 1.6 Timeouts and ports are checked in some calls and not others
 

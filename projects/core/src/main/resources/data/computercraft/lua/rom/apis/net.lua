@@ -749,6 +749,107 @@ function ping(target, timeout, ttl)
     end
 end
 
+local Pinger = {}
+Pinger.__index = Pinger
+
+--[[- Send the next echo request.
+
+@treturn[1] number Its sequence number: 1 for the first, and so on.
+@treturn[1] string|nil Why it couldn't be sent, if it couldn't, such as `"Network unreachable"`. A request which
+couldn't be sent still uses up a sequence number, so that the next one says how many were tried.
+@treturn[2] nil If the pinger is closed (or sent nothing for a minute, so was closed).
+@treturn[2] string Why not.
+]]
+function Pinger:send()
+    local seq, err = load():echo_next(self.id, self.address, self.ttl)
+    if not seq then return nil, "Pinger is closed" end
+    return seq, err
+end
+
+--[[- Wait for the next reply to any of the requests sent, or the next error about one.
+
+@tparam[opt] number timeout How long to wait, in seconds. Waits forever if not given.
+@treturn[1] table The reply: `seq`, the sequence number of the request it answers; `from`, the address it came from;
+and either `time` (the round trip time, in seconds), `ttl` (its remaining time to live) and `duplicate` (whether that
+request was answered before), or `error`, such as `"Host unreachable"` or `"TTL expired"`, from a router on the way.
+@treturn[2] nil If nothing came in time, or the pinger is closed.
+]]
+function Pinger:receive(timeout)
+    expect(1, timeout, "number", "nil")
+    if timeout and not (timeout >= 0 and timeout < math.huge) then error("bad argument #1 (invalid timeout)", 2) end
+    local s = load()
+    local timer = timeout and os.startTimer(timeout)
+    while true do
+        local reply = s:echo_take(self.id)
+        if reply then
+            if timer then os.cancelTimer(timer) end
+            return {
+                seq = reply.seq, from = address.format(reply.from), time = reply.rtt, ttl = reply.ttl,
+                duplicate = reply.duplicate, error = reply.error,
+            }
+        end
+        if not s:echo_result(self.id) then
+            if timer then os.cancelTimer(timer) end
+            return nil
+        end
+
+        local event, arg = os.pullEvent()
+        if event == "timer" and arg == timer then return nil end
+    end
+end
+
+--- Get the address the requests go to.
+--
+-- @treturn string The address.
+function Pinger:getAddress()
+    return address.format(self.address)
+end
+
+--- Close the pinger: replies which come after are ignored.
+function Pinger:close()
+    load():forget_echo(self.id)
+end
+
+--[[- Ping another computer again and again, as the `ping` program does. Each `send` sends an echo request with the next
+sequence number, and `receive` waits for the next reply. Unlike [`net.ping`], nothing times out: replies which come
+late, out of order or more than once are all received, as they show how the network is doing. Close the pinger once
+done with it.
+
+@tparam string target The computer's name or address. A broadcast address gets replies from everyone, each after the
+first marked as a duplicate.
+@tparam[opt=32] number ttl How many routers the requests may pass, from 1 to 255.
+@treturn[1] table The pinger, with `send`, `receive`, `getAddress` and `close` methods.
+@treturn[2] nil If the name couldn't be looked up.
+@treturn[2] string Why not, such as `"Name not found"`.
+@usage Ping a computer three times, a second apart, and show each reply.
+
+```lua
+local pinger = assert(net.pinger("10.0.0.2"))
+for _ = 1, 3 do
+    pinger:send()
+    local reply = pinger:receive(1)
+    if reply and reply.time then
+        print(("Reply to %d in %d ms"):format(reply.seq, reply.time * 1000))
+    elseif reply then
+        print(("%d: %s"):format(reply.seq, reply.error))
+    end
+end
+pinger:close()
+```
+]]
+function pinger(target, ttl)
+    expect(1, target, "string")
+    expect(2, ttl, "number", "nil")
+    if ttl and not (ttl % 1 == 0 and ttl >= 1 and ttl <= 255) then
+        error("bad argument #2 (TTL must be a whole number from 1 to 255)", 2)
+    end
+    local s = load()
+
+    local dst, err = resolve_number(target)
+    if not dst then return nil, err end
+    return setmetatable({ id = s:echo_series(), address = dst, ttl = ttl }, Pinger)
+end
+
 local Socket = {}
 Socket.__index = Socket
 

@@ -98,6 +98,81 @@ describe("cc.internal.net.stack", function()
         expect(a:echo_result(id).from):eq(ip("10.0.0.2"))
     end)
 
+    describe("a series of pings", function()
+        local function take_all(stack, id)
+            local replies = {}
+            while true do
+                local reply = stack:echo_take(id)
+                if not reply then return replies end
+                replies[#replies + 1] = reply
+            end
+        end
+
+        it("numbers each request, and keeps every reply, saying which request it answers", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            net.add(2, "10.0.0.2/24")
+            net.add(3, "10.0.0.3/24")
+            net.run()
+
+            local id = a:echo_series()
+            expect({ a:echo_next(id, ip("10.0.0.2")) }):same { 1 }
+            -- Everyone answers a broadcast: each answer after the first is a duplicate.
+            expect({ a:echo_next(id, ip("10.0.0.255")) }):same { 2 }
+            net.run()
+
+            local replies = take_all(a, id)
+            expect(replies[1]):matches { seq = 1, from = ip("10.0.0.2"), ttl = 32, duplicate = false }
+            expect(type(replies[1].rtt)):eq("number")
+            local from = {}
+            for i = 2, #replies do
+                expect(replies[i]):matches { seq = 2, duplicate = i > 2 }
+                from[replies[i].from] = true
+            end
+            expect({ from[ip("10.0.0.2")], from[ip("10.0.0.3")] }):same { true, true }
+        end)
+
+        it("keeps errors about requests, and says which couldn't be sent", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            net.run()
+
+            local id = a:echo_series()
+            expect({ a:echo_next(id, ip("10.0.0.9")) }):same { 1 }
+            -- One which can't be sent still uses up a number.
+            expect({ a:echo_next(id, ip("10.1.0.1")) }):same { 2, "Network unreachable" }
+            net.run()
+            expect(a:echo_take(id)):eq(nil)
+
+            net.advance(5)
+            expect(take_all(a, id)):same { { seq = 1, error = "Host unreachable", from = ip("10.0.0.1") } }
+            expect({ a:echo_next(id, ip("10.0.0.1")) }):same { 3 }
+            expect(take_all(a, id)):matches { { seq = 3, from = ip("10.0.0.1"), duplicate = false } }
+        end)
+
+        it("ignores replies once it's ended, and to requests it didn't send", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            local b = net.add(2, "10.0.0.2/24")
+            net.run()
+
+            local id = a:echo_series()
+            a:echo_next(id, ip("10.0.0.2"))
+            a:forget_echo(id)
+            net.run()
+            expect(a:echo_take(id)):eq(nil)
+            expect(a:echo_next(id, ip("10.0.0.2"))):eq(nil)
+
+            -- Replies to a series' requests which weren't sent, or with no number, aren't kept.
+            local other = a:echo_series()
+            for _, seq in ipairs { 5, "x", 1.5 } do
+                b:send(ip("10.0.0.1"), "icmp", { type = "echo_reply", id = other, seq = seq })
+            end
+            net.run()
+            expect(a:echo_take(other)):eq(nil)
+        end)
+    end)
+
     it("reports unknown protocols", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

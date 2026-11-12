@@ -701,6 +701,9 @@ Secure connections offer the same methods as plain ones, so programs switch by c
 net.interfaces()                      --> { { name = "top", band = "high", address = "10.4.0.17", prefix = 24, ... } }
 net.resolve("bank.spawn")             --> "10.4.0.5"  (or nil, "not found")
 net.ping("bank.spawn", 2)             --> 0.1 (seconds), or nil, "timed out"
+local pinger = net.pinger("bank.spawn") -- as the ping program does: every reply, numbered, late or doubled too
+pinger:send()                         --> 1 (its sequence number)
+pinger:receive()                      --> { seq = 1, time = 0.1, ttl = 31, from = "10.4.0.5", duplicate = false }
 
 -- Datagrams
 local sock = net.udp.open(5000)       -- or open() for an ephemeral port
@@ -1210,10 +1213,10 @@ the design above:
     read, and it can be answered or deleted), writing a message (and watching whether the network took it), networks
     (every network in range and the SIM's own and partners', with signal, which is in use and which is chosen;
     choosing one keeps the phone to it, and "Automatic" lets it choose), cell service off and on, and the monitor.
+    Every screen is left with Q or Backspace (the first quits), and a key held down never leaves two at once.
   - **The same from the shell:** `cell networks`, `cell network <name>|auto`, `cell on` and `cell off`.
   - **What it's built on.** The menus only use `net.cell`: `info` (which also has `enabled`, `signal`,
     `serving_network`, `roaming`, `selection` and `unread`), `messages`, `markRead`, `deleteMessage`, `send`,
-    Every screen is left with Q or Backspace (the first quits), and a key held down never leaves two at once.
     `networks`, `setNetwork` and `setEnabled`, so other programs can do all they do. They redraw on the events
     `cell_state`, `cell_message`, `cell_sent`, and `cell_messages`, which is queued when the kept messages change in
     another way (one was read or deleted), so a bar in one tab follows messages read in another.

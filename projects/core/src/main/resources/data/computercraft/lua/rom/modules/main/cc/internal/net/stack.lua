@@ -50,8 +50,8 @@ local MAX_TTL = 255
 local PROBATION = 3
 local DEFEND_INTERVAL = 1
 
--- How long an echo request is remembered, in seconds.
-local ECHO_LIFETIME = 60
+-- How long an echo request is remembered, in seconds, and how many replies a series of them keeps until they're taken.
+local ECHO_LIFETIME, MAX_ECHO_REPLIES = 60, 64
 
 -- How long frame capture lasts unless renewed, in seconds.
 local CAPTURE_LIFETIME = 30
@@ -939,7 +939,9 @@ end
 local function summarise(packet)
     local summary = { src = packet.src, dst = packet.dst, proto = packet.proto, id = packet.id }
     local body = packet.body
-    if packet.proto == "icmp" and type(body) == "table" and body.type == "echo" then summary.echo = body.id end
+    if packet.proto == "icmp" and type(body) == "table" and body.type == "echo" then
+        summary.echo, summary.seq = body.id, body.seq
+    end
     if type(body) == "table" and type(body.sp) == "number" then summary.sp, summary.dp = body.sp, body.dp end
     return summary
 end
@@ -1007,7 +1009,18 @@ function Stack:receive_icmp(packet)
         end
     elseif message.type == "echo_reply" then
         local echo = self.echoes[message.id]
-        if echo and not echo.done then
+        local series = echo and echo.series
+        if series then
+            local seq = message.seq
+            local sent = type(seq) == "number" and series.sent[seq]
+            if sent then
+                local duplicate = series.answered[seq] == true
+                series.answered[seq] = true
+                self:echo_heard(message.id, {
+                    seq = seq, rtt = self.clock() - sent, ttl = packet.ttl, from = packet.src, duplicate = duplicate,
+                })
+            end
+        elseif echo and not echo.done then
             echo.done, echo.rtt, echo.ttl, echo.from = true, self.clock() - echo.sent, packet.ttl, packet.src
             self.wake("net_echo", message.id)
         end
@@ -1016,7 +1029,12 @@ function Stack:receive_icmp(packet)
         if type(orig) ~= "table" then return end
 
         local echo = orig.echo and self.echoes[orig.echo]
-        if echo and not echo.done then
+        if echo and echo.series then
+            local seq = orig.seq
+            if type(seq) == "number" and echo.series.sent[seq] then
+                self:echo_heard(orig.echo, { seq = seq, error = describe_error(message), from = packet.src })
+            end
+        elseif echo and not echo.done then
             echo.done, echo.error, echo.from = true, describe_error(message), packet.src
             self.wake("net_echo", orig.echo)
         end
@@ -1178,21 +1196,92 @@ to see what happened, and [`Stack:forget_echo`] once done.
 @treturn[2] string Why not.
 ]]
 function Stack:echo(dst, data, ttl)
-    local now = self.clock()
-    for id, echo in pairs(self.echoes) do
-        if now - echo.sent > ECHO_LIFETIME then self.echoes[id] = nil end
-    end
-
-    self.next_echo = self.next_echo + 1
-    local id = self.next_echo
-    self.echoes[id] = { sent = now, done = false }
-
+    local id = self:add_echo({ done = false })
     local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = 1, data = data }, { ttl = ttl })
     if not ok then
         self.echoes[id] = nil
         return nil, err
     end
     return id
+end
+
+-- Remember an echo request (or a series of them), forgetting ones which have had nothing sent for a long time.
+function Stack:add_echo(echo)
+    local now = self.clock()
+    for id, other in pairs(self.echoes) do
+        if now - other.sent > ECHO_LIFETIME then self.echoes[id] = nil end
+    end
+    self.next_echo = self.next_echo + 1
+    echo.sent = now
+    self.echoes[self.next_echo] = echo
+    return self.next_echo
+end
+
+--[[- Start a series of echo requests, as `ping` sends. Each [`Stack:echo_next`] sends the next, with the next sequence
+number, and every reply to one is kept until [`Stack:echo_take`] takes it: one which comes late, out of order or more
+than once too, until the request is a minute old. So are errors about them, from routers which couldn't pass them on.
+A `net_echo` event with the series' ID is queued whenever one comes. [`Stack:forget_echo`] ends the series, and a
+series which sends nothing for a minute ends too.
+
+@treturn number The series' ID.
+]]
+function Stack:echo_series()
+    return self:add_echo({ series = { next = 0, sent = {}, answered = {}, replies = {} } })
+end
+
+--[[- Send the next echo request of a series.
+
+@tparam number id The series' ID.
+@tparam number dst Where to send it.
+@tparam[opt] number ttl The time to live.
+@treturn[1] number The request's sequence number: 1 for the first, and so on. A request which couldn't be sent still
+uses one up, as `ping`'s do.
+@treturn[1] string|nil Why it couldn't be sent, if it couldn't.
+@treturn[2] nil If there's no such series.
+]]
+function Stack:echo_next(id, dst, ttl)
+    local echo = self.echoes[id]
+    local series = echo and echo.series
+    if not series then return nil end
+
+    local now = self.clock()
+    echo.sent = now
+    for seq, sent in pairs(series.sent) do
+        if now - sent > ECHO_LIFETIME then series.sent[seq], series.answered[seq] = nil, nil end
+    end
+
+    series.next = series.next + 1
+    local seq = series.next
+    series.sent[seq] = now
+    local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = seq }, { ttl = ttl })
+    if not ok then
+        series.sent[seq] = nil
+        return seq, err
+    end
+    return seq
+end
+
+-- Keep a reply to (or an error about) one of a series of echo requests until it's taken. If too many are waiting, the
+-- program has stopped taking them, so the rest are dropped.
+function Stack:echo_heard(id, reply)
+    local replies = self.echoes[id].series.replies
+    if #replies >= MAX_ECHO_REPLIES then return end
+    replies[#replies + 1] = reply
+    self.wake("net_echo", id)
+end
+
+--[[- Take the oldest reply to a series of echo requests which hasn't been taken yet.
+
+@tparam number id The series' ID.
+@treturn table|nil The reply: `seq`, the request's sequence number; and either `rtt` (the round trip time, in
+seconds), `ttl`, `from`, and `duplicate` (whether that request was answered before), or `error` and `from` (the router
+which reported it). Nothing if no reply is waiting.
+]]
+function Stack:echo_take(id)
+    local echo = self.echoes[id]
+    local series = echo and echo.series
+    if not series then return nil end
+    return table.remove(series.replies, 1)
 end
 
 --- Get the state of an echo request.
@@ -1203,9 +1292,9 @@ function Stack:echo_result(id)
     return self.echoes[id]
 end
 
---- Forget an echo request.
+--- Forget an echo request, or end a series of them.
 --
--- @tparam number id The request's ID.
+-- @tparam number id The request's (or the series') ID.
 function Stack:forget_echo(id)
     self.echoes[id] = nil
 end
