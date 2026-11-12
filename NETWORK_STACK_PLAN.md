@@ -62,6 +62,12 @@ the code named, or by a test. Paths are relative to
   pulls. Inside `rshd` those events are the hosted session's, so a `sleep` in a remote program could hang.
 - **Change:** send the batch when it passes about 32 KiB (`message.measure` exists for this), check the result, and
   give `rshd` a way to send which keeps the events it pulls for the session. **Medium.**
+- **Done:** the remote terminal sends a batch once it's about 32 KiB (counted as `cc.internal.net.message` counts), and
+  draws long text in pieces, so no batch is too big to send. `rshd` puts batches in an outbox which a task of its own
+  sends from, so waiting for room no longer takes the session's events; while the outbox is full, the session's events
+  wait for it, in order. A batch which can't be sent ends the session, rather than leaving the client's screen out of
+  step. `rshd_spec.lua` runs a session against `rshd` on the same computer: thousands of lines without a yield, a
+  `sleep`, and a client slow to read.
 
 ### 1.3 A manual address change queues no event
 

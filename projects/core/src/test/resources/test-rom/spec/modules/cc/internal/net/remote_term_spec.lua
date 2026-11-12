@@ -42,6 +42,35 @@ describe("cc.internal.net.remote_term", function()
         expect({ client.getCursorPos() }):same { expected.getCursorPos() }
     end)
 
+    it("sends a lot of drawing in batches which each fit in a message", function()
+        local message = require "cc.internal.net.message"
+        local batches = {}
+        local remote = remote_term.new({ width = 20, height = 5, colour = true }, function(batch) batches[#batches + 1] = batch end)
+        local expected = window.create(term.current(), 1, 1, 20, 5, false)
+
+        -- Thousands of lines without a yield, and text far longer than a batch.
+        local function draw(target)
+            for i = 1, 3000 do
+                target.setCursorPos(1, 5)
+                target.write(("Line %d of a lot of text"):format(i))
+                target.scroll(1)
+            end
+            target.setCursorPos(1, 1)
+            target.write(("x"):rep(100000))
+            target.setCursorPos(1, 2)
+            target.blit(("y"):rep(70000), ("1"):rep(70000), ("2"):rep(70000))
+        end
+        draw(remote)
+        draw(expected)
+        remote.flush()
+
+        expect(#batches > 3):eq(true)
+        for _, batch in ipairs(batches) do expect(message.check({ term = batch })):eq(true) end
+        local client = window.create(term.current(), 1, 1, 20, 5, false)
+        for _, batch in ipairs(batches) do remote_term.apply(client, batch) end
+        expect(contents(client)):same(contents(expected))
+    end)
+
     it("answers questions without asking the client", function()
         local remote = remote_term.new({ width = 30, height = 10, colour = false, x = 3, y = 4 }, function() end)
         expect({ remote.getSize() }):same { 30, 10 }

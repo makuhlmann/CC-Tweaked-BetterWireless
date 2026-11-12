@@ -57,12 +57,27 @@ local REMOTE_EVENTS = {
     key = true, key_up = true, char = true, paste = true, terminate = true,
     mouse_click = true, mouse_drag = true, mouse_scroll = true, mouse_up = true,
 }
+-- rshd's own events, which the session doesn't get.
+local OWN_EVENTS = { rshd_input = true, rshd_output = true, rshd_sent = true }
+
+-- How many batches of drawing may wait to be sent before the session waits for them (each is up to about 32 KiB), and
+-- how many events the session may have waiting meanwhile, as a computer's own queue holds.
+local MAX_OUTBOX, MAX_HELD_EVENTS = 4, 256
 
 -- Run a shell, or a command, for a client, drawing on its terminal and taking its input.
+--
+-- What's drawn goes into an outbox, which a task of its own sends from: waiting for room on the connection pulls
+-- events, and if the session's task did that, they'd be lost to the session (a `sleep` in it would never end). While
+-- the outbox is full, the session's events wait for it, in order.
 local function run_session(connection, hello)
+    local outbox = {}
+    local function send(message)
+        outbox[#outbox + 1] = message
+        os.queueEvent("rshd_output")
+    end
     local remote = remote_term.new({
         width = hello.width, height = hello.height, colour = hello.colour == true, x = hello.x, y = hello.y,
-    }, function(operations) connection:send({ term = operations }) end)
+    }, function(operations) send({ term = operations }) end)
 
     local result
     local session = coroutine.create(function()
@@ -80,9 +95,22 @@ local function run_session(connection, hello)
         term.redirect(previous)
         remote.flush()
         if not ok then
-            connection:send({ term = { { "write", tostring(value) } } })
+            send({ term = { { "write", tostring(value) } } })
         else
             filter = value
+        end
+    end
+
+    -- Events for the session, given to it once it wants them and there's room for what it draws.
+    local held = {}
+    local function offer(event)
+        if #held < MAX_HELD_EVENTS then held[#held + 1] = event end
+    end
+    local function give()
+        while held[1] and #outbox < MAX_OUTBOX and coroutine.status(session) ~= "dead" do
+            local event = table.remove(held, 1)
+            -- Only the client may terminate the session, not this computer's own Ctrl+T.
+            if filter == nil or filter == event[1] or event[1] == "terminate" then resume(table.unpack(event, 1, event.n)) end
         end
     end
 
@@ -114,19 +142,39 @@ local function run_session(connection, hello)
             while coroutine.status(session) ~= "dead" and not closed do
                 local event = table.pack(os.pullEventRaw())
                 if event[1] == "rshd_input" then
-                    while pending[1] and coroutine.status(session) ~= "dead" do
+                    while pending[1] do
                         local remote_event = table.remove(pending, 1)
-                        if filter == nil or filter == remote_event[1] or remote_event[1] == "terminate" then
-                            resume(table.unpack(remote_event))
-                        end
+                        offer(table.pack(table.unpack(remote_event)))
                     end
-                elseif not LOCAL_INPUT[event[1]] and event[1] ~= "terminate" then
-                    if filter == nil or filter == event[1] then resume(table.unpack(event, 1, event.n)) end
+                elseif not OWN_EVENTS[event[1]] and not LOCAL_INPUT[event[1]] and event[1] ~= "terminate" then
+                    offer(event)
+                end
+                give()
+            end
+        end,
+        -- What the session drew, to the client. A batch which can't be sent would leave the client's screen out of
+        -- step with the session's for good, so that ends the session.
+        function()
+            while true do
+                local message = table.remove(outbox, 1)
+                if message then
+                    if not connection:send(message) then
+                        closed = true
+                        return
+                    end
+                    os.queueEvent("rshd_sent")
+                else
+                    os.pullEvent("rshd_output")
                 end
             end
         end
     )
 
+    -- Send what's still to go, and then say the session is over.
+    for _, message in ipairs(outbox) do
+        if closed then break end
+        if not connection:send(message) then closed = true end
+    end
     if not closed then connection:send({ exit = true, ok = result }) end
     connection:close()
 end

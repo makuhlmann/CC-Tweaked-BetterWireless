@@ -9,7 +9,8 @@
 
 [`new`] makes a terminal object (like `term.current()`) which programs on the server draw on. It keeps its own copy of
 the cursor, colours and palette, to answer questions without asking the client, and collects drawing calls into
-batches, which [`apply`] draws on the client's terminal.
+batches, which [`apply`] draws on the client's terminal. A batch is sent once it's about 32 KiB, well within what one
+message may hold, so a program which draws a lot without yielding doesn't make a batch which can't be sent.
 
 @local
 ]]
@@ -30,6 +31,24 @@ local OPERATIONS = {
     setPaletteColour = { "number", "number", "number", "number" },
 }
 
+-- A batch is sent once it holds about this many bytes, as the network's estimate of a message's size would have it.
+-- One message may hold about 60 KiB.
+local BATCH_SIZE = 32 * 1024
+-- Text longer than this is drawn in pieces, so that no one call is too big for a batch.
+local MAX_TEXT = 8 * 1024
+
+-- How big a drawing call is once encoded, counted as `cc.internal.net.message` counts it: its place in the batch, the
+-- table, and each value with its index.
+local function size_of(operation)
+    local size = 9 + 5
+    for i = 1, #operation do
+        local value = operation[i]
+        local kind = type(value)
+        size = size + 9 + (kind == "string" and #value + 5 or kind == "number" and 9 or 1)
+    end
+    return size
+end
+
 local function is_colour(colour)
     return type(colour) == "number" and colour >= 1 and colour <= 32768 and colour % 1 == 0 and bit32.band(colour, colour - 1) == 0
 end
@@ -41,7 +60,8 @@ end
     text? = number, background? = number,
 } options The client's terminal: its size, whether it shows colours, and where its cursor is and what colours are set
 when the session starts.
-@tparam function(operations:table) send Sends a batch of drawing calls to the client.
+@tparam function(operations:table) send Sends a batch of drawing calls to the client. It's called while drawing, once
+a batch is full, so it shouldn't wait.
 @treturn table The terminal, with every method `term` has, and `flush` (send what's been drawn) and `resize`.
 ]]
 local function new(options, send)
@@ -50,15 +70,25 @@ local function new(options, send)
     local text, background = options.text or colours.white, options.background or colours.black
     local palette = {}
     for i = 0, 15 do palette[2 ^ i] = { term.nativePaletteColour(2 ^ i) } end
-    local batch = {}
+    local batch, batch_size = {}, 0
 
-    local function add(name, ...) batch[#batch + 1] = { name, ... } end
+    local function add(...)
+        local operation = { ... }
+        local size = size_of(operation)
+        if batch_size + size > BATCH_SIZE and #batch > 0 then
+            local full = batch
+            batch, batch_size = {}, 0
+            send(full)
+        end
+        batch[#batch + 1] = operation
+        batch_size = batch_size + size
+    end
 
     local remote = {}
 
     function remote.write(value)
         value = tostring(value)
-        add("write", value)
+        for i = 1, #value, MAX_TEXT do add("write", value:sub(i, i + MAX_TEXT - 1)) end
         x = x + #value
     end
 
@@ -67,7 +97,10 @@ local function new(options, send)
         expect(2, fg, "string")
         expect(3, bg, "string")
         if #fg ~= #value or #bg ~= #value then error("Arguments must be the same length", 2) end
-        add("blit", value, fg, bg)
+        for i = 1, #value, MAX_TEXT do
+            local last = i + MAX_TEXT - 1
+            add("blit", value:sub(i, last), fg:sub(i, last), bg:sub(i, last))
+        end
         x = x + #value
     end
 
@@ -139,7 +172,7 @@ local function new(options, send)
     function remote.flush()
         if #batch == 0 then return end
         local operations = batch
-        batch = {}
+        batch, batch_size = {}, 0
         send(operations)
     end
 
