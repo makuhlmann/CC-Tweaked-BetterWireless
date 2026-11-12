@@ -22,10 +22,7 @@ describe("Roaming", function()
     local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
     local function copy(value) return codec.decode(codec.encode(value)) end
 
-    local function yield()
-        os.queueEvent("roaming_yield")
-        os.pullEvent("roaming_yield")
-    end
+    local yield = require "support.yield"
 
     local function operators(acme_cells, beta_cells, agreement)
         local acme = operator(acme_cells or { 0, 100 })

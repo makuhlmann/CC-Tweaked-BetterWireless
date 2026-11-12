@@ -42,10 +42,7 @@ describe("The security layer, given bad messages,", function()
         unhex("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
     }
 
-    local function yield()
-        os.queueEvent("fuzz_yield")
-        os.pullEvent("fuzz_yield")
-    end
+    local yield = require "support.yield"
 
     local function new_key()
         local private = crypto.generateKeyPair("x25519")

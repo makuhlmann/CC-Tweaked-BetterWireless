@@ -23,10 +23,7 @@ describe("Several cellular networks, under stress,", function()
         return total
     end
 
-    local function yield()
-        os.queueEvent("cell_networks_yield")
-        os.pullEvent("cell_networks_yield")
-    end
+    local yield = require "support.yield"
 
     -- Let time pass, without keeping the computer to ourselves.
     local function advance(net, seconds)

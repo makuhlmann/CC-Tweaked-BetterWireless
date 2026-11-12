@@ -654,8 +654,29 @@ local function run_test(test)
     end
 end
 
+--[[ Empty the event queue, so a test starts with nothing left over from the last: queue an event, and take every event
+until it comes.
+
+A computer's queue holds 256 events, and an event queued while it's full is lost. A test may leave it full, so if more
+than that comes first, the event was lost: queue it again. Under the test delegate, the next test may be asked for
+meanwhile (it gave up on this one before it began), and then that's the one to run. Waiting for the event alone would
+take that, and every request after it, while waiting for an event which never came.
+
+Returns whether the queue is empty, or `false` and the name of the test asked for next (`false` if the event named none).
+]]
+local function flush()
+    while true do
+        os.queueEvent("start_test")
+        for _ = 1, 256 do
+            local event = table.pack(os.pullEventRaw())
+            if event[1] == "start_test" then return true end
+            if cct_test and event[1] == "cct_test_run" then return false, event[2] or false end
+        end
+    end
+end
+
 --- Do the actual running of our test. Returns the name of the test to run next, if this one was stopped because the
--- test delegate asked for it (see `run_test`).
+-- test delegate asked for it (see `run_test` and `flush`).
 local function do_run(test)
     -- If we're a pre-computed test, determine our status message. Otherwise,
     -- skip.
@@ -669,10 +690,12 @@ local function do_run(test)
         local state = push_state()
 
         -- Flush the event queue and ensure we're running with 0 timeout.
-        os.queueEvent("start_test") os.pullEvent("start_test")
-
-        local ok
-        ok, err, next_test = run_test(test)
+        local ok, asked = flush()
+        if ok then
+            ok, err, next_test = run_test(test)
+        else
+            err, next_test = setmetatable({ message = "Not run, as the next test was asked for first" }, error_mt), asked
+        end
 
         status = ok and "pass" or (err.fail and "fail" or "error")
 

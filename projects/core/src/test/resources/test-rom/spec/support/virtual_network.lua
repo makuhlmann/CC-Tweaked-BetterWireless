@@ -62,10 +62,7 @@ return function()
         end
     end
 
-    local function yield()
-        os.queueEvent("network_yield")
-        os.pullEvent("network_yield")
-    end
+    local yield = require "support.yield"
 
     --- Add a computer with no interfaces.
     --

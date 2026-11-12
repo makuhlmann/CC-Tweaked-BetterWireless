@@ -17,10 +17,7 @@ describe("Shared cells", function()
 
     local function ip(text) return (address.parse(text)) end
 
-    local function yield()
-        os.queueEvent("sharing_yield")
-        os.pullEvent("sharing_yield")
-    end
+    local yield = require "support.yield"
 
     local function operators()
         local acme = operator({ 0, 100 })

@@ -34,10 +34,7 @@ describe("Cellular services", function()
         file.close()
     end
 
-    local function yield()
-        os.queueEvent("cell_service_yield")
-        os.pullEvent("cell_service_yield")
-    end
+    local yield = require "support.yield"
 
     -- Run functions alongside services, letting time pass, until the functions have finished.
     local function run(net, services, functions, limit, step)

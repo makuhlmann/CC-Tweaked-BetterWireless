@@ -42,10 +42,7 @@ describe("Cellular networks, under stress,", function()
         return result
     end
 
-    local function yield()
-        os.queueEvent("cell_stress_yield")
-        os.pullEvent("cell_stress_yield")
-    end
+    local yield = require "support.yield"
 
     -- Let time pass until something is true, or fail. (The test may take time itself, such as to wait for a ping.)
     local function wait_until(setup, test, limit, what)

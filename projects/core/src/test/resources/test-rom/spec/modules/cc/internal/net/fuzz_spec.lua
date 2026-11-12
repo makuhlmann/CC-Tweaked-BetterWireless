@@ -79,10 +79,7 @@ describe("The network stack, given bad messages,", function()
 
     Bad messages come from computer 9, which says it's 10.0.0.9.
     ]]
-    local function yield()
-        os.queueEvent("fuzz_yield")
-        os.pullEvent("fuzz_yield")
-    end
+    local yield = require "support.yield"
 
     -- A network which gives up quickly when something loops.
     local function small_network()
