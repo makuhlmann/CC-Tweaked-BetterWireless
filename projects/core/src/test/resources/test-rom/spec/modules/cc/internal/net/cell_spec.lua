@@ -45,7 +45,11 @@ describe("Cellular networks", function()
     it("refuses phones which aren't subscribers", function()
         local setup = operator { 0 }
         local phone = setup.add_phone(1, 10, false)
-        setup.net.advance(5)
+        -- It tries again every so often, so wait for a refusal.
+        for _ = 1, 50 do
+            if phone.state == "rejected" then break end
+            setup.net.advance(0.1)
+        end
         expect(phone.state):eq("rejected")
         expect(phone.rejected):eq("Not a subscriber of ACME")
         expect(phone.address):eq(nil)
@@ -434,6 +438,8 @@ describe("Cellular networks", function()
 
     it("keeps a handed-over phone's confirmation which comes before the core's word", function()
         local setup = operator { 0 }
+        -- Once the cell has joined its core.
+        setup.net.advance(0.1)
         local tower = setup.towers[1].tower
         local sent = {}
         tower.links.ACME.control_send = function(message) sent[#sent + 1] = message end

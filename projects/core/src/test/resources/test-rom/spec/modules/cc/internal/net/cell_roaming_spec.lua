@@ -583,15 +583,13 @@ describe("Roaming", function()
         net.advance(5)
         expect(reaches_server(net, stack)):eq(true)
 
-        -- The network carrying the phone restarts, and joins the phone's own again.
+        -- The network carrying the phone restarts, and its core joins the phone's own again by itself.
         beta.restart_core()
-        acme.roam_on(beta)
         wait_until(net, function() return phone.state == "attached" and reaches_server(net, stack) end, 30, "Service after BETA restarted")
         expect(address.format(stack.interfaces.cell.address)):eq("10.64.0.2")
 
-        -- The phone's own network restarts.
+        -- The phone's own network restarts, and the other's core joins it again.
         acme.restart_core()
-        acme.roam_on(beta)
         wait_until(net, function() return phone.state == "attached" and reaches_server(net, stack) end, 30, "Service after ACME restarted")
         expect(phone:roaming()):eq(true)
         expect(#beta.core:visitor_info()):eq(1)
@@ -605,10 +603,10 @@ describe("Roaming", function()
         net.advance(5)
         expect(phone:roaming()):eq(true)
 
-        -- BETA stops carrying ACME's phones. The phone finds out, and is turned away when it tries again.
-        beta.core:remove_partner("ACME")
-        acme.core:remove_tower(51)
-        acme.core:set_partner_keys({})
+        -- BETA stops carrying ACME's phones, and ACME's agreement no longer lets them use BETA's cells. The phone finds
+        -- out, and is turned away when it tries again.
+        beta.agree("ACME", { carry = false })
+        acme.agree("BETA", { roam = false })
         wait_until(net, function() return phone.state == "rejected" end, 30, "Losing service")
         expect(reaches_server(net, stack)):eq(false)
         expect(beta.core:visitor_info()):same {}

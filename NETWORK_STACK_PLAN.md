@@ -473,6 +473,21 @@ cover the replacement.
   agreements, as the wiring points at the old one, so the storm tests leave cores running.
 - **Change:** build the harness on the services, over the pipes `cell_service_spec.lua` already has, so tests use
   the same code as the game and can restart anything. **Large.** Easier after 3.1.
+- **Done:** each core in `spec/support/cell_network.lua` runs `core_service`, with its files in a folder of its own, and
+  each cell runs `cell_service`, building its tower as the net API does (one tower, a network added for each core). They
+  connect over pipes (`support/pipe.lua`, lifted from `cell_service_spec.lua`, which now uses it too), which deliver
+  after 0.01 seconds as the old wiring did, and a relay's cell connects over TCP through its own phone. The services run
+  as the network stack's background process would: each is resumed when something it waits for may have changed (a
+  message, a close, a timer), once however many things did, so the virtual network still only moves from one thing to
+  the next. `roam_on`, `peer_with` and the new `agree` set agreements as `cellcore network` does, and `share_cell` has
+  the cell join the other core too; `cut()` stops the two cores reaching each other, which now ends roaming between them
+  as well as messages, as one connection carries both. Services' errors go into `net.errors`. Anything can be restarted:
+  "comes back by itself when either core restarts" no longer wires roaming again by hand, "ends when the agreement does"
+  changes the agreements rather than the cores' tables, and a new test restarts both cores with roaming both ways, a
+  shared cell and messages, and everything comes back with nothing set up again. Three tests waited on timing which the
+  services change slightly (a cell joins its core a few hundredths of a second after it's made), and now wait for what
+  they meant to. The storm specs take about 20% longer (3 to 4 seconds each, alone). A core keeps the messages it holds
+  in memory only, so a restart loses them: the message storm doesn't restart cores for that reason.
 
 ### 3.4 Links between dimensions which are kept until something changes
 

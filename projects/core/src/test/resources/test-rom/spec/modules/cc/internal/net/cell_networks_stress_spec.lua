@@ -240,6 +240,70 @@ describe("Several cellular networks, under stress,", function()
         end
     end)
 
+    describe("with cores which restart,", function()
+        it("everything the networks agreed on comes back by itself", function()
+            math.randomseed(91)
+            local world = operators()
+            local acme, beta, net = world.acme, world.beta, world.net
+
+            -- Phones of each network at home, roaming on the other's cells, and at the shared cell.
+            local inbox, phones = {}, {}
+            local function add(network, id, position, partner)
+                inbox[id] = {}
+                local phone, stack = network.add_phone(id, position, true, {
+                    partners = partner and { [partner.name] = partner.signing_public } or nil,
+                    on_message = function(from, text) table.insert(inbox[id], from .. ": " .. text) end,
+                })
+                phones[#phones + 1] = { id = id, phone = phone, stack = stack }
+                return phone
+            end
+            add(acme, 1, 10)
+            local roaming_a = add(acme, 2, 290, beta)
+            add(acme, 3, 100)
+            add(beta, 4, 210)
+            -- Out of reach of the shared cell, which serves its own network too.
+            local roaming_b = add(beta, 5, -40, acme)
+            add(beta, 6, 105)
+
+            -- Wait until every phone has service again: a phone may not notice its core forgot it for a few seconds.
+            local function all_back(what)
+                for _ = 1, 60 do
+                    local working = true
+                    for _, entry in ipairs(phones) do
+                        if entry.phone.state ~= "attached" or not reaches_server(net, entry.stack) then working = false end
+                    end
+                    if working then break end
+                    advance(net, 1)
+                end
+                for _, entry in ipairs(phones) do
+                    expect(entry.phone.state):describe(("Phone %d's state, %s"):format(entry.id, what)):eq("attached")
+                    expect(reaches_server(net, entry.stack)):describe(("Phone %d reaches the server, %s"):format(entry.id, what)):eq(true)
+                end
+                expect({ roaming_a:roaming(), roaming_b:roaming() }):describe("Roaming, " .. what):same { true, true }
+                expect(acme.core.towers[12] ~= nil and beta.core.towers[12] ~= nil):describe("The shared cell, " .. what):eq(true)
+                expect({ #acme.core.peers.BETA.links, #beta.core.peers.ACME.links }):describe("Messages, " .. what):same { 1, 1 }
+            end
+            all_back("at first")
+
+            -- Each core restarts, forgetting every phone. Its cells, the shared cell and the other network's core join it
+            -- again, with nothing set up afresh.
+            acme.restart_core()
+            all_back("after ACME's core restarted")
+            beta.restart_core()
+            all_back("after BETA's core restarted")
+
+            -- Messages go between the networks, to phones at home and roaming.
+            assert(phones[1].phone:send_message("6664", "Over the border"))
+            assert(phones[4].phone:send_message("5552", "And back"))
+            assert(roaming_b:send_message("5553", "From abroad"))
+            advance(net, 10)
+            expect(inbox[4]):same { "5551: Over the border" }
+            expect(inbox[2]):same { "6664: And back" }
+            expect(inbox[3]):same { "6665: From abroad" }
+            expect(net.errors):same {}
+        end)
+    end)
+
     describe("with someone making up cells and networks,", function()
         -- Made-up system information: so many cells, each naming so many networks, with names which keep changing.
         local function flood(net, target, round, cells, names)

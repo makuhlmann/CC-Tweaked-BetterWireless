@@ -3,7 +3,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("Cellular services", function()
-    local codec = require "cc.net.codec"
     local noise = require "cc.internal.net.noise"
     local certificate = require "cc.internal.net.certificate"
     local common = require "cc.internal.net.cell.common"
@@ -12,12 +11,12 @@ describe("Cellular services", function()
     local cell_service = require "cc.internal.net.cell.cell_service"
     local tasks = require "cc.internal.net.tasks"
     local network = require "support.virtual_network"
+    local pipe = require "support.pipe"
 
     local DIR = "/.cell-spec"
 
     local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
     local function unhex(text) return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end)) end
-    local function copy(value) return codec.decode(codec.encode(value)) end
     local function new_key() return hex(crypto.random(32)) end
     local function fingerprint(key) return hex(crypto.sha256(unhex(key))):sub(1, 20):gsub("(....)", "%1 "):sub(1, -2) end
 
@@ -38,36 +37,6 @@ describe("Cellular services", function()
     local function yield()
         os.queueEvent("cell_service_yield")
         os.pullEvent("cell_service_yield")
-    end
-
-    --[[ Two ends of a connection, which wait (by yielding) as the net API's do. Each end's peer is the other side. ]]
-    local function pipe(clock, a, b)
-        local shared, inboxes, closed = {}, { {}, {} }, {}
-        local function side(me, other, peer)
-            return {
-                send = function(_, value)
-                    if shared.aborted or closed[me] then return nil, "Connection closed" end
-                    table.insert(inboxes[other], copy(value))
-                    return true
-                end,
-                receive = function(_, timeout)
-                    local deadline = timeout and clock() + timeout
-                    while true do
-                        if inboxes[me][1] then return table.remove(inboxes[me], 1) end
-                        if shared.aborted then return nil, "Connection reset" end
-                        if closed[other] then return nil end
-                        if deadline and clock() >= deadline then return nil, "Timed out" end
-                        coroutine.yield()
-                    end
-                end,
-                close = function() closed[me] = true end,
-                abort = function() shared.aborted = true end,
-                getPeerKey = function() return peer.key end,
-                getPeer = function() return peer.address, 2123 end,
-                is_gone = function() return shared.aborted or closed[me] or closed[other] end,
-            }
-        end
-        return side(1, 2, b), side(2, 1, a)
     end
 
     -- Run functions alongside services, letting time pass, until the functions have finished.
