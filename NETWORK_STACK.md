@@ -1088,8 +1088,8 @@ the design above:
   them. As §9 says, floods can only be limited; a per-cell limit would be the next step.
 - **Roaming** is built much as designed above. The network a phone belongs to is its *home*; one whose cells it
   uses instead is *visited*.
-  - **One big cell.** To the home core, the visited core is a cell: it connects to the home core's control port (with
-    the role `roam`), waits to be allowed by its key, as cells do, and gets a key for a tunnel. A roaming phone's
+  - **One big cell.** To the home core, the visited core is a cell: over the connection between the two cores (see
+    **Agreements**), it gets a key for a tunnel, as cells do. A roaming phone's
     attach handshake goes phone → visited cell → visited core → home core and back. Only the home core can answer it
     (it's `Noise_IK` with the home operator's key), so the visited network can't attach a phone by itself, or read
     what the two say. The home core gives the phone its usual address.
@@ -1100,7 +1100,10 @@ the design above:
   - **Packets** go phone → visited cell → visited core → home gateway, and back the same way: the visited core has a
     tunnel ID of its own for each visitor, and swaps it for the home core's. The tunnel between the cores is sealed
     like a cell's, and arrives at the visited core on port 2154. It counts as one relay towards the limit on how
-    deeply tunnels nest. A roaming phone's connections stay open, as its address is its home network's.
+    deeply tunnels nest. A roaming phone's connections stay open, as its address is its home network's. A core may
+    send down the tunnel from another address than the one the other core reached it at (it sends from the one it has
+    towards the other), so each core, if a tunnel's packet comes from an address it doesn't know, tries the other
+    networks' tunnel keys.
   - **Which cells to trust.** A phone can't check a visited cell's system information with its own operator's key. So
     the home core tells each phone, in the handshake's answer (which only that phone can read), the names of the
     networks it may use and the keys their cells are certified with. The phone remembers them (in `/.net/sim`), so it
@@ -1129,13 +1132,25 @@ the design above:
     core's answer brings the new partner list, so the phone can check that network's cells from then on. Until then
     it uses what it heard of the cell, which is safe, as the handshake is with its own operator. A network which turns
     it away (or doesn't answer) is left alone for a minute, like a real phone's forbidden networks.
-  - **Agreements** are made by the two cores' administrators. On the visited core, `cellcore carry <network> <core>`
-    connects to the home core, and keeps connecting. On the home core, `cellcore allow` lets it in, after showing its
-    fingerprint and the network it says it is. It's remembered as that network, and can't come back as another.
-    `cellcore deny` and `cellcore uncarry` end it from either side, and `cellcore roaming` shows both directions. An
-    agreement only goes one way: for each network's phones to use the other's cells, each core carries the other's.
+  - **Agreements** are made by the two cores' administrators. Each core keeps one for each other network (in
+    `/.cell/networks`): that network's core's key, ID and signing key, its number prefix, where its core is (if this
+    one connects to it), and what the two do for each other: whether this network carries the other's phones
+    (`cellcore network <network> carry on`), whether its own phones may use the other's cells (`roaming on`, or
+    `home on`), and whether the two networks' phones exchange messages (`messages on`). One secure connection between
+    the two cores (with the role `network`) carries all of it, whichever opened it: a core told where the other is
+    (`cellcore network <network> core <address>`) connects, and keeps connecting. Each core's hello says what it does
+    for the other, and each message after says what it's for (`s`). The first time, the other core's administrator
+    allows it with `cellcore allow`, after it shows its fingerprint, the network it says it is and what it offers;
+    allowing it makes the agreement there too, accepting the offer. A core is remembered as its network, and can't
+    come back as another, and the core which connected keeps the other's key from the first time. If both cores
+    connect at once, both keep the connection opened by the core with the smaller key. `cellcore deny` and
+    `cellcore network <network> forget` end it from either side, and `cellcore networks` shows each agreement both
+    ways. Carrying goes one way: for each network's phones to use the other's cells, each core carries the other's,
+    over the same connection. Older versions had a connection for each direction and another for messages, kept in
+    `/.cell/cells`, `/.cell/roaming` and `/.cell/peers`: a core with no `/.cell/networks` makes its agreements from
+    those once, and leaves them as they were. Both cores need this version (version 3 of the cellular protocols).
   - **Partners as good as home** (LTE's equivalent networks). The home core's administrator may say its phones treat a
-    partner as home (`cellcore partner <network> home`, kept with the partner's key in `/.cell/cells`). Phones hear of
+    partner as home (`cellcore network <network> home on`, kept in its agreement). Phones hear of
     it with the partner list (`home = true`), and remember it in `/.net/sim`. They use such a network's cells as
     readily as their own network's (the strongest of either), aren't roaming there (no `R`, and the bar shows their
     own network's name), stay on it until they lose it (as on their own network: moving between two networks means
@@ -1180,15 +1195,12 @@ the design above:
     nobody's here and has no prefix the core knows gets "Destination not reachable" (a network with no prefix, which
     exchanges messages with nobody, still says nobody has it). A phone hears its network's prefix when it attaches,
     and shows its full number (`5550042`).
-  - **Peers.** On one core, `cellcore peer <network> <core>` connects to the other network's core (with the role
-    `peer`, giving its name and prefix) and keeps connecting, as `carry` does; the other core's administrator allows
-    it, as for a cell. Messages then go both ways over that one connection, which is secure (§9), so they're encrypted
-    between the cores, though not end to end. Both networks need a prefix, and different ones. A network's core may be
-    both a roaming partner and a peer: its key is allowed for each role apart (`roles` in `/.cell/cells`). Peers are
-    kept in `/.cell/peers`; `cellcore peers` lists them, and `cellcore unpeer` (or `cellcore deny`, from the other
-    side) ends it. Changing the prefix makes the peers connect again, as they hear it when they connect. Each core
-    keeps its peers' prefixes (with their entries in `/.cell/peers` and `/.cell/cells`), so after a restart it knows
-    their numbers before they connect again.
+  - **Peers.** Two networks exchange messages when both agreements say so (`cellcore network <network> messages
+    on`). Messages then go both ways over the connection between the cores, which is secure (§9), so they're encrypted
+    between the cores, though not end to end. Both networks need a prefix, and different ones. `cellcore peers` lists
+    them, and `cellcore network <network> messages off` (or `cellcore deny`, from the other side) ends it. A new prefix
+    goes over the connection, which stays, so phones roaming there keep their service. Each core keeps its peers'
+    prefixes in their agreements, so after a restart it knows their numbers before they connect again.
   - **Delivery.** A phone's message for another network's number goes to its core, which passes it on with a number
     of its own, and the sender's full number. The other core keeps it for its subscriber as it would its own phones',
     and answers whether it has taken it, or why not ("Nobody has the number 6669"), which the sending phone hears.

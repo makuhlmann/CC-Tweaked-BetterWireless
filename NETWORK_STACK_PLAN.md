@@ -277,6 +277,12 @@ cover the replacement.
 - **Change:** `tasks.lua` gets `tasks:link(connection, on_message)`, which returns the function to send with and runs
   until the connection ends. **Medium.** `cell_service.lua`'s `run` and `core_service.lua`'s `keep_connecting` are the
   same reconnect loop twice, and can share one too.
+- **Done:** `Tasks:sender(connection, wake)` queues messages and sends them from a task of its own, returning the
+  function to send with and one to stop. The cell service and the core service (its cells, and the one connection to
+  each other network's core) use it: three places, where 3.1 left three of the five. Each keeps its own receive loop, as
+  what it does with a message differs. The two reconnect loops (a cell's to each core, and a core's to each other
+  network's) stay apart: they differ in what they record of each try and what ends them, and one shared loop would need
+  about as many options as it has lines.
 
 ### 2.3 One kind of remembered set
 
@@ -326,6 +332,9 @@ cover the replacement.
   `roles` as well, with `has_role` to look in both.
 - **Change:** a set of roles only, written to `/.cell/cells` as such, with the old form read as before. **Small.**
   It falls away if 3.1 is done.
+- **Done:** fell away with 3.1. `allowed` holds cells, administrators and refused computers, one role each, and other
+  networks' cores are in the agreements. Entries an older version wrote with `roam` or `peer` stay in `/.cell/cells`
+  when it's written, so an older ROM still finds them.
 
 ### 2.6 Take the cellular API out of `apis/net.lua`
 
@@ -355,6 +364,10 @@ cover the replacement.
 - **Change:** one command for another network, such as `cellcore network BETA` to show everything about it, and
   `cellcore network BETA carry|home|messages on|off` to change it. The old commands can stay as other names for a
   while. **Medium**; easiest after 3.1.
+- **Done:** with 3.1. `cellcore networks` lists the agreements; `cellcore network BETA` shows one, and `cellcore network
+  BETA carry|roaming|home|messages on|off`, `core <address>|none` and `forget` change it, saying what the other core's
+  administrator needs to allow this one. `carry`, `uncarry`, `partner`, `peer`, `unpeer`, `roaming` and `peers` are
+  still there, as other names which change and show agreements.
 
 ### 2.9 Dead exports and loose ends in the stack
 
@@ -399,6 +412,24 @@ cover the replacement.
   secure connection between the two cores, which either may open, carrying all of it, with a field in each message
   saying which service it's for. One step to allow a network, which shows its name, fingerprint and what it asks for.
   One file. **Large**, with the old files read once and written in the new form.
+- **Done:** one agreement for each other network (`cc.internal.net.cell.networks`, kept in `/.cell/networks`): the other
+  core's key, ID and signing key, its number prefix, where its core is, and whether we carry its phones, whether ours
+  may use its cells (as roaming or as home), and whether the two exchange messages. One secure connection between the
+  two cores (the role `network`) carries all of it, opened by whichever core knows where the other is; if both connect
+  at once, both keep the one opened by the core with the smaller key. Each core's hello says what it does for the other,
+  and each message after says what it's for (`s`: `home`, `visited`, `messages`, `tunnel`, `prefix`). Another network's
+  core waits once, showing its name, fingerprint and what it offers, and allowing it makes the agreement, accepting the
+  offer; the core which connects keeps the other's key from the first time. A new number prefix goes over the
+  connection, which stays, so roaming phones keep their service; a link is only made again if messages could start now.
+  The core service keeps `links` and `dialing` where it had six tables; the core is as it was, but for `open_uplink`,
+  which tries the partner towers' keys when a tunnel's packet comes from an address it doesn't know (as
+  `open_roam_tunnel` does the other way). The cellular protocol is version 3, and both cores need it: an older core's
+  `roam` and `peer` connections aren't understood. The older files (`cells` with `roam` and `peer`, `roaming`, `peers`)
+  are read once, when there's no `networks`, and left as they were, so going back to an older ROM still finds them.
+  Tested in `cell_service_spec.lua` (agreeing, everything over one connection, a prefix changing under it, both cores
+  connecting at once, older files, refusals, odd requests), `cell_agreements_spec.lua` (two worlds' files, word for
+  word), `cell_roaming_spec.lua` (a home core which reached the visited one at another address than it sends from), and
+  the roaming game test. The test harness still wires cores to each other directly: that's 3.3.
 
 ### 3.2 The phone as a state machine
 

@@ -28,7 +28,7 @@ end, function()
         admin:send({ op = "status" })
         local status = admin:receive(5)
         for _, waiting in ipairs(status.waiting) do
-            if waiting.role == "roam" and waiting.network == "VISIT" then key = waiting.key end
+            if waiting.role == "network" and waiting.network == "VISIT" then key = waiting.key end
         end
         if not key then sleep(0.5) end
     end

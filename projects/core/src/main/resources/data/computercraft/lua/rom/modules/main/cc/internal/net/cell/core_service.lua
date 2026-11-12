@@ -13,25 +13,24 @@ Computers connect securely, and say what they want to be: a cell, or an administ
 always allowed. Others wait, with their connection open, until someone allows their key. That's done by the computer's
 ID, after checking its fingerprint, so nobody needs to type a key in.
 
-Every connection starts with a hello, `{ role = "cell", "admin", "roam" or "peer", id = <computer ID> }`, which the core
-answers: `{ waiting = true, fingerprint = ... }` while the computer waits, then the cell's details (for a cell) or
-`{ ok = true }` (for an administrator), or `{ error = ... }`. Administrators then send requests, each with an `op`, and
-get a reply to each: `status`, `allow`, `deny`, `add`, `remove`, `set`, `log`, `carry`, `uncarry`, `partner`,
-`numbers`, `peer`, `unpeer`, `stop` and `restart`.
+Every connection starts with a hello, `{ role = "cell", "admin" or "network", id = <computer ID> }`, which the core
+answers: `{ waiting = true, fingerprint = ... }` while the computer waits; then the cell's details (for a cell),
+`{ ok = true }` (for an administrator) or its own hello (for another network's core); or `{ error = ... }`.
+Administrators then send requests, each with an `op`, and get a reply to each: `status`, `allow`, `deny`, `add`,
+`remove`, `set`, `log`, `network`, `numbers`, `stop` and `restart`; and `carry`, `uncarry`, `partner`, `peer` and
+`unpeer`, as older versions had them, which change agreements as `network` does.
 
-Roaming: the core of another network which carries this network's phones connects with the role `roam`, giving its
-network's name and signing key. Once it's allowed, it's to this core what a cell is (see [`cc.internal.net.cell.core`]),
-and this network's phones are told they may use its cells. The other way round, this core connects to the cores of the
-networks whose phones it carries (`carry`), kept in the file `roaming`, and tries again when it loses them. A partner
-may be one this network's phones treat as home (`partner`), kept with its key.
+Other networks: for each, an agreement (see [`cc.internal.net.cell.networks`]) says what the two do for each other:
+whether we carry its phones at our cells, whether ours may use its cells (roaming there, or as at home), and whether
+the two networks' phones exchange messages. One secure connection between the two cores carries all of it, which either
+may open: ours does when the agreement says where the other core is. Each core's hello says who it is and what it does
+for the other (`carry`, `messages`, and its signing key and number prefix), and each message after says what it's for
+(`s`): `home` (for the core of a phone, from the core whose cells it's at), `visited` (the other way), `messages`,
+`tunnel` (a phone's core's tunnel key, for the core which carries its phones) and `prefix` (a new number prefix). If both
+cores connect at once, the connection opened by the core with the smaller key is kept.
 
-Messages between networks: the core of a network which exchanges messages with this one (a peer) connects with the role
-`peer`, giving its network's name and number prefix, and waits to be allowed. Once it is, messages between the two
-networks' phones go over that connection, both ways. The other way round, this core connects to the cores of the
-networks it was told to exchange messages with (`peer`), kept in the file `peers`. Another network's core may be both a
-roaming partner and a peer: it's allowed for each, apart. This network's number prefix is in its `config`, and each
-peer's is kept with it (in `peers` or `cells`), so messages for a peer which hasn't connected since the core started
-are kept for it, rather than refused.
+Another network's core waits to be allowed the first time it connects, as a cell does, and allowing it accepts what it
+offers. A core we connect to needn't be allowed: being told where it is says we want to.
 
 @local
 ]]
@@ -40,6 +39,7 @@ local address = require "cc.net.address"
 local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
 local files = require "cc.internal.net.files"
+local networks = require "cc.internal.net.cell.networks"
 local tasks = require "cc.internal.net.tasks"
 
 --- How many computers may wait to be allowed at once.
@@ -61,24 +61,20 @@ local CERTIFICATE_LIFETIME = 365 * 24 * 60 * 60 * 1000
 local ROLES = {
     cell = { name = "Cell", wants = "to join as a cell" },
     admin = { name = "Computer", wants = "to manage the network" },
-    roam = { name = "Network", wants = "to carry this network's phones" },
-    peer = { name = "Network", wants = "to exchange messages with this network's phones" },
+    network = { name = "Network", wants = "an agreement with this network" },
 }
 
--- Roles a computer may have more than one of: another network's core's.
-local NETWORK_ROLES = { roam = true, peer = true }
+local is_number_prefix = common.is_number_prefix
 
--- Whether a computer allowed in has a role.
-local function has_role(entry, role)
-    return entry.role == role or (entry.roles ~= nil and entry.roles[role] == true)
+-- What another network's core offers, in words: "to carry this network's phones and exchange messages".
+local function offers(asks)
+    local parts = {}
+    if asks.carry then parts[#parts + 1] = "to carry this network's phones" end
+    if asks.messages then parts[#parts + 1] = "to exchange messages with this network's phones" end
+    return #parts > 0 and table.concat(parts, " and ") or "an agreement with this network"
 end
 
--- Number prefixes: digits, up to 8 of them.
-local function is_number_prefix(text)
-    return type(text) == "string" and #text >= 1 and #text <= 8 and not text:find("%D")
-end
-
--- How long to wait before connecting again to a network whose phones we carry, at first and at most, in seconds.
+-- How long to wait before connecting again to another network's core, at first and at most, in seconds.
 local FIRST_DELAY, MAX_DELAY = 2, 60
 
 local Service = {}
@@ -126,16 +122,12 @@ local function new(options)
         options = options, config = config,
         files = {
             subscribers = fs.combine(options.dir, "subscribers"), codes = fs.combine(options.dir, "codes"),
-            cells = fs.combine(options.dir, "cells"), roaming = fs.combine(options.dir, "roaming"),
-            peers = fs.combine(options.dir, "peers"), config = fs.combine(options.dir, "config"),
+            cells = fs.combine(options.dir, "cells"), config = fs.combine(options.dir, "config"),
         },
         waiting = {}, cells = {}, admins = {}, lines = {}, line_count = 0,
-        -- Roaming: the cores of networks which carry our phones, connected now, by network; and the networks whose
-        -- phones we carry, by name.
-        partners = {}, carrying = {},
-        -- Messages between networks: the connections to other networks' cores, either way, by network; and the
-        -- networks whose cores we connect to, by name.
-        peer_links = {}, peering = {},
+        -- Other networks: the connection to each one's core, either way; and our tries to connect to those we know
+        -- where to find, by network.
+        links = {}, dialing = {},
     }, Service)
     self.subscribers = read_table(self.files.subscribers)
     self:read_codes()
@@ -159,23 +151,18 @@ local function new(options)
     self.tasks:spawn(function() self:accept() end)
     self:log(("Started the core of %s, giving phones addresses in %s"):format(config.network, config.prefix))
 
+    -- Agreements with other networks: from older versions' files the first time, which are left as they were.
+    local migrated
+    self.networks, migrated = networks.read(options.dir, config.network)
+    if migrated and next(self.networks) then
+        self:save_networks()
+        self:log("Made agreements with other networks from the files of an older version")
+    end
     self:update_partner_keys()
-    for network, entry in pairs(read_table(self.files.roaming)) do
-        if common.is_network(network) and network ~= config.network and type(entry) == "table" and type(entry.core) == "string" then
-            self:start_carrying(network, entry.core)
-        end
-    end
-    for network, entry in pairs(read_table(self.files.peers)) do
-        if common.is_network(network) and network ~= config.network and type(entry) == "table" and type(entry.core) == "string" then
-            self:start_peering(network, entry.core, is_number_prefix(entry.prefix) and entry.prefix or nil)
-        end
-    end
-    -- Networks we exchange messages with, by the prefixes they had when they last connected: messages for them wait.
-    for network, entry in pairs(self.peering) do
-        if entry.prefix then core:know_peer(network, entry.prefix) end
-    end
-    for _, entry in pairs(self.allowed) do
-        if has_role(entry, "peer") and entry.network and entry.prefix then core:know_peer(entry.network, entry.prefix) end
+    for network, agreement in pairs(self.networks) do
+        -- Messages for a network we exchange them with wait while its core is away, by the prefix it last had.
+        if agreement.messages and agreement.prefix then core:know_peer(network, agreement.prefix) end
+        self:dial(network)
     end
     return self
 end
@@ -200,39 +187,32 @@ function Service:save_codes()
     write_table(self.files.codes, saved)
 end
 
--- The computers allowed in (and those refused), by key: `{ label, role, id }`. Older versions kept only a label, for
--- cells.
+-- The cells and administrators allowed in, and computers refused, by key: `{ label, role, id }`. Older versions kept
+-- only a label, for cells; and other networks' cores here too, which are agreements now (see `networks`).
 function Service:read_allowed()
     self.allowed = {}
     for key, entry in pairs(read_table(self.files.cells)) do
         if is_key(key) then
             if type(entry) == "string" then entry = { label = entry, role = "cell" } end
-            if type(entry) == "table" and (ROLES[entry.role] or entry.role == "denied") then
-                self.allowed[key:lower()] = {
-                    label = tostring(entry.label or ""), role = entry.role, id = tonumber(entry.id),
-                    -- For a roaming partner: its network, the key its cells are certified with, and whether our
-                    -- phones treat it as home.
-                    network = common.is_network(entry.network) and entry.network or nil,
-                    signing = is_key(entry.signing) and entry.signing or nil,
-                    home = entry.home == true or nil,
-                    -- For a peer: its number prefix, when it last connected.
-                    prefix = is_number_prefix(entry.prefix) and entry.prefix or nil,
-                }
-                -- Another network's core may have a second role.
-                if type(entry.roles) == "table" and NETWORK_ROLES[entry.role] then
-                    local roles = {}
-                    for role in pairs(NETWORK_ROLES) do
-                        if entry.roles[role] == true and role ~= entry.role then roles[role] = true end
-                    end
-                    self.allowed[key:lower()].roles = next(roles) and roles or nil
-                end
+            if type(entry) == "table" and (entry.role == "cell" or entry.role == "admin" or entry.role == "denied") then
+                self.allowed[key:lower()] = { label = tostring(entry.label or ""), role = entry.role, id = tonumber(entry.id) }
             end
         end
     end
 end
 
 function Service:save_allowed()
-    write_table(self.files.cells, self.allowed)
+    -- What older versions kept here for other networks' cores stays, for a version which still reads it.
+    local saved = {}
+    for key, entry in pairs(read_table(self.files.cells)) do
+        if type(entry) == "table" and (entry.role == "roam" or entry.role == "peer") then saved[key] = entry end
+    end
+    for key, entry in pairs(self.allowed) do saved[key] = entry end
+    write_table(self.files.cells, saved)
+end
+
+function Service:save_networks()
+    networks.write(self.options.dir, self.networks)
 end
 
 function Service:save_subscribers()
@@ -285,10 +265,23 @@ function Service:event(event, ...)
     if event == "code_used" or event == "activation_failed" then self:save_codes() end
 end
 
-function Service:allows(key, role)
+-- Whether a computer may come in, as it asked: another network's core, as the core of that network.
+function Service:allows(key, role, network)
+    if role == "network" then
+        local agreement = self.networks[network]
+        return agreement ~= nil and agreement.key == key
+    end
     if key == self.options.identity then return true end
     local entry = self.allowed[key]
-    return entry ~= nil and has_role(entry, role)
+    return entry ~= nil and entry.role == role
+end
+
+-- The network whose core a computer is, if it's one we have an agreement with.
+function Service:network_of(key)
+    for network, agreement in pairs(self.networks) do
+        if agreement.key == key then return network end
+    end
+    return nil
 end
 
 function Service:accept()
@@ -320,29 +313,31 @@ function Service:serve(connection)
     -- Computers' IDs are whole numbers, and small enough to write out.
     local id = common.is_id(hello.id) and hello.id < 2 ^ 31 and hello.id or nil
     -- Another network's core says which network it is before anything else, so that what's allowed has a name.
-    if NETWORK_ROLES[role] and not common.is_network(hello.network) then
+    if role == "network" and not common.is_network(hello.network) then
         return refuse(connection, "Another network's core must say which network it is.")
+    end
+    if role == "network" and hello.network == self.config.network then
+        return refuse(connection, "That's this network's own name.")
     end
     self:note_version(hello.v, ("%s #%s"):format(ROLES[role].name, tostring(id or "?")))
 
-    if not self:allows(key, role) then
-        local entry = self.allowed[key]
-        if entry and entry.role == "denied" then
-            return refuse(connection, "The core has refused this computer.")
-        elseif entry and not (NETWORK_ROLES[entry.role] and NETWORK_ROLES[role]) then
-            -- Another network's core may wait to be allowed for its second role.
-            local may = {
-                cell = "be a cell", admin = "manage the network", roam = "carry the network's phones",
-                peer = "exchange messages with the network's phones",
-            }
+    local entry = self.allowed[key]
+    if entry and entry.role == "denied" then return refuse(connection, "The core has refused this computer.") end
+    if not self:allows(key, role, hello.network) then
+        local may = { cell = "be a cell", admin = "manage the network" }
+        local core_of = self:network_of(key)
+        if core_of then
+            return refuse(connection, ("This computer is the core of %s, not of %s."):format(core_of, tostring(hello.network)))
+        elseif entry and role == "network" then
+            return refuse(connection, ("This computer may %s, but isn't another network's core."):format(may[entry.role]))
+        elseif entry then
             return refuse(connection, ("This computer may %s, but not %s."):format(may[entry.role], may[role]))
         end
         if not self:wait(connection, key, role, id, hello) then return end
     end
 
     if role == "cell" then return self:serve_cell(connection, key, hello, id) end
-    if role == "roam" then return self:serve_partner(connection, key, hello, id) end
-    if role == "peer" then return self:serve_peer(connection, key, hello, id) end
+    if role == "network" then return self:serve_network(connection, key, hello, id) end
     return self:serve_admin(connection, key)
 end
 
@@ -369,20 +364,23 @@ function Service:wait(connection, key, role, id, hello)
     local fingerprint = self.options.fingerprint(key)
     local entry = {
         key = key, id = id, role = role, fingerprint = fingerprint, since = self.options.clock(), connection = connection,
-        -- Another network's core says which it is (`serve` checked it's a name).
-        network = NETWORK_ROLES[role] and hello.network or nil,
     }
+    if role == "network" then
+        -- Another network's core says which it is (`serve` checked it's a name), and what it offers.
+        entry.network = hello.network
+        entry.asks = { carry = hello.carry == true, messages = hello.messages == true }
+    end
     self.waiting[key] = entry
     self:log(("%s #%s%s wants %s. Fingerprint %s. Allow it with 'cellcore allow %s'"):format(
-        ROLES[role].name, tostring(id or "?"), entry.network and " (" .. entry.network .. ")" or "", ROLES[role].wants,
-        fingerprint, tostring(id or fingerprint:sub(1, 9))
+        ROLES[role].name, tostring(id or "?"), entry.network and " (" .. entry.network .. ")" or "",
+        entry.asks and offers(entry.asks) or ROLES[role].wants, fingerprint, tostring(id or fingerprint:sub(1, 9))
     ))
     connection:send({ waiting = true, fingerprint = fingerprint })
 
     while true do
         -- Replaced by a newer connection, or refused.
         if self.waiting[key] ~= entry then return false end
-        if self:allows(key, role) then
+        if self:allows(key, role, entry.network) then
             self.waiting[key] = nil
             return true
         end
@@ -415,11 +413,7 @@ function Service:serve_cell(connection, key, hello, id)
     if old then old.connection:abort() end
 
     -- The core sends control messages from inside the network stack, where nothing may wait: queue them.
-    local outbox, done = {}, false
-    local function send(message)
-        outbox[#outbox + 1] = message
-        self.options.wake()
-    end
+    local send, stop_sending = self.tasks:sender(connection, self.options.wake)
     local peer = connection:getPeer()
     local tunnel_key = self.core:add_tower(id, address.parse(peer), send)
     if not connection:send({ v = common.VERSION, network = network, certificate = cert, tunnel_key = tunnel_key }) then
@@ -437,23 +431,13 @@ function Service:serve_cell(connection, key, hello, id)
     end
     self:log(("Cell #%d connected, from %s"):format(id, peer))
 
-    self.tasks:spawn(function()
-        while not done do
-            local message = table.remove(outbox, 1)
-            if message then
-                if not connection:send(message) then done = true end
-            else
-                coroutine.yield()
-            end
-        end
-    end)
-    while not done do
+    while true do
         local message = connection:receive()
         if message == nil then break end
         local ok, err = pcall(self.core.control, self.core, id, message)
         if not ok then self:log("Error: " .. tostring(err)) end
     end
-    done = true
+    stop_sending()
     connection:abort()
     self.core:remove_tower(id, send)
     if self.cells[id] == entry then
@@ -462,346 +446,259 @@ function Service:serve_cell(connection, key, hello, id)
     end
 end
 
--- Tell the core which networks' cells our phones may use: every partner we've allowed, connected now or not, so
--- phones keep hearing of a partner whose core is away for a moment.
+-- Tell the core which networks' cells our phones may use: every network whose cells our agreements let them use, its
+-- core connected now or not, so phones keep hearing of a partner whose core is away for a moment.
 function Service:update_partner_keys()
     local keys = {}
-    for _, entry in pairs(self.allowed) do
-        local signing = has_role(entry, "roam") and entry.network and from_hex(entry.signing)
-        if signing and #signing == 32 then keys[entry.network] = { signing = signing, home = entry.home } end
+    for network, agreement in pairs(self.networks) do
+        local signing = agreement.roam and from_hex(agreement.signing)
+        if signing and #signing == 32 then keys[network] = { signing = signing, home = agreement.roam == "home" } end
     end
     self.core:set_partner_keys(keys)
 end
 
--- Another network's core, which carries our phones at its cells. To our core, it's a cell.
-function Service:serve_partner(connection, key, hello, id)
-    local network, signing = hello.network, from_hex(hello.signing)
-    if not common.is_network(network) or not signing or #signing ~= 32 or not id then return connection:abort() end
-    if network == self.config.network then return refuse(connection, "That's this network's own name.") end
-    -- A partner is allowed as one network, and can't come back as another. Nor can two be the same network.
-    local known = self.allowed[key]
-    if known and known.network and known.network ~= network then
-        return refuse(connection, ("This computer was allowed as the core of %s, not of %s."):format(known.network, network))
-    end
-    for other_key, other in pairs(self.allowed) do
-        if other_key ~= key and has_role(other, "roam") and other.network == network then
-            return refuse(connection, ("Another computer is the core of %s."):format(network))
-        end
-    end
-
-    local old = self.partners[network]
-    if old then old.connection:abort() end
-
-    local outbox, done = {}, false
-    local function send(message)
-        outbox[#outbox + 1] = message
-        self.options.wake()
-    end
-    local peer = connection:getPeer()
-    local tunnel_key = self.core:add_tower(id, address.parse(peer), send, network)
-    if not connection:send({ v = common.VERSION, network = self.config.network, tunnel_key = tunnel_key }) then
-        self.core:remove_tower(id, send)
-        return connection:abort()
-    end
-
-    local entry = { id = id, key = key, network = network, address = peer, since = self.options.epoch(), connection = connection }
-    self.partners[network] = entry
-    if known and (known.id ~= id or known.network ~= network or known.signing ~= hello.signing:lower()) then
-        known.id, known.network, known.signing = id, network, hello.signing:lower()
-        self:save_allowed()
-    end
-    self:update_partner_keys()
-    self:log(("%s (core #%d, from %s) now carries this network's phones"):format(network, id, peer))
-
-    self.tasks:spawn(function()
-        while not done do
-            local message = table.remove(outbox, 1)
-            if message then
-                if not connection:send(message) then done = true end
-            else
-                coroutine.yield()
-            end
-        end
-    end)
-    while not done do
-        local message = connection:receive()
-        if message == nil then break end
-        local ok, err = pcall(self.core.control, self.core, id, message)
-        if not ok then self:log("Error: " .. tostring(err)) end
-    end
-    done = true
-    connection:abort()
-    self.core:remove_tower(id, send)
-    if self.partners[network] == entry then
-        self.partners[network] = nil
-        self:log(("Lost the core of %s, which carries this network's phones"):format(network))
-    end
+-- Our hello to another network's core: who we are, and what we do for it.
+function Service:network_hello(agreement)
+    return {
+        role = "network", v = common.VERSION, id = self.options.id, network = self.config.network,
+        signing = to_hex(self.options.signing), number_prefix = self.config.number_prefix,
+        carry = agreement.carry, messages = agreement.messages,
+    }
 end
 
--- Keep a connection to another network's core: connect, run it, and connect again once it's lost, less often each
--- time. `list` is where it's kept, by network.
-function Service:keep_connecting(list, network, core, run)
-    local options = self.options
-    local entry = { network = network, core = core, state = "connecting" }
-    local old = list[network]
-    list[network] = entry
-    if old and old.connection then old.connection:abort() end
-    if not options.connect or not options.sleep then
-        entry.state, entry.error = "lost", "This computer can't connect to other cores"
-        return entry
-    end
-
-    self.tasks:spawn(function()
-        local delay = FIRST_DELAY
-        while not self.stopped and list[network] == entry do
-            entry.state, entry.error = "connecting", nil
-            local connected, connection, err = pcall(options.connect, core)
-            if not connected then connection, err = nil, tostring(connection) end
-            if connection then
-                entry.connection = connection
-                local ok, reason = pcall(run, self, entry, connection)
-                entry.connection = nil
-                connection:abort()
-                if entry.served then delay, entry.served = FIRST_DELAY, false end
-                if not ok then reason = tostring(reason) end
-                if entry.state ~= "refused" then entry.state, entry.error = "lost", reason or "Its core closed the connection" end
-            else
-                entry.state, entry.error = "lost", tostring(err)
-            end
-            if self.stopped or list[network] ~= entry then return end
-            entry.retry = delay
-            options.sleep(delay)
-            delay = math.min(delay * 2, MAX_DELAY)
-        end
-    end)
-    return entry
-end
-
--- Carry another network's phones: connect to its core, and keep connecting.
-function Service:start_carrying(network, core)
-    self:keep_connecting(self.carrying, network, core, self.carry)
-end
-
--- Exchange messages with another network's phones: connect to its core, and keep connecting.
-function Service:start_peering(network, core, prefix)
-    self:keep_connecting(self.peering, network, core, self.exchange).prefix = prefix
-end
-
--- Whether a number prefix is another network's we exchange messages with (or one of its which has connected).
+-- Whether a number prefix is another network's (one we have an agreement with).
 function Service:prefix_taken(prefix, network)
-    for other, peer in pairs(self.core.peers) do
-        if other ~= network and peer.prefix == prefix then return other end
-    end
-    for other, links in pairs(self.peer_links) do
-        if other ~= network and links[1] and links[1].prefix == prefix then return other end
+    for other, agreement in pairs(self.networks) do
+        if other ~= network and agreement.prefix == prefix then return other end
     end
     return nil
 end
 
--- Stop exchanging messages with a network, unless we still connect to its core, or allow it to connect to ours.
-function Service:forget_peer(network)
-    if self.peering[network] then return end
-    for _, entry in pairs(self.allowed) do
-        if entry.network == network and has_role(entry, "peer") then return end
+-- Keep a connection to another network's core, if we know where it is: connect, and connect again once it's lost,
+-- less often each time. While its core is connected to ours, the other way, there's nothing to do.
+function Service:dial(network)
+    local options = self.options
+    local old = self.dialing[network]
+    if old and old.connection then old.connection:abort() end
+    local agreement = self.networks[network]
+    if not agreement or not agreement.core or not (agreement.carry or agreement.roam or agreement.messages) then
+        self.dialing[network] = nil
+        return
     end
-    self.core:forget_peer(network)
-end
-
--- Messages between our phones and another network's, over one connection to its core (either way), until it ends.
--- Returns why it ended.
-function Service:peer_link(network, prefix, connection, link)
-    local outbox, done = {}, false
-    local function send(message)
-        outbox[#outbox + 1] = message
-        self.options.wake()
+    local entry = { network = network, core = agreement.core, state = "connecting" }
+    self.dialing[network] = entry
+    if not options.connect or not options.sleep then
+        entry.state, entry.error = "lost", "This computer can't connect to other cores"
+        return
     end
-    link.network, link.prefix, link.connection = network, prefix, connection
-    local links = self.peer_links[network] or {}
-    self.peer_links[network] = links
-    links[#links + 1] = link
-    self.core:add_peer(network, prefix, send)
 
     self.tasks:spawn(function()
-        while not done do
-            local message = table.remove(outbox, 1)
-            if message then
-                if not connection:send(message) then done = true end
+        local delay = FIRST_DELAY
+        while not self.stopped and self.dialing[network] == entry do
+            if self.links[network] then
+                entry.state, entry.error, entry.retry, delay = "connected", nil, nil, FIRST_DELAY
+                options.sleep(1)
             else
-                coroutine.yield()
+                entry.state, entry.error = "connecting", nil
+                local connected, connection, err = pcall(options.connect, entry.core)
+                if not connected then connection, err = nil, tostring(connection) end
+                if connection then
+                    entry.connection = connection
+                    local ok, reason = pcall(self.call, self, entry, connection)
+                    entry.connection = nil
+                    connection:abort()
+                    if entry.served then delay, entry.served = FIRST_DELAY, false end
+                    if not ok then reason = tostring(reason) end
+                    if entry.state ~= "refused" then entry.state, entry.error = "lost", reason or "Its core closed the connection" end
+                else
+                    entry.state, entry.error = "lost", tostring(err)
+                end
+                if self.stopped or self.dialing[network] ~= entry then return end
+                if not self.links[network] then
+                    entry.retry = delay
+                    options.sleep(delay)
+                    delay = math.min(delay * 2, MAX_DELAY)
+                end
             end
         end
     end)
+end
+
+-- Our connection to another network's core: say hello, and wait for its. Returns why it ended.
+function Service:call(entry, connection)
+    local network = entry.network
+    local agreement = self.networks[network]
+    if not agreement then return "There's no agreement with " .. network end
+    connection:send(self:network_hello(agreement))
+    local reply, err = connection:receive(HELLO_TIMEOUT)
+    if type(reply) == "table" and reply.waiting then
+        entry.state = "waiting"
+        reply, err = connection:receive(WAIT_TIMEOUT + 60)
+    end
+    if type(reply) == "table" then self:note_version(reply.v, "The core of " .. network) end
+    if type(reply) == "table" and type(reply.error) == "string" then
+        entry.state, entry.error = "refused", reply.error
+        return
+    end
+    if type(reply) ~= "table" or reply.role ~= "network" then return err or "Its core didn't answer" end
+    if reply.network ~= network then
+        entry.state, entry.error = "refused", ("That's the core of %s, not of %s"):format(tostring(reply.network), network)
+        return
+    end
+    -- The core we were told where to find: met before, it must be the same one, and met now, it's this one from now on.
+    local key = connection:getPeerKey()
+    if agreement.key and agreement.key ~= key then
+        entry.state, entry.error = "refused", ("That isn't the core of %s met before: its key has changed. If it should have, run 'cellcore network %s forget' and set the agreement up again"):format(network, network)
+        return
+    end
+    if not agreement.key then
+        agreement.key = key
+        self:save_networks()
+    end
+    entry.state, entry.served = "connected", true
+    return self:run_link(network, connection, reply, { key = key, dialer = self.options.identity })
+end
+
+-- Another network's core has connected to ours, and is allowed.
+function Service:serve_network(connection, key, hello, id)
+    local network = hello.network
+    local agreement = self.networks[network]
+    if not agreement or not id then return connection:abort() end
+    if not connection:send(self:network_hello(agreement)) then return connection:abort() end
+    self:run_link(network, connection, hello, { key = key, dialer = key })
+end
+
+--[[ The one connection between our core and another network's, either way, once both have said hello: everything the
+two networks do for each other goes over it, until it ends. Returns why it ended.
+
+`other` is the other core's hello, and `link` says who it is (`key`) and which core connected (`dialer`, its key).
+]]
+function Service:run_link(network, connection, other, link)
+    local agreement = self.networks[network]
+    if not agreement then return "There's no agreement with " .. network end
+
+    -- If both cores connected at once, the connection opened by the core with the smaller key is kept, by both.
+    local current = self.links[network]
+    if current then
+        if current.dialer <= link.dialer then
+            connection:abort()
+            return "Connected already"
+        end
+        current.connection:abort()
+    end
+    link.connection, link.address = connection, connection:getPeer()
+    self.links[network] = link
+
+    -- What the other core says of itself.
+    local changed = false
+    local id = common.is_id(other.id) and other.id < 2 ^ 31 and other.id or agreement.id
+    if id ~= agreement.id then agreement.id, changed = id, true end
+    local signing = is_key(other.signing) and other.signing:lower() or nil
+    if signing and signing ~= agreement.signing then agreement.signing, changed = signing, true end
+    local prefix = is_number_prefix(other.number_prefix) and other.number_prefix ~= self.config.number_prefix
+        and not self:prefix_taken(other.number_prefix, network) and other.number_prefix or nil
+    if prefix and prefix ~= agreement.prefix then agreement.prefix, changed = prefix, true end
+    if changed then
+        self:save_networks()
+        self:update_partner_keys()
+    end
+    if not id then
+        if self.links[network] == link then self.links[network] = nil end
+        return "Its core didn't say which computer it is"
+    end
+    link.id, link.wants_messages = id, other.messages == true
+
+    local send, stop_sending = self.tasks:sender(connection, self.options.wake)
+    link.send = send
+    local function to(service) return function(message) send({ s = service, m = message }) end end
+    local to_visited, to_home, to_messages = to("visited"), to("home"), to("messages")
+    local peer_address = address.parse(link.address)
+    local done = {}
+    self:log(("Connected to %s's core #%d, at %s"):format(network, id, link.address))
+
+    -- It carries our phones, and our agreement lets them use its cells: to our core, it's a cell. Its core gets our
+    -- tunnel's key.
+    if other.carry == true and agreement.roam then
+        local tunnel_key = self.core:add_tower(id, peer_address, to_visited, network)
+        link.tower = true
+        send({ s = "tunnel", key = tunnel_key })
+        self:log(("%s carries this network's phones%s"):format(network, agreement.roam == "home" and ", as home" or ""))
+    end
+    -- Messages, if both networks want them, and both have number prefixes.
+    local function start_messages(peer_prefix)
+        if other.messages == true and agreement.messages and self.config.number_prefix and peer_prefix then
+            self.core:add_peer(network, peer_prefix, to_messages)
+            link.peer = true
+        end
+    end
+    start_messages(agreement.prefix)
+    if link.peer then self:log(("Exchanging messages with %s, its numbers starting %s"):format(network, agreement.prefix)) end
+
     local reason
-    while not done do
+    while true do
         local message, receive_err = connection:receive()
         if message == nil then
             reason = receive_err or "Its core closed the connection"
             break
         end
-        local ok, err = pcall(self.core.peer_control, self.core, network, message, send)
-        if not ok then self:log("Error: " .. tostring(err)) end
+        if type(message) == "table" then
+            local service, inner = message.s, message.m
+            local ok, err = true, nil
+            if service == "home" and link.tower then
+                ok, err = pcall(self.core.control, self.core, id, inner)
+            elseif service == "visited" and link.partner then
+                ok, err = pcall(self.core.partner_control, self.core, network, inner)
+            elseif service == "messages" and link.peer then
+                ok, err = pcall(self.core.peer_control, self.core, network, inner, to_messages)
+            elseif service == "tunnel" and agreement.carry and not link.partner
+                and type(message.key) == "string" and #message.key == 32 then
+                -- We carry its phones: our core is one big cell to its.
+                self.core:add_partner(network, { address = peer_address, tunnel_key = message.key, send = to_home })
+                link.partner = true
+                self:log(("Carrying the phones of %s"):format(network))
+            elseif service == "prefix" and is_number_prefix(message.prefix) and message.prefix ~= self.config.number_prefix
+                and not self:prefix_taken(message.prefix, network) and message.prefix ~= agreement.prefix then
+                -- Its numbers start differently now.
+                agreement.prefix = message.prefix
+                self:save_networks()
+                if link.peer then self.core:remove_peer(network, to_messages) end
+                link.peer = false
+                start_messages(message.prefix)
+                self:log(("%s's numbers now start %s"):format(network, message.prefix))
+            end
+            if not ok and not done[err] then
+                done[err] = true
+                self:log("Error: " .. tostring(err))
+            end
+        end
     end
-    done = true
+
+    stop_sending()
     connection:abort()
-    self.core:remove_peer(network, send)
-    for i, other in ipairs(links) do
-        if other == link then
-            table.remove(links, i)
-            break
-        end
+    if link.tower then self.core:remove_tower(id, to_visited) end
+    if link.partner then self.core:remove_partner(network, to_home) end
+    if link.peer then self.core:remove_peer(network, to_messages) end
+    if self.links[network] == link then
+        self.links[network] = nil
+        self:log(("Lost %s's core: %s"):format(network, tostring(reason)))
     end
-    if not links[1] and self.peer_links[network] == links then self.peer_links[network] = nil end
     return reason
 end
 
--- Another network's core, which exchanges messages with ours.
-function Service:serve_peer(connection, key, hello, id)
-    local network, prefix = hello.network, hello.number_prefix
-    if not common.is_network(network) or not is_number_prefix(prefix) or not id then return connection:abort() end
-    if network == self.config.network then return refuse(connection, "That's this network's own name.") end
-    local own = self.config.number_prefix
-    if not own then return refuse(connection, ("%s has no number prefix yet."):format(self.config.network)) end
-    if prefix == own then return refuse(connection, ("%s has the number prefix %s too."):format(self.config.network, own)) end
-    -- A peer is allowed as one network (the same as it carries our phones as), and two can't be the same network.
-    local known = self.allowed[key]
-    if known and known.network and known.network ~= network then
-        return refuse(connection, ("This computer was allowed as the core of %s, not of %s."):format(known.network, network))
+-- Forget what a network's core was doing for ours, now its agreement has changed: drop the connection, which is made
+-- again (by whichever core knows where the other is) with what's agreed now. Messages for it wait if they're agreed.
+function Service:agreement_changed(network)
+    local agreement = self.networks[network]
+    local link = self.links[network]
+    if link then link.connection:abort() end
+    if agreement and agreement.messages and agreement.prefix then
+        self.core:know_peer(network, agreement.prefix)
+    else
+        self.core:forget_peer(network)
     end
-    for other_key, other in pairs(self.allowed) do
-        if other_key ~= key and has_role(other, "peer") and other.network == network then
-            return refuse(connection, ("Another computer is the core of %s."):format(network))
-        end
-    end
-    local taken = self:prefix_taken(prefix, network)
-    if taken then return refuse(connection, ("%s has the number prefix %s already."):format(taken, prefix)) end
-    if not connection:send({ v = common.VERSION, network = self.config.network, number_prefix = own }) then
-        return connection:abort()
-    end
-    if known and (known.id ~= id or known.network ~= network or known.prefix ~= prefix) then
-        known.id, known.network, known.prefix = id, network, prefix
-        self:save_allowed()
-    end
-
-    local peer = connection:getPeer()
-    self:log(("%s (core #%d, from %s) exchanges messages with this network, its numbers starting %s"):format(network, id, peer, prefix))
-    self:peer_link(network, prefix, connection, { key = key, address = peer, incoming = true })
-    self:log(("Lost the core of %s, which exchanges messages with this network"):format(network))
-end
-
--- One connection to the core of a network we exchange messages with, which we connected to. Returns why it ended.
-function Service:exchange(entry, connection)
-    local options, network = self.options, entry.network
-    local own = self.config.number_prefix
-    if not own then
-        entry.state, entry.error = "refused", "This network has no number prefix yet: set one with 'cellcore numbers'"
-        return
-    end
-    connection:send({ role = "peer", v = common.VERSION, id = options.id, network = self.config.network, number_prefix = own })
-    local reply, err = connection:receive(HELLO_TIMEOUT)
-    if type(reply) == "table" and reply.waiting then
-        entry.state = "waiting"
-        reply, err = connection:receive(WAIT_TIMEOUT + 60)
-    end
-    if type(reply) == "table" then self:note_version(reply.v, "The core of " .. network) end
-    if type(reply) == "table" and type(reply.error) == "string" then
-        entry.state, entry.error = "refused", reply.error
-        return
-    end
-    if type(reply) ~= "table" or not is_number_prefix(reply.number_prefix) then return err or "Its core didn't answer" end
-    if reply.network ~= network then
-        entry.state, entry.error = "refused", ("That's the core of %s, not of %s"):format(tostring(reply.network), network)
-        return
-    end
-    if reply.number_prefix == own then
-        entry.state, entry.error = "refused", ("%s has the number prefix %s too"):format(network, own)
-        return
-    end
-    local taken = self:prefix_taken(reply.number_prefix, network)
-    if taken then
-        entry.state, entry.error = "refused", ("%s has the number prefix %s already"):format(taken, reply.number_prefix)
-        return
-    end
-
-    entry.state, entry.served = "serving", true
-    if entry.prefix ~= reply.number_prefix then
-        entry.prefix = reply.number_prefix
-        self:save_peering()
-    end
-    self:log(("Exchanging messages with %s, through its core %s, its numbers starting %s"):format(network, entry.core, reply.number_prefix))
-    local reason = self:peer_link(network, reply.number_prefix, connection, { address = connection:getPeer() })
-    self:log(("Lost the core of %s: messages for its phones wait until it's back"):format(network))
-    return reason
-end
-
-function Service:save_peering()
-    local saved = {}
-    for network, entry in pairs(self.peering) do saved[network] = { core = entry.core, prefix = entry.prefix } end
-    write_table(self.files.peers, saved)
-end
-
--- One connection to the core of a network whose phones we carry. Returns why it ended.
-function Service:carry(entry, connection)
-    local options, network = self.options, entry.network
-    connection:send({
-        role = "roam", v = common.VERSION, id = options.id, network = self.config.network, signing = to_hex(options.signing),
-    })
-    local reply, err = connection:receive(HELLO_TIMEOUT)
-    if type(reply) == "table" and reply.waiting then
-        entry.state = "waiting"
-        reply, err = connection:receive(WAIT_TIMEOUT + 60)
-    end
-    if type(reply) == "table" then self:note_version(reply.v, "The core of " .. network) end
-    if type(reply) == "table" and type(reply.error) == "string" then
-        entry.state, entry.error = "refused", reply.error
-        return
-    end
-    if type(reply) ~= "table" or type(reply.tunnel_key) ~= "string" or #reply.tunnel_key ~= 32 then
-        return err or "Its core didn't answer"
-    end
-    if reply.network ~= network then
-        entry.state, entry.error = "refused", ("That's the core of %s, not of %s"):format(tostring(reply.network), network)
-        return
-    end
-
-    local outbox, done = {}, false
-    local function send(message)
-        outbox[#outbox + 1] = message
-        options.wake()
-    end
-    self.core:add_partner(network, { address = address.parse(connection:getPeer()), tunnel_key = reply.tunnel_key, send = send })
-    entry.state, entry.served = "serving", true
-    self:log(("Carrying the phones of %s, through its core %s"):format(network, entry.core))
-
-    self.tasks:spawn(function()
-        while not done do
-            local message = table.remove(outbox, 1)
-            if message then
-                if not connection:send(message) then done = true end
-            else
-                coroutine.yield()
-            end
-        end
-    end)
-    local reason
-    while not done do
-        local message, receive_err = connection:receive()
-        if message == nil then
-            reason = receive_err or "Its core closed the connection"
-            break
-        end
-        local ok, control_err = pcall(self.core.partner_control, self.core, network, message)
-        if not ok then self:log("Error: " .. tostring(control_err)) end
-    end
-    done = true
-    self.core:remove_partner(network, send)
-    self:log(("Lost the core of %s: its phones here have no service"):format(network))
-    return reason
-end
-
-function Service:save_carrying()
-    local saved = {}
-    for network, entry in pairs(self.carrying) do saved[network] = { core = entry.core } end
-    write_table(self.files.roaming, saved)
+    self:update_partner_keys()
+    self:dial(network)
+    self.options.wake()
 end
 
 local requests = {}
@@ -840,12 +737,12 @@ local function by_id(a, b)
     return a.key < b.key
 end
 
---- Everything about the network: its cells, the computers allowed in and waiting, and the subscribers.
+--- Everything about the network: its cells, the computers allowed in and waiting, other networks, and the subscribers.
 function requests.status(self)
     local fingerprint, now = self.options.fingerprint, self.options.epoch()
     local result = {
         network = self.config.network, prefix = self.config.prefix, messages = #self.core.messages, codes = 0,
-        cells = {}, allowed = {}, waiting = {}, subscribers = {}, partners = {}, carrying = {}, peers = {},
+        cells = {}, allowed = {}, waiting = {}, subscribers = {}, networks = {},
         number_prefix = self.config.number_prefix,
     }
     for id, cell in pairs(self.cells) do
@@ -855,66 +752,46 @@ function requests.status(self)
         }
     end
     table.sort(result.cells, by_id)
-    local peers = {}
     for key, entry in pairs(self.allowed) do
         result.allowed[#result.allowed + 1] = {
             key = key, fingerprint = fingerprint(key), label = entry.label, role = entry.role, id = entry.id,
-            network = entry.network,
-        }
-        for role in pairs(entry.roles or {}) do
-            result.allowed[#result.allowed + 1] = {
-                key = key, fingerprint = fingerprint(key), label = entry.label, role = role, id = entry.id,
-                network = entry.network,
-            }
-        end
-        -- Networks which connect to us to exchange messages.
-        if has_role(entry, "peer") and entry.network then peers[entry.network] = { network = entry.network, id = entry.id } end
-        -- Networks which carry our phones.
-        if has_role(entry, "roam") and entry.network then
-            local connected = self.partners[entry.network]
-            result.partners[#result.partners + 1] = {
-                network = entry.network, id = entry.id, key = key, fingerprint = fingerprint(key), phones = 0,
-                connected = connected ~= nil and connected.key == key, address = connected and connected.address or nil,
-                home = entry.home == true,
-            }
-        end
-    end
-    table.sort(result.partners, function(a, b) return a.network < b.network end)
-    -- Networks whose phones we carry.
-    local visitors = {}
-    for _, visitor in ipairs(self.core:visitor_info()) do visitors[visitor.network] = (visitors[visitor.network] or 0) + 1 end
-    for network, entry in pairs(self.carrying) do
-        result.carrying[#result.carrying + 1] = {
-            network = network, core = entry.core, state = entry.state, error = entry.error, phones = visitors[network] or 0,
         }
     end
-    table.sort(result.carrying, function(a, b) return a.network < b.network end)
-    -- Networks we exchange messages with: those we connect to, and those which connect to us.
-    for network, entry in pairs(self.peering) do
-        local peer = peers[network] or { network = network }
-        peers[network] = peer
-        peer.core, peer.state, peer.error = entry.core, entry.state, entry.error
-    end
-    local held = self.core:held_info()
-    for network, peer in pairs(peers) do
-        local links = self.peer_links[network]
-        peer.connected = links ~= nil
-        peer.prefix = links and links[#links].prefix or (self.core.peers[network] and self.core.peers[network].prefix)
-        peer.waiting = held[network] or 0
-        result.peers[#result.peers + 1] = peer
-    end
-    table.sort(result.peers, function(a, b) return a.network < b.network end)
     table.sort(result.allowed, by_id)
     for key, entry in pairs(self.waiting) do
         result.waiting[#result.waiting + 1] = {
             key = key, fingerprint = entry.fingerprint, id = entry.id, role = entry.role, network = entry.network,
-            waited = math.floor(self.options.clock() - entry.since),
+            asks = entry.asks, waited = math.floor(self.options.clock() - entry.since),
         }
     end
     table.sort(result.waiting, by_id)
 
+    -- Other networks: what's agreed, and how it's going.
+    local here, there = {}, {}
+    for _, visitor in ipairs(self.core:visitor_info()) do here[visitor.network] = (here[visitor.network] or 0) + 1 end
     local sessions = {}
-    for _, session in ipairs(self.core:info()) do sessions[session.sim] = session end
+    for _, session in ipairs(self.core:info()) do
+        sessions[session.sim] = session
+        if session.attached and session.roaming then there[session.roaming] = (there[session.roaming] or 0) + 1 end
+    end
+    local held = self.core:held_info()
+    for network, agreement in pairs(self.networks) do
+        local link, dialing = self.links[network], self.dialing[network]
+        result.networks[#result.networks + 1] = {
+            network = network, key = agreement.key, fingerprint = agreement.key and fingerprint(agreement.key) or nil,
+            id = agreement.id, label = agreement.label, core = agreement.core, prefix = agreement.prefix,
+            carry = agreement.carry, roam = agreement.roam, messages = agreement.messages,
+            connected = link ~= nil, address = link and link.address or nil,
+            state = dialing and dialing.state or nil, error = dialing and dialing.error or nil,
+            retry = dialing and dialing.retry or nil,
+            -- What's under way: its phones here, ours there, and messages for its phones waiting.
+            carrying = link ~= nil and link.partner == true, carried = link ~= nil and link.tower == true,
+            messaging = link ~= nil and link.peer == true,
+            visitors = here[network] or 0, phones = there[network] or 0, waiting = held[network] or 0,
+        }
+    end
+    table.sort(result.networks, function(a, b) return a.network < b.network end)
+
     for sim, subscriber in pairs(self.subscribers) do
         local session = sessions[sim]
         local attached = session and session.attached
@@ -924,11 +801,6 @@ function requests.status(self)
             roaming = attached and session.roaming or nil, barred = subscriber.barred or nil,
             may_roam = subscriber.roaming ~= false,
         }
-        if attached and session.roaming then
-            for _, partner in ipairs(result.partners) do
-                if partner.network == session.roaming then partner.phones = partner.phones + 1 end
-            end
-        end
     end
     table.sort(result.subscribers, function(a, b) return tostring(a.id) < tostring(b.id) end)
     for _, code in pairs(self.codes) do
@@ -937,55 +809,70 @@ function requests.status(self)
     return result
 end
 
---- Allow a computer in, by its key: in the role it asked for, if it's waiting.
+--- Allow a computer in, by its key: as a cell or administrator, or as another network's core, accepting what it
+-- offered.
 function requests.allow(self, request, by)
     local key = is_key(request.key) and request.key:lower()
     if not key then return { error = "Expected a key, of 64 hexadecimal digits" } end
 
     local waiting, known = self.waiting[key], self.allowed[key]
     if known and known.role == "denied" then known = nil end
-    local role = waiting and waiting.role or (ROLES[request.role] and request.role ~= "cell" and request.role)
+
+    -- Another network's core: the agreement is made, with what it offered.
+    if waiting and waiting.role == "network" then
+        local network = waiting.network
+        local core_of = self:network_of(key)
+        if core_of and core_of ~= network then
+            return { error = ("That computer is the core of %s, not of %s"):format(core_of, network) }
+        end
+        local agreement = self.networks[network] or networks.empty()
+        self.networks[network] = agreement
+        agreement.key, agreement.id = key, waiting.id or agreement.id
+        agreement.label = type(request.label) == "string" and request.label ~= "" and request.label:sub(1, 32) or agreement.label
+        if waiting.asks.carry and not agreement.roam then agreement.roam = "partner" end
+        if waiting.asks.messages then agreement.messages = true end
+        -- Allowing it again lifts a refusal.
+        if self.allowed[key] and self.allowed[key].role == "denied" then
+            self.allowed[key] = nil
+            self:save_allowed()
+        end
+        self:save_networks()
+        self:update_partner_keys()
+        self:log(("Allowed the core of %s (#%s), %s%s"):format(network, tostring(agreement.id or "?"), offers(waiting.asks), self:by(by)))
+        self.options.wake()
+        return {
+            role = "network", network = network, id = agreement.id, label = agreement.label or network,
+            fingerprint = self.options.fingerprint(key), roam = agreement.roam, messages = agreement.messages,
+        }
+    end
+
+    local role = waiting and waiting.role or (ROLES[request.role] and request.role ~= "cell" and request.role ~= "network" and request.role)
         or (known and known.role) or "cell"
     local id = waiting and waiting.id or (known and known.id) or (self.allowed[key] and self.allowed[key].id)
-    local network = NETWORK_ROLES[role] and ((waiting and waiting.network) or (known and known.network)) or nil
-    local names = { cell = "cell", admin = "administrator", roam = "roaming partner", peer = "messaging peer" }
-
-    -- Another network's core, allowed already, gets its second role, as the same network.
-    if known and known.role ~= role and NETWORK_ROLES[known.role] and NETWORK_ROLES[role] then
-        if known.network and network and known.network ~= network then
-            return { error = ("That computer was allowed as the core of %s, not of %s"):format(known.network, network) }
-        end
-        known.roles = known.roles or {}
-        known.roles[role] = true
-        known.network = known.network or network
-        self:save_allowed()
-        self:log(("Allowed %s #%s, %s%s"):format(names[role], tostring(known.id or id or "?"), known.label, self:by(by)))
-        self.options.wake()
-        return { role = role, id = known.id or id, label = known.label, network = known.network, fingerprint = self.options.fingerprint(key) }
-    end
+    local names = { cell = "cell", admin = "administrator" }
     local label = type(request.label) == "string" and request.label ~= "" and request.label:sub(1, 32)
-        or (known and known.label ~= "" and known.label) or network
-        or (({ cell = "cell #", admin = "admin #", roam = "partner #", peer = "peer #" })[role] .. tostring(id or "?"))
+        or (known and known.label ~= "" and known.label)
+        or (({ cell = "cell #", admin = "admin #" })[role] .. tostring(id or "?"))
 
-    self.allowed[key] = {
-        label = label, role = role, id = id, network = network, signing = known and known.signing or nil,
-        home = known and known.home or nil,
-    }
+    self.allowed[key] = { label = label, role = role, id = id }
     self:save_allowed()
     self:log(("Allowed %s #%s, %s%s"):format(names[role], tostring(id or "?"), label, self:by(by)))
     self.options.wake()
-    return { role = role, id = id, label = label, network = network, fingerprint = self.options.fingerprint(key) }
+    return { role = role, id = id, label = label, fingerprint = self.options.fingerprint(key) }
 end
 
---- Refuse a computer, by its key, from now on. Any connections it has are dropped.
+--- Refuse a computer, by its key, from now on. Any connections it has are dropped. For another network's core, the
+-- agreement does nothing from now on.
 function requests.deny(self, request, by)
     local key = is_key(request.key) and request.key:lower()
     if not key then return { error = "Expected a key, of 64 hexadecimal digits" } end
     if key == self.options.identity then return { error = "The core's own computer is always allowed" } end
 
     local known, waiting = self.allowed[key], self.waiting[key]
-    local id = (known and known.id) or (waiting and waiting.id)
-    self.allowed[key] = { label = known and known.label or "", role = "denied", id = id }
+    local network = self:network_of(key)
+    local agreement = network and self.networks[network]
+    local id = (known and known.id) or (waiting and waiting.id) or (agreement and agreement.id)
+    self.allowed[key] = { label = known and known.label or (network or ""), role = "denied", id = id }
     self:save_allowed()
     self:log(("Refused #%s, %s%s"):format(tostring(id or "?"), self.options.fingerprint(key), self:by(by)))
 
@@ -999,63 +886,134 @@ function requests.deny(self, request, by)
     for connection, admin in pairs(self.admins) do
         if admin == key then connection:abort() end
     end
-    -- A network which carried our phones no longer does, and they're told its cells aren't for them. One which
-    -- exchanged messages with ours no longer does either.
-    for _, partner in pairs(self.partners) do
-        if partner.key == key then partner.connection:abort() end
+    -- A network's core: our phones are told its cells aren't for them, and nothing more is done for it.
+    if agreement then
+        agreement.carry, agreement.roam, agreement.messages = false, false, false
+        self:save_networks()
+        self:agreement_changed(network)
     end
-    for _, links in pairs(self.peer_links) do
-        for _, link in ipairs(links) do
-            if link.key == key then link.connection:abort() end
-        end
-    end
-    if known and known.network and has_role(known, "peer") then self:forget_peer(known.network) end
-    self:update_partner_keys()
-    return { id = id }
+    return { id = id, network = network }
 end
 
---- Carry another network's phones at our cells: connect to its core, from now on.
-function requests.carry(self, request, by)
-    local network, core = request.network, request.core
+--[[- See or change an agreement with another network: whether we carry its phones (`carry`), whether ours may use its
+cells (`roam`: `"partner"`, `"home"` or `false`), whether the two exchange messages (`messages`), and where its core is
+(`core`, or `false` to wait for it to connect). `forget` drops the agreement altogether.
+]]
+function requests.network(self, request, by)
+    local network = request.network
     if not common.is_network(network) then return { error = "Network names are letters, digits and dashes, up to 32 of them" } end
     if network == self.config.network then return { error = "That's this network" } end
-    if type(core) ~= "string" or #core < 1 or #core > 64 or core:find("[^%w%.%-_:]") then
-        return { error = "Expected the name or address of the other network's core" }
+    local agreement = self.networks[network]
+
+    if request.forget then
+        if not agreement then return { error = "There's no agreement with " .. network } end
+        self.networks[network] = nil
+        self:save_networks()
+        self:agreement_changed(network)
+        self:log(("Forgot the agreement with %s%s"):format(network, self:by(by)))
+        return { network = network, forgotten = true }
     end
-    self:start_carrying(network, core)
-    self:save_carrying()
-    self:log(("Set up to carry the phones of %s, through its core %s%s"):format(network, core, self:by(by)))
-    -- What the other core's administrator needs, to allow this one.
-    return { network = network, core = core, id = self.options.id, fingerprint = self.options.fingerprint(self.options.identity) }
+
+    local changes = {}
+    if request.carry ~= nil then
+        if type(request.carry) ~= "boolean" then return { error = "Expected carry to be true or false" } end
+        changes.carry = request.carry
+    end
+    if request.roam ~= nil then
+        if request.roam ~= false and request.roam ~= "partner" and request.roam ~= "home" then
+            return { error = "Expected roam to be partner, home or false" }
+        end
+        changes.roam = request.roam
+    end
+    if request.messages ~= nil then
+        if type(request.messages) ~= "boolean" then return { error = "Expected messages to be true or false" } end
+        if request.messages and not self.config.number_prefix then
+            return { error = "Set this network's number prefix first, with 'cellcore numbers'" }
+        end
+        changes.messages = request.messages
+    end
+    if request.core ~= nil then
+        if request.core ~= false and not networks.is_core(request.core) then
+            return { error = "Expected the name or address of the other network's core" }
+        end
+        changes.core = request.core or nil
+        if request.core == false then changes.no_core = true end
+    end
+
+    if next(changes) then
+        agreement = agreement or networks.empty()
+        self.networks[network] = agreement
+        local said = {}
+        for field, value in pairs(changes) do
+            if field == "no_core" then
+                agreement.core = nil
+            else
+                agreement[field] = value
+            end
+            said[#said + 1] = field == "no_core" and "core none" or ("%s %s"):format(field, tostring(value))
+        end
+        table.sort(said)
+        self:save_networks()
+        self:agreement_changed(network)
+        self:log(("Agreement with %s: %s%s"):format(network, table.concat(said, ", "), self:by(by)))
+    elseif not agreement then
+        return { error = "There's no agreement with " .. network }
+    end
+
+    local view = { network = network }
+    for field, value in pairs(agreement) do view[field] = value end
+    if view.key then view.fingerprint = self.options.fingerprint(view.key) end
+    view.connected = self.links[network] ~= nil
+    -- What the other core's administrator needs, to allow ours.
+    view.our_id, view.our_fingerprint = self.options.id, self.options.fingerprint(self.options.identity)
+    return view
+end
+
+-- The requests older versions had, which change agreements as `network` does.
+local function as_network(self, by, network, changes, check)
+    if check then
+        local agreement = type(network) == "string" and self.networks[network]
+        local err = check(agreement)
+        if err then return { error = err } end
+    end
+    changes.op, changes.network = "network", network
+    local reply = requests.network(self, changes, by)
+    if not reply.error then reply.id, reply.fingerprint = self.options.id, self.options.fingerprint(self.options.identity) end
+    return reply
+end
+
+--- Carry another network's phones at our cells, connecting to its core.
+function requests.carry(self, request, by)
+    if type(request.core) ~= "string" then return { error = "Expected the name or address of the other network's core" } end
+    return as_network(self, by, request.network, { carry = true, core = request.core })
 end
 
 --- Stop carrying another network's phones.
 function requests.uncarry(self, request, by)
-    local entry = type(request.network) == "string" and self.carrying[request.network]
-    if not entry then return { error = "This network doesn't carry the phones of " .. tostring(request.network) } end
-    self.carrying[request.network] = nil
-    if entry.connection then entry.connection:abort() end
-    self.core:remove_partner(request.network)
-    self:save_carrying()
-    self:log(("Stopped carrying the phones of %s%s"):format(request.network, self:by(by)))
-    self.options.wake()
-    return { network = request.network }
+    return as_network(self, by, request.network, { carry = false }, function(agreement)
+        if not agreement or not agreement.carry then return "This network doesn't carry the phones of " .. tostring(request.network) end
+    end)
 end
 
---- Say whether our phones treat a partner (a network which carries them) as home.
+--- Say whether our phones treat a network which carries them as home, or roam there.
 function requests.partner(self, request, by)
-    local network, home = request.network, request.home
-    if type(home) ~= "boolean" then return { error = "Expected home to be true or false" } end
-    local found
-    for _, entry in pairs(self.allowed) do
-        if has_role(entry, "roam") and entry.network == network then found = entry end
-    end
-    if not found then return { error = ("%s doesn't carry this network's phones"):format(tostring(network)) } end
-    found.home = home or nil
-    self:save_allowed()
-    self:update_partner_keys()
-    self:log(("%s is %s%s"):format(network, home and "home to this network's phones" or "a roaming partner", self:by(by)))
-    return { network = network, home = home }
+    if type(request.home) ~= "boolean" then return { error = "Expected home to be true or false" } end
+    return as_network(self, by, request.network, { roam = request.home and "home" or "partner" }, function(agreement)
+        if not agreement or not agreement.roam then return ("%s doesn't carry this network's phones"):format(tostring(request.network)) end
+    end)
+end
+
+--- Exchange messages with another network's phones, connecting to its core.
+function requests.peer(self, request, by)
+    if type(request.core) ~= "string" then return { error = "Expected the name or address of the other network's core" } end
+    return as_network(self, by, request.network, { messages = true, core = request.core })
+end
+
+--- Stop exchanging messages with another network.
+function requests.unpeer(self, request, by)
+    return as_network(self, by, request.network, { messages = false }, function(agreement)
+        if not agreement or not agreement.messages then return "This network doesn't exchange messages with " .. tostring(request.network) end
+    end)
 end
 
 --- Set this network's number prefix, which other networks' phones reach ours by.
@@ -1070,41 +1028,19 @@ function requests.numbers(self, request, by)
     write_table(self.files.config, config)
     self.config.number_prefix = prefix
     self.core:set_number_prefix(prefix)
-    -- Networks we exchange messages with heard the old one when they connected: they connect again.
-    for _, links in pairs(self.peer_links) do
-        for _, link in ipairs(links) do link.connection:abort() end
+    -- Other networks' cores hear of it over the connection, which stays: phones roaming there keep their service. One
+    -- we'd exchange messages with, but couldn't before (we had no prefix, or the same as it), is connected afresh, so
+    -- both look again.
+    for network, link in pairs(self.links) do
+        local agreement = self.networks[network]
+        if not link.peer and link.wants_messages and agreement and agreement.messages then
+            self:agreement_changed(network)
+        else
+            link.send({ s = "prefix", prefix = prefix })
+        end
     end
     self:log(("This network's numbers now start %s%s"):format(prefix, self:by(by)))
     return { prefix = prefix }
-end
-
---- Exchange messages with another network's phones: connect to its core, from now on.
-function requests.peer(self, request, by)
-    local network, core = request.network, request.core
-    if not common.is_network(network) then return { error = "Network names are letters, digits and dashes, up to 32 of them" } end
-    if network == self.config.network then return { error = "That's this network" } end
-    if type(core) ~= "string" or #core < 1 or #core > 64 or core:find("[^%w%.%-_:]") then
-        return { error = "Expected the name or address of the other network's core" }
-    end
-    if not self.config.number_prefix then return { error = "Set this network's number prefix first, with 'cellcore numbers'" } end
-    self:start_peering(network, core)
-    self:save_peering()
-    self:log(("Set up to exchange messages with %s, through its core %s%s"):format(network, core, self:by(by)))
-    -- What the other core's administrator needs, to allow this one.
-    return { network = network, core = core, id = self.options.id, fingerprint = self.options.fingerprint(self.options.identity) }
-end
-
---- Stop connecting to another network's core to exchange messages.
-function requests.unpeer(self, request, by)
-    local entry = type(request.network) == "string" and self.peering[request.network]
-    if not entry then return { error = "This network doesn't connect to the core of " .. tostring(request.network) } end
-    self.peering[request.network] = nil
-    if entry.connection then entry.connection:abort() end
-    self:save_peering()
-    self:forget_peer(request.network)
-    self:log(("Stopped connecting to the core of %s%s"):format(request.network, self:by(by)))
-    self.options.wake()
-    return { network = request.network }
 end
 
 --- Make an activation code for a subscriber.
@@ -1232,18 +1168,11 @@ function Service:stop()
     for _, entry in pairs(self.waiting) do entry.connection:abort() end
     for _, cell in pairs(self.cells) do cell.connection:abort() end
     for connection in pairs(self.admins) do connection:abort() end
-    for _, partner in pairs(self.partners) do partner.connection:abort() end
-    for _, entry in pairs(self.carrying) do
+    for _, link in pairs(self.links) do link.connection:abort() end
+    for _, entry in pairs(self.dialing) do
         if entry.connection then entry.connection:abort() end
     end
-    for _, entry in pairs(self.peering) do
-        if entry.connection then entry.connection:abort() end
-    end
-    for _, links in pairs(self.peer_links) do
-        for _, link in ipairs(links) do link.connection:abort() end
-    end
-    self.waiting, self.cells, self.admins, self.partners, self.carrying = {}, {}, {}, {}, {}
-    self.peering, self.peer_links = {}, {}
+    self.waiting, self.cells, self.admins, self.links, self.dialing = {}, {}, {}, {}, {}
 end
 
 return {

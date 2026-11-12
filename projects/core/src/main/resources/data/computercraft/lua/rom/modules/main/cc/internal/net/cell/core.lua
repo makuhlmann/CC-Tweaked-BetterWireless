@@ -1017,25 +1017,38 @@ function Core:downlink(packet, next_hop)
     end
 end
 
--- A packet from a phone, up a tunnel from its cell.
-function Core:uplink(data, from)
+-- Which of our cells (or other networks' cores) a packet up a tunnel is from, and what's in it. A cell sends from the
+-- address it connected from. Another network's core may not, when ours connected to it at an address of its other
+-- than the one it sends from: for those, the key which opens it says whose it is.
+function Core:open_uplink(data, from)
     for _, tower in pairs(self.towers) do
         if tower.address == from then
             local inner = tower.sealer:open(data)
-            if type(inner) ~= "table" or type(inner.packet) ~= "string" then return end
-            local session = self.by_teid[inner.teid]
-            if not session then
-                -- Another network's phone, at one of our cells: on to its own core's gateway.
-                local visitor = not tower.partner and self.visitors[inner.teid]
-                if visitor and visitor.cell == tower.id then self:roam_uplink(visitor, inner.packet) end
-                return
-            end
-            local packet = session.cell == tower.id and codec.decode(inner.packet)
-            -- A phone may only send from its own address.
-            if type(packet) == "table" and packet.src == session.address then self.stack:inject("cellular", packet) end
-            return
+            if inner ~= nil then return tower, inner end
         end
     end
+    for _, tower in pairs(self.towers) do
+        if tower.partner and tower.address ~= from then
+            local inner = tower.sealer:open(data)
+            if inner ~= nil then return tower, inner end
+        end
+    end
+end
+
+-- A packet from a phone, up a tunnel from its cell.
+function Core:uplink(data, from)
+    local tower, inner = self:open_uplink(data, from)
+    if not tower or type(inner) ~= "table" or type(inner.packet) ~= "string" then return end
+    local session = self.by_teid[inner.teid]
+    if not session then
+        -- Another network's phone, at one of our cells: on to its own core's gateway.
+        local visitor = not tower.partner and self.visitors[inner.teid]
+        if visitor and visitor.cell == tower.id then self:roam_uplink(visitor, inner.packet) end
+        return
+    end
+    local packet = session.cell == tower.id and codec.decode(inner.packet)
+    -- A phone may only send from its own address.
+    if type(packet) == "table" and packet.src == session.address then self.stack:inject("cellular", packet) end
 end
 
 --[[- Carry another network's phones: add its core, which we have connected to. To that core, we're one big cell (see

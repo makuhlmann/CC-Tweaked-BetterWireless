@@ -51,11 +51,12 @@ local MAX_CERTIFICATES = 256
 --[[- The version of the cellular network's protocols this computer speaks. System information, the hellos cells and
 cores send each other, and what a core tells a phone when it attaches each carry it.
 
-Version 2 is the first which says so (version 1 had system information for one network only). Whoever is newer knows
+Version 2 is the first which says so (version 1 had system information for one network only). Version 3 has one
+connection between two networks' cores, for all they do for each other. Whoever is newer knows
 whether it can still talk to the other, so a computer which hears a newer version only notes it: a phone says the
 network is newer than it is while it can't find a cell it can use, and a core logs it.
 ]]
-local VERSION = 2
+local VERSION = 3
 
 --- Whether another computer says it speaks a newer version than we do.
 --
@@ -79,6 +80,14 @@ local REPLAY_WINDOW = 64
 -- @treturn boolean Whether it's an ID.
 local function is_id(value)
     return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 2 ^ 53
+end
+
+--- Whether a value could be a number prefix: up to 8 digits, which a network's numbers start with for other networks.
+--
+-- @param value The value.
+-- @treturn boolean Whether it could be.
+local function is_number_prefix(value)
+    return type(value) == "string" and #value >= 1 and #value <= 8 and not value:find("%D")
 end
 
 --- Whether a value could be a network's name: letters, digits and dashes, up to 32 of them.
@@ -384,6 +393,7 @@ return {
     cell_name = cell_name,
     is_id = is_id,
     is_network = is_network,
+    is_number_prefix = is_number_prefix,
     is_path = is_path,
     make_code = make_code,
     parse_code = parse_code,

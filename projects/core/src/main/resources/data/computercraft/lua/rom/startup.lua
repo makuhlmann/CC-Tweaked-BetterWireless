@@ -135,8 +135,8 @@ shell.setCompletionFunction("rom/programs/http/pastebin.lua", completion.build(
 ))
 shell.setCompletionFunction("rom/programs/rednet/chat.lua", completion.build({ completion.choice, { "host ", "join " } }))
 local cellcore_commands = {
-    "status", "log", "add ", "subscribers", "remove ", "set ", "cells", "allow ", "deny ", "roaming", "carry ", "uncarry ",
-    "partner ", "numbers ", "peers", "peer ", "unpeer ", "restart",
+    "status", "log", "add ", "subscribers", "remove ", "set ", "cells", "allow ", "deny ", "networks", "network ",
+    "numbers ", "restart", "roaming", "carry ", "uncarry ", "partner ", "peers", "peer ", "unpeer ",
 }
 shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, index, text, previous)
     if index == 1 then

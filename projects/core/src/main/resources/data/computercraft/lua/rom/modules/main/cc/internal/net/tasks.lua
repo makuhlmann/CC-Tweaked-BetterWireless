@@ -69,6 +69,33 @@ function Tasks:resume(event, ...)
     self.list = alive
 end
 
+--[[- Send messages over a connection from a task of its own. A connection's `send` waits while the other side has no
+room, and the code which sends (the network stack's, say) mustn't wait: so it queues them here instead.
+
+@tparam table connection The connection.
+@tparam function() wake Wakes the tasks, once there's something to send.
+@treturn function(message:any) Queue a message. Once a send has failed, or sending has stopped, nothing more is sent.
+@treturn function() Stop sending, once done with the connection.
+]]
+function Tasks:sender(connection, wake)
+    local outbox, done = {}, false
+    self:spawn(function()
+        while not done do
+            local message = table.remove(outbox, 1)
+            if message ~= nil then
+                if not connection:send(message) then done = true end
+            else
+                coroutine.yield()
+            end
+        end
+    end)
+    return function(message)
+        if done then return end
+        outbox[#outbox + 1] = message
+        wake()
+    end, function() done = true end
+end
+
 --- Stop every task. They don't run again, so anything they hold must be cleaned up by whoever stops them.
 function Tasks:stop()
     self.stopped = true

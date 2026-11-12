@@ -145,12 +145,14 @@ local function operator(cell_positions, options)
     (and as `cellcore` has it do over a connection), and ours tells its phones about the other network.
 
     @tparam table visited The other operator.
-    @tparam[opt] { home? = boolean, dial? = number } roam_options Whether this operator's phones treat the other's
-    network as home; and the address the other's core reaches our core at (by default, our core's backhaul address).
+    @tparam[opt] { home? = boolean, dial? = number, tower_address? = number } roam_options Whether this operator's
+    phones treat the other's network as home; the address the other's core reaches our core at; and the address our
+    core reaches the other's at (by default, each core's backhaul address).
     ]]
     function setup.roam_on(visited, roam_options)
         local home_core, visited_core = setup.core, visited.core
-        local key = home_core:add_tower(visited.core_stack.id, visited.core_stack.interfaces.backhaul.address, function(message)
+        local tower_address = roam_options and roam_options.tower_address or visited.core_stack.interfaces.backhaul.address
+        local key = home_core:add_tower(visited.core_stack.id, tower_address, function(message)
             visited.core_stack:schedule(0.01, function()
                 if visited.core == visited_core then visited_core:partner_control(name, copy(message)) end
             end)

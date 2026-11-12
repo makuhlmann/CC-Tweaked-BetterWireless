@@ -121,30 +121,16 @@ function Service:serve(link, connection)
     end
 
     -- The cell sends control messages from inside the network stack, where nothing may wait: queue them.
-    local outbox, done = {}, false
+    local send, stop_sending = self.tasks:sender(connection, options.wake)
     local handle = options.start_tower({
         network = reply.network, certificate = reply.certificate, tunnel_key = reply.tunnel_key,
         core = connection:getPeer(), area = options.area or 0,
-    }, function(message)
-        outbox[#outbox + 1] = message
-        options.wake()
-    end)
+    }, send)
     link.handle, link.network, link.served, link.state = handle, reply.network, true, "serving"
-
-    self.tasks:spawn(function()
-        while not done do
-            local message = table.remove(outbox, 1)
-            if message then
-                if not connection:send(message) then done = true end
-            else
-                coroutine.yield()
-            end
-        end
-    end)
 
     local reason
     local ok, failure = pcall(function()
-        while not done do
+        while true do
             local message, receive_err = connection:receive()
             if message == nil then
                 reason = receive_err or "The core closed the connection"
@@ -153,7 +139,7 @@ function Service:serve(link, connection)
             handle:control(message)
         end
     end)
-    done = true
+    stop_sending()
     link.handle = nil
     handle:stop()
     if not ok then error(failure, 0) end

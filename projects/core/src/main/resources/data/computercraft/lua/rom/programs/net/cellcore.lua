@@ -23,14 +23,12 @@ local function usage()
     print(name .. " cells")
     print(name .. " allow <computer> [label]")
     print(name .. " deny <computer>")
-    print(name .. " roaming")
-    print(name .. " carry <network> <core>")
-    print(name .. " uncarry <network>")
-    print(name .. " partner <network> home|roaming")
+    print(name .. " networks")
+    print(name .. " network <network>")
+    print(name .. " network <network> carry|roaming|home|messages on|off")
+    print(name .. " network <network> core <core>|none")
+    print(name .. " network <network> forget")
     print(name .. " numbers <prefix>")
-    print(name .. " peers")
-    print(name .. " peer <network> <core>")
-    print(name .. " unpeer <network>")
     print(name .. " remote <core> <command...>")
 end
 
@@ -108,8 +106,10 @@ if command == "remote" then
 end
 
 local known = {
-    status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1,
-    roaming = 1, carry = 1, uncarry = 1, partner = 1, numbers = 1, peers = 1, peer = 1, unpeer = 1, stop = 1, restart = 1,
+    status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1, networks = 1,
+    network = 1, numbers = 1, stop = 1, restart = 1,
+    -- As older versions had them: they show or change agreements with other networks, as 'network' does.
+    roaming = 1, carry = 1, uncarry = 1, partner = 1, peers = 1, peer = 1, unpeer = 1,
 }
 if not known[command] then return usage() end
 
@@ -159,14 +159,18 @@ local function find(entries, who)
 end
 
 -- What each kind of computer does, as "wants to ..." and "allowed to ...".
-local WANTS = {
-    cell = "be a cell", admin = "manage the network", roam = "carry this network's phones",
-    peer = "exchange messages with this network's phones",
-}
+local WANTS = { cell = "be a cell", admin = "manage the network" }
+
+-- What another network's core offers, in words.
+local function offers(asks)
+    local parts = {}
+    if asks and asks.carry then parts[#parts + 1] = "carry this network's phones" end
+    if asks and asks.messages then parts[#parts + 1] = "exchange messages with this network's phones" end
+    return #parts > 0 and table.concat(parts, " and ") or "make an agreement with this network"
+end
 
 local function describe(entry)
-    local network = "network " .. tostring(entry.network or "?")
-    local role = ({ admin = "manager", roam = network, peer = network .. " (messages)" })[entry.role] or entry.role
+    local role = ({ admin = "manager", network = "core of " .. tostring(entry.network or "?") })[entry.role] or entry.role
     return ("#%s %s, %s"):format(tostring(entry.id or "?"), role, entry.fingerprint)
 end
 
@@ -191,11 +195,9 @@ function commands.status()
     print(("Phones: %d attached, of %d subscribers"):format(attached, #status.subscribers))
     if status.messages > 0 then print(("Messages waiting: %d"):format(status.messages)) end
     if status.codes > 0 then print(("Activation codes not used yet: %d"):format(status.codes)) end
-    local away = 0
-    for _, partner in ipairs(status.partners or {}) do away = away + partner.phones end
+    local away, visiting = 0, 0
+    for _, network in ipairs(status.networks or {}) do away, visiting = away + network.phones, visiting + network.visitors end
     if away > 0 then print(("Roaming on other networks: %d"):format(away)) end
-    local visiting = 0
-    for _, carried in ipairs(status.carrying or {}) do visiting = visiting + carried.phones end
     if visiting > 0 then print(("Other networks' phones here: %d"):format(visiting)) end
     if #status.waiting > 0 then
         print("Waiting to be allowed:")
@@ -220,12 +222,12 @@ function commands.cells()
             end
         end
     end
-    local groups = { cell = {}, admin = {}, roam = {}, peer = {}, denied = {} }
-    for _, entry in ipairs(status.allowed) do table.insert(groups[entry.role], entry) end
+    local groups = { cell = {}, admin = {}, denied = {} }
+    for _, entry in ipairs(status.allowed) do
+        if groups[entry.role] then table.insert(groups[entry.role], entry) end
+    end
     for _, group in ipairs {
-        { "cell", "Allowed cells:" }, { "admin", "Allowed to manage the network:" },
-        { "roam", "Allowed to carry this network's phones:" },
-        { "peer", "Allowed to exchange messages with this network's phones:" }, { "denied", "Refused:" },
+        { "cell", "Allowed cells:" }, { "admin", "Allowed to manage the network:" }, { "denied", "Refused:" },
     } do
         local entries = groups[group[1]]
         if #entries > 0 then
@@ -257,7 +259,7 @@ function commands.allow(who, label)
         end
         local found = find(candidates, who)
         if #found == 0 then
-            error(("Nothing called %s is waiting. Start 'celld <core>' on the cell ('cellcore remote <core>' on a computer to manage this one from, or 'cellcore carry' or 'cellcore peer' on another network's core) first."):format(who), 0)
+            error(("Nothing called %s is waiting. Start 'celld <core>' on the cell ('cellcore remote <core>' on a computer to manage this one from, or 'cellcore network <this network> core <this core>' on another network's core) first."):format(who), 0)
         elseif #found > 1 then
             print("More than one computer matches:")
             for _, entry in ipairs(found) do print("  " .. describe(entry)) end
@@ -269,7 +271,7 @@ function commands.allow(who, label)
         if not (digits:match("^%x+$") and #digits >= 8) then
             print(("#%s%s wants to %s. Its fingerprint is"):format(
                 tostring(target.id or "?"), target.network and ", the core of " .. target.network .. "," or "",
-                WANTS[target.role] or "be a cell"
+                target.role == "network" and offers(target.asks) or WANTS[target.role] or "be a cell"
             ))
             print("  " .. target.fingerprint)
             write("Does it show the same one? [y/N] ")
@@ -281,11 +283,13 @@ function commands.allow(who, label)
         end
     end
     local reply = request({ op = "allow", key = target.key, label = label })
-    print(("Allowed #%s to %s, as %s."):format(tostring(reply.id or "?"), WANTS[reply.role] or "be a cell", reply.label))
-    if reply.role == "roam" then
-        print("This network's phones are told they may use its cells when they next attach.")
-    elseif reply.role == "peer" then
-        print("Its phones and this network's can now send each other messages.")
+    if reply.role == "network" then
+        print(("Allowed the core of %s (#%s)."):format(reply.network, tostring(reply.id or "?")))
+        if reply.roam then print("This network's phones are told they may use its cells when they next attach.") end
+        if reply.messages then print("Its phones and this network's can send each other messages.") end
+        print(("'cellcore network %s' shows the agreement, and changes it."):format(reply.network))
+    else
+        print(("Allowed #%s to %s, as %s."):format(tostring(reply.id or "?"), WANTS[reply.role] or "be a cell", reply.label))
     end
 end
 
@@ -305,6 +309,15 @@ function commands.deny(who)
         for _, cell in ipairs(status.cells) do
             candidates[#candidates + 1] = { key = cell.key, id = cell.id, role = "cell", fingerprint = net.fingerprint(cell.key) }
         end
+        -- Other networks' cores, by their network's name too.
+        for _, network in ipairs(status.networks or {}) do
+            if network.key then
+                candidates[#candidates + 1] = {
+                    key = network.key, id = network.id, role = "network", network = network.network,
+                    label = network.network, fingerprint = network.fingerprint,
+                }
+            end
+        end
         local found = find(candidates, who)
         if #found == 0 then error(("Nothing called %s is allowed or waiting."):format(who), 0) end
         if #found > 1 then
@@ -316,6 +329,7 @@ function commands.deny(who)
     end
     local reply = request({ op = "deny", key = key })
     print(("Refused #%s. Allow it again with 'cellcore allow %s'."):format(tostring(reply.id or "?"), tostring(reply.id or key)))
+    if reply.network then print(("The agreement with %s does nothing from now on."):format(reply.network)) end
 end
 
 function commands.add(id, number, file)
@@ -380,59 +394,106 @@ function commands.restart()
     print("Starting the core afresh. Cells join again by themselves, and phones attach again, with new addresses.")
 end
 
-function commands.roaming()
+-- How the connection to another network's core is going, in words.
+local STATES = {
+    connecting = "connecting", waiting = "waiting to be allowed by its core", connected = "connected",
+    lost = "can't reach its core", refused = "refused",
+}
+
+local function how(network)
+    if network.connected then return "connected" end
+    if not network.state then return network.key and "waiting for its core to connect" or "not met yet" end
+    local text = STATES[network.state] or tostring(network.state)
+    if network.error then text = text .. ": " .. network.error end
+    return text
+end
+
+-- Show an agreement: who the other network's core is, what the two do for each other, and how it's going.
+local function show(network, status)
+    local where = network.core and (" at " .. network.core) or ""
+    print(("%s, core #%s%s: %s"):format(network.network, tostring(network.id or "?"), where, how(network)))
+    if network.carry then
+        print(("  Carries its phones%s"):format(network.carrying and (" (%d here)"):format(network.visitors) or ""))
+    end
+    if network.roam then
+        print(("  This network's phones %s its cells%s"):format(
+            network.roam == "home" and "treat as home" or "roam on", network.carried and (" (%d there)"):format(network.phones) or ""
+        ))
+    end
+    if network.messages then
+        local text = "  Messages between the networks' phones"
+        if network.prefix then text = text .. (", its numbers starting %s"):format(network.prefix) end
+        if (network.waiting or 0) > 0 then text = text .. (", %d waiting"):format(network.waiting) end
+        print(text)
+        if not status.number_prefix then print("  (This network needs a number prefix first: 'cellcore numbers')") end
+    end
+    if not network.carry and not network.roam and not network.messages then print("  Nothing agreed") end
+    if network.fingerprint then print("  Its fingerprint: " .. network.fingerprint) end
+end
+
+function commands.networks()
     local status = request({ op = "status" })
-    if #status.partners == 0 and #status.carrying == 0 then
-        print("No roaming. Another network carries this one's phones once its core runs")
-        print(("  cellcore carry %s <this core>"):format(status.network))
-        print("and you allow it here. This network carries another's with 'cellcore carry'.")
+    if #status.networks == 0 then
+        print("No agreements with other networks. Make one with")
+        print("  cellcore network <network> carry|roaming|messages on")
+        print("  cellcore network <network> core <its core>")
+        print("and allow this core on the other one, if it asks.")
         return
     end
-    if #status.partners > 0 then
-        print(("Networks which carry %s's phones:"):format(status.network))
-        for _, partner in ipairs(status.partners) do
-            local how = partner.connected and ("%d phone(s) there"):format(partner.phones) or "not connected"
-            print(("  %s, core #%s%s: %s"):format(partner.network, tostring(partner.id or "?"), partner.home and ", as home" or "", how))
+    for _, network in ipairs(status.networks) do show(network, status) end
+end
+
+local SWITCHES = { on = true, yes = true, ["true"] = true, off = false, no = false, ["false"] = false }
+
+function commands.network(name, what, value)
+    if not name then return usage() end
+    -- With nothing to change, it's shown.
+    local change = { op = "network", network = name }
+    if what == "forget" and value == nil then
+        change.forget = true
+    elseif what == "core" and value then
+        change.core = value ~= "none" and value or false
+    elseif (what == "carry" or what == "messages") and SWITCHES[value or ""] ~= nil then
+        change[what] = SWITCHES[value]
+    elseif what == "roaming" and SWITCHES[value or ""] ~= nil then
+        change.roam = SWITCHES[value] and "partner" or false
+    elseif what == "home" and SWITCHES[value or ""] ~= nil then
+        change.roam = SWITCHES[value] and "home" or "partner"
+    elseif what ~= nil then
+        return usage()
+    end
+    local reply = request(change)
+    if reply.forgotten then
+        print(("Forgot the agreement with %s."):format(name))
+        return
+    end
+    local status = request({ op = "status" })
+    for _, network in ipairs(status.networks) do
+        if network.network == name then show(network, status) end
+    end
+    if what ~= nil and not reply.key then
+        print(("Its core must allow this one, unless it's this core which waits for it: there, run 'cellcore allow %s',"):format(tostring(reply.our_id or "<ID>")))
+        print("and check it shows this fingerprint:")
+        print("  " .. tostring(reply.our_fingerprint))
+    end
+end
+
+-- The commands older versions had.
+
+function commands.roaming()
+    local status = request({ op = "status" })
+    local any = false
+    for _, network in ipairs(status.networks) do
+        if network.carry or network.roam then
+            show(network, status)
+            any = true
         end
     end
-    if #status.carrying > 0 then
-        print(("Networks whose phones %s carries:"):format(status.network))
-        local states = {
-            connecting = "connecting", waiting = "waiting to be allowed by its core", serving = "%d phone(s) here",
-            lost = "can't reach its core", refused = "refused",
-        }
-        for _, carried in ipairs(status.carrying) do
-            local how = (states[carried.state] or tostring(carried.state)):format(carried.phones)
-            if carried.error and carried.state ~= "serving" then how = how .. ": " .. carried.error end
-            print(("  %s, through %s: %s"):format(carried.network, carried.core, how))
-        end
+    if not any then
+        print("No roaming. Another network carries this one's phones once its core runs")
+        print(("  cellcore network %s carry on"):format(status.network))
+        print("and this network's agreement lets its phones use its cells ('cellcore network <it> roaming on').")
     end
-end
-
-function commands.carry(network, core)
-    if not network or not core then return usage() end
-    local reply = request({ op = "carry", network = network, core = core })
-    print(("Set up to carry the phones of %s."):format(network))
-    print(("Its core must allow this one: there, run 'cellcore allow %s', and check it shows this fingerprint:"):format(tostring(reply.id or "<ID>")))
-    print("  " .. tostring(reply.fingerprint))
-    print("'cellcore roaming' shows how it's going.")
-end
-
-function commands.partner(network, how)
-    if not network or (how ~= "home" and how ~= "roaming") then return usage() end
-    request({ op = "partner", network = network, home = how == "home" })
-    if how == "home" then
-        print(("This network's phones treat %s as home: they aren't roaming there, and use its cells as they would"):format(network))
-        print("this network's own. They hear of it when they next attach.")
-    else
-        print(("This network's phones roam on %s. They hear of it when they next attach."):format(network))
-    end
-end
-
-function commands.numbers(prefix)
-    if not prefix then return usage() end
-    request({ op = "numbers", prefix = prefix })
-    print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
 end
 
 function commands.peers()
@@ -442,52 +503,47 @@ function commands.peers()
     else
         print("This network has no number prefix yet: set one with 'cellcore numbers <digits>'.")
     end
-    if #status.peers == 0 then
-        print("It exchanges messages with no other network. Set it up with 'cellcore peer <network> <core>' on")
-        print("either network's core, and allow it on the other.")
-        return
-    end
-    print("Exchanges messages with:")
-    local states = {
-        connecting = "connecting", waiting = "waiting to be allowed by its core", serving = "connected",
-        lost = "can't reach its core", refused = "refused",
-    }
-    for _, peer in ipairs(status.peers) do
-        local how
-        if peer.connected then
-            how = "connected"
-        elseif peer.state then
-            how = states[peer.state] or tostring(peer.state)
-            if peer.error then how = how .. ": " .. peer.error end
-        else
-            how = "not connected"
+    local any = false
+    for _, network in ipairs(status.networks) do
+        if network.messages then
+            show(network, status)
+            any = true
         end
-        if (peer.waiting or 0) > 0 then how = ("%s, %d message(s) waiting"):format(how, peer.waiting) end
-        print(("  %s%s%s: %s"):format(
-            peer.network, peer.prefix and " (" .. peer.prefix .. "...)" or "", peer.core and ", through " .. peer.core or "", how
-        ))
     end
+    if not any then print("It exchanges messages with no other network: 'cellcore network <network> messages on' sets it up.") end
 end
 
-function commands.peer(network, core)
+function commands.carry(network, core)
     if not network or not core then return usage() end
-    local reply = request({ op = "peer", network = network, core = core })
-    print(("Set up to exchange messages with %s."):format(network))
-    print(("Its core must allow this one: there, run 'cellcore allow %s', and check it shows this fingerprint:"):format(tostring(reply.id or "<ID>")))
-    print("  " .. tostring(reply.fingerprint))
-    print("'cellcore peers' shows how it's going.")
-end
-
-function commands.unpeer(network)
-    if not network then return usage() end
-    request({ op = "unpeer", network = network })
-    print(("Stopped connecting to %s's core. Its core can end it too, with 'cellcore deny'."):format(network))
+    commands.network(network, "core", core)
+    commands.network(network, "carry", "on")
 end
 
 function commands.uncarry(network)
     if not network then return usage() end
-    request({ op = "uncarry", network = network })
-    print(("Stopped carrying the phones of %s. Those here lose service."):format(network))
+    commands.network(network, "carry", "off")
+end
+
+function commands.partner(network, how_much)
+    if not network or (how_much ~= "home" and how_much ~= "roaming") then return usage() end
+    commands.network(network, "home", how_much == "home" and "on" or "off")
+end
+
+function commands.peer(network, core)
+    if not network or not core then return usage() end
+    commands.network(network, "core", core)
+    commands.network(network, "messages", "on")
+end
+
+function commands.unpeer(network)
+    if not network then return usage() end
+    commands.network(network, "messages", "off")
+end
+
+function commands.numbers(prefix)
+    if not prefix then return usage() end
+    request({ op = "numbers", prefix = prefix })
+    print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
 end
 
 function commands.log()
