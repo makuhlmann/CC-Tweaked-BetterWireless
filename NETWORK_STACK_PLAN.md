@@ -594,6 +594,16 @@ None of these was measured in the game. They're ordered by how often the code ru
   and passes it the events it waits for, but a `cct_test_run` ends it, so only the test which ran on fails.
 - **Still open:** the storm tests in `cell_networks_stress_spec.lua` take ten to eleven seconds each on a machine which
   is busy, against the delegate's limit of ten, so they fail there. They could be shorter again, or the limit longer.
+  (Alone, they now take three to four seconds each.)
+- **Later:** the suite still stalled now and then, and twice cascaded for half an hour. `mcfly` now prints where a test
+  it ends was waiting, which showed the cause: a test waiting for the event its yield helper had just queued, which
+  never came. A computer's queue holds 256 events and drops one queued while it's full, and something on the test
+  computer fills it now and then (the real network stack, which the BIOS runs beside every test, queues an event each
+  time it wakes, but this isn't confirmed). The network specs share one helper, `support/yield.lua`, which queues its
+  event again once more than a full queue's worth of others have come first, and prints which events those were, the
+  first time; `mcfly`'s wait for the start of each test does the same, and runs the next test asked for if it comes
+  first. The delegate shows the computer's screen with the first three tests which time out, and once three in a row
+  have, fails the rest at once rather than waiting ten seconds for each.
 
 ### 5.3 What a killed test run leaves behind
 
