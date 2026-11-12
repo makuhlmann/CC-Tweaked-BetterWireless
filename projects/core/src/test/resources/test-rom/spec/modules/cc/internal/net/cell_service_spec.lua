@@ -894,6 +894,15 @@ describe("Cellular services", function()
                     expect(acme.service.core.peers.BETA.prefix):eq("666")
                     expect(acme.service.networks.BETA.signing):eq(hex(beta.signing))
                     expect(beta.service.networks.ACME.key):eq(acme.identity)
+
+                    -- Allowing a cell writes the computers allowed in again: what older versions kept there for BETA's
+                    -- core stays, for an older version to find.
+                    local admin, cell_key = acme.admin(), new_key()
+                    expect(ask(admin, { op = "allow", key = cell_key }).role):eq("cell")
+                    admin:close()
+                    local cells = read_table(fs.combine(acme.dir, "cells"))
+                    expect({ cells[beta_identity].role, cells[beta_identity].roles, cells[cell_key].role })
+                        :same { "roam", { peer = true }, "cell" }
                 end, }, 120)
             end)
 
