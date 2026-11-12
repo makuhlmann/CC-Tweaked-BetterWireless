@@ -14,27 +14,59 @@ end
 local zone = dns.normalise(args[1])
 local zone_file = shell.resolve(args[2] or fs.combine("/zones", zone .. ".txt"))
 
--- The zone file is read for every question, so changes apply straight away.
+-- When a file last changed, and its size: when neither has, what was read from it last time is still right.
+local function stamp(path)
+    local ok, attributes = pcall(fs.attributes, path)
+    if not ok or type(attributes) ~= "table" then return nil end
+    return ("%s:%s"):format(attributes.modified, attributes.size)
+end
+
+-- The zone file, read again whenever it changes, so changes still apply straight away. What's wrong with it is
+-- printed once, not for every question.
+local zone_records, zone_stamp = {}, false
 local function records()
-    if not fs.exists(zone_file) then return {} end
-    local handle = fs.open(zone_file, "r")
-    local result, errors = dns.parse_zone(handle.readAll())
+    local now = stamp(zone_file)
+    if now == zone_stamp then return zone_records end
+    zone_stamp, zone_records = now, {}
+    local handle = now and fs.open(zone_file, "r")
+    if not handle then return zone_records end
+    local result, errors = dns.parse_zone(handle.readAll() or "")
     handle.close()
     for _, err in ipairs(errors) do printError(zone_file .. ": " .. err) end
+    zone_records = result
     return result
 end
 
--- Computers which got their address from a DHCP server on this computer can be found by name too.
+-- Computers which got their address from a DHCP server on this computer can be found by name too. Each file of leases
+-- is read again only when it changes. A lease without a name or an expiry (from a file changed by hand) is passed by.
+local lease_files = {}
 local function leases()
     local result, now = {}, os.epoch("utc") / 1000
     if not fs.isDir("/.dhcpd") then return result end
+    local present = {}
     for _, file in ipairs(fs.list("/.dhcpd")) do
-        local handle = fs.open(fs.combine("/.dhcpd", file), "r")
-        local contents = textutils.unserialise(handle.readAll()) or {}
-        handle.close()
-        for _, lease in pairs(contents) do
-            if type(lease) == "table" and lease.hostname and lease.expires > now then result[lease.hostname] = lease.address end
+        local path = fs.combine("/.dhcpd", file)
+        present[path] = true
+        local file_stamp, cached = stamp(path), lease_files[path]
+        if not cached or cached.stamp ~= file_stamp then
+            local contents
+            local handle = fs.open(path, "r")
+            if handle then
+                contents = textutils.unserialise(handle.readAll() or "")
+                handle.close()
+            end
+            cached = { stamp = file_stamp, contents = type(contents) == "table" and contents or {} }
+            lease_files[path] = cached
         end
+        for _, lease in pairs(cached.contents) do
+            if type(lease) == "table" and type(lease.hostname) == "string" and type(lease.expires) == "number"
+                and lease.expires > now then
+                result[lease.hostname] = lease.address
+            end
+        end
+    end
+    for path in pairs(lease_files) do
+        if not present[path] then lease_files[path] = nil end
     end
     return result
 end

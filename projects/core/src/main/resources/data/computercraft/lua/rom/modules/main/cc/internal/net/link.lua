@@ -135,13 +135,14 @@ local function open(link, src, dst, sealed)
     end
     peer.seen[counter], peer.count = true, peer.count + 1
     if counter > peer.top then peer.top = counter end
-    -- Now and then, forget frames too old to be accepted anyway.
-    if peer.count > 256 then
+    -- Now and then, forget frames too old to be accepted anyway. A busy sender may have many which are still recent:
+    -- then wait for twice as many before looking again, rather than looking at them all for every frame.
+    if peer.count > (peer.limit or 256) then
         local floor, count = peer.top - REORDER * PER_MS, 0
         for seen in pairs(peer.seen) do
             if seen <= floor then peer.seen[seen] = nil else count = count + 1 end
         end
-        peer.count = count
+        peer.count, peer.limit = count, math.max(256, count * 2)
     end
     return inner.type, inner.body, inner.fwd == true
 end

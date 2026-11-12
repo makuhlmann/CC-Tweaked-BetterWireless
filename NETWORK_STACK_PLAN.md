@@ -460,6 +460,12 @@ None of these was measured in the game. They're ordered by how often the code ru
 - **The DNS cache** (`apis/net.lua` 70, `dns.lua` 188–191) never drops entries which have expired. **Small.**
 - **Encrypted links** (`link.lua` 136–145, **suspected**): a sender of more than 128 frames a second keeps the
   receiver pruning its replay window on every frame. **Small.**
+- **Done:** the core keeps its subscribers' SIMs by number (made again whenever the subscribers change, which the core
+  service says after every change), and delivers each message with that; `dnsd` reads its zone file and each file of
+  leases again only when it changes, says what's wrong with the zone file once, and passes by leases without a name or
+  expiry (and folders); the DNS cache forgets expired answers whenever it keeps a new name, and keeps 256 at most; and
+  an encrypted link which has many recent frames from a busy sender waits for twice as many before pruning them again.
+  Tested in `dns_spec.lua` and the new `dnsd_spec.lua`; the numbers by the messaging specs.
 
 ## 5. Tests and tools
 

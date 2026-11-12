@@ -295,7 +295,28 @@ end
 ]]
 function Core:remove_subscriber(sim)
     self.subscribers[sim] = nil
+    self:subscribers_changed()
     self:detach(sim)
+end
+
+--- Say the subscribers have changed (one was added or removed, or a number changed), so they're looked up afresh.
+-- Whoever changes the table of subscribers calls this.
+function Core:subscribers_changed()
+    self.by_number = nil
+end
+
+-- Find which of our subscribers has a number, by their SIM key. The SIMs are kept by number until the subscribers
+-- change, as each message needs this.
+function Core:sim_of(number)
+    local index = self.by_number
+    if not index then
+        index = {}
+        for sim, subscriber in pairs(self.subscribers) do
+            if type(subscriber.number) == "string" then index[subscriber.number] = sim end
+        end
+        self.by_number = index
+    end
+    return index[number]
 end
 
 --[[- Forget a phone's session: its cell forgets it, and it attaches again if it may. A subscriber who has been barred
@@ -497,6 +518,7 @@ function Core:activate_finish(tower, phone, message)
         if subscriber.id == code.id then self.subscribers[old_sim] = nil end
     end
     self.subscribers[sim] = { id = code.id, number = code.number }
+    self:subscribers_changed()
     self.on_event("activated", sim, code.id, code.number)
 
     local send = activating.handshake:split()
@@ -548,10 +570,7 @@ end
 
 -- Whether one of our subscribers has a number.
 function Core:has_number(number)
-    for _, subscriber in pairs(self.subscribers) do
-        if subscriber.number == number then return true end
-    end
-    return false
+    return self:sim_of(number) ~= nil
 end
 
 --[[ Find which network a number is: ours (`nil`, and the number here), another's (its name, and the number there), or
@@ -816,7 +835,14 @@ function Core:sessions_by_number()
 end
 
 function Core:deliver(message, sessions)
-    local session = (sessions or self:sessions_by_number())[message.to]
+    local session
+    if sessions then
+        session = sessions[message.to]
+    else
+        local sim = self:sim_of(message.to)
+        session = sim and self.sessions[sim]
+        if session and not session.teid then session = nil end
+    end
     if session then
         self:send(session.cell, { op = "sms", teid = session.teid, id = message.id, from = message.from, text = message.text })
     end

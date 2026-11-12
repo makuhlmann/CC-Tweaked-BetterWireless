@@ -98,6 +98,25 @@ describe("cc.internal.net.dns", function()
         expect(cache["beta.local"].address):eq(ip("10.0.0.2"))
     end)
 
+    it("forgets answers which have expired, and keeps no more than so many", function()
+        local net = network()
+        local a = computer(net, 1, "10.0.0.1/24", "alpha")
+        computer(net, 2, "10.0.0.2/24", "beta")
+        net.run()
+
+        local now = a.clock()
+        local cache = { old = { address = 1, expires = now - 1 }, fresh = { address = 2, expires = now + 100 } }
+        resolve(net, a, "beta.local", { cache = cache })
+        expect({ cache.old, cache.fresh ~= nil, cache["beta.local"].address }):same { nil, true, ip("10.0.0.2") }
+
+        for i = 1, 300 do cache["name" .. i] = { address = i, expires = now + 100 } end
+        cache["beta.local"] = nil
+        resolve(net, a, "beta.local", { cache = cache })
+        local count = 0
+        for _ in pairs(cache) do count = count + 1 end
+        expect(count):eq(1)
+    end)
+
     it("finds services", function()
         local net = network()
         local a = computer(net, 1, "10.0.0.1/24", "alpha")

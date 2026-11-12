@@ -126,6 +126,9 @@ local function find_record(answer, kind)
     end
 end
 
+-- How many answers to keep, at most.
+local MAX_CACHE = 256
+
 local function ttl(record)
     local value = record.ttl
     if type(value) ~= "number" or value ~= value then return 60 end
@@ -186,7 +189,18 @@ local function resolve(stack, name, options, callback)
     local last_error = "Name not found"
 
     local function found(addr, record)
-        options.cache[name] = { address = addr, expires = stack.clock() + ttl(record) }
+        local now, cache = stack.clock(), options.cache
+        if cache[name] == nil then
+            -- A name we hadn't kept: forget those which have expired, and keep no more than so many.
+            local count = 0
+            for key, entry in pairs(cache) do
+                if entry.expires <= now then cache[key] = nil else count = count + 1 end
+            end
+            if count >= MAX_CACHE then
+                for key in pairs(cache) do cache[key] = nil end
+            end
+        end
+        cache[name] = { address = addr, expires = now + ttl(record) }
         callback(addr)
     end
 

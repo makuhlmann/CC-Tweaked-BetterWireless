@@ -256,6 +256,8 @@ end
 
 function Service:save_subscribers()
     write_table(self.files.subscribers, self.subscribers)
+    -- Whatever changed them, the core looks them up afresh.
+    if self.core then self.core:subscribers_changed() end
 end
 
 --[[- Add a line to the log, which `cellcore log` shows.
