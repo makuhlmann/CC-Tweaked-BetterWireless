@@ -49,6 +49,19 @@ describe("The net library", function()
             expect(client:isOpen()):eq(false)
         end)
 
+        it("listens before anything else has started the network stack, as a startup program may", function()
+            -- A copy of the API as a computer has it when it starts: nothing has loaded the network stack yet.
+            local env = setmetatable({}, { __index = _G })
+            assert(loadfile("/rom/apis/net.lua", nil, env))()
+            local listener = assert(env.tcp.listen(4326))
+            listener:close()
+            -- rshd listens securely, where secure connections can be made.
+            if crypto and enclave then
+                local secure = assert(env.secure.listen(4327))
+                secure:close()
+            end
+        end)
+
         it("refuses connections nobody is listening for", function()
             expect({ net.tcp.connect("127.0.0.1", 4322, 1) }):same { nil, "Connection refused" }
         end)

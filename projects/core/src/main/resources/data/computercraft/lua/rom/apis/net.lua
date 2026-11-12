@@ -1195,7 +1195,9 @@ tcp = {
     ]]
     listen = function(port)
         expect(1, port, "number")
-        local listener, err = connections.listen(load(), port)
+        -- Load the network stack first: until then (as when a startup program listens), the TCP module isn't loaded.
+        local network = load()
+        local listener, err = connections.listen(network, port)
         if not listener then return nil, err end
         return setmetatable({ listener = listener }, Listener)
     end,
