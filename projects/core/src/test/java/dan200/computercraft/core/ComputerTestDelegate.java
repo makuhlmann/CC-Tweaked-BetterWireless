@@ -82,6 +82,14 @@ public class ComputerTestDelegate {
      */
     private static final int TIMEOUT_SCREENS = 3;
 
+    /**
+     * How many tests in a row may time out before the computer is taken to have stopped answering. McFly ends a test
+     * which runs on when it's asked for the next, so one which overruns only costs that test; when several in a row
+     * time out, the computer isn't getting the requests at all, and the rest fail at once rather than taking ten
+     * seconds each.
+     */
+    private static final int STUCK_AFTER = 3;
+
     private static final Set<String> SKIP_KEYWORDS = new HashSet<>(
         Arrays.asList(System.getProperty("cc.skip_keywords", "").split(","))
     );
@@ -108,6 +116,7 @@ public class ComputerTestDelegate {
     private boolean runFinished;
     private Throwable runResult;
     private int timeoutScreens;
+    private int timeoutsInARow;
 
     private final Condition hasFinished = lock.newCondition();
     private boolean finished = false;
@@ -399,6 +408,13 @@ public class ComputerTestDelegate {
                 var builder = root;
                 for (var i = 0; i < parts.size() - 1; i++) builder = builder.get(parts.get(i));
                 builder.runs(parts.get(parts.size() - 1), def, () -> {
+                    // A computer which stopped answering won't run this either: say so at once, rather than waiting.
+                    if (timeoutsInARow >= STUCK_AFTER) {
+                        throw new IllegalStateException(
+                            "Not run: the computer stopped answering, after " + STUCK_AFTER + " tests in a row timed out"
+                        );
+                    }
+
                     // Run it
                     lock.lockInterruptibly();
                     try {
@@ -422,6 +438,7 @@ public class ComputerTestDelegate {
 
                         LOG.debug("Finished '{}'", formatName(name));
 
+                        timeoutsInARow = remaining <= 0 ? timeoutsInARow + 1 : 0;
                         if (remaining <= 0) {
                             var message = "Timed out waiting for test";
                             if (timeoutScreens < TIMEOUT_SCREENS) {

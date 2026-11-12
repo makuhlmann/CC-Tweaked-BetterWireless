@@ -620,7 +620,7 @@ event, that event ends the test there and then. Were it passed to the test, whic
 isn't coming, the test would take it, and every test after would wait for an event which never came.
 
 Returns whether the test passed, why not, and, if it was ended so, the name of the test asked for next (`false` if the
-event named none, at the end of the run).
+event named none, at the end of the run). A test ended so says where it was waiting (`trace`).
 ]]
 local function run_test(test)
     local co = coroutine.create(function()
@@ -646,8 +646,9 @@ local function run_test(test)
         repeat
             event = table.pack(os.pullEventRaw())
             if cct_test and event[1] == "cct_test_run" then
-                return false, setmetatable({ message = "Stopped, as it ran on after its time was up" }, error_mt),
-                    event[2] or false
+                return false, setmetatable({
+                    message = "Stopped, as it ran on after its time was up", trace = debug and debug.traceback and debug.traceback(co) or nil,
+                }, error_mt), event[2] or false
             end
         until filter == nil or event[1] == filter or event[1] == "terminate"
     end
@@ -676,6 +677,13 @@ local function do_run(test)
         status = ok and "pass" or (err.fail and "fail" or "error")
 
         pop_state(state)
+
+        -- The test delegate has given up on a test which ran on, and won't show what became of it: show where it was
+        -- waiting, which shows with the next test which times out.
+        if next_test ~= nil then
+            print()
+            print(("%s ran on, waiting %s"):format(test.name, err.trace or "somewhere"))
+        end
     end
 
     -- If we've a boolean status, then convert it into a string
