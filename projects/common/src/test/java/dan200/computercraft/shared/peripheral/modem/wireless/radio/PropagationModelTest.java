@@ -171,7 +171,11 @@ public class PropagationModelTest {
         assertEquals(forward.loss(), backward.loss(), 1.0);
     }
 
-    /** The Nether, more or less: a ceiling whose top is at Y 128, five blocks thick, with open space beneath it. */
+    /**
+     * The Nether, more or less: a ceiling whose top is at Y 128, five blocks thick, with open space beneath it.
+     *
+     * @return The terrain.
+     */
     private static FakeTerrain cavern() {
         var terrain = new FakeTerrain((x, z) -> 128);
         terrain.ceiling = 128;

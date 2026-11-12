@@ -372,6 +372,7 @@ public class DormantWiringRandomTest {
         /**
          * Find the pieces of a chunk's wiring, going by its blocks alone.
          *
+         * @param chunk The chunk.
          * @return Each piece's ports, and the sides they're on.
          */
         Set<Map<Long, Integer>> pieces(long chunk) {

@@ -5,10 +5,10 @@
 package dan200.computercraft.shared.peripheral.modem.wired;
 
 import dan200.computercraft.api.network.wired.WiredNode;
+import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.impl.network.wired.DormantWiring;
 import dan200.computercraft.shared.computer.core.ServerContext;
 import dan200.computercraft.shared.util.DirectionUtil;
-import dan200.computercraft.core.util.Nullability;
 import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;

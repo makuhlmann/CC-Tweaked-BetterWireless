@@ -150,6 +150,9 @@ public class UnloadedWiringFileTest {
     /**
      * More dimensions, pieces or ports than the file holds, or fewer than none: nothing is read, and no room is made
      * for that many.
+     *
+     * @param dir A directory for the file.
+     * @throws IOException If the file can't be written.
      */
     @Test
     public void readsNothingFromFilesWithImpossibleCounts(@TempDir Path dir) throws IOException {
@@ -216,6 +219,9 @@ public class UnloadedWiringFileTest {
     /**
      * A file which has been damaged holds what was saved (if the damage was to something which doesn't matter), or
      * nothing: never wiring which wasn't saved, which would connect networks which aren't.
+     *
+     * @param dir A directory for the file.
+     * @throws IOException If the file can't be written.
      */
     @Test
     public void readsNothingWrongFromDamagedFiles(@TempDir Path dir) throws IOException {
@@ -281,6 +287,9 @@ public class UnloadedWiringFileTest {
     /**
      * Wiring of dimensions which haven't been used since the server started (or are no longer there) is kept as it was
      * read, and nothing is written while nothing changes.
+     *
+     * @param dir A directory for the file.
+     * @throws IOException If the file can't be written.
      */
     @Test
     public void keepsWiringOfDimensionsNeverUsed(@TempDir Path dir) throws IOException {
