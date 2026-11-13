@@ -115,16 +115,20 @@ describe("The net library", function()
     end)
 
     describe("addresses", function()
-        it("say when an interface's address is changed by hand", function()
-            -- A wired modem which is only pretend: what's sent on it goes nowhere.
-            local name = "net_spec_modem"
+        --[[ Run a function with a wired modem which is only pretend: what's sent on it is kept, in `sent`, and goes
+        nowhere. The network stack sees it come before the function runs, and go afterwards. ]]
+        local function with_modem(fn)
+            local name, sent = "net_spec_modem", {}
             local has_type, call = peripheral.hasType, peripheral.call
             stub(peripheral, "hasType", function(side, kind)
                 if side == name then return kind == "modem" end
                 return has_type(side, kind)
             end)
             stub(peripheral, "call", function(side, method, ...)
-                if side == name then return method ~= "isWireless" and nil or false end
+                if side == name then
+                    if method == "transmit" then sent[#sent + 1] = select(3, ...) end
+                    return method ~= "isWireless" and nil or false
+                end
                 return call(side, method, ...)
             end)
             -- Attach it, and let the network stack see it come.
@@ -132,7 +136,36 @@ describe("The net library", function()
             local _, up, what
             repeat _, up, what = os.pullEvent("net_interface") until up == name and what == "up"
 
-            local ok, err = pcall(function()
+            local ok, err = pcall(fn, name, sent)
+
+            -- Take the pretend modem away again, and let the network stack see it go.
+            os.queueEvent("peripheral_detach", name)
+            os.queueEvent("net_spec_marker")
+            os.pullEvent("net_spec_marker")
+            expect(net.getAddress(name)):eq(nil)
+            if not ok then error(err, 0) end
+        end
+
+        -- Every event queued so far, up to a marker.
+        local function events()
+            os.queueEvent("net_spec_marker")
+            local list = {}
+            while true do
+                local event = table.pack(os.pullEvent())
+                if event[1] == "net_spec_marker" then return list end
+                list[#list + 1] = event
+            end
+        end
+
+        local function route_to(network)
+            for _, route in ipairs(net.routes()) do
+                if route.network == network then return route end
+            end
+            return nil
+        end
+
+        it("say when an interface's address is changed by hand", function()
+            with_modem(function(name)
                 expect(net.interfaces()):matches { { name = name } }
                 expect(net.getAddress(name)):eq(nil)
                 net.setAddress(name, "10.123.0.5/24")
@@ -146,34 +179,108 @@ describe("The net library", function()
                 os.queueEvent("net_spec_marker")
                 expect(os.pullEvent()):eq("net_spec_marker")
             end)
-
-            -- Take the pretend modem away again, and let the network stack see it go.
-            os.queueEvent("peripheral_detach", name)
-            os.queueEvent("net_spec_marker")
-            os.pullEvent("net_spec_marker")
-            expect(net.getAddress(name)):eq(nil)
-            if not ok then error(err, 0) end
         end)
+
+        it("are sent encrypted on an interface with a passphrase, and not without", function()
+            expect.error(net.setPassphrase, "net_spec_none", "x"):eq("No interface named 'net_spec_none'")
+            with_modem(function(name, sent)
+                net.setAddress(name, "10.123.0.5/24")
+                expect(sent[#sent].type):ne("sealed")
+
+                -- The address is announced again, sealed, for the computers which share the passphrase.
+                local before = #sent
+                net.setPassphrase(name, "open sesame")
+                expect(#sent > before):eq(true)
+                for i = before + 1, #sent do expect(sent[i].type):eq("sealed") end
+
+                before = #sent
+                net.setPassphrase(name, nil)
+                expect(#sent > before):eq(true)
+                expect(sent[#sent].type):ne("sealed")
+            end)
+        end)
+
+        it("give the routes to the networks they're on, and those set up, once they're applied", function()
+            with_modem(function(name)
+                net.setAddress(name, "10.123.0.5/24")
+                expect(route_to("10.123.0.0/24")):matches { interface = name, source = "connected" }
+                expect(route_to("10.5.0.0/16")):eq(nil)
+
+                settings.set("net.routes", { "10.5.0.0/16 via 10.123.0.1" })
+                local ok, err = pcall(function()
+                    -- Not until they're applied.
+                    expect(route_to("10.5.0.0/16")):eq(nil)
+                    net.reload()
+                    expect(route_to("10.5.0.0/16")):matches { gateway = "10.123.0.1", source = "static" }
+                end)
+                settings.unset("net.routes")
+                net.reload()
+                if not ok then error(err, 0) end
+                expect(route_to("10.5.0.0/16")):eq(nil)
+            end)
+        end)
+
+        it("are seen in the frames captured while that's asked for", function()
+            with_modem(function(name)
+                net.capture(true)
+                local ok, err = pcall(function()
+                    net.setAddress(name, "10.123.0.5/24")
+                    local captured = 0
+                    for _, event in ipairs(events()) do
+                        if event[1] == "net_frame" then
+                            expect({ event[2], event[3], type(event[4]) }):same { "out", name, "table" }
+                            captured = captured + 1
+                        end
+                    end
+                    expect(captured > 0):eq(true)
+                end)
+                net.capture(false)
+                if not ok then error(err, 0) end
+
+                -- Not once it's stopped.
+                net.setAddress(name, "10.123.0.6/24")
+                for _, event in ipairs(events()) do expect(event[1]):ne("net_frame") end
+            end)
+        end)
+    end)
+
+    describe("names", function()
+        it("are this computer's own, as set, or from its label", function()
+            settings.set("net.hostname", "Relay 7!")
+            local ok, err = pcall(function() expect(net.getHostname()):eq("relay-7") end)
+            settings.unset("net.hostname")
+            if not ok then error(err, 0) end
+            if not os.getComputerLabel() then expect(net.getHostname()):eq("computer-" .. os.getComputerID()) end
+        end)
+
+        it("are found as addresses, fixed names, and this computer's own", function()
+            expect(net.resolve("10.1.2.3")):eq("10.1.2.3")
+            settings.set("net.hosts", { bank = "10.9.9.9" })
+            local ok, err = pcall(function() expect(net.resolve("bank")):eq("10.9.9.9") end)
+            settings.unset("net.hosts")
+            if not ok then error(err, 0) end
+            expect(net.resolve(net.getHostname())):ne(nil)
+        end)
+
+        -- Finding services others offer is tested in dns_spec, on a network with others on it.
+        it("of services nobody offers aren't found", function()
+            net.host("net-spec-service", 4567)
+            net.unhost("net-spec-service")
+            expect(net.lookup("net-spec-nobody", 0.2)):same {}
+        end)
+    end)
+
+    it("keeps errors for debugging, giving a copy of them", function()
+        local errors = net.getErrors()
+        expect(type(errors)):eq("table")
+        for _, err in ipairs(errors) do expect(type(err)):eq("string") end
+        errors[#errors + 1] = "Not one of the network stack's"
+        expect(#net.getErrors()):eq(#errors - 1)
     end)
 
     describe("net.secure", function()
         -- The enclave is part of the mod, not the computer, so pretend to have one.
-        local function with_enclave(fn)
-            local keys, base = {}, "\9" .. ("\0"):rep(31)
-            _G.enclave = {
-                publicKey = function(name) return keys[name] and keys[name].public end,
-                generate = function(name)
-                    local private = crypto.generateKeyPair("x25519")
-                    keys[name] = { private = private, public = crypto.exchange(private, base) }
-                    return keys[name].public
-                end,
-                exchange = function(name, public) return crypto.exchange(keys[name].private, public) end,
-            }
-            local ok, err = pcall(fn)
-            _G.enclave = nil
-            fs.delete("/.net")
-            if not ok then error(err, 0) end
-        end
+        local with_enclave = require "support.net_helpers".with_enclave
 
         -- Connect, with the listener accepting at the same time. When the client is expected to give up, the listener
         -- only waits a moment, rather than for the next client.
@@ -237,6 +344,19 @@ describe("The net library", function()
                 :eq('bad option trust (expected "certificate" or nothing)')
             expect.error(net.fingerprint, "not a key"):eq("bad argument #1 (expected a key: 64 hexadecimal digits)")
             expect.error(net.fingerprint, ("ab"):rep(31)):eq("bad argument #1 (expected a key: 64 hexadecimal digits)")
+        end)
+
+        it("lists trusted authorities: only keys, with what they're called", function()
+            local file = fs.open("/.net/trust", "w")
+            file.write(textutils.serialise({
+                [("AB"):rep(32)] = "Bank", short = "x", [("zz"):rep(32)] = "junk", [1] = "a number",
+            }))
+            file.close()
+            local ok, err = pcall(function()
+                expect(net.trusted()):same { [("ab"):rep(32)] = "Bank" }
+            end)
+            fs.delete("/.net")
+            if not ok then error(err, 0) end
         end)
 
         it("lists known hosts as it lists trusted authorities: only what's a name and a key", function()

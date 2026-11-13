@@ -146,4 +146,35 @@ function helpers.router(net, id, links)
     return stack
 end
 
+--[[- Run a function with a pretend enclave, as the mod gives computers and the test computer hasn't: it keeps its keys
+in a table. Afterwards the computer's network files, which hold what was made with them, are deleted.
+]]
+function helpers.with_enclave(fn)
+    local keys, base, old = {}, "\9" .. ("\0"):rep(31), _G.enclave
+    _G.enclave = {
+        publicKey = function(name) return keys[name] and keys[name].public end,
+        generate = function(name, kind)
+            if kind == "ed25519" then
+                local private, public = crypto.generateKeyPair("ed25519")
+                keys[name] = { private = private, public = public }
+            else
+                local private = crypto.generateKeyPair("x25519")
+                keys[name] = { private = private, public = crypto.exchange(private, base) }
+            end
+            return keys[name].public
+        end,
+        exchange = function(name, public) return crypto.exchange(keys[name].private, public) end,
+        sign = function(name, data) return crypto.sign(keys[name].private, data) end,
+        list = function()
+            local names = {}
+            for name in pairs(keys) do names[name] = true end
+            return names
+        end,
+    }
+    local ok, err = pcall(fn)
+    _G.enclave = old
+    fs.delete("/.net")
+    if not ok then error(err, 0) end
+end
+
 return helpers

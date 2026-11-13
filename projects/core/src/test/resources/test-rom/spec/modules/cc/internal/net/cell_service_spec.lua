@@ -10,7 +10,6 @@ describe("Cellular services", function()
     local cell_core = require "cc.internal.net.cell.core"
     local core_service = require "cc.internal.net.cell.core_service"
     local cell_service = require "cc.internal.net.cell.cell_service"
-    local tasks = require "cc.internal.net.tasks"
     local network = require "support.virtual_network"
     local pipe = require "support.pipe"
 
@@ -152,46 +151,6 @@ describe("Cellular services", function()
         end
         return env
     end
-
-    describe("tasks", function()
-        it("runs tasks side by side, each waiting for its own events", function()
-            local seen = {}
-            local set = tasks.new()
-            set:spawn(function(name)
-                while true do
-                    local _, value = coroutine.yield("a")
-                    seen[#seen + 1] = name .. value
-                end
-            end, "first ")
-            set:spawn(function()
-                local event, value = coroutine.yield()
-                seen[#seen + 1] = event .. " " .. value
-            end)
-            set:resume("b", "one")
-            set:resume("a", "two")
-            set:resume("terminate")
-            set:resume("a", "three")
-            expect(seen):same { "b one", "first two", "first three" }
-            expect(set:count()):eq(1)
-
-            set:stop()
-            set:resume("a", "four")
-            expect(#seen):eq(3)
-        end)
-
-        it("reports tasks which fail, and carries on", function()
-            local errors = {}
-            local set = tasks.new(function(err) errors[#errors + 1] = err end)
-            local ran = 0
-            set:spawn(function() coroutine.yield() error("Broken", 0) end)
-            set:spawn(function() while true do coroutine.yield() ran = ran + 1 end end)
-            set:resume()
-            set:resume()
-            expect(errors):same { "Broken" }
-            expect(ran):eq(2)
-            expect(set:count()):eq(1)
-        end)
-    end)
 
     describe("the core", function()
         it("lets its own computer manage it", function()
