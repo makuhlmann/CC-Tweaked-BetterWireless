@@ -642,6 +642,12 @@ None of these was measured in the game. They're ordered by how often the code ru
   are almost the same in `tcp_spec.lua` and `secure_spec.lua`, as are `router` and `default_route` in
   `routing_spec.lua` and `robustness_spec.lua`.
 - **Change:** `support/net_helpers.lua`. **Small to medium.**
+- **Done:** `spec/support/net_helpers.lua` has `ip` (which 17 specs had), `hex`, `unhex`, `copy`, `count`, `with` (and
+  its `NIL`, for a setting to clear), the odd values to feed what's tested (one core list, to which a spec adds its own,
+  so the link and secure fuzzers now try a far too long string too), `reaches_server`, `wait_until`, `run` and
+  `blocking` (the TCP and secure specs' near copies), `router` and `default_route`, and the pretend enclave the secure
+  tests used. `support/yield.lua` has the one `yield`. The sealed-message tests, which skip the table which contains
+  itself, find it by `RECURSIVE` rather than by its place in the list.
 
 ### 5.5 What has no test
 
@@ -658,6 +664,12 @@ None of these was measured in the game. They're ordered by how often the code ru
   were read, and never run.
 - **Checks which couldn't be run** where this was written: Checkstyle and the NeoForge build need dependencies the
   sandbox didn't have. CI should be seen to pass both for the last three commits.
+- **Done:** `net_spec.lua` covers `setPassphrase` (what's sent is sealed while there's one), `routes` and `reload`
+  (connected routes, and configured ones once they're applied), `capture`, `getHostname`, `resolve` (addresses,
+  `net.hosts` and this computer's own name), `unhost`, `getErrors` and `trusted`; `host` and `lookup` are covered by
+  `dns_spec.lua`, which finds services as `net.lookup` does. `route`, `firewall`, `nslookup` and `netkeys` have specs,
+  and `tasks.lua` has its own. **Not done:** specs for `nc`, `ncp`, `rsh`, `netdump` and `dhcpd`, and the game tests (a
+  shared cell, messages between networks, and wiring across chunks which aren't kept loaded).
 
 ## 6. Not planned here
 
