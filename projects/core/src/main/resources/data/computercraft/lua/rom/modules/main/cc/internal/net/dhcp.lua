@@ -439,8 +439,29 @@ function Server:handle(message)
     return nil, false
 end
 
+--[[- The DHCP client on an interface, if one runs there.
+
+@tparam table stack The network stack.
+@tparam string name The interface's name.
+@treturn table|nil The client.
+]]
+local function client(stack, name)
+    return stack.dhcp_clients and stack.dhcp_clients[name]
+end
+
+--[[- The DHCP clients running, by interface.
+
+@tparam table stack The network stack.
+@treturn { [string] = table } Each interface's client.
+]]
+local function running(stack)
+    return stack.dhcp_clients or {}
+end
+
 return {
     CLIENT_PORT = CLIENT_PORT,
+    client = client,
+    running = running,
     SERVER_PORT = SERVER_PORT,
     link_local = link_local,
     clean_hostname = clean_hostname,

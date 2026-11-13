@@ -1050,6 +1050,21 @@ end
 --- Describe the interfaces.
 --
 -- @treturn { table... } A description of each interface, sorted by name.
+--- Forward packets for other computers (as a router does), or not.
+--
+-- @tparam boolean enabled Whether to.
+function Stack:set_forwarding(enabled)
+    self.forwarding = enabled == true
+end
+
+--- Whether a modem has interfaces on it.
+--
+-- @tparam string modem The modem's peripheral name.
+-- @treturn boolean Whether it has.
+function Stack:has_modem(modem)
+    return self.by_modem[modem] ~= nil
+end
+
 function Stack:interface_info()
     local result = {}
     for _, interface in pairs(self.interfaces) do

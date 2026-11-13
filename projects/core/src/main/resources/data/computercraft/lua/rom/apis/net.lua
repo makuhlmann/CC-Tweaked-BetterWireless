@@ -191,7 +191,7 @@ local function open_channels(interface)
 end
 
 local function stop_dhcp(name, release)
-    local client = stack.dhcp_clients and stack.dhcp_clients[name]
+    local client = dhcp.client(stack, name)
     if client then client:stop(release) end
     stack:remove_routes(function(route) return route.source == "dhcp" and route.interface == name end)
 end
@@ -243,7 +243,7 @@ end
 
 -- Apply the routing settings: forwarding, fixed routes, the routing protocol and the firewall.
 function apply_routing()
-    stack.forwarding = settings.get("net.forwarding") == true
+    stack:set_forwarding(settings.get("net.forwarding") == true)
 
     stack:remove_routes(function(route) return route.source == "static" end)
     local gateway = settings.get("net.gateway")
@@ -300,7 +300,7 @@ local function apply_mode(name, mode)
     end
 
     if mode == "dhcp" then
-        local client = stack.dhcp_clients and stack.dhcp_clients[name]
+        local client = dhcp.client(stack, name)
         if not client then
             stack:set_address(name, nil)
             dhcp.start(stack, name, {
@@ -373,7 +373,7 @@ local function add_interface(name, modem, kind, band)
 end
 
 local function setup_modem(name)
-    if not peripheral.hasType(name, "modem") or stack.by_modem[name] then return end
+    if not peripheral.hasType(name, "modem") or stack:has_modem(name) then return end
 
     if not peripheral.call(name, "isWireless") then return add_interface(name, name, "wired", "high") end
 
@@ -432,7 +432,7 @@ local function resolver_options()
         local addr = address.parse(server)
         if addr then servers[#servers + 1] = addr end
     end
-    for _, client in pairs(stack.dhcp_clients or {}) do
+    for _, client in pairs(dhcp.running(stack)) do
         local lease = client.lease
         if lease then
             for _, server in ipairs(lease.dns) do servers[#servers + 1] = server end
@@ -560,7 +560,7 @@ function interfaces()
     local s = load()
     local result = s:interface_info()
     for _, info in ipairs(result) do
-        local client = s.dhcp_clients and s.dhcp_clients[info.name]
+        local client = dhcp.client(s, info.name)
         if client then
             local state = client:info()
             info.config, info.dhcp, info.lease = "dhcp", state.state, state.expires
@@ -1751,7 +1751,7 @@ local function new_core(options)
         settings.set("net.forwarding", true)
         settings.save()
     end
-    stack.forwarding = true
+    stack:set_forwarding(true)
     return env_require("cc.internal.net.cell.core").new {
         stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
         operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
