@@ -578,4 +578,34 @@ describe("The net library", function()
             expect(pinger:receive()):eq(nil)
         end)
     end)
+
+    describe("net.run", function()
+        it("keeps one timer for the stack, even when its timers come late", function()
+            local s = require "support.debug_ext".getupvalue(net.run, "load")()
+
+            -- Something for the stack to do shortly, and then a test which runs on without yielding, for longer than
+            -- the background process lets a timer be late.
+            local ran = false
+            s:schedule(0.05, function() ran = true end)
+            local finish = os.clock() + 1.5
+            while os.clock() < finish do end
+
+            -- The background process sees every event. Count the timers it starts while a few go by: it once started
+            -- one for each, and then one for each of those, until the computer's event queue was full of them.
+            local started, start_timer = 0, os.startTimer
+            stub(os, "startTimer", function(...)
+                if debug.getinfo(2, "S").short_src:find("apis/net.lua", 1, true) then started = started + 1 end
+                return start_timer(...)
+            end)
+            for _ = 1, 50 do
+                os.queueEvent("net_spec_late")
+                os.pullEvent("net_spec_late")
+            end
+            local deadline = os.clock() + 2
+            while not ran and os.clock() < deadline do sleep(0.05) end
+
+            expect(ran):eq(true)
+            expect(started < 10):describe(("started %d timers"):format(started)):eq(true)
+        end)
+    end)
 end)

@@ -604,6 +604,14 @@ None of these was measured in the game. They're ordered by how often the code ru
   first time; `mcfly`'s wait for the start of each test does the same, and runs the next test asked for if it comes
   first. The delegate shows the computer's screen with the first three tests which time out, and once three in a row
   have, fails the rest at once rather than waiting ten seconds for each.
+- **Found:** the timers were the network stack's own. `net.run`, which the BIOS runs beside the shell, started a timer
+  for the stack's next deadline, and took one which was a second overdue to be lost and started another, without
+  cancelling it and still taking the deadline as when it would fire. Once a test had kept the computer busy for over a
+  second, every event, those timers included, started another, and only the newest would run the stack, so they
+  multiplied until the queue was full: 716,065 timers in one run of the suite. It now keeps one timer, with when it
+  will fire, and cancels any it replaces: 10 in the whole of `net_spec.lua`, and a test in it which kept the computer
+  busy starts 1,001 with the old loop. Under the test delegate, `mcfly` notes where each timer was started, which
+  `support/yield.lua` prints with a full queue, and writes how many each place and each test started to `/timers.txt`.
 
 ### 5.3 What a killed test run leaves behind
 

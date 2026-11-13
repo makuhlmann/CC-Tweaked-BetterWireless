@@ -513,18 +513,22 @@ function run()
                 if not service_ok then log_error(service_err) end
             end
 
-            -- Events are lost when a computer's event queue is full, timers included. If one of ours is well overdue,
-            -- it isn't coming: start another, or the network stack would stop.
+            -- Keep one timer, for when the stack next has something to do, and when it should fire (which is now, for
+            -- a deadline which has passed). A nearer deadline replaces it, and the one it replaces is cancelled, so
+            -- timers never pile up. Events are lost when a computer's event queue is full, timers included: one which
+            -- is well overdue isn't coming, so it's replaced too, or the network stack would stop.
             local now = os.clock()
-            if timer_at and now > timer_at + 1 then timer, timer_at = nil, nil end
-            if now > channel_check_at + CHANNEL_CHECK_INTERVAL then
-                channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), now + CHANNEL_CHECK_INTERVAL
-            end
-
             local deadline = s:next_deadline()
-            if deadline and (not timer_at or deadline < timer_at) then
-                timer_at = deadline
-                timer = os.startTimer(math.max(0, deadline - os.clock()))
+            if deadline then
+                local at = math.max(deadline, now)
+                if not timer_at or at < timer_at or now > timer_at + 1 then
+                    if timer then os.cancelTimer(timer) end
+                    timer, timer_at = os.startTimer(at - now), at
+                end
+            end
+            if now > channel_check_at + CHANNEL_CHECK_INTERVAL then
+                os.cancelTimer(channel_check)
+                channel_check, channel_check_at = os.startTimer(CHANNEL_CHECK_INTERVAL), now + CHANNEL_CHECK_INTERVAL
             end
         end)
         if not ok then log_error(err) end
@@ -1373,7 +1377,8 @@ SecureListener.__index = SecureListener
 
 --[[- Wait for a secure connection. Connections which fail their handshake are dropped, and waiting carries on.
 
-While a client does its handshake, others wait: one which stalls holds them up for up to 5 seconds.
+While a client does its handshake, others wait: one which stalls holds them up for up to 10 seconds (5 for each
+message from it which the handshake waits for).
 
 @tparam[opt] number timeout How long to wait, in seconds. Waits until one comes if not given.
 @treturn[1] table The connection, with the same methods as one from [`net.secure.connect`].

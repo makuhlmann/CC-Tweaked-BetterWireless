@@ -675,6 +675,9 @@ local function flush()
     end
 end
 
+-- The test which is running, for counting the timers each starts (see below).
+local running_test
+
 --- Do the actual running of our test. Returns the name of the test to run next, if this one was stopped because the
 -- test delegate asked for it (see `run_test` and `flush`).
 local function do_run(test)
@@ -692,7 +695,9 @@ local function do_run(test)
         -- Flush the event queue and ensure we're running with 0 timeout.
         local ok, asked = flush()
         if ok then
+            running_test = test.name
             ok, err, next_test = run_test(test)
+            running_test = nil
         else
             err, next_test = setmetatable({ message = "Not run, as the next test was asked for first" }, error_mt), asked
         end
@@ -732,6 +737,35 @@ local function do_run(test)
     term.setTextColour(colours.white)
 
     return next_test
+end
+
+-- Under the test delegate, note where each timer was started (the first few places outside the BIOS), so a test
+-- which finds the computer's event queue full of timers can say where they came from (see spec/support/yield.lua),
+-- and count them by place and by test (written to /timers.txt at the end).
+local timer_counts
+if cct_test and debug and debug.getinfo then
+    local start, creators, order = os.startTimer, {}, {}
+    local by_place, by_test = {}, {}
+    timer_counts = { by_place = by_place, by_test = by_test }
+    os.startTimer = function(...)
+        local id = start(...)
+        local places = {}
+        for level = 2, 8 do
+            local info = debug.getinfo(level, "Sl")
+            if not info then break end
+            if info.short_src ~= "bios.lua" and info.what ~= "C" then places[#places + 1] = info.short_src .. ":" .. info.currentline end
+            if #places >= 2 then break end
+        end
+        local where = table.concat(places, " < ")
+        creators[id] = where
+        by_place[where] = (by_place[where] or 0) + 1
+        local test = running_test and running_test:gsub("\0", " > ") or "(between tests)"
+        by_test[test] = (by_test[test] or 0) + 1
+        order[#order + 1] = id
+        if #order > 4096 then creators[table.remove(order, 1)] = nil end
+        return id
+    end
+    _G.cct_test_timer_creator = function(id) return creators[id] end
 end
 
 -- Loop over all our tests, running them as required.
@@ -787,6 +821,21 @@ if test_status.pending > 0 then
 end
 
 term.setTextColour(colours.white) io.write(info .. "\n")
+
+-- How many timers were started, from where and by which test: the most of each, in /timers.txt.
+if timer_counts then
+    local handle = fs.open("/timers.txt", "w")
+    if handle then
+        for _, kind in ipairs { "by_place", "by_test" } do
+            local rows = {}
+            for key, count in pairs(timer_counts[kind]) do rows[#rows + 1] = { key = key, count = count } end
+            table.sort(rows, function(a, b) return a.count > b.count end)
+            handle.writeLine(kind)
+            for i = 1, math.min(25, #rows) do handle.writeLine(("%8d  %s"):format(rows[i].count, rows[i].key)) end
+        end
+        handle.close()
+    end
+end
 
 if cct_test then cct_test.finish(line_counts) end
 if howlci then howlci.log("debug", info) sleep(3) end
