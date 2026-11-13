@@ -398,6 +398,12 @@ cover the replacement.
   to 5 seconds, where it's up to 10.
 - **Change:** three documents: the design (§1 to §10 and §12, brought up to date), a reference for the cellular
   layer as built (§11), and the testing log (§13's robustness sections). **Medium.**
+- **Done:** `NETWORK_STACK.md` (1,084 lines) keeps the design, §1 to §10 and §12, with a summary of §11 and §13's
+  account of how the stack is tested. `NETWORK_CELLULAR.md` is the cellular layer, as asked for and as built, and
+  `NETWORK_TESTING.md` what each round of testing found, and what stalled the test suite. The passages behind the code
+  were brought up to date: `Stack.new`'s example, `netstat` and `chat` (gone), how modules are loaded, the API sketch's
+  trust options and error messages, and `net.secure`'s `accept`, which a stalled handshake holds up for up to 10 seconds
+  (5 for each of the client's two messages).
 
 ## 3. Reworks
 
