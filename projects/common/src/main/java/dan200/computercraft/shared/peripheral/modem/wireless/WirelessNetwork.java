@@ -10,6 +10,7 @@ import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioPropagationService;
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioSettings;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
 
@@ -89,7 +90,9 @@ public class WirelessNetwork implements PacketNetwork {
                 continue;
             }
 
-            if (!settings.isPossible(receiver.getPosition().distanceTo(origin), band)) continue;
+            // Pocket computers and turtles are weaker, so need to be closer: don't look at terrain for those too far.
+            var offset = RadioSettings.offset(sender, receiver);
+            if (!settings.isPossible(receiver.getPosition().distanceTo(origin), band, offset)) continue;
 
             if (candidates == null) candidates = new ArrayList<>();
             candidates.add(receiver);

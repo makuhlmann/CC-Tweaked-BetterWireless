@@ -335,7 +335,7 @@ public final class RadioPropagationService {
         var here = DimensionMapping.map(to, other, level, heights);
 
         // Ender modems are weak, so most are out of range whatever is in the way. Don't look at terrain for those.
-        var offset = Math.min(0, packet.sender().getTransmitOffset()) + Math.min(0, receiver.getReceiveOffset());
+        var offset = RadioSettings.offset(packet.sender(), receiver);
         var throughTheirs = settings.isPossible(there.distanceTo(to), band, offset);
         var throughOurs = settings.isPossible(from.distanceTo(here), band, offset);
         if (!throughTheirs && !throughOurs) return;

@@ -4,6 +4,8 @@
 
 package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
+import dan200.computercraft.api.network.PacketReceiver;
+import dan200.computercraft.api.network.PacketSender;
 import dan200.computercraft.shared.config.Config;
 
 import java.util.Map;
@@ -79,27 +81,33 @@ public record RadioSettings(
     }
 
     /**
-     * Whether a link could possibly work, even in perfect conditions.
-     *
-     * @param distance The distance between the two antennas, in blocks.
-     * @param band     The band the link uses.
-     * @return Whether the link is worth evaluating.
-     */
-    public boolean isPossible(double distance, RadioBand band) {
-        return isPossible(distance, band, 0);
-    }
-
-    /**
      * Whether a link between two particular devices could possibly work, even in perfect conditions.
+     * <p>
+     * This only looks at the distance, so is cheap: no link loses less than it would in free space. Links which pass
+     * still need their terrain looked up and evaluated, so this should account for everything it can, including how
+     * weak the devices are.
      *
      * @param distance The distance between the two antennas, in blocks.
      * @param band     The band the link uses.
-     * @param offset   How much weaker the two devices are than the strongest, in dB: the sum of the sender's transmit
-     *                 offset and the receiver's receive offset, zero or negative.
+     * @param offset   How much weaker the two devices are than the strongest, in dB: see
+     *                 {@link #offset(PacketSender, PacketReceiver)}.
      * @return Whether the link is worth evaluating.
      */
     public boolean isPossible(double distance, RadioBand band, double offset) {
         return distance <= maxRange
             && RadioMath.freeSpaceLoss(distance * environment.metresPerBlock(), band.frequencyMHz()) <= band.linkBudget() + Math.min(0, offset);
+    }
+
+    /**
+     * How much weaker two devices are than the strongest (a wireless modem on a placed computer at each end), and so
+     * how much less loss a link between them can take.
+     *
+     * @param sender   The device which sends.
+     * @param receiver The device which receives.
+     * @return The sum of the sender's transmit offset and the receiver's receive offset, in dB. Positive offsets
+     * count as zero, so this is zero or negative.
+     */
+    public static double offset(PacketSender sender, PacketReceiver receiver) {
+        return Math.min(0, sender.getTransmitOffset()) + Math.min(0, receiver.getReceiveOffset());
     }
 }
