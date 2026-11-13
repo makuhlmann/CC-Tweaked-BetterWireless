@@ -345,6 +345,12 @@ cover the replacement.
   which `netkeys`, `rshd` and `core_service` then share. `net.lua` puts them together and documents them. Add
   `stack:set_forwarding()` and a way to ask for an interface's DHCP client. **Large** for the cellular part,
   **medium** for the rest.
+- **Done:** `cc.internal.net.cell.api` (912 lines) holds the phone's files and messages, the core's and the cell's
+  services and the manager; `net.cell` keeps each function's documentation and argument checks and hands the rest to it,
+  in a tail call so errors still blame the caller. `cc.internal.net.trust` holds the trust store, which the net API and
+  `netkeys` share; `rshd` and `core_service` turned out not to use it. `dhcp.client`, `dhcp.running`,
+  `Stack:set_forwarding` and `Stack:has_modem` stand for what the net API read and wrote of the stack's insides.
+  `net.lua` is 1,852 lines, from 2,631 before the cellular part moved.
 
 ### 2.7 Split `stack.lua`
 
