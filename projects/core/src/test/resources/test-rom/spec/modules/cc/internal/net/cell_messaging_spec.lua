@@ -11,6 +11,7 @@ phones.
 ]]
 
 describe("Messages between networks", function()
+    local helpers = require "support.net_helpers"
     local operator = require "support.cell_network".operator
 
     local function operators(peered)
@@ -32,11 +33,7 @@ describe("Messages between networks", function()
         return new, inbox, sent
     end
 
-    local function count(list)
-        local total = 0
-        for _ in pairs(list) do total = total + 1 end
-        return total
-    end
+    local count = helpers.count
 
     it("passes messages between the networks' phones, both ways, by number prefix", function()
         math.randomseed(51)

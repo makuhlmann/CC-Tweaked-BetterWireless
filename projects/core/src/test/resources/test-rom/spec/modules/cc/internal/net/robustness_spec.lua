@@ -5,30 +5,20 @@
 --[[ Big networks, slow and lossy links, floods, loops and address conflicts. ]]
 
 describe("The network stack, under stress,", function()
+    local helpers = require "support.net_helpers"
     local Stack = require "cc.internal.net.stack"
     local rip = require "cc.internal.net.rip"
     local dhcp = require "cc.internal.net.dhcp"
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
-    local function default_route(stack, gateway)
-        stack:add_route { network = 0, prefix = 0, gateway = ip(gateway), source = "static" }
-    end
+    local default_route = helpers.default_route
 
-    local function router(net, id, links)
-        local stack = net.stack(id)
-        for _, link in ipairs(links) do net.connect(stack, link[1], link[2], link[3]) end
-        stack.forwarding = true
-        return stack
-    end
+    local router = helpers.router
 
-    local function count(t)
-        local n = 0
-        for _ in pairs(t) do n = n + 1 end
-        return n
-    end
+    local count = helpers.count
 
     -- Run a DHCP server on a stack's interface, as the dhcpd program does.
     local function dhcp_server(stack, name, options)

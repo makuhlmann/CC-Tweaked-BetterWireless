@@ -3,11 +3,12 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.dhcp", function()
+    local helpers = require "support.net_helpers"
     local dhcp = require "cc.internal.net.dhcp"
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local function server_options(net, extra)
         local options = {

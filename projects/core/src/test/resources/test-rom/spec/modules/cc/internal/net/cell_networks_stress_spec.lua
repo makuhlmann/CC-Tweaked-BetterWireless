@@ -11,17 +11,12 @@ coverage end up with service by themselves, messages arrive once, and nothing gr
 ]]
 
 describe("Several cellular networks, under stress,", function()
+    local helpers = require "support.net_helpers"
     local address = require "cc.net.address"
     local common = require "cc.internal.net.cell.common"
     local operator = require "support.cell_network".operator
 
-    local function ip(text) return (address.parse(text)) end
-
-    local function count(list)
-        local total = 0
-        for _ in pairs(list) do total = total + 1 end
-        return total
-    end
+    local count = helpers.count
 
     local yield = require "support.yield"
 
@@ -34,29 +29,17 @@ describe("Several cellular networks, under stress,", function()
         end
     end
 
-    local function reaches_server(net, stack)
-        local result = net.ping(stack, ip("10.0.0.60"), nil, 1)
-        return result ~= nil and result.error == nil
-    end
+    local reaches_server = helpers.reaches_server
 
     -- A frame on the air which says it's from a computer it isn't from.
     local function spoof(net, target, src, body)
         net.inject("air", target.interfaces.air.unicast, { net = 1, src = src, dst = target.id, type = common.FRAME, body = body })
     end
 
-    local NIL = {}
-    local BAD = {
-        { "nil", NIL }, { "NaN", 0 / 0 }, { "inf", math.huge }, { "-inf", -math.huge }, { "1e18", 1e18 },
-        { "-1", -1 }, { "0.5", 0.5 }, { "2^32", 2 ^ 32 }, { "a string", "x" }, { "a table", {} }, { "true", true },
-        { "a long string", ("y"):rep(5000) }, { "a network's name", "BETA" }, { "our network's name", "ACME" },
-    }
+    local NIL = helpers.NIL
+    local BAD = helpers.bad_values({ "a network's name", "BETA" }, { "our network's name", "ACME" })
 
-    local function with(template, key, value)
-        local result = {}
-        for k, v in pairs(template) do result[k] = v end
-        if value == NIL then result[key] = nil else result[key] = value end
-        return result
-    end
+    local with = helpers.with
 
     local function operators(options)
         options = options or {}

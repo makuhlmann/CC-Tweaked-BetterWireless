@@ -11,6 +11,7 @@ A cell is heard up to 100 away, so ACME covers up to 200, and BETA from 200 on.
 ]]
 
 describe("Roaming", function()
+    local helpers = require "support.net_helpers"
     local codec = require "cc.net.codec"
     local address = require "cc.net.address"
     local tcp = require "cc.internal.net.tcp"
@@ -18,9 +19,9 @@ describe("Roaming", function()
     local common = require "cc.internal.net.cell.common"
     local operator = require "support.cell_network".operator
 
-    local function ip(text) return (address.parse(text)) end
-    local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-    local function copy(value) return codec.decode(codec.encode(value)) end
+    local ip = helpers.ip
+    local hex = helpers.hex
+    local copy = helpers.copy
 
     local yield = require "support.yield"
 
@@ -33,20 +34,9 @@ describe("Roaming", function()
         return acme, beta, acme.net
     end
 
-    local function wait_until(net, test, limit, what)
-        local deadline = net.time + (limit or 30)
-        while net.time < deadline do
-            if test() then return end
-            net.advance(0.1)
-            yield()
-        end
-        error(("%s didn't happen within %d seconds"):format(what or "Something", limit or 30), 2)
-    end
+    local wait_until = helpers.wait_until
 
-    local function reaches_server(net, stack)
-        local result = net.ping(stack, ip("10.0.0.60"), nil, 1)
-        return result ~= nil and result.error == nil
-    end
+    local reaches_server = helpers.reaches_server
 
     local function event_kinds(phone)
         local result = {}
@@ -754,7 +744,7 @@ describe("Roaming", function()
         local visitor = next(beta.core.visitors)
 
         -- (Not tables which contain themselves: connections between cores don't carry them.)
-        local NIL = {}
+        local NIL = helpers.NIL
         local bad = { NIL, 0 / 0, math.huge, -math.huge, 1e18, -1, 0.5, 2 ^ 32, "x", {}, true, { 1, { 2 } }, ("y"):rep(5000) }
         local template = {
             phone = 1, teid = session.teid, cell = 21, target = 22, handshake = ("h"):rep(96), data = ("d"):rep(40),

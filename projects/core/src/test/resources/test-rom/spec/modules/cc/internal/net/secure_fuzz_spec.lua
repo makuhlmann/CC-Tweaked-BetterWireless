@@ -7,6 +7,7 @@ sealed frames, filled with things they don't expect. Nothing may escape as an er
 something which was changed on the way, and everything must carry on working afterwards. ]]
 
 describe("The security layer, given bad messages,", function()
+    local helpers = require "support.net_helpers"
     local secure = require "cc.internal.net.secure"
     local noise = require "cc.internal.net.noise"
     local codec = require "cc.net.codec"
@@ -16,16 +17,10 @@ describe("The security layer, given bad messages,", function()
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
-    local NIL = {}
-    local recursive = {}
-    recursive.self = recursive
-    local BAD = {
-        { "nil", NIL }, { "NaN", 0 / 0 }, { "inf", math.huge }, { "-inf", -math.huge }, { "1e18", 1e18 },
-        { "-1", -1 }, { "0.5", 0.5 }, { "2^32", 2 ^ 32 }, { "a string", "x" }, { "a table", {} }, { "true", true },
-        { "a recursive table", recursive },
-    }
+    local NIL = helpers.NIL
+    local BAD = helpers.bad_values()
 
     local function unhex(text)
         return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end))
@@ -587,12 +582,7 @@ describe("The security layer, given bad messages,", function()
             if not result or result.error then error("Ping failed: " .. tostring(result and result.error), 0) end
         end
 
-        local function with(template, key, value)
-            local result = {}
-            for k, v in pairs(template) do result[k] = v end
-            if value == NIL then result[key] = nil else result[key] = value end
-            return result
-        end
+        local with = helpers.with
 
         it("ignore sealed frames with anything unexpected in them", function()
             local net, target, peer = sealed_network()

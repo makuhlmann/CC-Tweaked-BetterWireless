@@ -3,12 +3,13 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.tcp", function()
+    local helpers = require "support.net_helpers"
     local tcp = require "cc.internal.net.tcp"
     local stream = require "cc.internal.net.stream"
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local function route(stack, network_text, gateway)
         local addr, prefix = address.parse(network_text)
@@ -17,49 +18,7 @@ describe("cc.internal.net.tcp", function()
 
     --[[ Run several functions side by side, like `parallel`, letting a little time pass on the network between turns.
     Functions wait by yielding. ]]
-    local function run(net, functions, limit)
-        local threads = {}
-        for i, fn in ipairs(functions) do threads[i] = coroutine.create(fn) end
-        local elapsed = 0
-        while true do
-            local alive = false
-            for _, thread in ipairs(threads) do
-                if coroutine.status(thread) ~= "dead" then
-                    local ok, err = coroutine.resume(thread)
-                    if not ok then error(err, 0) end
-                    if coroutine.status(thread) ~= "dead" then alive = true end
-                end
-            end
-            if not alive then return elapsed end
-            net.advance(0.05)
-            elapsed = elapsed + 0.05
-            if elapsed > (limit or 300) then error(("Still running after %d seconds"):format(elapsed), 0) end
-        end
-    end
-
-    -- Wrap a connection so `send` and `receive` wait (by yielding), as the net API's do.
-    local function blocking(connection)
-        return {
-            send = function(_, value)
-                while true do
-                    local ok, err = connection:send(value)
-                    if ok then return true end
-                    if err ~= "Full" then return nil, err end
-                    coroutine.yield()
-                end
-            end,
-            receive = function()
-                while true do
-                    local ok, value = connection:take()
-                    if ok then return value end
-                    if value == "closed" then return nil end
-                    if value then return nil, value end
-                    coroutine.yield()
-                end
-            end,
-            close = function() connection:close() end,
-        }
-    end
+    local run, blocking = helpers.run, helpers.blocking
 
     local function accept(listener)
         while true do
@@ -125,16 +84,16 @@ describe("cc.internal.net.tcp", function()
 
         local listener = assert(tcp.listen(h3, 115))
         local received
-        local elapsed = run(net, {
+        local _, elapsed = run(net, {
             function()
                 local connection = assert(tcp.connect(h1, ip("10.3.0.2"), 115))
                 expect(wait_open(connection)):eq(true)
-                local out = stream.wrap(blocking(connection))
+                local out = stream.wrap(blocking(net, connection))
                 out.write(data)
                 out.close()
             end,
             function()
-                local input = stream.wrap(blocking(accept(listener)))
+                local input = stream.wrap(blocking(net, accept(listener)))
                 received = input.readAll()
             end,
         })
@@ -154,7 +113,7 @@ describe("cc.internal.net.tcp", function()
         local values = { "text", 42, false, { nested = { true } }, "" }
 
         local got_a, got_b = {}, {}
-        local client = blocking(assert(tcp.connect(a, ip("10.0.0.2"), 80)))
+        local client = blocking(net, assert(tcp.connect(a, ip("10.0.0.2"), 80)))
         run(net, {
             function()
                 for i = 1, 100 do assert(client:send(values[i % #values + 1])) end
@@ -169,7 +128,7 @@ describe("cc.internal.net.tcp", function()
                 end
             end,
             function()
-                local connection = blocking(accept(listener))
+                local connection = blocking(net, accept(listener))
                 while true do
                     local value = connection:receive()
                     if value == nil then break end

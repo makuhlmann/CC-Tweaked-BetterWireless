@@ -6,11 +6,11 @@
 a connection delivers what was sent in order and exactly once or fails saying why, and nothing is left behind. ]]
 
 describe("Connections, under stress,", function()
+    local helpers = require "support.net_helpers"
     local tcp = require "cc.internal.net.tcp"
-    local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     -- Two computers on one link.
     local function pair()
@@ -20,11 +20,7 @@ describe("Connections, under stress,", function()
         return net, a, b
     end
 
-    local function count(list)
-        local total = 0
-        for _ in pairs(list) do total = total + 1 end
-        return total
-    end
+    local count = helpers.count
 
     -- Check a computer's tables of connections agree with each other.
     local function check_registry(stack)

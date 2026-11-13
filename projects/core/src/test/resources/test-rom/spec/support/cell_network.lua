@@ -24,6 +24,7 @@ local cell_phone = require "cc.internal.net.cell.phone"
 local core_service = require "cc.internal.net.cell.core_service"
 local cell_service = require "cc.internal.net.cell.cell_service"
 local network = require "support.virtual_network"
+local helpers = require "support.net_helpers"
 local pipe = require "support.pipe"
 
 -- How long a control message takes from one computer to another, in seconds.
@@ -37,9 +38,9 @@ local DIR = "/.cell-harness"
 local made = 0
 fs.delete(DIR)
 
-local function ip(text) return (address.parse(text)) end
-local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-local function unhex(text) return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end)) end
+local ip = helpers.ip
+local hex = helpers.hex
+local unhex = helpers.unhex
 local function new_key() return hex(crypto.random(32)) end
 local function fingerprint(key) return hex(crypto.sha256(unhex(key))):sub(1, 20):gsub("(....)", "%1 "):sub(1, -2) end
 

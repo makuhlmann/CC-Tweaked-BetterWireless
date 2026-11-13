@@ -11,11 +11,12 @@ A cell is heard up to 120 away, and fit to use up to 100 away.
 ]]
 
 describe("Shared cells", function()
+    local helpers = require "support.net_helpers"
     local address = require "cc.net.address"
     local tcp = require "cc.internal.net.tcp"
     local operator = require "support.cell_network".operator
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local yield = require "support.yield"
 
@@ -28,20 +29,9 @@ describe("Shared cells", function()
         return acme, beta, acme.net, link
     end
 
-    local function wait_until(net, test, limit, what)
-        local deadline = net.time + (limit or 30)
-        while net.time < deadline do
-            if test() then return end
-            net.advance(0.1)
-            yield()
-        end
-        error(("%s didn't happen within %d seconds"):format(what or "Something", limit or 30), 2)
-    end
+    local wait_until = helpers.wait_until
 
-    local function reaches_server(net, stack)
-        local result = net.ping(stack, ip("10.0.0.60"), nil, 1)
-        return result ~= nil and result.error == nil
-    end
+    local reaches_server = helpers.reaches_server
 
     -- The networks a phone hears a cell serve, and whether each one's part checked out.
     local function heard_at(phone, id)

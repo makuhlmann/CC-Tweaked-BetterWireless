@@ -17,9 +17,9 @@ A message, or word that the other end has closed, arrives at once, unless `optio
  - `wake_at(side, seconds)` is called when an end starts waiting with a time limit, to wake it once the time is up.
 ]]
 
-local codec = require "cc.net.codec"
+local helpers = require "support.net_helpers"
 
-local function copy(value) return codec.decode(codec.encode(value)) end
+local copy = helpers.copy
 
 return function(clock, a, b, options)
     options = options or {}

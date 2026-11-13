@@ -3,14 +3,14 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("Cellular networks", function()
-    local codec = require "cc.net.codec"
+    local helpers = require "support.net_helpers"
     local address = require "cc.net.address"
     local tcp = require "cc.internal.net.tcp"
     local certificate = require "cc.internal.net.certificate"
     local common = require "cc.internal.net.cell.common"
     local message = require "cc.internal.net.message"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
     -- A phone's events, without their times.
     local function event_kinds(phone)
         local result = {}
@@ -20,8 +20,8 @@ describe("Cellular networks", function()
         end
         return result
     end
-    local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-    local function copy(value) return codec.decode(codec.encode(value)) end
+    local hex = helpers.hex
+    local copy = helpers.copy
 
     local operator = require "support.cell_network".operator
 

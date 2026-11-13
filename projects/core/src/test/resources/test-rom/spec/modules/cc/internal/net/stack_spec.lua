@@ -3,10 +3,10 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.stack", function()
+    local helpers = require "support.net_helpers"
     local Stack = require "cc.internal.net.stack"
-    local address = require "cc.net.address"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local network = require "support.virtual_network"
 

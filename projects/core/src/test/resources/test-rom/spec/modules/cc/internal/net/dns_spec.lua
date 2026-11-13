@@ -3,11 +3,11 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.dns", function()
+    local helpers = require "support.net_helpers"
     local dns = require "cc.internal.net.dns"
-    local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local function computer(net, id, addr, name, services)
         local stack = net.add(id, addr)

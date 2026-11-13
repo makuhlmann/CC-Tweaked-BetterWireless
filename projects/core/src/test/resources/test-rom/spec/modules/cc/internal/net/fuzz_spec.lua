@@ -6,6 +6,7 @@
 expect. Nothing may escape as an error, leave the stack in a state which breaks later, or stop it working. ]]
 
 describe("The network stack, given bad messages,", function()
+    local helpers = require "support.net_helpers"
     local Stack = require "cc.internal.net.stack"
     local rip = require "cc.internal.net.rip"
     local tcp = require "cc.internal.net.tcp"
@@ -14,24 +15,13 @@ describe("The network stack, given bad messages,", function()
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
-    local NIL = {}
-    local recursive = {}
-    recursive.self = recursive
-    local BAD = {
-        { "nil", NIL }, { "NaN", 0 / 0 }, { "inf", math.huge }, { "-inf", -math.huge }, { "1e18", 1e18 },
-        { "-1", -1 }, { "0.5", 0.5 }, { "2^32", 2 ^ 32 }, { "a string", "x" }, { "a table", {} }, { "true", true },
-        { "a recursive table", recursive },
-    }
+    local NIL = helpers.NIL
+    local BAD = helpers.bad_values()
 
     -- A copy of a table with one field replaced.
-    local function with(template, key, value)
-        local result = {}
-        for k, v in pairs(template) do result[k] = v end
-        if value == NIL then result[key] = nil else result[key] = value end
-        return result
-    end
+    local with = helpers.with
 
     -- Every variant of a template with one field made bad.
     local function variants(name, template, fields, wrap)

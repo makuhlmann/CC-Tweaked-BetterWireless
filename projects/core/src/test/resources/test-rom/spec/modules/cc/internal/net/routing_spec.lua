@@ -3,23 +3,17 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("Routing", function()
+    local helpers = require "support.net_helpers"
     local Stack = require "cc.internal.net.stack"
     local rip = require "cc.internal.net.rip"
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
-    local function default_route(stack, gateway)
-        stack:add_route { network = 0, prefix = 0, gateway = ip(gateway), source = "static" }
-    end
+    local default_route = helpers.default_route
 
-    local function router(net, id, links)
-        local stack = net.stack(id)
-        for _, link in ipairs(links) do net.connect(stack, link[1], link[2], link[3]) end
-        stack.forwarding = true
-        return stack
-    end
+    local router = helpers.router
 
     --[[ Two hosts with a router between them:
 

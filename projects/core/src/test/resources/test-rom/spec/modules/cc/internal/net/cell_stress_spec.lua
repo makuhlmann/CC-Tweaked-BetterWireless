@@ -7,8 +7,8 @@ Whatever happens, a phone with coverage ends up with service again by itself, me
 without limit. ]]
 
 describe("Cellular networks, under stress,", function()
+    local helpers = require "support.net_helpers"
     local codec = require "cc.net.codec"
-    local address = require "cc.net.address"
     local tcp = require "cc.internal.net.tcp"
     local common = require "cc.internal.net.cell.common"
     local noise = require "cc.internal.net.noise"
@@ -16,31 +16,17 @@ describe("Cellular networks, under stress,", function()
     local cell_network = require "support.cell_network"
     local operator, x25519 = cell_network.operator, cell_network.x25519
 
-    local function ip(text) return (address.parse(text)) end
-    local function copy(value) return codec.decode(codec.encode(value)) end
-    local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
+    local ip = helpers.ip
+    local copy = helpers.copy
+    local hex = helpers.hex
 
-    local function count(list)
-        local total = 0
-        for _ in pairs(list) do total = total + 1 end
-        return total
-    end
+    local count = helpers.count
 
-    local NIL = {}
-    local recursive = {}
-    recursive.self = recursive
-    local BAD = {
-        { "nil", NIL }, { "NaN", 0 / 0 }, { "inf", math.huge }, { "-inf", -math.huge }, { "1e18", 1e18 },
-        { "-1", -1 }, { "0.5", 0.5 }, { "2^32", 2 ^ 32 }, { "a string", "x" }, { "a table", {} }, { "true", true },
-        { "a recursive table", recursive }, { "a long string", ("y"):rep(5000) },
-    }
+    local NIL = helpers.NIL
+    local recursive = helpers.RECURSIVE
+    local BAD = helpers.bad_values()
 
-    local function with(template, key, value)
-        local result = {}
-        for k, v in pairs(template) do result[k] = v end
-        if value == NIL then result[key] = nil else result[key] = value end
-        return result
-    end
+    local with = helpers.with
 
     local yield = require "support.yield"
 

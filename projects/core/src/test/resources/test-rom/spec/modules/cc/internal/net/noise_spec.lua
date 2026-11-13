@@ -3,10 +3,11 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.noise", function()
+    local helpers = require "support.net_helpers"
     local noise = require "cc.internal.net.noise"
 
-    local function unhex(text) return (text:gsub("..", function(byte) return string.char(tonumber(byte, 16)) end)) end
-    local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
+    local unhex = helpers.unhex
+    local hex = helpers.hex
 
     local function static(private)
         private = unhex(private)

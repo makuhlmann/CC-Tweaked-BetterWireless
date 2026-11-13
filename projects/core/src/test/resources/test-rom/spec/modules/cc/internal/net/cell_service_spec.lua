@@ -3,6 +3,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("Cellular services", function()
+    local helpers = require "support.net_helpers"
     local noise = require "cc.internal.net.noise"
     local certificate = require "cc.internal.net.certificate"
     local common = require "cc.internal.net.cell.common"
@@ -15,8 +16,8 @@ describe("Cellular services", function()
 
     local DIR = "/.cell-spec"
 
-    local function hex(bytes) return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end)) end
-    local function unhex(text) return (text:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end)) end
+    local hex = helpers.hex
+    local unhex = helpers.unhex
     local function new_key() return hex(crypto.random(32)) end
     local function fingerprint(key) return hex(crypto.sha256(unhex(key))):sub(1, 20):gsub("(....)", "%1 "):sub(1, -2) end
 
@@ -517,16 +518,11 @@ describe("Cellular services", function()
 
         local recursive = {}
         recursive.self = recursive
-        local NIL = {}
+        local NIL = helpers.NIL
         local BAD = {
             NIL, 0 / 0, math.huge, -math.huge, 1e18, -1, 0.5, 2 ^ 32, "x", {}, true, ("y"):rep(5000), { 1, { 2 } },
         }
-        local function with(template, key, value)
-            local result = {}
-            for k, v in pairs(template) do result[k] = v end
-            if value == NIL then result[key] = nil else result[key] = value end
-            return result
-        end
+        local with = helpers.with
         local function errors_logged(env)
             local found = {}
             for _, line in ipairs(env.service.lines) do

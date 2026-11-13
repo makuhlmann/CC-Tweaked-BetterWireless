@@ -3,13 +3,14 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("Virtual interfaces and frame handlers", function()
+    local helpers = require "support.net_helpers"
     local tcp = require "cc.internal.net.tcp"
     local rip = require "cc.internal.net.rip"
     local link = require "cc.internal.net.link"
     local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     it("carry pings and connections", function()
         local net = network()

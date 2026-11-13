@@ -3,15 +3,15 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 describe("cc.internal.net.secure", function()
+    local helpers = require "support.net_helpers"
     local secure = require "cc.internal.net.secure"
     local noise = require "cc.internal.net.noise"
     local tcp = require "cc.internal.net.tcp"
     local stream = require "cc.internal.net.stream"
     local codec = require "cc.net.codec"
-    local address = require "cc.net.address"
     local network = require "support.virtual_network"
 
-    local function ip(text) return (address.parse(text)) end
+    local ip = helpers.ip
 
     local function new_key()
         local private = crypto.generateKeyPair("x25519")
@@ -19,55 +19,7 @@ describe("cc.internal.net.secure", function()
     end
 
     -- Run functions side by side, letting time pass on the network between turns. Functions wait by yielding.
-    local function run(net, functions, limit)
-        local threads, results = {}, {}
-        for i, fn in ipairs(functions) do
-            threads[i] = coroutine.create(function() results[i] = table.pack(fn()) end)
-        end
-        local elapsed = 0
-        while true do
-            local alive = false
-            for _, thread in ipairs(threads) do
-                if coroutine.status(thread) ~= "dead" then
-                    local ok, err = coroutine.resume(thread)
-                    if not ok then error(err, 0) end
-                    if coroutine.status(thread) ~= "dead" then alive = true end
-                end
-            end
-            if not alive then return results end
-            net.advance(0.05)
-            elapsed = elapsed + 0.05
-            if elapsed > (limit or 120) then error("Still running", 0) end
-        end
-    end
-
-    -- A connection whose send and receive wait (by yielding), like the net API's.
-    local function blocking(net, connection)
-        return {
-            connection = connection,
-            send = function(_, value)
-                while true do
-                    local ok, err = connection:send(value)
-                    if ok then return true end
-                    if err ~= "Full" then return nil, err end
-                    coroutine.yield()
-                end
-            end,
-            receive = function(_, timeout)
-                local started = net.time
-                while true do
-                    local ok, value = connection:take()
-                    if ok then return value end
-                    if value == "closed" then return nil end
-                    if value then return nil, value end
-                    if timeout and net.time - started >= timeout then return nil, "Timed out" end
-                    coroutine.yield()
-                end
-            end,
-            close = function() connection:close() end,
-            abort = function() connection:abort() end,
-        }
-    end
+    local run, blocking = helpers.run, helpers.blocking
 
     --[[ Two computers, a client and a server, with a secure connection between them. ]]
     local function connect(options)
