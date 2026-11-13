@@ -45,7 +45,7 @@ These facts about CC: Tweaked (as of 1.121.0, on this branch) shape the design:
 | A modem sends a Lua value on one of 65,536 channels to every modem in range that has that channel open. Functions and metatables are dropped. | The physical layer is a broadcast medium carrying Lua values, not bytes. Channels only filter what wakes a computer up. |
 | A modem can have at most 128 channels open. | Each computer can only listen on a few channels, so addresses can't map one-to-one to channels. |
 | `modem_message` gives the side, channel, reply channel, message and distance, and on this branch the signal strength in dBm for radio messages. | Link quality is visible to the stack and can feed routing and cell selection. |
-| On this branch, channels 0–1023 use the low band (150 MHz, long range) and 1024–65532 the high band (2.4 GHz, short range). 65533–65535 are reserved for rednet and GPS. | Which channel the stack uses decides how far it reaches. Wired modems ignore bands. |
+| On this branch, channels 0–1023 use the low band (150 MHz, long range) and 1024–65532 the high band (2.4 GHz, short range). 65533–65535 are reserved for rednet and GPS. Rednet's messages always use the high band, whatever their channel. | Which channel the stack uses decides how far it reaches. Wired modems ignore bands. |
 | Radio messages arrive at the next server tick. Wired messages arrive immediately. Ender modems hear everything, in every dimension. | Each radio hop takes at least 50 ms. Timers should be measured in ticks. |
 | Anyone can open any channel, and the sender of a message is whatever the message says. | Without cryptography there is no privacy and no authentication. |
 | Each computer's event queue holds 256 events. Further events are silently dropped. | A flood of messages loses some of them. The stack must keep its queue short and treat drops as loss. |
@@ -793,6 +793,7 @@ a world as a datapack (§1) to try a newer version without replacing the jar.
 | GPS | Unchanged. It needs the physical distance between modems, which only raw modem messages have. |
 
 Rednet can stay in the ROM, running alongside, while programs move over. The two never interpret each other's messages.
+Over radio, rednet always uses the short-range high band, so long-range wireless links need the stack.
 
 ## 11. Cellular networks
 

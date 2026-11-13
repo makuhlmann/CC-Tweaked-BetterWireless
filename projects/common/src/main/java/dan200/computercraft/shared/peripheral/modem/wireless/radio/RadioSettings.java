@@ -4,9 +4,11 @@
 
 package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
+import dan200.computercraft.api.network.Packet;
 import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.api.network.PacketSender;
 import dan200.computercraft.shared.config.Config;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Map;
 
@@ -42,7 +44,10 @@ public record RadioSettings(
     boolean useGenerator,
     boolean useDistantHorizons
 ) {
-    /** Rednet and GPS use these channels, and should keep long range regardless of band settings. */
+    /**
+     * Channels 65533-65535 belong to rednet and GPS. GPS keeps long range whatever the band settings. Rednet's messages
+     * are recognised by what they carry instead (see {@link #band(Packet)}), so only other messages use the low band here.
+     */
     private static final int FIRST_RESERVED_CHANNEL = 65533;
 
     public static RadioSettings fromConfig() {
@@ -76,8 +81,35 @@ public record RadioSettings(
         );
     }
 
-    public RadioBand band(int channel) {
+    /**
+     * The band a packet is sent on.
+     * <p>
+     * Rednet's messages always use the high band, whatever their channel. Rednet sends to a computer on a channel
+     * derived from its ID, so going by channel alone would give rednet long range to some computers and short range to
+     * others, and send replies on a different band from the messages they answer.
+     * <p>
+     * Everything else goes by channel: channels from {@link #highBandFirstChannel()} use the high band, except
+     * 65533-65535 (GPS), which always use the low band.
+     *
+     * @param packet The packet being sent.
+     * @return The band it's sent on.
+     */
+    public RadioBand band(Packet packet) {
+        if (isRednet(packet.payload())) return highBand;
+
+        var channel = packet.channel();
         return channel >= highBandFirstChannel && channel < FIRST_RESERVED_CHANNEL ? highBand : lowBand;
+    }
+
+    /**
+     * Whether a message is one of rednet's. Rednet wraps everything it sends (lookups, broadcasts and what repeaters
+     * pass on included) in a table with a message ID and the recipient's ID. This is the check rednet's repeater makes.
+     *
+     * @param payload The message.
+     * @return Whether it's rednet's.
+     */
+    static boolean isRednet(@Nullable Object payload) {
+        return payload instanceof Map<?, ?> message && message.get("nMessageID") != null && message.get("nRecipient") instanceof Number;
     }
 
     /**

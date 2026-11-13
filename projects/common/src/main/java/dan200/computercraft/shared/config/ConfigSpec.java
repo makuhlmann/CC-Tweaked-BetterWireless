@@ -387,17 +387,18 @@ public final class ConfigSpec {
                 .defineInRange("max_message_size", Config.radioMaxMessageSize, 0, Integer.MAX_VALUE);
 
             radioLowBandFrequency = builder
-                .comment("The frequency of low channels (and rednet/GPS), in MHz. Lower frequencies penetrate and diffract better.")
+                .comment("The frequency of low channels (and GPS), in MHz. Lower frequencies penetrate and diffract better.")
                 .defineInRange("low_band_frequency", Config.radioLowBandFrequency, 1, 100_000);
 
             radioHighBandFrequency = builder
-                .comment("The frequency of high channels, in MHz.")
+                .comment("The frequency of high channels (and rednet), in MHz.")
                 .defineInRange("high_band_frequency", Config.radioHighBandFrequency, 1, 100_000);
 
             radioHighBandFirstChannel = builder
                 .comment("""
-                    The first channel to use the high band. Channels 65533-65535 (used by rednet and GPS)
-                    always use the low band.""")
+                    The first channel to use the high band. Rednet's messages always use the high band,
+                    whatever their channel. Other messages on channels 65533-65535 (such as GPS) always use
+                    the low band.""")
                 .defineInRange("high_band_first_channel", Config.radioHighBandFirstChannel, 0, 65535);
 
             radioHighBandBudgetOffset = builder

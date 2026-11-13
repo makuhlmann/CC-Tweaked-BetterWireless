@@ -225,7 +225,7 @@ public final class RadioPropagationService {
             queued.addAndGet(-transmission.receivers().size());
             var level = transmission.level();
             var thundering = level.isThundering();
-            var band = settings.band(transmission.packet().channel());
+            var band = settings.band(transmission.packet());
             var from = transmission.antenna();
 
             for (var receiver : transmission.receivers()) {

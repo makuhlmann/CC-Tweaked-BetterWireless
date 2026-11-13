@@ -149,11 +149,17 @@ Channels are split into two bands:
 
 | Channels | Default frequency | Budget | Flat-ground range (2m antennas) |
 |---|---|---|---|
-| 0–1023, 65533–65535 (rednet, GPS) | 150MHz (VHF) | from `reference_range` | 1024 blocks |
-| 1024–65532 | 2400MHz (UHF) | 20dB less | ~260 blocks |
+| 0–1023, 65533–65535 (GPS) | 150MHz (VHF) | from `reference_range` | 1024 blocks |
+| 1024–65532, and rednet on any channel | 2400MHz (UHF) | 20dB less | ~260 blocks |
 
 Higher frequencies lose more in free space, diffract worse (ν grows with √f) and are attenuated far more by
 materials, so the high band is a short-range, line-of-sight band, as in the original fork's design.
+
+Rednet's messages always use the high band, recognised by the table rednet wraps them in (a message ID and a numeric
+recipient, the check rednet's repeater makes). Going by channel would treat rednet unevenly: it sends to a computer on
+that computer's ID channel, so computers with IDs below 1024 would get long range and the rest short, and a reply
+could travel on a different band from the message it answers. Broadcasts, lookups and repeaters are rednet's too, so
+rednet is short range throughout. Other messages on 65533–65535, such as GPS, keep the low band.
 
 Some numbers with the defaults: two VHF modems on 30m towers reach ~15km over flat ground; one tower and one
 ground-level modem reach ~4km. A 40-block ridge halfway along a 1km link costs ~34dB on VHF and ~55dB on UHF.
@@ -283,7 +289,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `max_range` | 16384 | Hard cap on link distance. Bounds server work. |
 | `max_message_size` | 65536 | Largest wireless or ender message, in bytes, estimated from its contents. 0 for no limit. |
 | `low_band_frequency`, `high_band_frequency` | 150, 2400 | Band frequencies in MHz. |
-| `high_band_first_channel` | 1024 | First channel on the high band. |
+| `high_band_first_channel` | 1024 | First channel on the high band. Rednet always uses the high band. |
 | `high_band_power_offset` | -20 | High band budget relative to low band, in dB. |
 | `metres_per_block`, `metres_per_block_vertical` | 1, 1 | For worlds at reduced scale. |
 | `earth_radius` | 0 | Planet radius in km for curvature (6371 for Earth-scale Tellus). |

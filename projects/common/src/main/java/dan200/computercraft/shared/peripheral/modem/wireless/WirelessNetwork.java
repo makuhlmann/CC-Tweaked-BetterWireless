@@ -73,7 +73,7 @@ public class WirelessNetwork implements PacketNetwork {
     private void transmitRadio(Packet packet, ServerLevel level, boolean crossDimension) {
         var sender = packet.sender();
         var settings = propagation.settings();
-        var band = settings.band(packet.channel());
+        var band = settings.band(packet);
         var origin = sender.getPosition();
         List<PacketReceiver> candidates = null;
         List<PacketReceiver> elsewhere = null;
