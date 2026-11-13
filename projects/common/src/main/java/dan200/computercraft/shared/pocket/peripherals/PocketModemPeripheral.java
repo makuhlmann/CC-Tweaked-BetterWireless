@@ -7,6 +7,7 @@ package dan200.computercraft.shared.pocket.peripherals;
 import dan200.computercraft.api.peripheral.IPeripheral;
 import dan200.computercraft.api.pocket.IPocketAccess;
 import dan200.computercraft.shared.config.Config;
+import dan200.computercraft.shared.integration.Sable;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessModemPeripheral;
 import net.minecraft.world.level.Level;
@@ -28,13 +29,15 @@ public class PocketModemPeripheral extends WirelessModemPeripheral {
 
     @Override
     public Vec3 getPosition() {
-        return access.getPosition();
+        // A lectern on a Sable object is in its far-off plot, so map it back to the world. Anyone holding the pocket
+        // computer is already in the world.
+        return Sable.toWorld(access.getLevel(), access.getPosition());
     }
 
     @Override
     public Vec3 getAntennaPosition() {
         // This is the holder's eyes, or the middle of a lectern, both of which are already a sensible place for it.
-        return access.getPosition();
+        return getPosition();
     }
 
     @Override

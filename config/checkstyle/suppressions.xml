@@ -20,6 +20,9 @@ SPDX-License-Identifier: MPL-2.0
     <!-- Allow putting files in other packages if they look like our TeaVM stubs. -->
     <suppress checks="PackageName" files=".*[\\/]T[A-Za-z]+.java" />
 
+    <!-- The tests' stand-in for Sable Companion must be in its package, as we look it up by name. -->
+    <suppress checks="PackageName" files=".*[\\/]src[\\/]test[\\/]java[\\/]dev[\\/]ryanhcode[\\/].*.java" />
+
     <!-- Allow underscores in our test classes. -->
     <suppress checks="MethodName" files=".*(Contract|Test).java" />
 

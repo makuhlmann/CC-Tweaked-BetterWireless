@@ -5,6 +5,7 @@
 package dan200.computercraft.shared.peripheral.modem.wireless;
 
 import dan200.computercraft.api.peripheral.IPeripheral;
+import dan200.computercraft.shared.integration.Sable;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.platform.PlatformHelper;
@@ -34,14 +35,15 @@ public class WirelessModemBlockEntity extends BlockEntity {
 
         @Override
         public Vec3 getPosition() {
-            return Vec3.atLowerCornerOf(entity.getBlockPos().relative(entity.getDirection()));
+            // On a Sable object, our block position is in its far-off plot, so map it back to the world.
+            return Sable.toWorld(entity.getLevel(), Vec3.atLowerCornerOf(entity.getBlockPos().relative(entity.getDirection())));
         }
 
         @Override
         public Vec3 getAntennaPosition() {
             // The position above is the block we're attached to, which may well be buried in a wall. The modem itself
             // sticks out into the block in front of it.
-            return Vec3.atCenterOf(entity.getBlockPos());
+            return Sable.toWorld(entity.getLevel(), Vec3.atCenterOf(entity.getBlockPos()));
         }
 
         @Override

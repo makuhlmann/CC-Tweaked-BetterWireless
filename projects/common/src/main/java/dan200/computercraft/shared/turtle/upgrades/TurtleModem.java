@@ -13,6 +13,7 @@ import dan200.computercraft.api.upgrades.MutableUpgradeHandle;
 import dan200.computercraft.api.upgrades.UpgradeType;
 import dan200.computercraft.shared.ModRegistry;
 import dan200.computercraft.shared.config.Config;
+import dan200.computercraft.shared.integration.Sable;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.peripheral.modem.wireless.WirelessModemPeripheral;
 import net.minecraft.core.component.DataComponentPatch;
@@ -42,17 +43,13 @@ public class TurtleModem extends AbstractTurtleUpgrade {
 
         @Override
         public Vec3 getPosition() {
-            var turtlePos = turtle.getPosition();
-            return new Vec3(
-                turtlePos.getX(),
-                turtlePos.getY(),
-                turtlePos.getZ()
-            );
+            // On a Sable object, the turtle's position is in its far-off plot, so map it back to the world.
+            return Sable.toWorld(turtle.getLevel(), Vec3.atLowerCornerOf(turtle.getPosition()));
         }
 
         @Override
         public Vec3 getAntennaPosition() {
-            return Vec3.atCenterOf(turtle.getPosition());
+            return Sable.toWorld(turtle.getLevel(), Vec3.atCenterOf(turtle.getPosition()));
         }
 
         @Override

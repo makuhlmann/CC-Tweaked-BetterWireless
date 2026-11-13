@@ -143,6 +143,14 @@ An earlier version used `getPosition()` plus half a block. That put the antenna 
 ceiling inside the rock, so a modem hanging in plain sight lost the low band within 64 blocks, and the high band
 within 10.
 
+Mods which turn blocks into moving objects may keep those blocks somewhere else. Sable (used by Create Aeronautics)
+keeps each object's blocks in a "plot" in the same level, around X/Z 20,480,000, and only draws them where the object
+is. A modem on one would report the plot position, and so be some 29 million blocks from everything, out of range of
+every other device (or, without the radio model, of every other wireless modem; ender modems still got through, but
+with nonsense distances). Sable patches vanilla's own distance checks, such as a player's reach, but can't know about
+ours. So modems, turtles and pocket computers map both of their positions back to the world through Sable Companion
+(`shared.integration.Sable`), which also makes `modem_message` distances, and so GPS, right on a moving object.
+
 ### Bands
 
 Channels are split into two bands:
