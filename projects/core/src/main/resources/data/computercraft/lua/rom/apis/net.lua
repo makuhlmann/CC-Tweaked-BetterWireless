@@ -60,10 +60,8 @@ local PORT_ERROR = checks.PORT_ERROR
 local CONNECT_TIMEOUT = 5
 local HANDSHAKE_TIMEOUT = 5
 
--- Where secure connections keep what they know.
-local KNOWN_HOSTS, TRUSTED, CERTIFICATE = files.KNOWN_HOSTS, files.TRUSTED, files.CERTIFICATE
 
-local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, running
+local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, trust_store, running
 local rip_instance, rip_config
 local add_modem, apply_routing, start_phone, start_cellular, env_require
 local errors = {}
@@ -104,6 +102,7 @@ local function load()
     secure_connections = env.require("cc.internal.net.secure")
     links = env.require("cc.internal.net.link")
     certificates = env.require("cc.internal.net.certificate")
+    trust_store = env.require("cc.internal.net.trust")
 
     settings.define("net.enabled", {
         description = "Run the network stack.",
@@ -1274,11 +1273,8 @@ end
 @treturn { [string] = string } Each authority's key (as hexadecimal digits), and a description.
 ]]
 function trusted()
-    local result = {}
-    for key, label in pairs(read_table(TRUSTED)) do
-        if from_hex(key) and #key == 64 then result[key:lower()] = tostring(label) end
-    end
-    return result
+    load()
+    return trust_store.trusted()
 end
 
 --[[- Get the keys this computer has seen for other computers, when connecting securely (in `/.net/known_hosts`).
@@ -1287,13 +1283,8 @@ end
 (in a file which was changed by hand, say) are left out, as [`net.trusted`] does.
 ]]
 function knownHosts()
-    local result = {}
-    for name, key in pairs(read_table(KNOWN_HOSTS)) do
-        if type(name) == "string" and type(key) == "string" and #key == 64 and from_hex(key) then
-            result[name] = key:lower()
-        end
-    end
-    return result
+    load()
+    return trust_store.known_hosts()
 end
 
 --[[- Forget the key this computer has seen for a name, so the next secure connection to it learns a new one. Use this
@@ -1305,12 +1296,7 @@ when a computer's key changed for a good reason, such as the computer being repl
 function forgetHost(name)
     expect(1, name, "string")
     load()
-    local hosts = read_table(KNOWN_HOSTS)
-    name = dns.normalise(name)
-    if hosts[name] == nil then return false end
-    hosts[name] = nil
-    write_table(KNOWN_HOSTS, hosts)
-    return true
+    return trust_store.forget_host(dns.normalise(name))
 end
 
 local SecureConnection = setmetatable({}, { __index = Connection })
@@ -1484,7 +1470,7 @@ secure = {
         if options.key and (not pinned or #pinned ~= 32) then error("bad option key (expected 64 hexadecimal digits)", 2) end
         local remote_static
         if options.anonymous then
-            remote_static = pinned or from_hex(read_table(KNOWN_HOSTS)[name] or "")
+            remote_static = pinned or trust_store.known_key(name)
             if not remote_static or #remote_static ~= 32 then return nil, "Connecting anonymously needs the server's key" end
         end
 
@@ -1505,7 +1491,7 @@ secure = {
                 local ok, reason = certificates.verify(crypto, certificate, {
                     name = name, key = key, now = os.epoch("utc"), trusted = (function()
                         local result = {}
-                        for authority in pairs(trusted()) do result[from_hex(authority)] = true end
+                        for authority in pairs(trust_store.trusted()) do result[from_hex(authority)] = true end
                         return result
                     end)(),
                 })
@@ -1517,17 +1503,10 @@ secure = {
             end
             if options.trust == "certificate" then return nil, "The server's certificate " .. problem end
 
-            local hosts = read_table(KNOWN_HOSTS)
-            local known = hosts[name]
-            if known == nil then
-                hosts[name] = to_hex(key)
-                write_table(KNOWN_HOSTS, hosts)
-                trust = "new"
-            elseif known ~= to_hex(key) then
+            trust = trust_store.check_host(name, key)
+            if not trust then
                 return nil, ("The key for %s has changed! Something may be pretending to be it. If you know why it " ..
                     "changed, forget the old key with 'netkeys forget %s'."):format(name, name)
-            else
-                trust = "known"
             end
             return true
         end
@@ -1559,12 +1538,7 @@ secure = {
         if not listener then return nil, err end
 
         -- Offer our certificate, if we have one.
-        local certificate
-        local file = fs.open(CERTIFICATE, "rb")
-        if file then
-            certificate = file.readAll()
-            file.close()
-        end
+        local certificate = trust_store.certificate()
         return setmetatable({
             listener = listener, identity = own, certificate = certificate, anonymous = options and options.anonymous,
         }, SecureListener)

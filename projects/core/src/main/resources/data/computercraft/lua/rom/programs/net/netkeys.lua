@@ -5,7 +5,7 @@
 local certificate = require "cc.internal.net.certificate"
 
 local files = require "cc.internal.net.files"
-local TRUSTED, CERTIFICATE = files.TRUSTED, files.CERTIFICATE
+local trust = require "cc.internal.net.trust"
 local DAY = 24 * 60 * 60 * 1000
 
 local args = { ... }
@@ -58,7 +58,6 @@ local function read_key(text)
     return key
 end
 
-local read_table = files.read_table
 
 -- This computer's certificate authority key, made the first time it's needed.
 local function authority()
@@ -71,7 +70,7 @@ if command == nil then
     print("This computer's key, which other computers see when it connects to them:")
     print(key)
     print("Fingerprint: " .. net.fingerprint(key))
-    local cert = certificate.decode(read_file(CERTIFICATE, true))
+    local cert = certificate.decode(trust.certificate())
     if cert then print(("It has a certificate for %s, until %s."):format(cert.name, os.date("%Y-%m-%d", cert.expires / 1000))) end
 elseif command == "hosts" and #args == 1 then
     local any = false
@@ -96,20 +95,10 @@ elseif command == "authority" and #args <= 2 then
     end
 elseif command == "trust" and (#args == 2 or #args == 3) then
     local key = to_hex(read_key(args[2]))
-    local trusted = read_table(TRUSTED)
-    trusted[key] = args[3] or "added by hand"
-    write_file(TRUSTED, textutils.serialise(trusted))
+    trust.trust(key, args[3] or "added by hand")
     print("Trusting certificates from " .. net.fingerprint(key))
 elseif command == "untrust" and #args == 2 then
-    local trusted, removed = read_table(TRUSTED), 0
-    for key, label in pairs(trusted) do
-        if key == args[2]:lower() or label == args[2] then
-            trusted[key] = nil
-            removed = removed + 1
-        end
-    end
-    write_file(TRUSTED, textutils.serialise(trusted))
-    print(removed > 0 and "Removed." or "No such authority.")
+    print(trust.untrust(args[2]) > 0 and "Removed." or "No such authority.")
 elseif command == "sign" and #args >= 3 and #args <= 5 then
     local name, key = args[2]:lower(), read_key(args[3])
     local days = tonumber(args[4] or 365)
@@ -135,8 +124,7 @@ elseif command == "install" and #args == 2 then
         return
     end
     -- Replacing one, say when renewing it.
-    fs.delete(CERTIFICATE)
-    fs.copy(shell.resolve(args[2]), CERTIFICATE)
+    trust.install_certificate(shell.resolve(args[2]))
     print(("Installed the certificate for %s. Secure servers started from now on offer it."):format(cert.name))
 else
     usage()
