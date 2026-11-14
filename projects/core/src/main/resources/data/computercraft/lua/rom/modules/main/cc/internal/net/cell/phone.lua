@@ -1061,9 +1061,11 @@ function Phone:attach()
         -- so go by what we heard.
         local heard, cell = self.heard[choice.id], self.cells[choice.id]
         if not cell then
+            -- How often it sends system information, and what it carries, too: a satellite which sends every 10 seconds
+            -- mustn't be taken for gone after four, nor given packets it won't carry.
             cell = {
                 samples = { table.unpack(heard.samples) }, signal = heard.signal, heard = heard.heard, area = heard.area,
-                networks = {},
+                interval = heard.interval, ul = heard.ul, service = heard.service, networks = {},
             }
             self.cells[choice.id] = cell
         end
@@ -1217,7 +1219,7 @@ function Phone:check(here)
     if not self.selection and not confirming then
         local class = self:home_class(here.via) and HOME or self.partners[here.via] and PARTNER or OTHER
         local serving_order = order_of(class, serving_sms)
-        local better = self:best(now, function(choice)
+        local better = serving_order > HOME and self:best(now, function(choice)
             if choice.tier == FAILED or choice.order >= serving_order then return false end
             if serving_sms and not choice.sms then return choice.network ~= here.via end
             return choice.tier == HOME and (choice.signal >= serving.signal + HYSTERESIS or choice.id == here.cell)
