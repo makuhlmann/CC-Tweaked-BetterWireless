@@ -45,7 +45,7 @@ These facts about CC: Tweaked (as of 1.121.0, on this branch) shape the design:
 | A modem sends a Lua value on one of 65,536 channels to every modem in range that has that channel open. Functions and metatables are dropped. | The physical layer is a broadcast medium carrying Lua values, not bytes. Channels only filter what wakes a computer up. |
 | A modem can have at most 128 channels open. | Each computer can only listen on a few channels, so addresses can't map one-to-one to channels. |
 | `modem_message` gives the side, channel, reply channel, message and distance, and on this branch the signal strength in dBm for radio messages. | Link quality is visible to the stack and can feed routing and cell selection. |
-| On this branch, channels 0–1023 use the low band (150 MHz, long range) and 1024–65532 the high band (2.4 GHz, short range). 65533–65535 are reserved for rednet and GPS. Rednet's messages always use the high band, whatever their channel. | Which channel the stack uses decides how far it reaches. Wired modems ignore bands. |
+| On this branch, a channel's number is its frequency in units of 100 kHz (channel 1500 is 150 MHz, 24000 is 2.4 GHz). Lower frequencies go further through walls and over hills. Rednet's messages have their own frequency (2.4 GHz) and less power, whatever their channel, and GPS's channel has its own (1575.42 MHz). Programs set a modem's transmit power, within a limit for each kind of device. | Which channels the stack uses decides how its signal gets through; its power decides how far. Wired modems ignore both. |
 | Radio messages arrive at the next server tick. Wired messages arrive immediately. Ender modems hear everything, in every dimension. | Each radio hop takes at least 50 ms. Timers should be measured in ticks. |
 | Anyone can open any channel, and the sender of a message is whatever the message says. | Without cryptography there is no privacy and no authentication. |
 | Each computer's event queue holds 256 events. Further events are silently dropped. | A flood of messages loses some of them. The stack must keep its queue short and treat drops as loss. |
@@ -209,15 +209,16 @@ Interfaces come and go as modems are attached and removed, and the stack reports
 Each interface listens on a broadcast channel and a unicast channel derived from its computer ID. Unicast channels are
 only a filter: several computers may share one, and frames carry the real destination ID.
 
-| Band | Unicast channel | Broadcast channel | Reserved |
+A channel's number is its frequency in units of 100 kHz, so each band is a range of channels:
+
+| Band | Frequencies | Unicast channel | Broadcast channel |
 |---|---|---|---|
-| Low | `id mod 1000` (0–999) | 1000 | 1001–1007 for cellular control (§11) |
-| High, and wired | `1024 + id mod 60000` (1024–61023) | 61024 | |
+| Low | VHF, 136–174 MHz | `1361 + id mod 379` (1361–1739) | 1360 |
+| High, and wired | 2.4 GHz, 2400–2483.5 MHz | `24001 + id mod 834` (24001–24834) | 24000 |
 
 Rednet listens on `id mod 65500`, which can land on another computer's unicast channel here. Each side ignores the
-other's messages, so this only costs the odd wasted wakeup. Channels 1008–1023 and 61025–65532 are left for other
-programs. The ranges are fixed for now; settings to move them could
-be added if a server's programs conflict. Frames always carry a version field, so the stack ignores anything that isn't its own.
+other's messages, so this only costs the odd wasted wakeup. Every other channel is left for other programs. The ranges
+are fixed for now; settings to move them could be added if a server's programs conflict. Frames always carry a version field, so the stack ignores anything that isn't its own.
 
 ### Frames
 

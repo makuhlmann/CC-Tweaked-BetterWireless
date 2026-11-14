@@ -53,8 +53,13 @@ public class TurtleModem extends AbstractTurtleUpgrade {
         }
 
         @Override
-        public double getTransmitOffset() {
-            return Config.radioTurtleTransmitOffset + getEnderTransmitOffset();
+        protected double getDefaultTransmitPower() {
+            return Config.radioTurtleTransmitPower;
+        }
+
+        @Override
+        protected double getMaxTransmitPower() {
+            return Config.radioTurtleMaxTransmitPower;
         }
 
         @Override

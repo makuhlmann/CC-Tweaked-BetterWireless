@@ -35,11 +35,13 @@ Some of these deliberately reverse choices in the original fork, so are worth ch
   longer talk. Ender modems now hear (and are heard by) everything, without any propagation simulation.
 - **Messages arrive at the next server tick**, rather than during the `transmit` call.
 - **`modem_range` is only used when propagation is disabled**, with upstream's default of 64 (and the high-altitude
-  options are back). The fork's 1024 now lives in `peripheral.radio.reference_range`, and means something more
-  specific: the range of two ground-level modems over flat, open ground.
+  options are back). The fork's 1024 is now the range of two ground-level modems over flat, open ground at the
+  default transmit power (`peripheral.radio.transmit_power`, 8.4 dBm).
 - **Wired modems don't get the extra `modem_message` argument.** Only messages received by radio do.
 - **The signal strength argument is in dBm**, rather than "remaining range in blocks".
-- **Channels above 1023 have a shorter range for physical reasons** (a higher frequency), rather than a fixed ÷8.
+- **A channel's number is its frequency** (in units of 100 kHz), and what a frequency does to range is physical
+  (materials and hills cost more at higher frequencies), rather than a fixed ÷8 above channel 1023. Programs set how
+  much power a modem transmits with.
 
 ## 1. The original implementation
 
@@ -91,13 +93,12 @@ batch, rather than paying one tick of latency per block.
 
 ## 2. The propagation model
 
-The model computes a **link budget** in dB, as radio engineers do. A message is received if the path loss is less than
-the budget (transmit power + antenna gains − receiver sensitivity). The receiver is told the received signal strength
-in dBm.
+The model computes a **link budget** in dB, as radio engineers do. A message is received if the transmit power, less
+the path loss, is at least the receiver's sensitivity. The receiver is told the received signal strength in dBm.
 
-Rather than configure the budget directly, it is derived from `reference_range`: the distance at which two modems
-sitting on flat, open ground can just hear each other (1024 blocks by default). Everything else follows from the
-physics: raising a modem extends its range, while hills and walls shrink it.
+Each modem transmits with a power programs can set (see [Frequencies and power](#frequencies-and-power)). By default
+it is 8.4 dBm for placed computers, which makes two modems sitting on flat, open ground just hear each other 1024 blocks
+apart. Everything else follows from the physics: raising a modem extends its range, while hills and walls shrink it.
 
 ### Path loss
 
@@ -151,26 +152,44 @@ with nonsense distances). Sable patches vanilla's own distance checks, such as a
 ours. So modems, turtles and pocket computers map both of their positions back to the world through Sable Companion
 (`shared.integration.Sable`), which also makes `modem_message` distances, and so GPS, right on a moving object.
 
-### Bands
+### Frequencies and power
 
-Channels are split into two bands:
+**A channel's number is its frequency in units of 100 kHz**, as 3GPP's channel raster is: channel 1500 is 150 MHz,
+channel 9250 is 925 MHz, and channel 24000 is 2.4 GHz. The model works from 30 MHz to 10 GHz; channels below 300 are
+treated as 30 MHz. Higher frequencies lose more in free space (within the two-ray crossover distance), diffract worse
+(ν grows with √f) and are attenuated far more by materials. Beyond the crossover distance, the two-ray loss doesn't
+depend on the frequency, so on flat, open ground every frequency reaches as far for the same power: low frequencies
+win over hills, through forests and through walls.
 
-| Channels | Default frequency | Budget | Flat-ground range (2m antennas) |
+Three kinds of message have frequencies of their own, whatever their channel:
+
+- **Rednet's messages** (2400 MHz, `rednet_frequency`), recognised by the table rednet wraps them in (a message ID and
+  a numeric recipient, the check rednet's repeater makes). Going by channel would treat rednet unevenly: it sends to a
+  computer on that computer's ID channel, so every computer would get a different frequency, and a reply could travel
+  at a different frequency from the message it answers. Broadcasts, lookups and repeaters are rednet's too. Rednet is
+  also sent with 20 dB less power (`rednet_power_offset`), which keeps it short range: ~260 blocks over flat ground at
+  the default power, as before.
+- **GPS's channel**, 65534 (1575.42 MHz, GPS's own L1 frequency, `gps_frequency`).
+- **Other messages on rednet's channels** (65533 and 65535), which are taken for rednet's.
+
+**Each modem transmits with a power programs set** (`modem.setTransmitPower`, in dBm), up to a limit for each kind of
+device:
+
+| Device | Default | Most | Sensitivity |
 |---|---|---|---|
-| 0–1023, 65533–65535 (GPS) | 150MHz (VHF) | from `reference_range` | 1024 blocks |
-| 1024–65532, and rednet on any channel | 2400MHz (UHF) | 20dB less | ~260 blocks |
+| Placed computer | 8.4 dBm | 50 dBm | −100 dBm |
+| Pocket computer | −1.6 dBm | 23 dBm (a phone's) | −93 dBm |
+| Turtle | −1.6 dBm | 30 dBm | −93 dBm |
 
-Higher frequencies lose more in free space, diffract worse (ν grows with √f) and are attenuated far more by
-materials, so the high band is a short-range, line-of-sight band, as in the original fork's design.
+The defaults are what the old offsets gave, so the old low band (now channels 300–1739, say) and rednet reach as far
+as they did. What used to be the high band (channels 1024 and up, 20 dB weaker) has no penalty of its own any more: it
+reaches as far as any frequency over open ground at the same power, and only loses more to walls and hills. Ender
+modems radiate 10 dB less than they're set to. Power captured when a packet is sent counts, even if a program
+changes it before the packet is delivered. A link is traced as far as the strongest device's budget reaches, so a path
+in the cache serves every device.
 
-Rednet's messages always use the high band, recognised by the table rednet wraps them in (a message ID and a numeric
-recipient, the check rednet's repeater makes). Going by channel would treat rednet unevenly: it sends to a computer on
-that computer's ID channel, so computers with IDs below 1024 would get long range and the rest short, and a reply
-could travel on a different band from the message it answers. Broadcasts, lookups and repeaters are rednet's too, so
-rednet is short range throughout. Other messages on 65533–65535, such as GPS, keep the low band.
-
-Some numbers with the defaults: two VHF modems on 30m towers reach ~15km over flat ground; one tower and one
-ground-level modem reach ~4km. A 40-block ridge halfway along a 1km link costs ~34dB on VHF and ~55dB on UHF.
+Some numbers with the defaults: two modems on 30m towers reach ~15km over flat ground; one tower and one ground-level
+modem reach ~4km. A 40-block ridge halfway along a 1km link costs ~34dB at 150 MHz and ~55dB at 2.4 GHz.
 
 ### Materials
 
@@ -295,20 +314,29 @@ oracle for the whole planet, and would be the best possible height source here. 
 `-72.5`). Messages arrive down to about -100dBm. Wired and ender modem messages are unchanged. Messages are delivered
 at the next server tick rather than immediately.
 
+Wireless modems (and pocket computers' and turtles' modems) gain `setTransmitPower(power)`, which sets the power in
+dBm, reduced to the device's limit, and returns what it was set to; and `getTransmitPower()`, which returns the power
+and the limit. The power lasts until it is set again or the modem is removed.
+
 `PacketReceiver` keeps upstream's `receiveSameDimension(Packet, double)`, with a new default overload
 `receiveSameDimension(Packet, double, double signalStrength)`, so other mods' receivers keep working.
+`PacketSender.getTransmitPower()` gives a sender's power in dBm; other mods' senders, which don't say, transmit with
+the default for placed computers.
 
 Everything lives under `[peripheral.radio]` in the server config:
 
 | Option | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | When `false`, upstream behaviour (and the `modem_range` options) is used. |
-| `reference_range` | 1024 | Range of two ground-level VHF modems on flat, open ground, in blocks. |
-| `max_range` | 16384 | Hard cap on link distance. Bounds server work. |
+| `max_range` | 65536 | Hard cap on link distance. Bounds server work. |
 | `max_message_size` | 65536 | Largest wireless or ender message, in bytes, estimated from its contents. 0 for no limit. |
-| `low_band_frequency`, `high_band_frequency` | 150, 2400 | Band frequencies in MHz. |
-| `high_band_first_channel` | 1024 | First channel on the high band. Rednet always uses the high band. |
-| `high_band_power_offset` | -20 | High band budget relative to low band, in dB. |
+| `transmit_power`, `max_transmit_power` | 8.4, 50 | Placed computers' default and greatest power, in dBm. 8.4 dBm reaches 1024 blocks over flat ground. |
+| `pocket_transmit_power`, `pocket_max_transmit_power` | -1.6, 23 | The same for pocket computers. |
+| `turtle_transmit_power`, `turtle_max_transmit_power` | -1.6, 30 | The same for turtles. |
+| `pocket_receive_offset`, `turtle_receive_offset` | -7, -7 | How much worse they hear than placed computers, in dB. |
+| `ender_power_offset` | -10 | How much less ender modems radiate than they're set to, in dB. |
+| `rednet_frequency`, `rednet_power_offset` | 2400, -20 | Rednet's frequency in MHz, and how much less power it's sent with, in dB. |
+| `gps_frequency` | 1575.42 | The frequency of GPS's channel, in MHz. |
 | `metres_per_block`, `metres_per_block_vertical` | 1, 1 | For worlds at reduced scale. |
 | `earth_radius` | 0 | Planet radius in km for curvature (6371 for Earth-scale Tellus). |
 | `ground_reflection` | `true` | Two-ray model (height matters) vs free space only. |

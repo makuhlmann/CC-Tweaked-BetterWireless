@@ -86,8 +86,21 @@ public final class RadioPropagationService {
     private long tick;
     private long lastErrorLog = Long.MIN_VALUE;
 
+    /**
+     * A packet waiting to be delivered.
+     *
+     * @param packet         The packet.
+     * @param level          The level it was sent in.
+     * @param origin         Where it was sent from.
+     * @param antenna        Where the sender's antenna is.
+     * @param receivers      The receivers which might hear it.
+     * @param crossDimension Whether it's for receivers in other dimensions.
+     * @param frequency      The frequency it was sent at, in MHz.
+     * @param power          The power it was sent with, in dBm.
+     */
     private record Transmission(
-        Packet packet, ServerLevel level, Vec3 origin, Vec3 antenna, List<PacketReceiver> receivers, boolean crossDimension
+        Packet packet, ServerLevel level, Vec3 origin, Vec3 antenna, List<PacketReceiver> receivers, boolean crossDimension,
+        double frequency, double power
     ) {
     }
 
@@ -97,7 +110,9 @@ public final class RadioPropagationService {
     private sealed interface Waiting permits Delivery, CrossDelivery {
     }
 
-    private record Delivery(Packet packet, PacketReceiver receiver, double distance, boolean thundering, RadioBand band) implements Waiting {
+    private record Delivery(
+        Packet packet, PacketReceiver receiver, double distance, boolean thundering, double frequency, double power
+    ) implements Waiting {
     }
 
     /**
@@ -108,15 +123,17 @@ public final class RadioPropagationService {
         final Packet packet;
         final PacketReceiver receiver;
         final boolean thundering;
-        final RadioBand band;
+        final double frequency;
+        final double power;
         int waiting;
         double loss = Double.POSITIVE_INFINITY;
 
-        CrossDelivery(Packet packet, PacketReceiver receiver, boolean thundering, RadioBand band, int waiting) {
+        CrossDelivery(Packet packet, PacketReceiver receiver, boolean thundering, double frequency, double power, int waiting) {
             this.packet = packet;
             this.receiver = receiver;
             this.thundering = thundering;
-            this.band = band;
+            this.frequency = frequency;
+            this.power = power;
             this.waiting = waiting;
         }
     }
@@ -171,9 +188,11 @@ public final class RadioPropagationService {
      * @param level     The level the packet was sent in.
      * @param origin    Where the packet was sent from. This is used for the distance reported to the receiver.
      * @param receivers The receivers which might be able to hear it.
+     * @param frequency The frequency the packet is sent at, in MHz.
+     * @param power     The power the packet is sent with, in dBm.
      */
-    public void submit(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers) {
-        submit(packet, level, origin, receivers, false);
+    public void submit(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers, double frequency, double power) {
+        submit(packet, level, origin, receivers, false, frequency, power);
     }
 
     /**
@@ -185,19 +204,25 @@ public final class RadioPropagationService {
      * @param origin    Where the packet was sent from.
      * @param receivers The receivers which might be able to hear it. Those in the same level, or which aren't
      *                  inter-dimensional, are skipped.
+     * @param frequency The frequency the packet is sent at, in MHz.
+     * @param power     The power the packet is sent with, in dBm.
      */
-    public void submitCrossDimension(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers) {
-        submit(packet, level, origin, receivers, true);
+    public void submitCrossDimension(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers, double frequency, double power) {
+        submit(packet, level, origin, receivers, true, frequency, power);
     }
 
-    private void submit(Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers, boolean crossDimension) {
+    private void submit(
+        Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers, boolean crossDimension, double frequency, double power
+    ) {
         if (receivers.isEmpty()) return;
         if (queued.addAndGet(receivers.size()) > MAX_QUEUED) {
             // Congestion: drop the packet, much like a real network would.
             queued.addAndGet(-receivers.size());
             return;
         }
-        incoming.add(new Transmission(packet, level, origin, RadioAntenna.of(packet.sender(), origin), receivers, crossDimension));
+        incoming.add(new Transmission(
+            packet, level, origin, RadioAntenna.of(packet.sender(), origin), receivers, crossDimension, frequency, power
+        ));
     }
 
     /**
@@ -233,19 +258,21 @@ public final class RadioPropagationService {
             queued.addAndGet(-transmission.receivers().size());
             var level = transmission.level();
             var thundering = level.isThundering();
-            var band = settings.band(transmission.packet());
             var from = transmission.antenna();
 
             for (var receiver : transmission.receivers()) {
                 if (transmission.crossDimension()) {
-                    queueCrossDimension(transmission, receiver, band);
+                    queueCrossDimension(transmission, receiver);
                     continue;
                 }
 
                 if (receiver.getLevel() != level) continue;
                 var position = receiver.getPosition();
                 var to = RadioAntenna.of(receiver, position);
-                var delivery = new Delivery(transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering, band);
+                var delivery = new Delivery(
+                    transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering,
+                    transmission.frequency(), transmission.power()
+                );
                 request(level, from, to, delivery, false);
             }
         }
@@ -312,9 +339,9 @@ public final class RadioPropagationService {
      */
     private void complete(Waiting waiting, @Nullable LinkPath path) {
         if (waiting instanceof Delivery delivery) {
-            if (path != null) deliver(delivery, path.evaluate(delivery.band().frequencyMHz()));
+            if (path != null) deliver(delivery, path.evaluate(delivery.frequency()));
         } else if (waiting instanceof CrossDelivery delivery) {
-            if (path != null) delivery.loss = Math.min(delivery.loss, path.evaluate(delivery.band.frequencyMHz()).loss());
+            if (path != null) delivery.loss = Math.min(delivery.loss, path.evaluate(delivery.frequency).loss());
             if (--delivery.waiting == 0) deliverCrossDimension(delivery);
         }
     }
@@ -328,9 +355,8 @@ public final class RadioPropagationService {
      *
      * @param transmission The transmission.
      * @param receiver     The receiver.
-     * @param band         The band the packet was sent on.
      */
-    private void queueCrossDimension(Transmission transmission, PacketReceiver receiver, RadioBand band) {
+    private void queueCrossDimension(Transmission transmission, PacketReceiver receiver) {
         var level = transmission.level();
         if (!receiver.isInterdimensional() || !(receiver.getLevel() instanceof ServerLevel other) || other == level) return;
 
@@ -342,12 +368,16 @@ public final class RadioPropagationService {
         var here = DimensionMapping.map(to, other, level, heights);
 
         // Ender modems are weak, so most are out of range whatever is in the way. Don't look at terrain for those.
-        var offset = RadioSettings.offset(packet.sender(), receiver);
-        var throughTheirs = settings.isPossible(there.distanceTo(to), band, offset);
-        var throughOurs = settings.isPossible(from.distanceTo(here), band, offset);
+        var frequency = transmission.frequency();
+        var power = transmission.power();
+        var sensitivity = RadioSettings.sensitivity(receiver);
+        var throughTheirs = settings.isPossible(there.distanceTo(to), frequency, power, sensitivity);
+        var throughOurs = settings.isPossible(from.distanceTo(here), frequency, power, sensitivity);
         if (!throughTheirs && !throughOurs) return;
 
-        var delivery = new CrossDelivery(packet, receiver, other.isThundering(), band, (throughTheirs ? 1 : 0) + (throughOurs ? 1 : 0));
+        var delivery = new CrossDelivery(
+            packet, receiver, other.isThundering(), frequency, power, (throughTheirs ? 1 : 0) + (throughOurs ? 1 : 0)
+        );
         if (throughTheirs) request(other, there, to, delivery, true);
         if (throughOurs) request(level, from, here, delivery, true);
     }
@@ -409,11 +439,8 @@ public final class RadioPropagationService {
     }
 
     private void deliver(Delivery delivery, LinkResult result) {
-        var signal = RadioMath.receivedSignal(
-            delivery.band().transmitPower(), result.loss(),
-            delivery.packet().sender().getTransmitOffset(), delivery.receiver().getReceiveOffset()
-        );
-        var threshold = RadioBand.SENSITIVITY + (delivery.thundering() ? settings.stormPenalty() : 0);
+        var signal = delivery.power() - result.loss();
+        var threshold = RadioSettings.sensitivity(delivery.receiver()) + (delivery.thundering() ? settings.stormPenalty() : 0);
         if (signal < threshold) return;
 
         try {
@@ -426,11 +453,8 @@ public final class RadioPropagationService {
     private void deliverCrossDimension(CrossDelivery delivery) {
         if (delivery.loss == Double.POSITIVE_INFINITY) return;
 
-        var signal = RadioMath.receivedSignal(
-            delivery.band.transmitPower(), delivery.loss,
-            delivery.packet.sender().getTransmitOffset(), delivery.receiver.getReceiveOffset()
-        );
-        var threshold = RadioBand.SENSITIVITY + (delivery.thundering ? settings.stormPenalty() : 0);
+        var signal = delivery.power - delivery.loss;
+        var threshold = RadioSettings.sensitivity(delivery.receiver) + (delivery.thundering ? settings.stormPenalty() : 0);
         if (signal < threshold) return;
 
         try {

@@ -11,17 +11,27 @@ describe("cc.internal.net.stack", function()
     local network = require "support.virtual_network"
 
     it("uses separate channels for each band", function()
-        expect({ Stack.channels(1500, "low") }):same { 500, 1000 }
-        expect({ Stack.channels(5, "high") }):same { 1029, 61024 }
+        -- A channel's number is its frequency in units of 100kHz: the low band is 136-174MHz, the high 2.4GHz.
+        expect({ Stack.channels(1500, "low") }):same { 1724, 1360 }
+        expect({ Stack.channels(5, "high") }):same { 24006, 24000 }
+    end)
+
+    it("keeps every computer's channels within its band", function()
+        for id = 0, 2000 do
+            local low, low_broadcast = Stack.channels(id, "low")
+            local high, high_broadcast = Stack.channels(id, "high")
+            expect(low > low_broadcast and low <= 1739):eq(true)
+            expect(high > high_broadcast and high <= 24834):eq(true)
+        end
     end)
 
     it("gives radios either band, and wired modems the high band's channels", function()
         local stack = network().stack(5)
         -- Ender modems are radios too.
-        expect(stack:add_interface("a", "a", "wireless", "low")):matches { band = "low", unicast = 5, broadcast = 1000 }
-        expect(stack:add_interface("b", "b", "ender", "low")):matches { band = "low", unicast = 5, broadcast = 1000 }
-        expect(stack:add_interface("c", "c", "ender", "high")):matches { band = "high", unicast = 1029, broadcast = 61024 }
-        expect(stack:add_interface("d", "d", "wired", "low")):matches { band = "high", unicast = 1029, broadcast = 61024 }
+        expect(stack:add_interface("a", "a", "wireless", "low")):matches { band = "low", unicast = 1366, broadcast = 1360 }
+        expect(stack:add_interface("b", "b", "ender", "low")):matches { band = "low", unicast = 1366, broadcast = 1360 }
+        expect(stack:add_interface("c", "c", "ender", "high")):matches { band = "high", unicast = 24006, broadcast = 24000 }
+        expect(stack:add_interface("d", "d", "wired", "low")):matches { band = "high", unicast = 24006, broadcast = 24000 }
     end)
 
     it("answers pings", function()

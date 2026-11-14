@@ -196,8 +196,8 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower`, `core`, `core_s
 programs `cell` (phones), `celld` (cells, in place of `beacon.lua`) and `cellcore` (the core). Where they differ from
 the design above:
 
-- **System information** goes out as a link-layer `cell` frame on the low band's broadcast channel (1000), rather than
-  on channel 1001: the stack only hears channels it has opened. A cell's certificate is issued by the core when the cell
+- **System information** goes out as a link-layer `cell` frame on the low band's broadcast channel (1360, 136 MHz),
+  rather than on a channel of its own: the stack only hears channels it has opened. A cell's certificate is issued by the core when the cell
   connects, for the cell's own Ed25519 key (`cell.tower` in its enclave), signed by the operator's (`cell.signing`).
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.

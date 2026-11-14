@@ -5,6 +5,8 @@
 package dan200.computercraft.shared.peripheral.modem.wireless;
 
 import dan200.computercraft.api.ComputerCraftAPI;
+import dan200.computercraft.api.lua.LuaException;
+import dan200.computercraft.api.lua.LuaFunction;
 import dan200.computercraft.api.network.PacketNetwork;
 import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.shared.config.Config;
@@ -15,6 +17,9 @@ import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioAntenna;
 public abstract class WirelessModemPeripheral extends ModemPeripheral implements RadioAntenna {
     public static final String NORMAL_ADJECTIVE = "upgrade.computercraft.wireless_modem_normal.adjective";
     public static final String ADVANCED_ADJECTIVE = "upgrade.computercraft.wireless_modem_advanced.adjective";
+
+    /** The least power a modem may be set to transmit with, in dBm: a microwatt. */
+    public static final double MIN_TRANSMIT_POWER = -30;
 
     private final boolean advanced;
 
@@ -29,18 +34,78 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
     }
 
     /**
-     * How much weaker this modem transmits for being an ender modem, in dB. Devices which are weaker themselves add
-     * this to their own offset.
+     * The power this kind of device transmits with unless a program sets another.
      *
-     * @return The offset, which is zero for wireless modems.
+     * @return The power, in dBm.
      */
-    protected final double getEnderTransmitOffset() {
-        return advanced ? Config.radioEnderPowerOffset : 0;
+    protected double getDefaultTransmitPower() {
+        return Config.radioTransmitPower;
+    }
+
+    /**
+     * The most power a program may set this kind of device to transmit with.
+     *
+     * @return The power, in dBm.
+     */
+    protected double getMaxTransmitPower() {
+        return Config.radioMaxTransmitPower;
+    }
+
+    /**
+     * The power this modem is set to transmit with: what a program set, or the default, within what this kind of
+     * device allows.
+     *
+     * @return The power, in dBm.
+     */
+    private double getSetTransmitPower() {
+        var power = getModemState().getTransmitPower();
+        if (Double.isNaN(power)) power = getDefaultTransmitPower();
+        return Math.clamp(power, MIN_TRANSMIT_POWER, Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()));
     }
 
     @Override
-    public double getTransmitOffset() {
-        return getEnderTransmitOffset();
+    public double getTransmitPower() {
+        // Ender modems radiate less of their power than wireless modems.
+        return getSetTransmitPower() + (advanced ? Config.radioEnderPowerOffset : 0);
+    }
+
+    /**
+     * Set the power this modem transmits with, in dBm (decibels relative to a milliwatt). More power reaches further:
+     * every 6 dB more roughly doubles the range over open ground, though walls and hills still cost what they cost.
+     * <p>
+     * Each kind of device has a limit: pocket computers' is lower than placed computers', for instance. Power beyond
+     * the limit is reduced to it. The power lasts until it's set again, or the modem is removed.
+     * <p>
+     * Ender modems transmit with less power than they're set to.
+     *
+     * @param power The power, in dBm. The default for a placed computer's modem is about 8 dBm.
+     * @return The power the modem now transmits with, in dBm, once reduced to the limit.
+     * @throws LuaException If the power isn't a number.
+     * @cc.usage Transmit with as much power as this modem allows.
+     *
+     * <pre>{@code
+     * local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
+     * modem.setTransmitPower(math.huge)
+     * }</pre>
+     */
+    @LuaFunction
+    public final double setTransmitPower(double power) throws LuaException {
+        if (Double.isNaN(power)) throw new LuaException("Expected a number");
+        var set = Math.clamp(power, MIN_TRANSMIT_POWER, Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()));
+        getModemState().setTransmitPower(set);
+        return set;
+    }
+
+    /**
+     * Get the power this modem transmits with, and the most it may be set to.
+     *
+     * @return The power, in dBm, and the limit for this kind of device, in dBm.
+     * @cc.treturn number The power, in dBm.
+     * @cc.treturn number The most power this modem may be set to, in dBm.
+     */
+    @LuaFunction("getTransmitPower")
+    public final Object[] getTransmitPowerForLua() {
+        return new Object[]{ getSetTransmitPower(), Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()) };
     }
 
     @Override

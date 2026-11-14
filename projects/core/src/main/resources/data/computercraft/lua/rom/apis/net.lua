@@ -24,8 +24,9 @@ Computers on different networks reach each other through routers: computers with
 setting). Routers learn routes from each other with `net.rip`, or are given them with `net.routes`; the `route` program
 sets these. `net.firewall` holds rules for which packets a router forwards.
 
-A wired modem is one interface. A wireless or ender modem is one interface on the short-range high band by default
-(channels 1024 and up). Set `net.<name>.band` to `"low"` to use the long-range low band instead (channels below 1024).
+A wired modem is one interface. A wireless or ender modem is one interface on the high band (2.4GHz, channels
+24000-24834) by default. Set `net.<name>.band` to `"low"` to use the low band (VHF, 136-174MHz, channels 1360-1739)
+instead, which goes further through walls and over hills.
 An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
 `net.<name>:high.address`).
 

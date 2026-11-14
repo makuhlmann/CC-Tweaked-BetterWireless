@@ -35,14 +35,16 @@ public interface PacketSender {
     String getSenderID();
 
     /**
-     * How much weaker this device transmits than a wireless modem on a placed computer, in dB. When radio propagation
-     * is simulated, this is added to the signal strength at every receiver.
+     * The power this device transmits with, in dBm. When radio propagation is simulated, a receiver hears a packet if
+     * this, less the loss along the way, is above what the receiver can hear.
      * <p>
-     * Pocket computers and turtles transmit with less power than placed computers.
+     * Wireless modems' power can be set by programs, up to a limit for each kind of device (pocket computers' is lower
+     * than placed computers', say). Ender modems transmit with less power than they're set to.
      *
-     * @return The offset, which should be zero or negative. Positive values are treated as zero.
+     * @return The power, in dBm, or {@link Double#NaN} to use the server's default for wireless modems on placed
+     * computers. More than the server allows any device is treated as that.
      */
-    default double getTransmitOffset() {
-        return 0;
+    default double getTransmitPower() {
+        return Double.NaN;
     }
 }

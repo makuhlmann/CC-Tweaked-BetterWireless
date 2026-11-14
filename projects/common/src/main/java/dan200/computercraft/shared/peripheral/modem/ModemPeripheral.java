@@ -50,8 +50,10 @@ import java.util.Set;
  * behind a hill may not reach anything at all. The strength of each received message is reported in the
  * [`modem_message`] event.
  * <p>
- * Channels 1024 and above use a higher frequency than lower channels (and rednet and GPS), so have a shorter range
- * and are blocked more easily by walls. Servers can configure all of this, or switch back to a simple fixed range.</li>
+ * A channel's number is its frequency in units of 100kHz: channel 1500 is 150MHz, and channel 24000 is 2.4GHz.
+ * Lower frequencies go further through walls and over hills. [`rednet`] and [`gps`] have frequencies of their own,
+ * whatever their channel, and rednet sends with less power, so is short range. How far a modem reaches depends on its
+ * power, which programs can set with {@code setTransmitPower}, up to a limit for each kind of device. Servers can configure all of this, or switch back to a simple fixed range.</li>
  * <li><strong>Ender modems:</strong> These are wireless modems which also reach other dimensions. They are radios like
  * wireless modems, though weaker ones, so don't reach as far. Their signal also appears at the corresponding place in
  * every other dimension (an eighth of the coordinates in the Nether, for instance), where other ender modems within

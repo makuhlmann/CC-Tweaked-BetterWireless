@@ -66,13 +66,13 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Integer> modemRangeDuringStorm;
     public static final ConfigFile.Value<Integer> modemHighAltitudeRangeDuringStorm;
     public static final ConfigFile.Value<Boolean> radioEnabled;
-    public static final ConfigFile.Value<Integer> radioReferenceRange;
     public static final ConfigFile.Value<Integer> radioMaxRange;
     public static final ConfigFile.Value<Integer> radioMaxMessageSize;
-    public static final ConfigFile.Value<Double> radioLowBandFrequency;
-    public static final ConfigFile.Value<Double> radioHighBandFrequency;
-    public static final ConfigFile.Value<Integer> radioHighBandFirstChannel;
-    public static final ConfigFile.Value<Double> radioHighBandBudgetOffset;
+    public static final ConfigFile.Value<Double> radioTransmitPower;
+    public static final ConfigFile.Value<Double> radioMaxTransmitPower;
+    public static final ConfigFile.Value<Double> radioRednetFrequency;
+    public static final ConfigFile.Value<Double> radioRednetPowerOffset;
+    public static final ConfigFile.Value<Double> radioGpsFrequency;
     public static final ConfigFile.Value<Double> radioMetresPerBlock;
     public static final ConfigFile.Value<Double> radioMetresPerBlockVertical;
     public static final ConfigFile.Value<Double> radioEarthRadius;
@@ -82,9 +82,11 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Integer> radioVoxelRadius;
     public static final ConfigFile.Value<Integer> radioProfileSamples;
     public static final ConfigFile.Value<Double> radioStormPenalty;
-    public static final ConfigFile.Value<Double> radioPocketTransmitOffset;
+    public static final ConfigFile.Value<Double> radioPocketTransmitPower;
+    public static final ConfigFile.Value<Double> radioPocketMaxTransmitPower;
     public static final ConfigFile.Value<Double> radioPocketReceiveOffset;
-    public static final ConfigFile.Value<Double> radioTurtleTransmitOffset;
+    public static final ConfigFile.Value<Double> radioTurtleTransmitPower;
+    public static final ConfigFile.Value<Double> radioTurtleMaxTransmitPower;
     public static final ConfigFile.Value<Double> radioTurtleReceiveOffset;
     public static final ConfigFile.Value<Double> radioEnderPowerOffset;
     public static final ConfigFile.Value<Boolean> radioEnderCrossDimension;
@@ -367,13 +369,6 @@ public final class ConfigSpec {
                 .comment("Whether to simulate radio propagation.")
                 .define("enabled", Config.radioEnabled);
 
-            radioReferenceRange = builder
-                .comment("""
-                    The range of two wireless modems placed on flat, open ground, in blocks. All other
-                    ranges follow from this: raising modems up increases their range, while hills and
-                    walls reduce it.""")
-                .defineInRange("reference_range", Config.radioReferenceRange, 1, MODEM_MAX_RANGE);
-
             radioMaxRange = builder
                 .comment("""
                     The maximum distance a wireless message can travel, in blocks, regardless of
@@ -386,24 +381,32 @@ public final class ConfigSpec {
                     the message's contents). Larger messages are refused. 0 means no limit.""")
                 .defineInRange("max_message_size", Config.radioMaxMessageSize, 0, Integer.MAX_VALUE);
 
-            radioLowBandFrequency = builder
-                .comment("The frequency of low channels (and GPS), in MHz. Lower frequencies penetrate and diffract better.")
-                .defineInRange("low_band_frequency", Config.radioLowBandFrequency, 1, 100_000);
-
-            radioHighBandFrequency = builder
-                .comment("The frequency of high channels (and rednet), in MHz.")
-                .defineInRange("high_band_frequency", Config.radioHighBandFrequency, 1, 100_000);
-
-            radioHighBandFirstChannel = builder
+            radioTransmitPower = builder
                 .comment("""
-                    The first channel to use the high band. Rednet's messages always use the high band,
-                    whatever their channel. Other messages on channels 65533-65535 (such as GPS) always use
-                    the low band.""")
-                .defineInRange("high_band_first_channel", Config.radioHighBandFirstChannel, 0, 65535);
+                    The power placed computers' wireless modems transmit with, unless a program sets
+                    another, in dBm. A channel's number is its frequency in units of 100kHz (channel 1500
+                    is 150MHz), and two modems on flat, open ground hear each other up to 1024 blocks
+                    apart at this default. Raising modems up increases their range, while hills and walls
+                    reduce it.""")
+                .defineInRange("transmit_power", Config.radioTransmitPower, -30, 100);
 
-            radioHighBandBudgetOffset = builder
-                .comment("How much stronger (or, if negative, weaker) high band transmitters are than low band ones, in dB.")
-                .defineInRange("high_band_power_offset", Config.radioHighBandBudgetOffset, -100, 100);
+            radioMaxTransmitPower = builder
+                .comment("The most power a program may set a placed computer's wireless modem to, in dBm.")
+                .defineInRange("max_transmit_power", Config.radioMaxTransmitPower, -30, 100);
+
+            radioRednetFrequency = builder
+                .comment("The frequency rednet's messages are sent at, whatever their channel, in MHz.")
+                .defineInRange("rednet_frequency", Config.radioRednetFrequency, 30, 10_000);
+
+            radioRednetPowerOffset = builder
+                .comment("""
+                    How much less power rednet's messages are sent with than the modem's, in dB. This
+                    keeps rednet short range (about 260 blocks over open ground) at the default power.""")
+                .defineInRange("rednet_power_offset", Config.radioRednetPowerOffset, -100, 0);
+
+            radioGpsFrequency = builder
+                .comment("The frequency of GPS's channel (65534), in MHz.")
+                .defineInRange("gps_frequency", Config.radioGpsFrequency, 30, 10_000);
 
             radioMetresPerBlock = builder
                 .comment("How many metres a block represents horizontally. Increase this for worlds generated at a reduced scale.")
@@ -447,17 +450,25 @@ public final class ConfigSpec {
                 .comment("How much noise thunderstorms add, in dB. Every 6dB roughly halves the range.")
                 .defineInRange("storm_noise", Config.radioStormPenalty, 0, 100);
 
-            radioPocketTransmitOffset = builder
-                .comment("How much weaker pocket computers' modems transmit than placed computers', in dB.")
-                .defineInRange("pocket_transmit_offset", Config.radioPocketTransmitOffset, -100, 0);
+            radioPocketTransmitPower = builder
+                .comment("The power pocket computers' modems transmit with, unless a program sets another, in dBm.")
+                .defineInRange("pocket_transmit_power", Config.radioPocketTransmitPower, -30, 100);
+
+            radioPocketMaxTransmitPower = builder
+                .comment("The most power a program may set a pocket computer's modem to, in dBm.")
+                .defineInRange("pocket_max_transmit_power", Config.radioPocketMaxTransmitPower, -30, 100);
 
             radioPocketReceiveOffset = builder
                 .comment("How much worse pocket computers' modems receive than placed computers', in dB.")
                 .defineInRange("pocket_receive_offset", Config.radioPocketReceiveOffset, -100, 0);
 
-            radioTurtleTransmitOffset = builder
-                .comment("How much weaker turtles' modems transmit than placed computers', in dB.")
-                .defineInRange("turtle_transmit_offset", Config.radioTurtleTransmitOffset, -100, 0);
+            radioTurtleTransmitPower = builder
+                .comment("The power turtles' modems transmit with, unless a program sets another, in dBm.")
+                .defineInRange("turtle_transmit_power", Config.radioTurtleTransmitPower, -30, 100);
+
+            radioTurtleMaxTransmitPower = builder
+                .comment("The most power a program may set a turtle's modem to, in dBm.")
+                .defineInRange("turtle_max_transmit_power", Config.radioTurtleMaxTransmitPower, -30, 100);
 
             radioTurtleReceiveOffset = builder
                 .comment("How much worse turtles' modems receive than placed computers', in dB.")
@@ -465,8 +476,8 @@ public final class ConfigSpec {
 
             radioEnderPowerOffset = builder
                 .comment("""
-                    How much weaker ender modems transmit than wireless modems, in dB. On a pocket
-                    computer or turtle, this adds to their own offset.""")
+                    How much less power ender modems radiate than they're set to transmit with, in
+                    dB.""")
                 .defineInRange("ender_power_offset", Config.radioEnderPowerOffset, -100, 0);
 
             radioEnderCrossDimension = builder
@@ -646,13 +657,13 @@ public final class ConfigSpec {
         Config.modemHighAltitudeRangeDuringStorm = modemHighAltitudeRangeDuringStorm.get();
         Config.monitorBandwidth = monitorBandwidth.get();
         Config.radioEnabled = radioEnabled.get();
-        Config.radioReferenceRange = radioReferenceRange.get();
         Config.radioMaxRange = radioMaxRange.get();
         Config.radioMaxMessageSize = radioMaxMessageSize.get();
-        Config.radioLowBandFrequency = radioLowBandFrequency.get();
-        Config.radioHighBandFrequency = radioHighBandFrequency.get();
-        Config.radioHighBandFirstChannel = radioHighBandFirstChannel.get();
-        Config.radioHighBandBudgetOffset = radioHighBandBudgetOffset.get();
+        Config.radioTransmitPower = radioTransmitPower.get();
+        Config.radioMaxTransmitPower = radioMaxTransmitPower.get();
+        Config.radioRednetFrequency = radioRednetFrequency.get();
+        Config.radioRednetPowerOffset = radioRednetPowerOffset.get();
+        Config.radioGpsFrequency = radioGpsFrequency.get();
         Config.radioMetresPerBlock = radioMetresPerBlock.get();
         Config.radioMetresPerBlockVertical = radioMetresPerBlockVertical.get();
         Config.radioEarthRadius = radioEarthRadius.get();
@@ -662,9 +673,11 @@ public final class ConfigSpec {
         Config.radioVoxelRadius = radioVoxelRadius.get();
         Config.radioProfileSamples = radioProfileSamples.get();
         Config.radioStormPenalty = radioStormPenalty.get();
-        Config.radioPocketTransmitOffset = radioPocketTransmitOffset.get();
+        Config.radioPocketTransmitPower = radioPocketTransmitPower.get();
+        Config.radioPocketMaxTransmitPower = radioPocketMaxTransmitPower.get();
         Config.radioPocketReceiveOffset = radioPocketReceiveOffset.get();
-        Config.radioTurtleTransmitOffset = radioTurtleTransmitOffset.get();
+        Config.radioTurtleTransmitPower = radioTurtleTransmitPower.get();
+        Config.radioTurtleMaxTransmitPower = radioTurtleMaxTransmitPower.get();
         Config.radioTurtleReceiveOffset = radioTurtleReceiveOffset.get();
         Config.radioEnderPowerOffset = radioEnderPowerOffset.get();
         Config.radioEnderCrossDimension = radioEnderCrossDimension.get();

@@ -73,7 +73,9 @@ public class WirelessNetwork implements PacketNetwork {
     private void transmitRadio(Packet packet, ServerLevel level, boolean crossDimension) {
         var sender = packet.sender();
         var settings = propagation.settings();
-        var band = settings.band(packet);
+        // The power is the sender's now: a program may change it before the packet is delivered.
+        var frequency = settings.frequency(packet);
+        var power = settings.transmitPower(packet);
         var origin = sender.getPosition();
         List<PacketReceiver> candidates = null;
         List<PacketReceiver> elsewhere = null;
@@ -90,16 +92,16 @@ public class WirelessNetwork implements PacketNetwork {
                 continue;
             }
 
-            // Pocket computers and turtles are weaker, so need to be closer: don't look at terrain for those too far.
-            var offset = RadioSettings.offset(sender, receiver);
-            if (!settings.isPossible(receiver.getPosition().distanceTo(origin), band, offset)) continue;
+            // Don't look at terrain for receivers too far to hear the packet even in the open.
+            var distance = receiver.getPosition().distanceTo(origin);
+            if (!settings.isPossible(distance, frequency, power, RadioSettings.sensitivity(receiver))) continue;
 
             if (candidates == null) candidates = new ArrayList<>();
             candidates.add(receiver);
         }
 
-        if (candidates != null) propagation.submit(packet, level, origin, candidates);
-        if (elsewhere != null) propagation.submitCrossDimension(packet, level, origin, elsewhere);
+        if (candidates != null) propagation.submit(packet, level, origin, candidates, frequency, power);
+        if (elsewhere != null) propagation.submitCrossDimension(packet, level, origin, elsewhere, frequency, power);
     }
 
     private static void tryTransmit(PacketReceiver receiver, Packet packet, double range, boolean interdimensional) {

@@ -107,8 +107,10 @@ class Modem_Test {
             assertEquals(7, event.size, "modem_message should include the signal strength")
             assertEquals("Hello", event[4])
 
+            // Channel 12 is the lowest frequency there is, which loses little over a block or two, so the signal may
+            // be above 0 dBm. It's never stronger than it was sent with.
             val signal = (event[6] as Number).toDouble()
-            if (signal <= -100 || signal >= 0) throw AssertionError("Unexpected signal strength $signal")
+            if (signal <= -100 || signal > Config.radioTransmitPower) throw AssertionError("Unexpected signal strength $signal")
         }
     }
 
@@ -139,11 +141,11 @@ class Modem_Test {
     fun Ender_signals_cross_dimensions(helper: GameTestHelper) = helper.sequence {
         class Heard(val message: Any?, val distance: Double?, val signal: Double?)
 
-        class Sender(private val level: Level, private val position: Vec3, private val offset: Double) : PacketSender {
+        class Sender(private val level: Level, private val position: Vec3, private val power: Double) : PacketSender {
             override fun getLevel(): Level = level
             override fun getPosition(): Vec3 = position
             override fun getSenderID(): String = "test"
-            override fun getTransmitOffset(): Double = offset
+            override fun getTransmitPower(): Double = power
         }
 
         class Receiver(private val level: Level, private val position: Vec3, private val ender: Boolean) : PacketReceiver {
@@ -183,14 +185,15 @@ class Modem_Test {
         // Too far whichever way: 2,000 blocks of the Nether we know nothing of, or 16,000 across the Overworld.
         val acrossFar = Receiver(nether, there.add(2000.0, 0.0, 0.0), true)
         val receivers = listOf(beside, across, acrossWireless, acrossFar)
-        val ender = Sender(overworld, here, Config.radioEnderPowerOffset)
-        val wireless = Sender(overworld, here, 0.0)
+        val ender = Sender(overworld, here, Config.radioTransmitPower + Config.radioEnderPowerOffset)
+        val wireless = Sender(overworld, here, Config.radioTransmitPower)
 
         thenExecute {
             for (receiver in receivers) network.addReceiver(receiver)
             // As ender and wireless modems send them.
-            network.transmitInterdimensional(Packet(977, 977, "ender", ender))
-            network.transmitSameDimension(Packet(977, 977, "wireless", wireless), 64.0)
+            // On channel 1500, 150MHz.
+            network.transmitInterdimensional(Packet(1500, 1500, "ender", ender))
+            network.transmitSameDimension(Packet(1500, 1500, "wireless", wireless), 64.0)
         }
         // The link through the Nether crosses chunks which aren't loaded, whose heights are looked up first.
         thenWaitUntil {
@@ -217,7 +220,7 @@ class Modem_Test {
     }
 
     /**
-     * Sends a high band message between two computers set into a thick stone ceiling, with their modems hanging
+     * Sends a 2.4GHz message between two computers set into a thick stone ceiling, with their modems hanging
      * underneath. The computers are buried, but the modems can see each other, so the message should get through.
      */
     @GameTest
@@ -225,18 +228,18 @@ class Modem_Test {
         thenStartComputer("send") {
             val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
             while (true) {
-                callPeripheral(modem, "transmit", 2000, 34, "Hello")
+                callPeripheral(modem, "transmit", 24000, 34, "Hello")
                 sleep(50.milliseconds)
             }
         }
         thenOnComputer("receive") {
             val modem = findPeripheral("modem") ?: throw IllegalStateException("Cannot find modem")
-            callPeripheral(modem, "open", 2000)
+            callPeripheral(modem, "open", 24000)
 
             val event = pullEvent("modem_message")
             assertEquals("Hello", event[4])
 
-            // Nothing but air between the modems, so the signal should be strong (around -70dBm).
+            // Nothing but air between the modems, so the signal should be strong (around -50dBm).
             val signal = (event[6] as Number).toDouble()
             if (signal <= -85) throw AssertionError("Signal is too weak: $signal")
         }

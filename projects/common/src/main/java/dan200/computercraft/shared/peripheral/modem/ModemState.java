@@ -18,6 +18,9 @@ public class ModemState {
     private boolean open = false;
     private final IntSet channels = new IntOpenHashSet();
 
+    /** The power a program set a wireless modem to transmit with, in dBm, or {@link Double#NaN} for its default. */
+    private volatile double transmitPower = Double.NaN;
+
     public ModemState() {
         onChanged = null;
     }
@@ -68,5 +71,23 @@ public class ModemState {
             channels.clear();
             setOpen(false);
         }
+    }
+
+    /**
+     * Get the power a program set a wireless modem to transmit with.
+     *
+     * @return The power in dBm, or {@link Double#NaN} if none was set, and the modem uses its default.
+     */
+    public double getTransmitPower() {
+        return transmitPower;
+    }
+
+    /**
+     * Set the power a wireless modem transmits with.
+     *
+     * @param power The power in dBm, or {@link Double#NaN} to use the modem's default.
+     */
+    public void setTransmitPower(double power) {
+        transmitPower = power;
     }
 }

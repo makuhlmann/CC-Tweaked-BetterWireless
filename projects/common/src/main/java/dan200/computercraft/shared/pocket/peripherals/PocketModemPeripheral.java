@@ -41,8 +41,13 @@ public class PocketModemPeripheral extends WirelessModemPeripheral {
     }
 
     @Override
-    public double getTransmitOffset() {
-        return Config.radioPocketTransmitOffset + getEnderTransmitOffset();
+    protected double getDefaultTransmitPower() {
+        return Config.radioPocketTransmitPower;
+    }
+
+    @Override
+    protected double getMaxTransmitPower() {
+        return Config.radioPocketMaxTransmitPower;
     }
 
     @Override

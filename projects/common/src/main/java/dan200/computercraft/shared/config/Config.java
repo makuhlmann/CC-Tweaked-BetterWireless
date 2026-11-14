@@ -25,13 +25,13 @@ public final class Config {
     public static int modemHighAltitudeRangeDuringStorm = 384;
 
     public static boolean radioEnabled = true;
-    public static int radioReferenceRange = 1024;
-    public static int radioMaxRange = 16384;
+    public static int radioMaxRange = 65536;
     public static int radioMaxMessageSize = 64 * 1024;
-    public static double radioLowBandFrequency = 150;
-    public static double radioHighBandFrequency = 2400;
-    public static int radioHighBandFirstChannel = 1024;
-    public static double radioHighBandBudgetOffset = -20;
+    public static double radioTransmitPower = 8.4;
+    public static double radioMaxTransmitPower = 50;
+    public static double radioRednetFrequency = 2400;
+    public static double radioRednetPowerOffset = -20;
+    public static double radioGpsFrequency = 1575.42;
     public static double radioMetresPerBlock = 1;
     public static double radioMetresPerBlockVertical = 1;
     public static double radioEarthRadius = 0;
@@ -41,9 +41,11 @@ public final class Config {
     public static int radioVoxelRadius = 64;
     public static int radioProfileSamples = 512;
     public static double radioStormPenalty = 6;
-    public static double radioPocketTransmitOffset = -10;
+    public static double radioPocketTransmitPower = -1.6;
+    public static double radioPocketMaxTransmitPower = 23;
     public static double radioPocketReceiveOffset = -7;
-    public static double radioTurtleTransmitOffset = -10;
+    public static double radioTurtleTransmitPower = -1.6;
+    public static double radioTurtleMaxTransmitPower = 30;
     public static double radioTurtleReceiveOffset = -7;
     public static double radioEnderPowerOffset = -10;
     public static boolean radioEnderCrossDimension = true;

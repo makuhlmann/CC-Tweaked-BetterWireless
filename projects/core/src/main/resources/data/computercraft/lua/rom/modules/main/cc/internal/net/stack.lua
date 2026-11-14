@@ -64,10 +64,14 @@ local INFINITY, usable, is_broadcast = routing.INFINITY, routing.usable, routing
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
 local EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST
 
--- Channels: low band channels are 0-1023, high band channels are above that. Wired modems use the high band plan,
+-- Channels: a channel's number is its frequency in units of 100kHz. The low band is VHF, 136-174MHz (channels
+-- 1360-1739), for range; the high band is 2.4GHz, 2400-2483.5MHz (channels 24000-24834). Each band's first channel is
+-- its broadcast channel, and computers' unicast channels are the rest, by ID. Wired modems use the high band plan,
 -- though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
-local LOW_UNICAST, LOW_BROADCAST = 1000, 1000
-local HIGH_BASE, HIGH_UNICAST, HIGH_BROADCAST = 1024, 60000, 61024
+local BANDS = {
+    low = { first = 1360, last = 1739 },
+    high = { first = 24000, last = 24834 },
+}
 
 --- Get the channels used by a computer on a band.
 --
@@ -76,12 +80,15 @@ local HIGH_BASE, HIGH_UNICAST, HIGH_BROADCAST = 1024, 60000, 61024
 -- @treturn number The computer's unicast channel.
 -- @treturn number The broadcast channel.
 local function channels(id, band)
-    if band == "low" then return id % LOW_UNICAST, LOW_BROADCAST end
-    return HIGH_BASE + id % HIGH_UNICAST, HIGH_BROADCAST
+    local range = BANDS[band] or BANDS.high
+    return range.first + 1 + id % (range.last - range.first), range.first
 end
 
 local function band_of(channel)
-    return channel < HIGH_BASE and "low" or "high"
+    for name, range in pairs(BANDS) do
+        if channel >= range.first and channel <= range.last then return name end
+    end
+    return nil
 end
 
 local ERRORS = {
