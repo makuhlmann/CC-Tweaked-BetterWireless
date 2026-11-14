@@ -331,7 +331,7 @@ local function start_cell_service(config)
                 tower_instance = require("cc.internal.net.cell.tower").new {
                     stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval, pos = config.pos,
+                    fixed_interval = welcome.fixed_interval, pos = config.pos, service = config.service,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
                     -- A relay reaches a core through this computer's phone, so it can only serve that core's network
@@ -370,6 +370,7 @@ function start_cellular()
     if cores and cell.enabled ~= false then
         local ok, err = start_cell_service({
             cores = cores, area = cell.area, band = cell.band, interval = cell.interval, pos = cell.pos, power = cell.power,
+            service = cell.service,
         })
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
@@ -836,9 +837,10 @@ function api.setNetwork(name)
 end
 
 function api.startCell(core, settings)
-    local area, band, interval, pos, power
+    local area, band, interval, pos, power, service
     if type(settings) == "table" then
         area, band, interval, pos, power = settings.area, settings.band, settings.interval, settings.pos, settings.power
+        service = settings.service
     else
         area = settings
     end
@@ -846,6 +848,7 @@ function api.startCell(core, settings)
         return nil, "A cell's position is three whole numbers: its computer's x, y and z"
     end
     pos = pos and { pos[1], pos[2], pos[3] }
+    if service ~= nil and service ~= "sms" then return nil, "A cell's service is \"sms\" (messages only), or everything" end
     local cores = {}
     if type(core) == "string" then
         cores[1] = core
@@ -857,14 +860,16 @@ function api.startCell(core, settings)
         if not cores[1] then error("bad argument #1 (expected at least one core)", 2) end
     end
     require_crypto()
-    local config = { cores = cores, area = area or 0, band = band, interval = interval, pos = pos, power = power }
+    local config = {
+        cores = cores, area = area or 0, band = band, interval = interval, pos = pos, power = power, service = service,
+    }
     local old = read_table(CELL_CONFIG)
     -- Start again with new settings, or to try again at once after losing a core.
     if background.cell then
         local function place(p) return p and table.concat(p, ",") or "" end
         local again = table.concat(cell_cores(old) or {}, " ") ~= table.concat(cores, " ") or (old.area or 0) ~= config.area
             or old.band ~= config.band or old.interval ~= config.interval or place(old.pos) ~= place(config.pos)
-            or old.power ~= config.power
+            or old.power ~= config.power or old.service ~= config.service
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end
@@ -903,6 +908,7 @@ function api.cellInfo()
     end
     info.pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil
     info.power = type(config.power) == "number" and config.power or nil
+    info.service = config.service == "sms" and "sms" or nil
     return info
 end
 

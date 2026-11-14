@@ -180,10 +180,12 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number, bands? = { string... },
+    services? = { string... },
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
-cells send system information; and the band each cell asks to be on, by its index.
+cells send system information; the band each cell asks to be on, by its index; and each cell's service, by its index
+(`"sms"` for one which only carries messages).
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -277,6 +279,7 @@ local function operator(cell_positions, options)
         towers[i] = {
             index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address, public = cell_public,
             band = options.bands and options.bands[i], pos = type(position) == "table" and position or nil,
+            service_kind = options.services and options.services[i],
             sign = function(data) return crypto.sign(cell_private, data) end, shared = {},
             driver = new_driver(net, stack, ("%s's cell #%d"):format(name, id), key, addr),
         }
@@ -333,7 +336,7 @@ local function operator(cell_positions, options)
                     stack = entry.stack, crypto = crypto, modem = "air", kind = "wireless", area = welcome.area,
                     sign = entry.sign, epoch = now, can_serve = entry.can_serve,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval, pos = entry.pos,
+                    fixed_interval = welcome.fixed_interval, pos = entry.pos, service = entry.service_kind,
                 }
             end
             return entry.tower:add_network(welcome.network, {

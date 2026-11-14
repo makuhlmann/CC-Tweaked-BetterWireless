@@ -57,7 +57,7 @@ Link.__index = Link
 @tparam {
     stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number,
     interval? = number, fixed_interval? = boolean, area? = number, pos? = { number, number, number },
-    sign = function(data:string):string,
+    service? = string, sign = function(data:string):string,
     epoch = function():number, can_serve? = function(core:number):boolean,
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
     carriers? = { number... },
@@ -65,7 +65,8 @@ Link.__index = Link
 carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; how often to send system
 information, in seconds, and whether that was set for this cell, so its core can't change it; this cell's tracking
 area; where it is (its computer's block position), which it says in its system information so phones can work out
-where they are, if it's given; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
+where they are, if it's given; `"sms"` for a cell which only carries messages (a satellite, say: phones use it only
+when nothing better will do, and it carries none of their packets); a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
 network's phones now, given the address of its core (a relay can't while its own phone has no service, and stops naming
 that network, so its phones move to another cell). It may also be given the first network to serve, as `add_network`
 takes it.
@@ -85,6 +86,7 @@ local function new(options)
         interval = common.is_interval(options.interval) and options.interval or common.DEFAULT_INTERVAL,
         fixed_interval = options.fixed_interval == true,
         pos = common.is_position(options.pos) and { options.pos[1], options.pos[2], options.pos[3] } or nil,
+        service = options.service == "sms" and "sms" or nil,
         can_serve = options.can_serve or function() return true end,
         links = {}, phones = {}, downlinks = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
@@ -239,7 +241,7 @@ function Tower:beacon()
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
-        ul = self.ul, interval = self.interval, pos = self.pos, sign = self.sign,
+        ul = self.ul, interval = self.interval, pos = self.pos, service = self.service, sign = self.sign,
     })
 end
 
@@ -284,6 +286,8 @@ function Tower:radio(phone, message)
         -- packets, messages and pings say so too, once it has heard of the channel.)
         if value.dl ~= nil and value.dl == context.dl then context.dl_heard = true end
         if type(value.p) == "string" then
+            -- A cell which only carries messages carries no packets: its phones have no route for them anyway.
+            if self.service == "sms" then return end
             -- Up the tunnel to the gateway.
             local sealed = link.tunnel:seal({ teid = context.teid, packet = value.p })
             if sealed then
@@ -428,7 +432,7 @@ function Tower:downlink(data)
         local inner = link.tunnel:open(data)
         if inner ~= nil then
             local context = type(inner) == "table" and link.by_teid[inner.teid]
-            if not context or not context.active or type(inner.packet) ~= "string" then return end
+            if not context or not context.active or type(inner.packet) ~= "string" or self.service == "sms" then return end
             local sealed = context.sealer:seal({ p = inner.packet })
             if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
             return

@@ -133,6 +133,18 @@ local INTERFACE = "cell.phone"
 -- Cells an attach through which got no answer lately come after all of those, whatever their network.
 local HOME, PARTNER, OTHER, FAILED = 1, 2, 3, 4
 
+--[[ Where cells which only carry messages (satellites, say) come among those, as a phone uses them only when nothing
+better will do: our own network's after partners' full cells, other networks' after every full cell, even those of
+networks we don't know. ]]
+local HOME_MESSAGES, OTHER_MESSAGES = 2.5, 3.5
+
+-- How a way to use a cell ranks, by what its network is to us and whether it only carries messages: lower is better.
+local function order_of(class, messages_only)
+    if not messages_only then return class end
+    if class == HOME then return HOME_MESSAGES end
+    return class == PARTNER and OTHER_MESSAGES or OTHER_MESSAGES + 0.25
+end
+
 -- Where cells on several bands will do, a phone uses the highest band whose cell is at least this strong, in dBm, as
 -- phones do in LTE: higher bands have more room for phones, lower ones reach further. Below it, the strongest wins.
 local BAND_THRESHOLD = -95
@@ -227,10 +239,11 @@ local function silence(cell)
 end
 
 -- Whether to listen on a network's carriers while attached: our own, those we treat as home, the one we're using, and
--- partners' (for coming back to, or moving between) while we roam.
+-- partners' (for coming back to, or moving between) while we roam or our cell only carries messages.
 function Phone:listens_for(network)
     if self:home_class(network) or network == self.via or network == self.selection then return true end
-    return self.partners[network] ~= nil and self:roaming()
+    -- Partners' too while roaming, or while our cell only carries messages: one of theirs may carry everything.
+    return self.partners[network] ~= nil and (self:roaming() or self.state == "attached" and self:messages_only())
 end
 
 --[[- Work out which channels to listen on, and listen on them.
@@ -462,13 +475,15 @@ function Phone:home_class(network)
     return network == self.operator.network or self.equivalent[network] == true
 end
 
---[[ Whether one way to use a cell is better than another: by what its network is to us (`tier`, which puts cells which
-didn't answer lately last, and then `class`); then, if both are strong enough, the higher band (`rank`); then the
-stronger, then our own network before one we treat as home, and otherwise the one first by network and cell.
+--[[ Whether one way to use a cell is better than another: cells which didn't answer lately last (`tier`), then by
+what its network is to us and whether it only carries messages (`order`); then, if both are strong enough, the higher
+band (`rank`); then the stronger, then our own network before one we treat as home, and otherwise the one first by
+network and cell.
 ]]
 local function before(a, b)
-    if a.tier ~= b.tier then return a.tier < b.tier end
-    if a.class ~= b.class then return a.class < b.class end
+    local a_failed, b_failed = a.tier == FAILED, b.tier == FAILED
+    if a_failed ~= b_failed then return b_failed end
+    if a.order ~= b.order then return a.order < b.order end
     if a.rank ~= b.rank and a.signal >= BAND_THRESHOLD and b.signal >= BAND_THRESHOLD then return a.rank > b.rank end
     if a.signal ~= b.signal then return a.signal > b.signal end
     if a.own ~= b.own then return a.own end
@@ -480,7 +495,7 @@ end
 it serves which we may use. With `others`, through networks we don't know to carry us too (neither ours nor a
 partner's), leaving out those which turned us away lately, unless we've been told to use one.
 
-Each way is `{ id, network, signal, class, tier, own, rank }`, and [`before`] says which is better. Attaching, going home and
+Each way is `{ id, network, signal, class, tier, own, rank, sms, order }`, and [`before`] says which is better. Attaching, going home and
 being handed over each take the best of those they may use.
 ]]
 function Phone:best(now, fits, others)
@@ -490,6 +505,10 @@ function Phone:best(now, fits, others)
     local function consider(id, network, signal, class, tier)
         choice.id, choice.network, choice.signal, choice.class, choice.tier = id, network, signal, class, tier
         choice.own, choice.rank = network == own, band_rank(self.heard[id] or self.cells[id])
+        -- Whether it only carries messages, as its system information says: checked, for cells we may use.
+        local cell = self.cells[id] or self.heard[id]
+        choice.sms = cell ~= nil and cell.service == "sms"
+        choice.order = order_of(class, choice.sms)
         if (not fits or fits(choice)) and (not found or before(choice, found)) then found, choice = choice, found or {} end
     end
 
@@ -502,9 +521,9 @@ function Phone:best(now, fits, others)
         end
     end
 
-    -- Networks we don't know only come before cells which didn't answer lately, so they're only worth looking for when
-    -- there's nothing better.
-    if not others or (found and found.tier ~= FAILED) then return found end
+    -- Networks we don't know only come before cells which didn't answer lately, and other networks' cells which only
+    -- carry messages, so they're only worth looking for when there's nothing better.
+    if not others or (found and found.tier ~= FAILED and found.order < OTHER) then return found end
     local chosen = self.selection
     for id, cell in pairs(self.heard) do
         if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and id ~= self.stack.id then
@@ -527,7 +546,9 @@ local function sample(cell, message, signal, now)
     local total = 0
     for _, value in ipairs(cell.samples) do total = total + value end
     cell.signal, cell.heard = total / #cell.samples, now
-    if message then cell.area, cell.interval, cell.ul = message.area, message.interval, message.ul end
+    if message then
+        cell.area, cell.interval, cell.ul, cell.service = message.area, message.interval, message.ul, message.service
+    end
 end
 
 --- Whether the network we're attached through is another network, which we don't treat as home.
@@ -1030,9 +1051,10 @@ function Phone:attach()
     local scanned = self.selection ~= nil or now - search.since >= SCAN_TIME
     local choice = self:best(now, nil, scanned)
     if not choice then return end
-    -- Just started (or activated), we may not have heard our own network's cells yet, only a partner's. Don't settle
-    -- for that, and stay there, until we've listened for long enough to hear every cell around.
-    if choice.tier == PARTNER and now - self.started < SCAN_TIME then return end
+    -- Just started (or activated), we may not have heard our own network's cells yet, only a partner's, or one which
+    -- only carries messages. Don't settle for that, and stay there, until we've listened for long enough to hear every
+    -- cell around.
+    if (choice.tier == PARTNER or choice.sms) and now - self.started < SCAN_TIME then return end
 
     if choice.class == OTHER then
         -- We can't check its cell's part for that network until (and unless) our operator gives us the network's key,
@@ -1105,9 +1127,27 @@ function Phone:set_address(addr)
         stack:add_virtual_interface("cell", "cell", function(packet) self:uplink(packet) end)
     end
     if stack.interfaces.cell.address ~= addr then stack:set_address("cell", addr, 32) end
-    stack:remove_routes(function(route) return route.source == "cell" end)
-    stack:add_route { network = 0, prefix = 0, interface = "cell", metric = 5, source = "cell" }
-    self.address = addr
+    self.address, self.routed = addr, nil
+    self:update_route()
+end
+
+--- Whether the cell we use only carries messages, as its system information says.
+--
+-- @treturn boolean Whether it does.
+function Phone:messages_only()
+    local cell = self.cell and (self.cells[self.cell] or self.heard[self.cell])
+    return cell ~= nil and cell.service == "sms"
+end
+
+-- Our default route, through our cell: unless it only carries messages, so programs hear at once that there's no way
+-- out, rather than waiting for packets the cell won't carry.
+function Phone:update_route()
+    if not self.address then return end
+    local wanted = not self:messages_only()
+    if wanted == self.routed then return end
+    self.routed = wanted
+    self.stack:remove_routes(function(route) return route.source == "cell" end)
+    if wanted then self.stack:add_route { network = 0, prefix = 0, interface = "cell", metric = 5, source = "cell" } end
 end
 
 function Phone:uplink(packet)
@@ -1123,7 +1163,10 @@ end
 function Phone:measure()
     self.timer = self.stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
     self:update_listening()
-    if self.state == "attached" then self:check(self.here) end
+    if self.state == "attached" then
+        self:update_route()
+        self:check(self.here)
+    end
 end
 
 -- While attached (`here`): see that our cell is still there, and knows us; whether to go home; and whether another cell
@@ -1164,16 +1207,25 @@ function Phone:check(here)
 
     self:send_waiting(true)
 
-    -- Roaming, and left to choose: go back to our own network (or one we treat as home) once its best cell has been
-    -- stronger than ours for a while, or at once if ours serves it too (it's shared). We attach again, through its
-    -- cell, rather than being handed over, and keep our address. On a network we treat as home, we stay until we lose
-    -- it, as on our own.
-    if not self:home_class(here.via) and not self.selection and not confirming then
-        local home = self:best(now)
-        if home and home.tier == HOME and (home.signal >= serving.signal + HYSTERESIS or home.id == here.cell) then
+    -- Left to choose, move to a better kind of cell for a while: back to our own network (or one we treat as home)
+    -- once its best cell has been stronger than ours, or at once if ours serves it too (it's shared); and off a cell
+    -- which only carries messages, once one of a network we may use which carries everything will do, however weak
+    -- (on our network, a handover does that, below). We attach again, through the better cell, rather than being
+    -- handed over, and keep our address. On a network we treat as home, with a cell which carries everything, we stay
+    -- until we lose it, as on our own.
+    local serving_sms = serving.service == "sms"
+    if not self.selection and not confirming then
+        local class = self:home_class(here.via) and HOME or self.partners[here.via] and PARTNER or OTHER
+        local serving_order = order_of(class, serving_sms)
+        local better = self:best(now, function(choice)
+            if choice.tier == FAILED or choice.order >= serving_order then return false end
+            if serving_sms and not choice.sms then return choice.network ~= here.via end
+            return choice.tier == HOME and (choice.signal >= serving.signal + HYSTERESIS or choice.id == here.cell)
+        end)
+        if better then
             here.home_since = here.home_since or now
             if now - here.home_since >= HOME_TIME then
-                self:event("home", { from = here.cell })
+                self:event(better.tier == HOME and not better.sms and "home" or "service", { from = here.cell })
                 self:enter("searching")
                 return self:attach()
             end
@@ -1187,6 +1239,9 @@ function Phone:check(here)
     local serving_rank = band_rank(serving)
     local target = self:best(now, function(choice)
         if choice.network ~= here.via or choice.id == here.cell then return false end
+        -- Off a cell which only carries messages, to one which carries everything, once it will do; never the other
+        -- way (once ours goes, we attach again, to the best there is).
+        if choice.sms ~= serving_sms then return serving_sms end
         -- Up to a higher band once it's strong enough, with some to spare; down to a lower one only once ours is too
         -- weak to stay on. Otherwise (or on the same band), to a cell which is stronger enough.
         if choice.rank > serving_rank and choice.signal >= BAND_THRESHOLD + HYSTERESIS then return true end
@@ -1244,7 +1299,7 @@ function Phone:info()
                 local _, band = bands.carrier_of(cell.ul or 0)
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
-                    band = band, interval = cell.interval, distance = cell.distance,
+                    band = band, interval = cell.interval, distance = cell.distance, service = cell.service,
                     pos = cell.pos and { cell.pos[1], cell.pos[2], cell.pos[3] },
                     -- Heard lately enough to use.
                     fresh = age <= silence(cell),
@@ -1280,6 +1335,7 @@ function Phone:info()
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
         heard = heard, events = events, network = self.operator and self.operator.network,
         roaming = self:roaming(), selection = self.selection, partners = partners, equivalent = equivalent,
+        messages_only = self.state == "attached" and self:messages_only() or nil,
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
         newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,
     }
@@ -1328,6 +1384,7 @@ end
 function Phone:stop()
     self.stack:cancel(self.timer)
     self.stack:off_frame(common.FRAME, self.frame_handler)
+    self.routed = nil
     self.stack:remove_routes(function(route) return route.source == "cell" end)
     self.stack:remove_interface("cell")
     if self.stack.interfaces[INTERFACE] then self.stack:remove_interface(INTERFACE) end

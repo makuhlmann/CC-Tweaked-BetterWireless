@@ -81,6 +81,7 @@ local function monitor()
             return ("Roaming #%s %s"):format(event.cell, event.roaming), c(colours.lime)
         elseif kind == "attached" then return ("Attached #%s"):format(event.cell), c(colours.lime)
         elseif kind == "home" then return ("Home from #%s"):format(event.from), c(colours.lightBlue)
+        elseif kind == "service" then return ("Full service from #%s"):format(event.from), c(colours.lightBlue)
         elseif kind == "handover" then return ("Moved #%s > #%s"):format(event.from, event.to), c(colours.lightBlue)
         elseif kind == "lost" then return ("Lost #%s"):format(event.cell), c(colours.orange)
         elseif kind == "rejected" then return "Rejected: " .. tostring(event.reason), c(colours.red)
@@ -278,6 +279,7 @@ elseif command == nil then
     end
     if info.network then print("Network:  " .. info.network) end
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
+    if info.messages_only then print("Messages only: this cell carries no packets") end
     if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end

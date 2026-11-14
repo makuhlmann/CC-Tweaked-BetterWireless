@@ -53,7 +53,8 @@ end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
 (`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle. On a
-network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. On a narrow screen,
+network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. On a cell which only
+carries messages, `SMS` follows the name. On a narrow screen,
 the name is cut short to leave room for the rest. The bar is dark grey.
 
 @tparam table info The phone's state, as `net.cell.info` gives it.
@@ -75,6 +76,8 @@ local function line(info, width, colour, quiet)
     if attached then
         -- A network the phone treats as its own goes by its own network's name.
         name = info.roaming and info.serving_network or info.network or info.serving_network or "?"
+        -- A cell which only carries messages, such as a satellite's.
+        if info.messages_only then name = tostring(name) .. " SMS" end
     elseif info.state == "searching" and info.newer then
         -- The cells around speak a newer version than this phone, which may be why it finds none.
         name = "Phone too old"

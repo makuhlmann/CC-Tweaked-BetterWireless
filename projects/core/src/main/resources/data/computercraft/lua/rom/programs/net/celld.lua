@@ -10,7 +10,7 @@ local name = arg[0] or fs.getName(shell.getRunningProgram())
 
 local function usage()
     print("Usages:")
-    print(name .. " <core> [core...] [area] [band <band>] [interval <seconds>] [pos <x> <y> <z>] [power <dBm>]")
+    print(name .. " <core> [core...] [area] [band <band>] [interval <seconds>] [pos <x> <y> <z>] [power <dBm>] [sms]")
     print(name)
     print(name .. " stop")
 end
@@ -46,6 +46,7 @@ end
 local function show_settings(info)
     if info.pos then print(("At %d, %d, %d."):format(info.pos[1], info.pos[2], info.pos[3])) end
     if info.power then print(("Sending with %g dBm."):format(info.power)) end
+    if info.service == "sms" then print("Carries messages only.") end
 end
 
 -- Say what the cell is doing.
@@ -89,11 +90,14 @@ elseif args[1] == "stop" then
 end
 
 -- Cores, then the area if it's given, and options: the band, how often to send system information, where the cell is,
--- and the power to send with.
+-- the power to send with, and whether it only carries messages.
 local cores, settings, i = {}, {}, 1
 while i <= #args do
     local arg = args[i]
-    if arg == "pos" and #cores > 0 then
+    if arg == "sms" and #cores > 0 then
+        settings.service = "sms"
+        i = i + 1
+    elseif arg == "pos" and #cores > 0 then
         local x, y, z = tonumber(args[i + 1]), tonumber(args[i + 2]), tonumber(args[i + 3])
         if not x or not y or not z then return usage() end
         settings.pos = { x, y, z }

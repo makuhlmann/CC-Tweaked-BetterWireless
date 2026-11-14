@@ -241,6 +241,17 @@ the design above:
     much the same height, seen from far away, say little about the phone's height; cells all at one height can't say
     which side of them it is. A cell may also send with more power (`celld <core> power 30`, in dBm), which it sets
     again whenever its modem is replaced.
+  - **Cells which only carry messages** (`celld <core> sms`, or `service = "sms"` in `net.cell.startCell`'s settings)
+    are for when nothing better will do: a satellite (up high, strong, sending system information every 10 seconds),
+    for off-grid or emergency messages. The cell says so in its signed system information, carries its phones'
+    messages, and drops their packets both ways; a phone on it has no default route, so programs hear at once that
+    there's no way out, and the status bar shows `SMS` after the network's name (`net.cell.info().messages_only`).
+    Phones rank such cells after full ones: their own network's after their partners' full cells, other networks'
+    after every full cell, even of networks they don't know. Just started, a phone waits to have heard every cell
+    around before settling on one. On one, it listens for its partners' cells too, and moves off as soon as a full
+    cell will do, however weak: within its network by a handover, otherwise by attaching again after 5 seconds
+    (`service` in its events). It's never handed over from a full cell to one which only carries messages: it
+    attaches to one once its full cell is gone. A phone told to use a network (`cell network`) stays on it.
 - **System information** goes out as a link-layer `cell` frame on the cell's carrier's beacon channel. A cell's
   certificate is issued by the core when the cell connects, for the cell's own Ed25519 key (`cell.tower` in its
   enclave), signed by the operator's (`cell.signing`). Version 4 signs the cell's uplink channel, its interval and each

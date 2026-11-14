@@ -1571,6 +1571,7 @@ cell = {
 
      - `enabled`: whether cell service is turned on (see `net.cell.setEnabled`);
      - `signal` and `serving_network`: the signal strength (dBm) and network of the cell it's using, when attached;
+     - `messages_only`: whether that cell only carries messages (a satellite, say), so there's no route for packets;
      - `roaming`: whether that's another network than the SIM's own (and not one it treats as its own);
      - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
        the phone treats as its own network (it isn't roaming there);
@@ -1583,12 +1584,14 @@ cell = {
        first, then strongest first. Each has `id`, `network`, `signal` (dBm), `area`, `load` (0 to 1), `age` (seconds
        since it was last heard), `band` (such as `"b20"`), `interval` (how often it sends system information, in
        seconds), `pos` (where it says it is, as `{ x, y, z }`, if it does) and `distance` (how far away it was, in
-       blocks, if it says where it is), `serving` (whether the phone uses it), and `verified`: for cells of the phone's
+       blocks, if it says where it is), `service` (`"sms"` if it only carries messages), `serving` (whether the
+       phone uses it), and `verified`: for cells of the phone's
        own network, whether their system information came from the operator (`false` may mean a fake cell), or `nil`
        for other networks;
      - `events`: the last 20 things which happened, oldest first. Each has `kind` and `time` (as `os.epoch("utc")`
        gives it): `"activated"` (with `network`), `"activation_failed"` (`reason`), `"attached"` (`cell`),
-       `"handover"` (`from` and `to`), `"lost"` (`cell`) or `"rejected"` (`reason`).
+       `"handover"` (`from` and `to`), `"home"` (back to its own network, `from`), `"service"` (off a cell which only
+       carries messages, `from`), `"lost"` (`cell`) or `"rejected"` (`reason`).
 
     A computer without a SIM only hears cells once it listens, with `net.cell.listen` (or tries to activate).
     ]]
@@ -1764,9 +1767,11 @@ cell = {
 
     @tparam string|{ string... } core The core's name or address, or those of several networks' cores.
     @tparam[opt] number|{ area? = number, band? = string, interval? = number, pos? = { number, number, number },
-    power? = number } settings The cell's tracking area; or that, the cellular band it should be on (such as `"b20"`),
-    how often it sends system information, in seconds, where it is (its computer's block position, which it says in its
-    system information, so phones can work out where they are), and the power its modem sends with, in dBm.
+    power? = number, service? = string } settings The cell's tracking area; or that, the cellular band it should be on
+    (such as `"b20"`), how often it sends system information, in seconds, where it is (its computer's block position,
+    which it says in its system information, so phones can work out where they are), the power its modem sends with, in
+    dBm, and `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
+    carries everything will do, and have no route for packets while they do.
     @treturn[1] true If it started.
     @treturn[2] nil If it couldn't.
     @treturn[2] string Why not.
@@ -1775,7 +1780,9 @@ cell = {
         expect(1, core, "string", "table")
         expect(2, settings, "number", "table", "nil")
         if type(settings) == "table" then
-            for key, kind in pairs { area = "number", band = "string", interval = "number", pos = "table", power = "number" } do
+            for key, kind in pairs {
+                area = "number", band = "string", interval = "number", pos = "table", power = "number", service = "string",
+            } do
                 local value = settings[key]
                 if value ~= nil and type(value) ~= kind then
                     error(("bad field '%s' (%s expected, got %s)"):format(key, kind, type(value)), 2)
@@ -1795,8 +1802,8 @@ cell = {
     @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
     why; the `core`; the `network` it serves; its `area`; its `id` and `fingerprint`, which the core's administrator
-    checks before allowing it; where it says it is (`pos`, as `{ x, y, z }`) and the power it sends with (`power`, in
-    dBm), if they were set; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
+    checks before allowing it; where it says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in
+    dBm) and `service` (`"sms"` if it only carries messages), if they were set; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
     for each core, for a cell which serves several networks. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()
