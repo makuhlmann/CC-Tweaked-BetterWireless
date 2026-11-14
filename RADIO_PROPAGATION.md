@@ -211,20 +211,30 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
 1. `WirelessNetwork.transmitSameDimension` (on the computer thread) only filters receivers: same level, listening on
    the channel, and not ruled out by free-space loss alone (which is a lower bound on any real path loss). It queues
    the packet and returns immediately.
-2. At the start of each server tick, `RadioPropagationService` evaluates queued links on the server thread, reading
+2. At the start of each server tick, `RadioPropagationService` traces queued links on the server thread, reading
    loaded chunks directly through `getChunkNow` and chunk sections (no cross-thread hops, no loading). Work is capped
-   at `tick_budget` (2ms) per tick; leftovers wait for the next tick. Each evaluation is one voxel walk along the ray
-   (which stops as soon as the signal is lost), a `block_radius` walk at each end to find where the signal leaves any
-   enclosure, and a `profile_samples`-point profile. A rough micro-benchmark puts one link at ~15µs for 1km, ~30µs for
-   4km and ~85µs at the 16km maximum range.
-3. Results are cached for `cache_ticks` (5s) per *unordered* pair of block positions and band. Path loss is reciprocal,
-   so the reply to a rednet message or GPS ping is a cache hit, as are repeated messages between stationary computers.
-   Concurrent requests for the same link share one evaluation.
-4. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
+   at `tick_budget` (2ms) per tick; leftovers wait for the next tick. Each trace is one voxel walk along the ray
+   (which stops once the signal is lost at every frequency), a `block_radius` walk at each end to find where the
+   signal leaves any enclosure, and a `profile_samples`-point profile. A rough micro-benchmark puts one link at ~15µs
+   for 1km, ~30µs for 4km and ~85µs at 16km, measured before tracing became independent of the frequency (below).
+3. **A trace doesn't depend on the frequency.** What it records (`LinkPath`) is how many metres of each material the
+   signal passes through (straight through, and on the way out of each antenna's enclosure), the antennas' heights
+   for the two-ray model, and the Deygout obstacles. Each obstacle's diffraction parameter scales with `1/√λ`, so the
+   main obstacle and those either side of it are the same at every frequency; only whether each counts, and what it
+   costs, isn't. Turning a path into a loss at a frequency takes microseconds: materials' attenuations come from a
+   table per frequency, worked out once. The walks stop once the loss, at each material's *least* attenuation over the
+   whole frequency range, is beyond the strongest device's budget, so a path serves every frequency and device. That
+   makes walks through rock or forest go somewhat further than a walk for one frequency would.
+4. Paths are cached for `cache_ticks` (5s) per *unordered* pair of block positions, whatever the frequency. Path loss
+   is reciprocal, so the reply to a rednet message or GPS ping is a cache hit, as are repeated messages between
+   stationary computers, and the two directions of a link whose uplink and downlink use different frequencies.
+   Concurrent requests for the same link share one trace. A path traced for a smaller budget than devices now have
+   (the config changed) is traced again.
+5. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
    it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates.
-5. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
+6. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
    dropped (congestion, like a real network).
-6. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
+7. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
    can't take down the server tick.
 
 ## 4. Terrain data for unloaded chunks

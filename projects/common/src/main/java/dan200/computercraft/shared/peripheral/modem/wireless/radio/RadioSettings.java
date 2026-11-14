@@ -113,6 +113,16 @@ public record RadioSettings(
     }
 
     /**
+     * The largest link budget any link may have: that of the strongest transmitter and receiver, on the band which
+     * gets the most out of them. Links are traced this far, so a traced link serves every device.
+     *
+     * @return The budget, in dB.
+     */
+    public double maxBudget() {
+        return Math.max(lowBand.linkBudget(), highBand.linkBudget());
+    }
+
+    /**
      * Whether a link between two particular devices could possibly work, even in perfect conditions.
      * <p>
      * This only looks at the distance, so is cheap: no link loses less than it would in free space. Links which pass

@@ -163,6 +163,52 @@ public class PropagationModelTest {
     }
 
     @Test
+    public void onePathServesEveryFrequency() {
+        // A single wooden wall in the middle of the link, beyond the block radius, which the signal goes through.
+        var wall = new FakeTerrain((x, z) -> x == 300 ? GROUND + 200 : GROUND);
+        wall.solid = (x, y, z) -> x == 300 && y < GROUND + 200 ? BlockRadioInfo.full(RadioMaterial.WOOD) : null;
+        var throughWall = PropagationModel.trace(0.5, GROUND + 1, 0.5, 600.5, GROUND + 1, 0.5, BUDGET + 200, ENV, wall);
+
+        // A hill, which it goes over.
+        var hill = new FakeTerrain((x, z) -> x >= 450 && x < 550 ? GROUND + 40 : GROUND);
+        var overHill = PropagationModel.trace(0.5, GROUND + 1, 0.5, 1000.5, GROUND + 1, 0.5, BUDGET + 200, ENV, hill);
+
+        for (var frequency : new double[]{ VHF, UHF }) {
+            var traced = throughWall.evaluate(frequency);
+            assertEquals(evaluate(wall, 0, 0, 600, frequency).loss(), traced.loss(), 1e-9);
+            assertEquals(RadioMaterial.WOOD.attenuation(frequency), traced.through(), 0.01 * traced.through());
+
+            var diffracted = overHill.evaluate(frequency);
+            assertEquals(evaluate(hill, 0, 0, 1000, frequency).loss(), diffracted.loss(), 1e-9);
+            assertTrue(diffracted.diffracted());
+        }
+        assertTrue(overHill.evaluate(UHF).diffraction() > overHill.evaluate(VHF).diffraction());
+    }
+
+    @Test
+    public void tracingFurtherChangesNothingWithinBudget() {
+        // The near trace gives up walking through the hill sooner, but the signal goes over it either way.
+        var terrain = new FakeTerrain((x, z) -> x >= 450 && x < 550 ? GROUND + 40 : GROUND);
+        var near = PropagationModel.trace(0.5, GROUND + 1, 0.5, 1000.5, GROUND + 1, 0.5, BUDGET + 60, ENV, terrain);
+        var far = PropagationModel.trace(0.5, GROUND + 1, 0.5, 1000.5, GROUND + 1, 0.5, BUDGET + 200, ENV, terrain);
+
+        assertTrue(near.evaluate(VHF).loss() < BUDGET + 60, "The link should be within budget: " + near.evaluate(VHF));
+        assertEquals(near.evaluate(VHF).loss(), far.evaluate(VHF).loss(), 1e-9);
+    }
+
+    @Test
+    public void lostLinksAreLostAtEveryFrequency() {
+        // A link traced for one budget, and lost, is lost however well the frequency penetrates.
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        terrain.solid = (x, y, z) -> y < GROUND ? BlockRadioInfo.full(RadioMaterial.ROCK) : null;
+        var path = PropagationModel.trace(0.5, GROUND - 30, 0.5, 200.5, GROUND + 1, 0.5, BUDGET, ENV, terrain);
+
+        for (var frequency : new double[]{ RadioMaterial.MIN_FREQUENCY, VHF, UHF, RadioMaterial.MAX_FREQUENCY }) {
+            assertTrue(path.evaluate(frequency).loss() > BUDGET, "Lost at " + frequency + "MHz: " + path.evaluate(frequency));
+        }
+    }
+
+    @Test
     public void linksAreReciprocal() {
         var terrain = new FakeTerrain((x, z) -> GROUND + (int) (20 * Math.sin(x / 50.0)) + (x == 30 ? 3 : 0));
         var forward = PropagationModel.evaluate(0.5, GROUND + 25, 0.5, 700.5, GROUND + 30, 0.5, VHF, BUDGET + 100, ENV, terrain);

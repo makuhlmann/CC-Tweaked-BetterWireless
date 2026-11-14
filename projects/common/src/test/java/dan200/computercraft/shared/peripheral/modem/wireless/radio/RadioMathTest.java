@@ -67,6 +67,44 @@ public class RadioMathTest {
     }
 
     @Test
+    public void deygoutEdgesServeEveryFrequency() {
+        double[] distance = { 0, 300, 450, 600, 1000 };
+        double[] height = { 0, 25, 10, 18, 0 };
+        var edges = RadioMath.deygoutEdges(distance, height, 0, 4, 0, 0, 1);
+        assertNotNull(edges);
+        for (var frequency : new double[]{ 30, 150, 900, 2400, 10_000 }) {
+            var lambda = RadioMath.wavelength(frequency);
+            assertEquals(RadioMath.deygoutLoss(distance, height, 0, 4, 0, 0, lambda, 1), edges.loss(lambda), 1e-9);
+        }
+    }
+
+    @Test
+    public void edgesBelowTheLineOfSightOnlyCountAtLowFrequencies() {
+        // An obstacle a little under the line of sight is close enough to cost something at VHF, but not at UHF,
+        // whose Fresnel zone is narrower.
+        double[] distance = { 0, 500, 1000 };
+        double[] height = { 0, -8, 0 };
+        var edges = RadioMath.deygoutEdges(distance, height, 0, 2, 0, 0, 1);
+        assertNotNull(edges);
+        assertTrue(edges.loss(RadioMath.wavelength(150)) > 0);
+        assertEquals(0, edges.loss(RadioMath.wavelength(2400)));
+    }
+
+    @Test
+    public void attenuationTablesMatchMaterials() {
+        var table = RadioMaterial.attenuationTable(900);
+        assertSame(table, RadioMaterial.attenuationTable(900));
+        var least = RadioMaterial.leastAttenuationTable();
+        for (var material : RadioMaterial.values()) {
+            assertEquals(material.attenuation(900), table[material.ordinal()], 1e-12);
+            // The least attenuation is no more than at any frequency the model works at.
+            for (var frequency : new double[]{ RadioMaterial.MIN_FREQUENCY, 150, 900, 2400, RadioMaterial.MAX_FREQUENCY }) {
+                assertTrue(least[material.ordinal()] <= material.attenuation(frequency), material + " at " + frequency);
+            }
+        }
+    }
+
+    @Test
     public void materialAttenuation() {
         // Concrete at 2.4GHz is in the tens of dB per metre (a 20cm wall is ~10-15dB).
         var concrete = RadioMaterial.ROCK.attenuation(2400);

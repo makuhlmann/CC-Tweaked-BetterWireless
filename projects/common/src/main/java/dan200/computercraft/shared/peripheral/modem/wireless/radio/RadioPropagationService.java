@@ -97,7 +97,7 @@ public final class RadioPropagationService {
     private sealed interface Waiting permits Delivery, CrossDelivery {
     }
 
-    private record Delivery(Packet packet, PacketReceiver receiver, double distance, boolean thundering) implements Waiting {
+    private record Delivery(Packet packet, PacketReceiver receiver, double distance, boolean thundering, RadioBand band) implements Waiting {
     }
 
     /**
@@ -108,45 +108,53 @@ public final class RadioPropagationService {
         final Packet packet;
         final PacketReceiver receiver;
         final boolean thundering;
+        final RadioBand band;
         int waiting;
         double loss = Double.POSITIVE_INFINITY;
 
-        CrossDelivery(Packet packet, PacketReceiver receiver, boolean thundering, int waiting) {
+        CrossDelivery(Packet packet, PacketReceiver receiver, boolean thundering, RadioBand band, int waiting) {
             this.packet = packet;
             this.receiver = receiver;
             this.thundering = thundering;
+            this.band = band;
             this.waiting = waiting;
         }
     }
 
-    private record LinkKey(ResourceKey<Level> level, long first, long second, int band) {
-        static LinkKey of(ServerLevel level, Vec3 a, Vec3 b, RadioBand band) {
+    /**
+     * A link, by the blocks at each end. Links are reciprocal, and a {@link LinkPath} serves every frequency, so the
+     * key is the same either way round, whatever the frequency.
+     *
+     * @param level  The level the link is in.
+     * @param first  The packed position of the end with the smaller packed position.
+     * @param second The packed position of the other end.
+     */
+    private record LinkKey(ResourceKey<Level> level, long first, long second) {
+        static LinkKey of(ServerLevel level, Vec3 a, Vec3 b) {
             var x = BlockPos.asLong((int) Math.floor(a.x), (int) Math.floor(a.y), (int) Math.floor(a.z));
             var y = BlockPos.asLong((int) Math.floor(b.x), (int) Math.floor(b.y), (int) Math.floor(b.z));
-            return new LinkKey(level.dimension(), Math.min(x, y), Math.max(x, y), band.id());
+            return new LinkKey(level.dimension(), Math.min(x, y), Math.max(x, y));
         }
     }
 
-    private record CachedLink(LinkResult result, long expires) {
+    private record CachedLink(LinkPath path, long expires) {
     }
 
     private static final class Evaluation {
         final LinkKey key;
         final ServerLevel level;
         final Vec3 from, to;
-        final RadioBand band;
         final long started;
         /** Whether this is for a packet from another dimension, whose links are remembered for longer. */
         final boolean crossDimension;
         final List<Waiting> deliveries = new ArrayList<>(1);
         @Nullable LongSet missing;
 
-        Evaluation(LinkKey key, ServerLevel level, Vec3 from, Vec3 to, RadioBand band, long started, boolean crossDimension) {
+        Evaluation(LinkKey key, ServerLevel level, Vec3 from, Vec3 to, long started, boolean crossDimension) {
             this.key = key;
             this.level = level;
             this.from = from;
             this.to = to;
-            this.band = band;
             this.started = started;
             this.crossDimension = crossDimension;
         }
@@ -237,8 +245,8 @@ public final class RadioPropagationService {
                 if (receiver.getLevel() != level) continue;
                 var position = receiver.getPosition();
                 var to = RadioAntenna.of(receiver, position);
-                var delivery = new Delivery(transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering);
-                request(level, from, to, band, delivery, false);
+                var delivery = new Delivery(transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering, band);
+                request(level, from, to, delivery, false);
             }
         }
 
@@ -255,7 +263,7 @@ public final class RadioPropagationService {
                 // This runs as part of the server tick, so must never throw. Drop the link instead.
                 logError("Failed to evaluate radio link", e);
                 evaluating.remove(evaluation.key);
-                for (var waiting : evaluation.deliveries) complete(waiting, evaluation.band, null);
+                for (var waiting : evaluation.deliveries) complete(waiting, null);
                 done = true;
             }
             if (!done) pending.add(evaluation);
@@ -269,15 +277,15 @@ public final class RadioPropagationService {
      * @param level          The level the link is in.
      * @param from           One end of the link.
      * @param to             The other end.
-     * @param band           The band the link uses.
      * @param waiting        What's waiting for the link.
      * @param crossDimension Whether this is for a packet from another dimension.
      */
-    private void request(ServerLevel level, Vec3 from, Vec3 to, RadioBand band, Waiting waiting, boolean crossDimension) {
-        var key = LinkKey.of(level, from, to, band);
+    private void request(ServerLevel level, Vec3 from, Vec3 to, Waiting waiting, boolean crossDimension) {
+        var key = LinkKey.of(level, from, to);
         var cached = links.get(key);
-        if (cached != null && cached.expires() > tick) {
-            complete(waiting, band, cached.result());
+        // A path traced for a smaller budget than devices may now have (the config changed) is traced again.
+        if (cached != null && cached.expires() > tick && cached.path().budget() >= settings.maxBudget()) {
+            complete(waiting, cached.path());
             return;
         }
 
@@ -285,11 +293,11 @@ public final class RadioPropagationService {
         if (evaluation == null) {
             // The server can't keep up with the number of distinct links, so drop the packet.
             if (pending.size() >= MAX_EVALUATIONS) {
-                complete(waiting, band, null);
+                complete(waiting, null);
                 return;
             }
 
-            evaluation = new Evaluation(key, level, from, to, band, tick, crossDimension);
+            evaluation = new Evaluation(key, level, from, to, tick, crossDimension);
             evaluating.put(key, evaluation);
             pending.add(evaluation);
         }
@@ -300,15 +308,14 @@ public final class RadioPropagationService {
      * Tell something which was waiting for a link how good the link is.
      *
      * @param waiting What was waiting.
-     * @param band    The band the link uses.
-     * @param result  The evaluated link, or {@code null} if it couldn't be evaluated.
+     * @param path    The traced link, or {@code null} if it couldn't be traced.
      */
-    private void complete(Waiting waiting, RadioBand band, @Nullable LinkResult result) {
+    private void complete(Waiting waiting, @Nullable LinkPath path) {
         if (waiting instanceof Delivery delivery) {
-            if (result != null) deliver(delivery, band, result);
+            if (path != null) deliver(delivery, path.evaluate(delivery.band().frequencyMHz()));
         } else if (waiting instanceof CrossDelivery delivery) {
-            if (result != null) delivery.loss = Math.min(delivery.loss, result.loss());
-            if (--delivery.waiting == 0) deliverCrossDimension(delivery, band);
+            if (path != null) delivery.loss = Math.min(delivery.loss, path.evaluate(delivery.band.frequencyMHz()).loss());
+            if (--delivery.waiting == 0) deliverCrossDimension(delivery);
         }
     }
 
@@ -340,9 +347,9 @@ public final class RadioPropagationService {
         var throughOurs = settings.isPossible(from.distanceTo(here), band, offset);
         if (!throughTheirs && !throughOurs) return;
 
-        var delivery = new CrossDelivery(packet, receiver, other.isThundering(), (throughTheirs ? 1 : 0) + (throughOurs ? 1 : 0));
-        if (throughTheirs) request(other, there, to, band, delivery, true);
-        if (throughOurs) request(level, from, here, band, delivery, true);
+        var delivery = new CrossDelivery(packet, receiver, other.isThundering(), band, (throughTheirs ? 1 : 0) + (throughOurs ? 1 : 0));
+        if (throughTheirs) request(other, there, to, delivery, true);
+        if (throughOurs) request(level, from, here, delivery, true);
     }
 
     private void logError(String message, Exception e) {
@@ -378,16 +385,15 @@ public final class RadioPropagationService {
 
         var from = evaluation.from;
         var to = evaluation.to;
-        var band = evaluation.band;
-        var result = PropagationModel.evaluate(from.x, from.y, from.z, to.x, to.y, to.z, band.frequencyMHz(), band.linkBudget(), env, terrain);
+        var path = PropagationModel.trace(from.x, from.y, from.z, to.x, to.y, to.z, settings.maxBudget(), env, terrain);
 
         // Links evaluated with incomplete information are only cached briefly, so we try again once we know more.
         // Links between dimensions are mostly between computers which stay where they are, so are kept for longer.
         var cacheTicks = evaluation.crossDimension ? settings.crossCacheTicks() : settings.cacheTicks();
         if (!missing.isEmpty()) cacheTicks = Math.min(cacheTicks, 20);
-        links.put(evaluation.key, new CachedLink(result, tick + cacheTicks));
+        links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
         evaluating.remove(evaluation.key);
-        for (var waiting : evaluation.deliveries) complete(waiting, band, result);
+        for (var waiting : evaluation.deliveries) complete(waiting, path);
         return true;
     }
 
@@ -402,9 +408,9 @@ public final class RadioPropagationService {
         return sources;
     }
 
-    private void deliver(Delivery delivery, RadioBand band, LinkResult result) {
+    private void deliver(Delivery delivery, LinkResult result) {
         var signal = RadioMath.receivedSignal(
-            band.transmitPower(), result.loss(),
+            delivery.band().transmitPower(), result.loss(),
             delivery.packet().sender().getTransmitOffset(), delivery.receiver().getReceiveOffset()
         );
         var threshold = RadioBand.SENSITIVITY + (delivery.thundering() ? settings.stormPenalty() : 0);
@@ -417,11 +423,11 @@ public final class RadioPropagationService {
         }
     }
 
-    private void deliverCrossDimension(CrossDelivery delivery, RadioBand band) {
+    private void deliverCrossDimension(CrossDelivery delivery) {
         if (delivery.loss == Double.POSITIVE_INFINITY) return;
 
         var signal = RadioMath.receivedSignal(
-            band.transmitPower(), delivery.loss,
+            delivery.band.transmitPower(), delivery.loss,
             delivery.packet.sender().getTransmitOffset(), delivery.receiver.getReceiveOffset()
         );
         var threshold = RadioBand.SENSITIVITY + (delivery.thundering ? settings.stormPenalty() : 0);

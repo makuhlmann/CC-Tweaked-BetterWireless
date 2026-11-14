@@ -29,14 +29,19 @@ import java.util.Arrays;
  * </ol>
  * The signal takes whichever of the through and over paths is better.
  * <p>
+ * None of the walking or sampling depends on the frequency: only how much each material, obstacle and metre costs
+ * does. So a link is {@linkplain #trace traced} once, into a {@link LinkPath} which records how much of each material
+ * the signal passes through and which obstacles it diffracts over, and that is {@linkplain LinkPath#evaluate
+ * evaluated} at each frequency it's used at.
+ * <p>
  * Worlds with a ceiling (the Nether) are a special case. Their heightmaps are those of the ceiling, so say nothing of
  * the space beneath it. Where chunks aren't loaded, that space is taken to be mostly open, with a small fixed loss:
  * rock, at a small fraction of its attenuation. There's no path over the terrain from beneath a ceiling, as there's
  * nothing to go over, while above it is open ground like any other.
  * <p>
- * Evaluating a link costs one walk along the ray (which stops as soon as the signal is lost), a short walk at each end
- * to find where the signal leaves any enclosure, and one profile of a bounded size. The model never loads chunks:
- * anything not exposed by the {@link TerrainView} is guessed.
+ * Tracing a link costs one walk along the ray (which stops as soon as the signal is lost at every frequency), a short
+ * walk at each end to find where the signal leaves any enclosure, and one profile of a bounded size. The model never
+ * loads chunks: anything not exposed by the {@link TerrainView} is guessed.
  */
 public final class PropagationModel {
     /**
@@ -100,7 +105,7 @@ public final class PropagationModel {
     }
 
     /**
-     * Evaluate a link between two antennas.
+     * Evaluate a link between two antennas at one frequency.
      *
      * @param tx           The transmitting antenna's X position.
      * @param ty           The transmitting antenna's Y position.
@@ -113,10 +118,33 @@ public final class PropagationModel {
      * @param env          The model parameters.
      * @param terrain      The terrain to propagate through.
      * @return The evaluated link. If the loss exceeds the link budget, the individual components are lower bounds.
+     * @see #trace
      */
     public static LinkResult evaluate(
         double tx, double ty, double tz, double rx, double ry, double rz,
         double frequencyMHz, double linkBudget, RadioEnvironment env, TerrainView terrain
+    ) {
+        return trace(tx, ty, tz, rx, ry, rz, linkBudget, env, terrain).evaluate(frequencyMHz);
+    }
+
+    /**
+     * Trace a link between two antennas, to evaluate it at any frequency.
+     *
+     * @param tx         The transmitting antenna's X position.
+     * @param ty         The transmitting antenna's Y position.
+     * @param tz         The transmitting antenna's Z position.
+     * @param rx         The receiving antenna's X position.
+     * @param ry         The receiving antenna's Y position.
+     * @param rz         The receiving antenna's Z position.
+     * @param linkBudget The largest link budget the path is needed for, in dB. We stop tracing once the loss exceeds
+     *                   this at every frequency.
+     * @param env        The model parameters.
+     * @param terrain    The terrain to propagate through.
+     * @return The traced link.
+     */
+    public static LinkPath trace(
+        double tx, double ty, double tz, double rx, double ry, double rz,
+        double linkBudget, RadioEnvironment env, TerrainView terrain
     ) {
         var horizontalBlocks = Math.hypot(rx - tx, rz - tz);
         var dy = ry - ty;
@@ -124,10 +152,7 @@ public final class PropagationModel {
 
         var horizontal = horizontalBlocks * env.metresPerBlock();
         var distance = Math.hypot(horizontal, dy * env.metresPerBlockVertical());
-        if (rayBlocks < 1e-6) {
-            var loss = RadioMath.freeSpaceLoss(1, frequencyMHz);
-            return new LinkResult(loss, loss, 0, 0, 0);
-        }
+        if (rayBlocks < 1e-6) return new LinkPath(1, false, 0, 0, linkBudget, false, new double[RadioMaterial.COUNT], null, null, null);
 
         // Sample the terrain profile.
         var segments = segmentCount(horizontalBlocks, env.maxProfileSamples());
@@ -144,63 +169,68 @@ public final class PropagationModel {
         fillUnknown(surface, fallback);
         for (var i = 0; i < surface.length; i++) surface[i] = Math.max(surface[i], ground[i]);
 
-        // Loss from distance alone.
-        double base;
-        if (env.groundReflection()) {
+        // Loss from distance alone. This is least at the lowest frequency.
+        var groundReflection = env.groundReflection();
+        double height1 = 0, height2 = 0;
+        if (groundReflection) {
             var meanGround = 0.0;
             for (var height : ground) meanGround += height;
             meanGround /= ground.length;
 
-            var height1 = Math.max(env.minAntennaHeight(), (ty - meanGround) * env.metresPerBlockVertical());
-            var height2 = Math.max(env.minAntennaHeight(), (ry - meanGround) * env.metresPerBlockVertical());
-            base = RadioMath.groundReflectionLoss(distance, frequencyMHz, height1, height2);
-        } else {
-            base = RadioMath.freeSpaceLoss(distance, frequencyMHz);
+            height1 = Math.max(env.minAntennaHeight(), (ty - meanGround) * env.metresPerBlockVertical());
+            height2 = Math.max(env.minAntennaHeight(), (ry - meanGround) * env.metresPerBlockVertical());
         }
+        var base = LinkPath.baseLoss(distance, groundReflection, height1, height2, RadioMaterial.MIN_FREQUENCY);
 
         var headroom = linkBudget - base;
-        if (headroom <= 0) return new LinkResult(base, base, 0, 0, 0);
+        if (headroom <= 0) {
+            return new LinkPath(distance, groundReflection, height1, height2, linkBudget, false, new double[RadioMaterial.COUNT], null, null, null);
+        }
 
-        // Walk the blocks near each end of the link.
+        // Walk the blocks near each end of the link. Until the end, losses are measured at each material's least
+        // attenuation, so the walks only stop once the signal is lost at every frequency.
         var lossScale = env.materialLossScale() * (distance / rayBlocks);
         var walkLength = Math.min(env.voxelRadius(), rayBlocks);
         var txThrough = walkLength;
         var rxThrough = Math.min(env.voxelRadius(), rayBlocks - txThrough);
 
-        var cavern = Cavern.of(terrain, env, frequencyMHz);
-        var fromTx = new Walk(terrain, cavern, frequencyMHz, lossScale, headroom, txThrough, rayBlocks - MOUNT_CLEARANCE);
+        var cavern = Cavern.of(terrain, env);
+        var fromTx = new Walk(terrain, cavern, lossScale, headroom, txThrough, rayBlocks - MOUNT_CLEARANCE);
         fromTx.start(tx, ty, tz);
         VoxelRay.traverse(tx, ty, tz, rx, ry, rz, walkLength, fromTx);
-        var fromRx = new Walk(terrain, cavern, frequencyMHz, lossScale, headroom, rxThrough, rayBlocks - MOUNT_CLEARANCE);
+        var fromRx = new Walk(terrain, cavern, lossScale, headroom, rxThrough, rayBlocks - MOUNT_CLEARANCE);
         fromRx.start(rx, ry, rz);
         VoxelRay.traverse(rx, ry, rz, tx, ty, tz, walkLength, fromRx);
 
         // Straight through: the walked bits near each end, plus whatever is in the middle.
-        var through = fromTx.through + fromRx.through;
+        var through = new double[RadioMaterial.COUNT];
+        add(through, fromTx.through);
+        add(through, fromRx.through);
+        var least = RadioMaterial.leastAttenuationTable();
+        var throughLoss = LinkPath.loss(least, through);
         var middleLength = rayBlocks - txThrough - rxThrough;
-        if (middleLength > 0 && through <= headroom) {
+        if (middleLength > 0 && throughLoss <= headroom) {
             var start = txThrough / rayBlocks;
             var end = 1 - rxThrough / rayBlocks;
-            var middle = new MiddleWalk(terrain, cavern, frequencyMHz, lossScale, headroom - through, ground, surface, start, 1 / rayBlocks);
+            var middle = new MiddleWalk(terrain, cavern, lossScale, headroom - throughLoss, ground, surface, start, 1 / rayBlocks);
             VoxelRay.traverse(
                 tx + (rx - tx) * start, ty + dy * start, tz + (rz - tz) * start,
                 tx + (rx - tx) * end, ty + dy * end, tz + (rz - tz) * end,
                 middleLength, middle
             );
-            through += middle.loss;
+            add(through, middle.metres);
         }
 
-        // Over the top: escape any enclosure around each antenna, then diffract over the terrain.
-        var txEscape = escape(fromTx, terrain, cavern, tx, ty, tz, frequencyMHz, headroom, env);
-        var rxEscape = escape(fromRx, terrain, cavern, rx, ry, rz, frequencyMHz, headroom, env);
-        var over = Double.POSITIVE_INFINITY;
-        var diffraction = 0.0;
+        // Over the top: escape any enclosure around each antenna, then find what the signal diffracts over.
+        var txEscape = escape(fromTx, terrain, cavern, tx, ty, tz, headroom, env);
+        var rxEscape = escape(fromRx, terrain, cavern, rx, ry, rz, headroom, env);
+        RadioMath.DiffractionEdge diffraction = null;
         if (txEscape != null && rxEscape != null) {
             var distances = new double[segments + 1];
             var heights = new double[segments + 1];
             var effectiveRadius = env.effectiveEarthRadius();
-            var txClear = Math.max(txEscape.exit() / rayBlocks * horizontalBlocks, PROFILE_CLEARANCE) * env.metresPerBlock();
-            var rxClear = Math.max(rxEscape.exit() / rayBlocks * horizontalBlocks, PROFILE_CLEARANCE) * env.metresPerBlock();
+            var txClear = Math.max(txEscape.exit / rayBlocks * horizontalBlocks, PROFILE_CLEARANCE) * env.metresPerBlock();
+            var rxClear = Math.max(rxEscape.exit / rayBlocks * horizontalBlocks, PROFILE_CLEARANCE) * env.metresPerBlock();
 
             for (var i = 0; i <= segments; i++) {
                 var d1 = horizontal * i / segments;
@@ -211,75 +241,86 @@ public final class PropagationModel {
                     : surface[i] * env.metresPerBlockVertical() + RadioMath.earthBulge(d1, d2, effectiveRadius);
             }
 
-            diffraction = RadioMath.deygoutLoss(
+            diffraction = RadioMath.deygoutEdges(
                 distances, heights, 0, segments,
-                txEscape.height() * env.metresPerBlockVertical(), rxEscape.height() * env.metresPerBlockVertical(),
-                RadioMath.wavelength(frequencyMHz), 1
+                txEscape.height * env.metresPerBlockVertical(), rxEscape.height * env.metresPerBlockVertical(), 1
             );
-            over = txEscape.loss() + rxEscape.loss() + diffraction;
         }
 
         // Note that when the direct ray is clear, the through path wins outright, even if the terrain intrudes into the
         // first Fresnel zone. This is deliberate: the two-ray model already accounts for the ground close to the path,
         // and charging for both would penalise perfectly flat terrain.
 
-        return new LinkResult(base + Math.min(through, over), base, through, over, diffraction);
+        return new LinkPath(
+            distance, groundReflection, height1, height2, linkBudget, true, through,
+            txEscape == null ? null : txEscape.metres, rxEscape == null ? null : rxEscape.metres, diffraction
+        );
+    }
+
+    private static void add(double[] total, double[] metres) {
+        for (var i = 0; i < total.length; i++) total[i] += metres[i];
     }
 
     /**
      * How a signal escapes the enclosure around an antenna.
-     *
-     * @param loss   The penetration loss on the way out, in dB.
-     * @param exit   How far along the ray (in blocks) the signal reaches open air. Zero if it escapes vertically.
-     * @param height The height the signal diffracts from. Usually the antenna, but the surface for buried antennas.
      */
-    private record Escape(double loss, double exit, double height) {
+    private static final class Escape {
+        /** How many metres of each material it passes through on the way out. */
+        final double[] metres;
+        /** How far along the ray (in blocks) the signal reaches open air. Zero if it escapes vertically. */
+        final double exit;
+        /** The height the signal diffracts from. Usually the antenna, but the surface for buried antennas. */
+        final double height;
+
+        Escape(double[] metres, double exit, double height) {
+            this.metres = metres;
+            this.exit = exit;
+            this.height = height;
+        }
     }
 
     private static @Nullable Escape escape(
-        Walk walk, TerrainView terrain, @Nullable Cavern cavern, double x, double y, double z, double frequencyMHz, double cap, RadioEnvironment env
+        Walk walk, TerrainView terrain, @Nullable Cavern cavern, double x, double y, double z, double cap, RadioEnvironment env
     ) {
-        if (!Double.isNaN(walk.exit)) return new Escape(walk.escape, walk.exit, y);
+        if (walk.escape != null) return new Escape(walk.escape, walk.exit, y);
 
         // Beneath a world's ceiling, there's nothing above to go over.
         if (cavern != null && y < cavern.ceiling) return null;
 
         // The ray towards the other antenna stays enclosed, so try going straight up instead. This handles antennas in
         // basements and bunkers: they reach the surface through the ceiling, then propagate from there.
-        var up = new Walk(terrain, cavern, frequencyMHz, env.materialLossScale() * env.metresPerBlockVertical(), cap, 0, Double.MAX_VALUE);
+        var up = new Walk(terrain, cavern, env.materialLossScale() * env.metresPerBlockVertical(), cap, 0, Double.MAX_VALUE);
         VoxelRay.traverse(x, y, z, x, y + env.voxelRadius(), z, env.voxelRadius(), up);
-        return Double.isNaN(up.exit) ? null : new Escape(up.escape, 0, y + up.exit);
+        return up.escape == null ? null : new Escape(up.escape, 0, y + up.exit);
     }
 
     /**
      * The space beneath a world's ceiling, where we only have heightmaps.
      *
-     * @param ceiling     The ceiling's height: the first Y position above it.
-     * @param rock        The attenuation of the ceiling itself, in dB per metre.
-     * @param attenuation The attenuation of the space beneath it, in dB per metre.
+     * @param ceiling The ceiling's height: the first Y position above it.
+     * @param fill    How much of the space beneath it is rock, between 0 and 1.
      */
-    private record Cavern(int ceiling, double rock, double attenuation) {
-        static @Nullable Cavern of(TerrainView terrain, RadioEnvironment env, double frequencyMHz) {
+    private record Cavern(int ceiling, double fill) {
+        static @Nullable Cavern of(TerrainView terrain, RadioEnvironment env) {
             var ceiling = terrain.ceilingHeight();
             if (ceiling == TerrainView.UNKNOWN) return null;
-            var rock = TERRAIN.attenuation(frequencyMHz);
-            return new Cavern(ceiling, rock, rock * env.ceilingUnknownFill());
+            return new Cavern(ceiling, env.ceilingUnknownFill());
         }
 
         /**
-         * Guess how much a block we know nothing else about attenuates the signal.
+         * Guess how much rock a block we know nothing else about holds.
          *
          * @param y      The block's Y position.
          * @param ground The ground height of its column (which is the top of the ceiling, or of whatever was built on
          *               it), or {@link TerrainView#UNKNOWN}.
-         * @return The attenuation in dB per metre, or {@link Double#NaN} if the block is above the ceiling, and so
-         * should be treated as in any other world.
+         * @return How much of it is rock, between 0 and 1, or {@link Double#NaN} if the block is above the ceiling,
+         * and so should be treated as in any other world.
          */
         double guess(int y, int ground) {
             if (y >= ceiling) return Double.NaN;
             // Where something is built on the ceiling, the ceiling is still where it always is.
             var top = ground == TerrainView.UNKNOWN ? ceiling : Math.min(ground, ceiling);
-            return y >= top - CEILING_THICKNESS ? rock : attenuation;
+            return y >= top - CEILING_THICKNESS ? 1 : fill;
         }
     }
 
@@ -320,59 +361,67 @@ public final class PropagationModel {
     private static final class MiddleWalk implements VoxelRay.Visitor {
         private final TerrainView terrain;
         private final @Nullable Cavern cavern;
-        private final double frequencyMHz;
         private final double lossScale;
         private final double cap;
         private final double[] ground;
         private final double[] surface;
         private final double start;
         private final double scale;
-        private final double[] attenuation = new double[RadioMaterial.values().length];
+        private final double[] least = RadioMaterial.leastAttenuationTable();
 
+        /** How many metres of each material the walk has passed through. */
+        final double[] metres = new double[RadioMaterial.COUNT];
+        /** The loss so far, at each material's least attenuation. */
         double loss;
 
         /**
          * Create a new walk.
          *
-         * @param terrain      The terrain to walk through.
-         * @param cavern       The space beneath the world's ceiling, if it has one.
-         * @param frequencyMHz The frequency, in MHz.
-         * @param lossScale    A multiplier for material attenuation.
-         * @param cap          The loss at which to give up.
-         * @param ground       The ground heights along the profile.
-         * @param surface      The surface heights along the profile.
-         * @param start        How far along the whole link the walk starts, between 0 and 1.
-         * @param scale        The fraction of the whole link covered by one block.
+         * @param terrain   The terrain to walk through.
+         * @param cavern    The space beneath the world's ceiling, if it has one.
+         * @param lossScale A multiplier for material attenuation.
+         * @param cap       The loss at which to give up, at each material's least attenuation.
+         * @param ground    The ground heights along the profile.
+         * @param surface   The surface heights along the profile.
+         * @param start     How far along the whole link the walk starts, between 0 and 1.
+         * @param scale     The fraction of the whole link covered by one block.
          */
         MiddleWalk(
-            TerrainView terrain, @Nullable Cavern cavern, double frequencyMHz, double lossScale, double cap,
+            TerrainView terrain, @Nullable Cavern cavern, double lossScale, double cap,
             double[] ground, double[] surface, double start, double scale
         ) {
             this.terrain = terrain;
             this.cavern = cavern;
-            this.frequencyMHz = frequencyMHz;
             this.lossScale = lossScale;
             this.cap = cap;
             this.ground = ground;
             this.surface = surface;
             this.start = start;
             this.scale = scale;
-            Arrays.fill(attenuation, Double.NaN);
         }
 
         @Override
         public boolean visit(int x, int y, int z, double enter, double exit) {
             var info = terrain.block(x, y, z);
-            double blockAttenuation;
+            RadioMaterial material;
+            double fill;
             if (info != null) {
                 if (info.fill() == 0) return true;
-                blockAttenuation = attenuation(info.material()) * info.fill();
+                material = info.material();
+                fill = info.fill();
             } else {
-                blockAttenuation = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
-                if (Double.isNaN(blockAttenuation)) blockAttenuation = attenuation(guessMaterial(x, y, z, (enter + exit) / 2));
+                fill = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
+                if (Double.isNaN(fill)) {
+                    material = guessMaterial(x, y, z, (enter + exit) / 2);
+                    fill = 1;
+                } else {
+                    material = TERRAIN;
+                }
             }
 
-            loss += blockAttenuation * lossScale * (exit - enter);
+            var length = fill * lossScale * (exit - enter);
+            metres[material.ordinal()] += length;
+            loss += least[material.ordinal()] * length;
             return loss <= cap;
         }
 
@@ -388,49 +437,40 @@ public final class PropagationModel {
         private static RadioMaterial classify(int y, double ground, double surface) {
             return y < ground ? TERRAIN : y < surface ? RadioMaterial.VEGETATION : RadioMaterial.AIR;
         }
-
-        /**
-         * Get a material's attenuation. This is fairly expensive to compute, and we may visit thousands of blocks, so
-         * we cache it.
-         *
-         * @param material The material.
-         * @return The material's attenuation at our frequency, in dB per metre.
-         */
-        private double attenuation(RadioMaterial material) {
-            var value = attenuation[material.ordinal()];
-            if (Double.isNaN(value)) attenuation[material.ordinal()] = value = material.attenuation(frequencyMHz);
-            return value;
-        }
     }
 
     /**
      * Walks the blocks along a ray from one antenna. This tracks two things:
      * <ul>
-     *     <li>The loss in the first {@code throughLength} blocks, for the straight-through path.</li>
-     *     <li>The loss before the ray first reaches open air, for the path over the terrain.</li>
+     *     <li>What the first {@code throughLength} blocks are made of, for the straight-through path.</li>
+     *     <li>What lies before the ray first reaches open air, for the path over the terrain.</li>
      * </ul>
      */
     private static final class Walk implements VoxelRay.Visitor {
         private final TerrainView terrain;
         private final @Nullable Cavern cavern;
-        private final double frequencyMHz;
         private final double lossScale;
         private final double cap;
         private final double throughLength;
         private final double farLimit;
+        private final double[] least = RadioMaterial.leastAttenuationTable();
 
+        /** How many metres of each material the walk has passed through. */
+        final double[] metres = new double[RadioMaterial.COUNT];
+        /** The same, within the first {@code throughLength} blocks. */
+        final double[] through = new double[RadioMaterial.COUNT];
+        /** The loss so far, at each material's least attenuation. */
         double loss;
-        double through;
-        double escape = Double.POSITIVE_INFINITY;
+        /** What the walk passed through before reaching open air, or {@code null} if it hasn't. */
+        double @Nullable [] escape;
+        /** How far along the ray the walk reached open air. */
         double exit = Double.NaN;
 
         Walk(
-            TerrainView terrain, @Nullable Cavern cavern, double frequencyMHz, double lossScale, double cap,
-            double throughLength, double farLimit
+            TerrainView terrain, @Nullable Cavern cavern, double lossScale, double cap, double throughLength, double farLimit
         ) {
             this.terrain = terrain;
             this.cavern = cavern;
-            this.frequencyMHz = frequencyMHz;
             this.lossScale = lossScale;
             this.cap = cap;
             this.throughLength = throughLength;
@@ -449,17 +489,17 @@ public final class PropagationModel {
             var ground = terrain.groundHeight((int) Math.floor(x), (int) Math.floor(z));
             if (ground != TerrainView.UNKNOWN && Math.floor(y) >= ground) {
                 exit = 0;
-                escape = 0;
+                escape = new double[RadioMaterial.COUNT];
             }
         }
 
         @Override
         public boolean visit(int x, int y, int z, double enter, double exit) {
-            if (Double.isNaN(this.exit) && enter >= MOUNT_CLEARANCE) {
+            if (escape == null && enter >= MOUNT_CLEARANCE) {
                 var ground = terrain.groundHeight(x, z);
                 if (ground != TerrainView.UNKNOWN && y >= ground) {
                     this.exit = enter;
-                    escape = loss;
+                    escape = metres.clone();
                 }
             }
 
@@ -468,21 +508,30 @@ public final class PropagationModel {
             var end = Math.min(exit, farLimit);
             if (end > start) {
                 var info = terrain.block(x, y, z);
-                double attenuation;
+                RadioMaterial material;
+                double fill;
                 if (info != null) {
-                    attenuation = info.material().attenuation(frequencyMHz) * info.fill();
+                    material = info.material();
+                    fill = info.fill();
                 } else {
-                    attenuation = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
-                    if (Double.isNaN(attenuation)) attenuation = guessMaterial(x, y, z).attenuation(frequencyMHz);
+                    fill = cavern == null ? Double.NaN : cavern.guess(y, terrain.groundHeight(x, z));
+                    if (Double.isNaN(fill)) {
+                        material = guessMaterial(x, y, z);
+                        fill = 1;
+                    } else {
+                        material = TERRAIN;
+                    }
                 }
-                attenuation *= lossScale;
 
-                loss += attenuation * (end - start);
-                through += attenuation * Math.max(0, Math.min(end, throughLength) - start);
+                var scale = fill * lossScale;
+                var length = scale * (end - start);
+                metres[material.ordinal()] += length;
+                through[material.ordinal()] += scale * Math.max(0, Math.min(end, throughLength) - start);
+                loss += least[material.ordinal()] * length;
             }
 
             // Stop once we've escaped and covered the through section, or once nothing can get through anyway.
-            return loss <= cap && (Double.isNaN(this.exit) || exit < throughLength);
+            return loss <= cap && (escape == null || exit < throughLength);
         }
 
         private RadioMaterial guessMaterial(int x, int y, int z) {

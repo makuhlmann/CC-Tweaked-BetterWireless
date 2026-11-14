@@ -4,6 +4,8 @@
 
 package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Pure radio propagation formulas. Nothing in here touches Minecraft, so it can be used from any thread and is easy to
  * unit test.
@@ -128,15 +130,38 @@ public final class RadioMath {
      * @param wavelength The wavelength, in metres.
      * @param depth      The maximum recursion depth. A depth of 1 gives the classic three-edge Deygout construction.
      * @return The diffraction loss in dB.
+     * @see #deygoutEdges(double[], double[], int, int, double, double, int)
      */
     public static double deygoutLoss(double[] distance, double[] height, int from, int to, double fromHeight, double toHeight, double wavelength, int depth) {
-        if (to - from < 2) return 0;
+        var edge = deygoutEdges(distance, height, from, to, fromHeight, toHeight, depth);
+        return edge == null ? 0 : edge.loss(wavelength);
+    }
+
+    /**
+     * The obstacles the Deygout method finds along a terrain profile, at any frequency.
+     * <p>
+     * An obstacle's diffraction parameter is proportional to {@code 1/√λ}, so the obstacle with the largest one is the
+     * same at every frequency, as are those either side of it. Only whether each counts (whether its parameter is
+     * above {@link #KNIFE_EDGE_THRESHOLD}) and how much it costs depend on the frequency. So the obstacles can be found
+     * once, and the loss worked out for each frequency with {@link DiffractionEdge#loss(double)}.
+     *
+     * @param distance   The distance of each profile point from the transmitter, in metres. Must be increasing.
+     * @param height     The height of each profile point, in metres. This should already include any earth bulge.
+     * @param from       The index of the first terminal in the profile.
+     * @param to         The index of the second terminal in the profile.
+     * @param fromHeight The height of the first terminal (antenna, or obstacle tip), in metres.
+     * @param toHeight   The height of the second terminal, in metres.
+     * @param depth      The maximum recursion depth. A depth of 1 gives the classic three-edge Deygout construction.
+     * @return The main obstacle, with those either side of it, or {@code null} if there's none.
+     */
+    public static @Nullable DiffractionEdge deygoutEdges(double[] distance, double[] height, int from, int to, double fromHeight, double toHeight, int depth) {
+        if (to - from < 2) return null;
 
         var x0 = distance[from];
         var length = distance[to] - x0;
-        if (length <= 0) return 0;
+        if (length <= 0) return null;
 
-        var bestV = Double.NEGATIVE_INFINITY;
+        var best = Double.NEGATIVE_INFINITY;
         var bestIndex = -1;
         for (var i = from + 1; i < to; i++) {
             var d1 = distance[i] - x0;
@@ -144,22 +169,48 @@ public final class RadioMath {
             if (d1 <= 0 || d2 <= 0) continue;
 
             var lineOfSight = fromHeight + (toHeight - fromHeight) * (d1 / length);
-            var v = fresnelParameter(height[i] - lineOfSight, d1, d2, wavelength);
-            if (v > bestV) {
-                bestV = v;
+            var steepness = fresnelParameter(height[i] - lineOfSight, d1, d2, 1);
+            if (steepness > best) {
+                best = steepness;
                 bestIndex = i;
             }
         }
 
-        if (bestIndex < 0 || bestV <= KNIFE_EDGE_THRESHOLD) return 0;
+        if (bestIndex < 0) return null;
+        if (depth <= 0) return new DiffractionEdge(best, null, null);
 
-        var loss = knifeEdgeLoss(bestV);
-        if (depth > 0) {
-            var tip = height[bestIndex];
-            loss += deygoutLoss(distance, height, from, bestIndex, fromHeight, tip, wavelength, depth - 1);
-            loss += deygoutLoss(distance, height, bestIndex, to, tip, toHeight, wavelength, depth - 1);
+        var tip = height[bestIndex];
+        return new DiffractionEdge(
+            best,
+            deygoutEdges(distance, height, from, bestIndex, fromHeight, tip, depth - 1),
+            deygoutEdges(distance, height, bestIndex, to, tip, toHeight, depth - 1)
+        );
+    }
+
+    /**
+     * An obstacle found by the Deygout method, with the obstacles found either side of it.
+     *
+     * @param steepness The obstacle's diffraction parameter for a wavelength of one metre. At other wavelengths, the
+     *                  parameter is this divided by {@code √λ}.
+     * @param left      The main obstacle between the first terminal and this one, if any.
+     * @param right     The main obstacle between this one and the second terminal, if any.
+     */
+    public record DiffractionEdge(double steepness, @Nullable DiffractionEdge left, @Nullable DiffractionEdge right) {
+        /**
+         * The diffraction loss of this obstacle and those either side of it.
+         *
+         * @param wavelength The wavelength, in metres.
+         * @return The diffraction loss in dB.
+         */
+        public double loss(double wavelength) {
+            var v = steepness / Math.sqrt(wavelength);
+            if (v <= KNIFE_EDGE_THRESHOLD) return 0;
+
+            var loss = knifeEdgeLoss(v);
+            if (left != null) loss += left.loss(wavelength);
+            if (right != null) loss += right.loss(wavelength);
+            return loss;
         }
-        return loss;
     }
 
     /**
