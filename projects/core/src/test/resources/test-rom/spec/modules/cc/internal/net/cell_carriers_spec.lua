@@ -19,6 +19,7 @@ describe("Cellular carriers", function()
         return net.from[stack] and net.from[stack][from] or 0
     end
 
+
     it("keeps networks, cells and phones apart on their channels", function()
         math.randomseed(1)
         -- ACME's cells 11 and 12, and BETA's 21, all within range of each other and of ACME's two phones.
@@ -134,6 +135,38 @@ describe("Cellular carriers", function()
         expect(acme.towers[2].service:info().error):eq("ACME has no carrier in band b7")
         expect(bands.carrier_name(acme.towers[1].tower.carrier)):eq("b3/1")
         expect(acme.towers[2].tower):eq(nil)
+    end)
+
+    it("prefers a higher band where it's strong enough, and a lower one where it isn't", function()
+        math.randomseed(6)
+        -- Cell 11 on band 20 (800MHz) at 0, cell 12 on band 3 (1800MHz) at 20.
+        local acme = operator({ 0, 20 }, { carriers = { "b20/1", "b3/1" }, bands = { "b20", "b3" } })
+        local net = acme.net
+        local phone, stack = acme.add_phone(1, 5)
+        -- Band 3's cell is weaker here, but strong enough: it ends up there (moving up from band 20's, if it heard
+        -- that first).
+        wait_until(net, function() return phone.state == "attached" and phone.cell == 12 end, 15, "Using band 3")
+        expect(phone.cells[11].signal > phone.cells[12].signal):eq(true)
+        net.advance(5)
+        expect(phone.cell):eq(12)
+        local events = #phone.events
+
+        -- Further away, band 20's is stronger still, but band 3's is good enough to stay on.
+        acme.positions[1] = -60
+        net.advance(10)
+        expect(phone.cell):eq(12)
+
+        -- Further, band 3's is too weak: it moves down.
+        acme.positions[1] = -78
+        wait_until(net, function() return phone.cell == 11 end, 20, "Moving down a band")
+        expect(#phone.events):eq(events + 1)
+        expect(phone.events[#phone.events].kind):eq("handover")
+
+        -- Back again, band 3's is strong enough once more: it moves up.
+        acme.positions[1] = 5
+        wait_until(net, function() return phone.cell == 12 end, 20, "Moving up a band")
+        expect(net.ping(stack, ip("10.0.0.60"))):matches { done = true }
+        expect(net.errors):same {}
     end)
 
     it("only takes system information which says how to reach the cell", function()

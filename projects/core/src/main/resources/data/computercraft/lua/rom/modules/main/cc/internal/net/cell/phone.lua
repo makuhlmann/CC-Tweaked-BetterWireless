@@ -129,6 +129,20 @@ local INTERFACE = "cell.phone"
 -- Cells an attach through which got no answer lately come after all of those, whatever their network.
 local HOME, PARTNER, OTHER, FAILED = 1, 2, 3, 4
 
+-- Where cells on several bands will do, a phone uses the highest band whose cell is at least this strong, in dBm, as
+-- phones do in LTE: higher bands have more room for phones, lower ones reach further. Below it, the strongest wins.
+local BAND_THRESHOLD = -95
+
+--- How a cell's band ranks: its downlink's frequency, so higher bands rank higher.
+--
+-- @tparam table|nil cell The cell, as heard: its `ul` channel says where it is.
+-- @treturn number The rank, or 0 if we don't know its band.
+local function band_rank(cell)
+    local _, band = bands.carrier_of(cell and cell.ul or 0)
+    local info = band and bands.get(band)
+    return info and info.downlink[1] or 0
+end
+
 local Phone = {}
 Phone.__index = Phone
 
@@ -426,12 +440,13 @@ function Phone:home_class(network)
 end
 
 --[[ Whether one way to use a cell is better than another: by what its network is to us (`tier`, which puts cells which
-didn't answer lately last, and then `class`), then the stronger, then our own network before one we treat as home, and
-otherwise the one first by network and cell.
+didn't answer lately last, and then `class`); then, if both are strong enough, the higher band (`rank`); then the
+stronger, then our own network before one we treat as home, and otherwise the one first by network and cell.
 ]]
 local function before(a, b)
     if a.tier ~= b.tier then return a.tier < b.tier end
     if a.class ~= b.class then return a.class < b.class end
+    if a.rank ~= b.rank and a.signal >= BAND_THRESHOLD and b.signal >= BAND_THRESHOLD then return a.rank > b.rank end
     if a.signal ~= b.signal then return a.signal > b.signal end
     if a.own ~= b.own then return a.own end
     if a.network ~= b.network then return a.network < b.network end
@@ -442,7 +457,7 @@ end
 it serves which we may use. With `others`, through networks we don't know to carry us too (neither ours nor a
 partner's), leaving out those which turned us away lately, unless we've been told to use one.
 
-Each way is `{ id, network, signal, class, tier, own }`, and [`before`] says which is better. Attaching, going home and
+Each way is `{ id, network, signal, class, tier, own, rank }`, and [`before`] says which is better. Attaching, going home and
 being handed over each take the best of those they may use.
 ]]
 function Phone:best(now, fits, others)
@@ -451,7 +466,7 @@ function Phone:best(now, fits, others)
     local found, choice = nil, {}
     local function consider(id, network, signal, class, tier)
         choice.id, choice.network, choice.signal, choice.class, choice.tier = id, network, signal, class, tier
-        choice.own = network == own
+        choice.own, choice.rank = network == own, band_rank(self.heard[id] or self.cells[id])
         if (not fits or fits(choice)) and (not found or before(choice, found)) then found, choice = choice, found or {} end
     end
 
@@ -1140,8 +1155,14 @@ function Phone:check(here)
 
     -- Handovers stay within the network we're on, to the best cell which is stronger enough than ours. One which didn't
     -- answer an attach lately comes after any other which will do.
+    local serving_rank = band_rank(serving)
     local target = self:best(now, function(choice)
-        return choice.network == here.via and choice.id ~= here.cell and choice.signal >= serving.signal + HYSTERESIS
+        if choice.network ~= here.via or choice.id == here.cell then return false end
+        -- Up to a higher band once it's strong enough, with some to spare; down to a lower one only once ours is too
+        -- weak to stay on. Otherwise (or on the same band), to a cell which is stronger enough.
+        if choice.rank > serving_rank and choice.signal >= BAND_THRESHOLD + HYSTERESIS then return true end
+        if choice.rank < serving_rank and serving.signal >= BAND_THRESHOLD - HYSTERESIS then return false end
+        return choice.signal >= serving.signal + HYSTERESIS
     end)
     if target then
         if here.candidate ~= target.id then
