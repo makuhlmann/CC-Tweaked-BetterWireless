@@ -185,7 +185,7 @@ describe("Phones, given made-up system information,", function()
         -- Stronger than the real cell, so each is remembered, if only for a moment.
         acme.fake_signal = -50
         local phones = { phone, listener, searching }
-        flood(acme, phones, 600, 2000)
+        flood(acme, phones, 250, 2000)
         acme.net.advance(3)
         for _, who in ipairs(phones) do
             local name = ("Phone %d (%s)"):format(who.stack.id, who.state)

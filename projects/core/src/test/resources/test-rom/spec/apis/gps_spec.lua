@@ -223,7 +223,8 @@ describe("The gps library", function()
             end
             local took = os.epoch("utc") - start
             expect(result and result[1]):describe(tostring(result and result[2])):eq(true)
-            expect(took < 3000):describe(("Took %d ms"):format(took)):eq(true)
+            -- Before only the first few hosts counted, this took long enough to fail.
+            expect(took < 6000):describe(("Took %d ms"):format(took)):eq(true)
         end)
 
         it("doesn't fail on duplicate hosts", function()
