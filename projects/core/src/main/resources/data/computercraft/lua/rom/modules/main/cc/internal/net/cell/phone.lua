@@ -123,8 +123,8 @@ local FAILED_TIME, MAX_FAILED_TIME = 30, 300
 local MAX_ACTIVATION_CELLS = 8
 -- How many intervals a cell may be silent before we give up on it (but never less than SILENCE).
 local SILENT_INTERVALS = 3
--- While attached: how often to listen on every carrier, for other networks and new carriers, and for how long, in
--- seconds; and how long to keep listening on a carrier our networks were last heard naming.
+-- While camped (attached, or listening without a SIM): how often to listen on every carrier, for other networks and new
+-- carriers, and for how long, in seconds; and how long to keep listening on a carrier a network was last heard naming.
 local SCAN_PERIOD, SCAN_WINDOW, CARRIER_MEMORY = 60, 5, 300
 --- The name of the interface phones use, on their modem.
 local INTERFACE = "cell.phone"
@@ -203,8 +203,9 @@ local function new(options)
         seen_messages = recent.new(MAX_SEEN), outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
         started = stack.clock(),
         -- How to reach each cell heard (its uplink channel); the carriers networks were heard naming, by beacon
-        -- channel, to each network and when; the channels we listen on, and when we last listened on every carrier.
-        uplinks = {}, carriers = {}, listening = {}, last_scan = stack.clock(),
+        -- channel, to each network and when; the channels we listen on, and when we last listened on every carrier
+        -- (as if a minute ago: a phone without a SIM camps from the start, but has heard nothing yet).
+        uplinks = {}, carriers = {}, listening = {}, last_scan = stack.clock() - SCAN_PERIOD,
     }, Phone)
 
     self:set_modem(options.modem, options.kind or "wireless")
@@ -238,25 +239,39 @@ local function silence(cell)
     return math.max(SILENCE, SILENT_INTERVALS * (cell and cell.interval or 0))
 end
 
--- Whether to listen on a network's carriers while attached: our own, those we treat as home, the one we're using, and
--- partners' (for coming back to, or moving between) while we roam or our cell only carries messages.
+-- Whether to listen on a network's carriers while camped: our own, those we treat as home, the one we're using, and
+-- partners' (for coming back to, or moving between) while we roam or our cell only carries messages. Without a SIM,
+-- every network's: we only listen, to see what's around.
 function Phone:listens_for(network)
+    if not self.operator then return true end
     if self:home_class(network) or network == self.via or network == self.selection then return true end
     -- Partners' too while roaming, or while our cell only carries messages: one of theirs may carry everything.
     return self.partners[network] ~= nil and (self:roaming() or self.state == "attached" and self:messages_only())
 end
 
+-- Whether a phone in a state camps: it's attached, or it only listens (it has no SIM). Searching, attaching or
+-- activating, it listens on every carrier.
+local function camps(state) return state == "attached" or state == "inactive" end
+
 --[[- Work out which channels to listen on, and listen on them.
 
-While not attached, every carrier's beacon channel, to find cells. While attached: our cell's carrier, the carriers our
-networks were heard naming lately, and our own downlink channel; and every carrier, for a few seconds each minute,
-for other networks and carriers we don't know yet.
+While searching (or activating), every carrier's beacon channel, to find cells. While camped (attached, or listening
+without a SIM): our cell's carrier, the carriers the networks we listen for were heard naming lately, and our own
+downlink channel; and every carrier, for a few seconds each minute (and first, without a SIM), for other networks and
+carriers we don't know yet.
 ]]
 function Phone:update_listening()
     local now, wanted = self.stack.clock(), {}
-    local scanning = self.state ~= "attached" or now - self.last_scan >= SCAN_PERIOD
-    if self.state == "attached" and now - self.last_scan >= SCAN_PERIOD + SCAN_WINDOW then
+    local camped = camps(self.state)
+    local scanning = not camped or now - self.last_scan >= SCAN_PERIOD
+    if camped and now - self.last_scan >= SCAN_PERIOD + SCAN_WINDOW then
         self.last_scan, scanning = now, false
+    end
+    -- Since when we've listened on every carrier, or when we last stopped.
+    if scanning then
+        self.scan_since = self.scan_since or now
+    elseif self.scan_since then
+        self.scan_since, self.scan_ended = nil, now
     end
     if scanning then
         for _, channel in ipairs(bands.beacon_channels()) do wanted[channel] = true end
@@ -290,6 +305,21 @@ function Phone:update_listening()
     self.stack:set_listening(INTERFACE, list)
     self.listening = wanted
     self.stack.interfaces[INTERFACE].reply = self.here.dl or list[1] or 0
+end
+
+--- Listen on every carrier for a few seconds from now, if we're camped and not doing so already: for cells we may not
+-- be listening for, such as those of a network to activate on, or for the monitor.
+function Phone:rescan()
+    if camps(self.state) and self.stack.clock() - self.last_scan < SCAN_PERIOD then
+        self.last_scan = self.stack.clock() - SCAN_PERIOD
+        self:update_listening()
+    end
+end
+
+-- Whether we've listened on every carrier long enough, lately, to have heard every cell around.
+function Phone:heard_everywhere(now)
+    if self.scan_since then return now - self.scan_since >= SCAN_TIME end
+    return self.scan_ended ~= nil and now - self.scan_ended <= SCAN_WINDOW
 end
 
 --[[- Our cell gave us a downlink channel of our own: listen there, and tell it we are, so it sends our frames there.
@@ -333,8 +363,8 @@ function Phone:enter(state, here)
     end
     self.cell, self.via = here.cell, here.via
     self.rejected = self.search and self.search.rejected or nil
-    -- Searching listened on every carrier already: the next listen on every carrier can wait.
-    if state == "attached" and old ~= "attached" then self.last_scan = self.stack.clock() end
+    -- Searching (or activating) listened on every carrier already: the next listen on every carrier can wait.
+    if camps(state) and not camps(old) then self.last_scan = self.stack.clock() end
     self:update_listening()
     if old == state then return end
     if state == "attached" then
@@ -878,6 +908,12 @@ function Phone:activate(network, code)
         if a.network ~= b.network then return a.network < b.network end
         return a.id < b.id
     end)
+    -- Camped, we only listen on the carriers we heard lately: the network's may not be one of them. Listen on every
+    -- carrier for a moment, and say so, so we're asked again.
+    if not named and not self:heard_everywhere(now) then
+        self:rescan()
+        return nil, "No cell of " .. network .. " in range"
+    end
 
     -- The network's own cells if we hear any, else every network's: the strongest of each operator, then the others.
     local candidates, others, seen = {}, {}, {}
@@ -1321,6 +1357,14 @@ function Phone:info()
         return a.network < b.network
     end)
     table.sort(networks)
+    -- The strongest cell heard lately, of any network: the one a phone without a SIM shows the signal of.
+    local strongest
+    for _, cell in ipairs(heard) do
+        if cell.fresh then
+            strongest = cell
+            break
+        end
+    end
 
     local partners, equivalent = {}, {}
     for network in pairs(self.partners) do partners[network] = true end
@@ -1335,7 +1379,7 @@ function Phone:info()
     return {
         state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
-        heard = heard, events = events, network = self.operator and self.operator.network,
+        heard = heard, strongest = strongest, events = events, network = self.operator and self.operator.network,
         roaming = self:roaming(), selection = self.selection, partners = partners, equivalent = equivalent,
         messages_only = self.state == "attached" and self:messages_only() or nil,
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.

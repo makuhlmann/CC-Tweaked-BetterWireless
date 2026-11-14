@@ -58,10 +58,12 @@ local background = {}
 -- Whether a "net_cell" event, which wakes services, is queued already.
 local cell_wake_queued = false
 
--- Cellular networks. A phone runs in the background, once the computer has a SIM.
+-- Cellular networks. A phone runs in the background, once the computer has a SIM; or, without one, if it was told to
+-- listen for cells.
 local SIM_FILE = "/.net/sim"
 local INBOX_FILE = "/.net/messages"
--- What the user has chosen: `off` (cell service is turned off) and `network` (the only network to use).
+-- What the user has chosen: `off` (cell service is turned off), `listen` (without a SIM, it's turned on: the phone
+-- listens for cells) and `network` (the only network to use).
 local PHONE_FILE = "/.net/phone"
 local MAX_INBOX = 100
 -- How many sent messages may wait to be sent while cell service is off: as many as the phone keeps.
@@ -215,13 +217,18 @@ local function has_sim()
     return type(sim.network) == "string" and from_hex(sim.key) ~= nil and from_hex(sim.signing) ~= nil
 end
 
--- Start the phone, if this computer has been activated on a network.
+-- Start the phone, if this computer has been activated on a network; or, without a SIM, one which only listens for
+-- cells, if it was told to.
 function start_phone()
     if phone_instance or not crypto or not enclave then return end
-    if read_table(PHONE_FILE).off then return end
+    local chosen = read_table(PHONE_FILE)
+    if chosen.off then return end
     local sim = read_table(SIM_FILE)
     local key, signing = from_hex(sim.key), from_hex(sim.signing)
-    if type(sim.network) ~= "string" or not key or not signing then return end
+    if type(sim.network) ~= "string" or not key or not signing then
+        if chosen.listen == true then new_phone(nil) end
+        return
+    end
     local partners, equivalent = {}, {}
     for network, partner in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do
         local partner_key = from_hex(partner)
@@ -640,7 +647,8 @@ function api.info()
         end
     end
     if not info.subscriber and sim.id then info.subscriber = { id = sim.id, number = sim.number } end
-    info.enabled = not off
+    -- Without a SIM, cell service is only on once it's told to listen for cells.
+    info.enabled = chosen.off ~= true and (type(sim.network) == "string" or chosen.listen == true)
     info.selection = type(chosen.network) == "string" and chosen.network or "auto"
     info.roaming = info.roaming == true
     info.newer = info.newer == true
@@ -660,7 +668,12 @@ end
 function api.listen()
     require_crypto()
     load()
-    if phone_instance then return true end
+    if phone_instance then
+        -- A phone which is camped only listens on the carriers it heard lately: for the monitor, listen on every one
+        -- for a moment.
+        phone_instance:rescan()
+        return true
+    end
     local phone, err = new_phone(nil)
     if not phone then return nil, err end
     return true
@@ -753,7 +766,7 @@ function api.setEnabled(enabled)
     load()
     local chosen = read_table(PHONE_FILE)
     if not enabled then
-        chosen.off = true
+        chosen.off, chosen.listen = true, nil
         write_table(PHONE_FILE, chosen)
         if phone_instance then
             phone_instance:stop()
@@ -764,10 +777,13 @@ function api.setEnabled(enabled)
     end
 
     require_crypto()
-    chosen.off = nil
+    -- Without a SIM, the phone listens for cells, and shows the strongest: from when the computer starts too. This is
+    -- kept even without a modem, so the phone starts once one comes.
+    local sim = has_sim()
+    chosen.off, chosen.listen = nil, not sim or nil
     write_table(PHONE_FILE, chosen)
-    -- A phone which was only listening (for the monitor) has no SIM to attach with.
-    if phone_instance and not phone_instance.operator then
+    -- A phone which was only listening (for the monitor) has no SIM to attach with, if there is one now.
+    if sim and phone_instance and not phone_instance.operator then
         phone_instance:stop()
         phone_instance = nil
     end
@@ -775,11 +791,7 @@ function api.setEnabled(enabled)
         local ok, err = pcall(start_phone)
         if not ok then return nil, tostring(err) end
     end
-    if not phone_instance then
-        local sim = read_table(SIM_FILE)
-        if type(sim.network) ~= "string" then return nil, "No SIM: activate one with 'cell activate'" end
-        return nil, "This needs a wireless modem"
-    end
+    if not phone_instance then return nil, "This needs a wireless modem" end
     os.queueEvent("cell_state", phone_instance.state)
     return true
 end

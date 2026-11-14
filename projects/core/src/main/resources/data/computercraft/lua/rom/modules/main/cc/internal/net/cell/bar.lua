@@ -3,7 +3,8 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 --[[- The phone's status bar: the screen's top line, which says which network the phone is on, how strong its signal
-is, and whether there are new messages. Any program can run beneath it.
+is, and whether there are new messages. Any program can run beneath it. Without a SIM, once it listens for cells
+(`cell on`), it says so, with the strongest cell's signal.
 
 Basic computers get greys where advanced ones get colours.
 
@@ -41,21 +42,22 @@ end
 
 -- What the bar says in place of a network's name, when the phone isn't attached to one.
 local BAR_STATES = {
-    searching = "Searching...", attaching = "Connecting...", rejected = "Rejected", inactive = "Not activated",
+    searching = "Searching...", attaching = "Connecting...", rejected = "Rejected", inactive = "No SIM",
     activating = "Activating...",
 }
 
--- Whether there's something for the bar to show: cell service is on, and the phone has a SIM; and whether it should
--- be shown, as it is unless it was turned off ("cell bar off").
+-- Whether there's something for the bar to show: cell service is on, and the phone has a SIM (or, without one, was told
+-- to listen for cells); and whether it should be shown, as it is unless it was turned off ("cell bar off").
 local function wanted(info)
-    return info.state ~= "off" and info.state ~= "none" and info.network ~= nil and settings.get("cell.bar") ~= false
+    return info.state ~= "off" and info.state ~= "none" and (info.network ~= nil or info.enabled == true)
+        and settings.get("cell.bar") ~= false
 end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
 (`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle. On a
 network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. On a cell which only
-carries messages, `SMS` follows the name. On a narrow screen,
-the name is cut short to leave room for the rest. The bar is dark grey.
+carries messages, `SMS` follows the name. Without a SIM, it says `No SIM`, and the bars are the strongest cell's, of any
+network (`strongest`). On a narrow screen, the name is cut short to leave room for the rest. The bar is dark grey.
 
 @tparam table info The phone's state, as `net.cell.info` gives it.
 @tparam number width The screen's width.
@@ -96,8 +98,10 @@ local function line(info, width, colour, quiet)
     end
 
     -- An R and a space when roaming, four bars in brackets, then a space. Only a very narrow screen has no room for
-    -- them.
-    local count = attached and signal_bars(info.signal) or 0
+    -- them. Without a SIM, the bars are the strongest cell's.
+    local signal = attached and info.signal or nil
+    if not info.network and type(info.strongest) == "table" then signal = info.strongest.signal end
+    local count = signal_bars(signal)
     local roaming = attached and info.roaming == true
     local right_width = roaming and 9 or 7
     local right = width - right_width + 1
@@ -131,8 +135,8 @@ end
 local MOUSE_EVENTS = { mouse_click = true, mouse_up = true, mouse_drag = true, mouse_scroll = true }
 
 --[[- Run a function beneath the status bar. The bar has the screen's top line, and the function has the rest, as a
-terminal of its own. While cell service is turned off, or the phone has no SIM, there's no bar, and the function has
-the whole screen.
+terminal of its own. While cell service is turned off, or the phone has no SIM and doesn't listen for cells, there's no
+bar, and the function has the whole screen.
 
 When the function ends, it gets the top line back, and what it left on the screen stays. A program which is already
 running beneath a bar doesn't get a second one.
@@ -252,15 +256,15 @@ local function run(fn, ...)
     return table.unpack(result, 2, result.n)
 end
 
---[[- Whether the computer should start beneath the status bar: it has a SIM, the bar hasn't been turned off, and
-nothing has given it one already.
+--[[- Whether the computer should start beneath the status bar: it has a SIM (or, without one, listens for cells), the
+bar hasn't been turned off, and nothing has given it one already.
 
 @treturn boolean Whether it should.
 ]]
 local function at_startup()
     if settings.get("cell.bar") == false or term.current().cell_bar or not (net and net.cell) then return false end
     local ok, info = pcall(net.cell.info)
-    return ok and type(info) == "table" and info.network ~= nil
+    return ok and type(info) == "table" and (info.network ~= nil or info.enabled == true)
 end
 
 return {

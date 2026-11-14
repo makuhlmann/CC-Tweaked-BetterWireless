@@ -210,8 +210,8 @@ the design above:
     on its own channel (it says so when it hears it, and in each packet, message and check that the cell still knows
     it), and after a phone starts attaching again. So phones aren't woken by each other's packets, nor cells by each other's system
     information, and the server isn't kept busy working out those links.
-  - **Listening.** A phone which isn't attached listens on every carrier's beacon channel: 61, under a modem's 128.
-    Attached, it listens on its cell's carrier, the carriers its own network (and those it treats as home, its
+  - **Listening.** A phone which is searching (or activating) listens on every carrier's beacon channel: 61, under a
+    modem's 128. Attached, it camps: it listens on its cell's carrier, the carriers its own network (and those it treats as home, its
     cell's network, and partners' while roaming) were heard naming in the last five minutes, and its own downlink
     channel; and on every carrier for five seconds each minute, to find other networks and new carriers. Two networks
     on the same carrier hear each other's cells, so neighbouring networks should be given different ones.
@@ -252,12 +252,21 @@ the design above:
     cell will do, however weak: within its network by a handover, otherwise by attaching again after 5 seconds
     (`service` in its events). It's never handed over from a full cell to one which only carries messages: it
     attaches to one once its full cell is gone. A phone told to use a network (`cell network`) stays on it.
+  - **Without a SIM**, a computer listens for cells once told to (`cell on`, or `net.cell.setEnabled(true)`), from
+    when it starts too, until `cell off`; `/.net/phone` keeps that, even while there's no modem. It never sends. It
+    camps as an attached phone does, listening on every carrier for five seconds first and each minute, and otherwise
+    on the carriers every network was heard naming lately, so it hears every cell around. The status bar says
+    `No SIM`, with the strongest cell's signal, of any network (`net.cell.info().strongest`); `cell` names that cell,
+    and `cell monitor` shows it in place of the one in use. It can say where it is (`cell locate`), from any cells
+    which say where they are, as none can be checked without a SIM. Activating on a network it hasn't heard lately
+    listens on every carrier first: until it has for three seconds, it says there's no cell of that network in range,
+    and the `cell` program asks again. (Later, cell broadcast: messages from a cell to every phone around, SIM or
+    not.)
 - **System information** goes out as a link-layer `cell` frame on the cell's carrier's beacon channel. A cell's
   certificate is issued by the core when the cell connects, for the cell's own Ed25519 key (`cell.tower` in its
   enclave), signed by the operator's (`cell.signing`). Version 4 signs the cell's uplink channel, its interval and each
-  network's carriers too, and the cell's position if it has one (three whole numbers), and has room for saying the
-  cell only carries messages (for later); a phone ignores system information without a fit uplink channel and
-  interval.
+  network's carriers too, and the cell's position if it has one (three whole numbers), and whether the cell only carries
+  messages; a phone ignores system information without a fit uplink channel and interval.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
@@ -303,8 +312,8 @@ the design above:
   and load, whatever its network. Phones remember the last 32 cells they've heard (of any network) for 30 seconds,
   noting for their own network's whether the system information checked out, so a cell claiming the name without the
   operator's certificate shows as a fake. They also remember their last 20 events (activated, attached, moved, lost,
-  rejected). `cell monitor` shows all of this on one screen, sized for a pocket computer, and works before activation
-  too (`net.cell.listen`).
+  rejected). `cell monitor` shows all of this on one screen, sized for a pocket computer, with each cell's band, and
+  works before activation too (`net.cell.listen`, or `cell on`, which keeps it listening).
 - **Messages** travel on the control path: sealed between the phone and its cell, then over the cell's control
   connection to the core. Both halves of the journey are acknowledged, as radio frames get lost:
   - A phone numbers each message, and sends it every 5 seconds until the core says it has it (or won't take it, and

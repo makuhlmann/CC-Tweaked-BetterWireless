@@ -414,6 +414,12 @@ describe("The cell program's GUI", function()
             expect((bar.line(info, 26, false))):eq(" Rejected          [....] ")
             info.state = "attaching"
             expect((bar.line(info, 26, false))):eq(" Connecting...     [....] ")
+
+            -- Without a SIM, listening for cells: the strongest cell's signal.
+            info = { state = "inactive", enabled = true, unread = 0, strongest = { id = 11, network = "ACME", signal = -65 } }
+            expect((bar.line(info, 26, true))):eq(" No SIM            [||||] ")
+            info.strongest = nil
+            expect((bar.line(info, 26, true))):eq(" No SIM            [....] ")
         end)
 
         it("marks roaming", function()
@@ -527,10 +533,10 @@ describe("The cell program's GUI", function()
             end)
         end)
 
-        it("isn't there without a SIM", function()
-            local phone = fake_phone({ state = "none", enabled = true, selection = "auto", roaming = false })
+        it("isn't there without a SIM, unless it listens for cells", function()
+            local phone = fake_phone({ state = "none", enabled = false, selection = "auto", roaming = false })
             run(phone, {}, function(app)
-                expect(app.lines(1, 4)):same { "Phone", "", " Monitor", " Quit" }
+                expect(app.lines(1, 5)):same { "Phone", "", " Cell service: Off", " Monitor", " Quit" }
                 expect(app.lines(17, 20)):same {
                     "No SIM. Activate one with:",
                     "cell activate <network>",
@@ -538,12 +544,20 @@ describe("The cell program's GUI", function()
                     "Enter: choose  Q: quit",
                 }
 
-                -- A computer which only listens for cells, as the monitor makes it, has no SIM either.
+                -- A computer which only listens for cells for now, as the monitor makes it, has no bar either.
                 phone.info.state = "inactive"
                 app.event("cell_state", "inactive")
-                expect(app.lines(1, 4)):same { "Phone", "", " Monitor", " Quit" }
+                expect(app.lines(1, 5)):same { "Phone", "", " Cell service: Off", " Monitor", " Quit" }
 
-                -- Once it's activated, there's a bar, and everything else.
+                -- Told to listen for cells, it has one: no SIM, and the strongest cell's signal.
+                phone.info.enabled, phone.info.strongest = true, { id = 11, network = "ACME", signal = -85 }
+                app.event("cell_state", "inactive")
+                expect(app.lines(1, 4)):same { " No SIM            [||..]", "Phone", "", " Cell service: On" }
+                phone.info.strongest = nil
+                app.timers(2)
+                expect(app.line(1)):eq(" No SIM            [....]")
+
+                -- Once it's activated, there's everything else.
                 phone.info.state, phone.info.network = "searching", "ACME"
                 phone.info.subscriber = { id = "ACME-0042", number = "0042" }
                 app.event("cell_state", "searching")
@@ -1333,11 +1347,12 @@ describe("The cell program's GUI", function()
         end)
 
         it("says why it can't listen", function()
-            local phone = fake_phone({ state = "none", enabled = true, selection = "auto", roaming = false })
+            local phone = fake_phone({ state = "none", enabled = false, selection = "auto", roaming = false })
             stub(net.cell, "listen", function() return nil, "This needs a wireless modem" end)
             run(phone, {}, function(app)
+                app.key(keys.down)
                 app.key(keys.enter)
-                expect(app.lines(1, 4)):same { "Phone", "", " Monitor", " Quit" }
+                expect(app.lines(1, 5)):same { "Phone", "", " Cell service: Off", " Monitor", " Quit" }
                 expect(app.lines(18, 19)):same { "This needs a wireless", "modem" }
             end)
         end)
@@ -1425,12 +1440,15 @@ describe("The cell program's GUI", function()
             if not ok then error(err, 0) end
         end)
 
-        it("starts with the computer once it has a SIM, unless it's turned off", function()
+        it("starts with the computer once it has a SIM (or listens for cells), unless it's turned off", function()
             local bar = require "cc.internal.net.cell.bar"
             local phone = fake_phone()
             expect(bar.at_startup()):eq(true)
-            phone.info.network = nil
+            phone.info.network, phone.info.enabled = nil, false
             expect(bar.at_startup()):eq(false)
+            -- Without a SIM, once told to listen for cells.
+            phone.info.enabled = true
+            expect(bar.at_startup()):eq(true)
 
             phone.info.network = "ACME"
             settings.set("cell.bar", false)

@@ -509,7 +509,8 @@ describe("The net library", function()
 
         it("can be turned off, and told which network to use", function()
             expect(net.cell.info().state):eq("none")
-            expect(net.cell.info().enabled):eq(true)
+            -- Without a SIM, it's off until it's told to listen for cells.
+            expect(net.cell.info().enabled):eq(false)
             expect({ net.cell.send("1", "hello") }):same { nil, "No SIM" }
 
             write("/.net/sim", { network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1" })
@@ -594,6 +595,94 @@ describe("The net library", function()
                     attach("net_spec_other")
                     expect(phone().modem):eq("net_spec_other")
                     expect(s.interfaces["cell.phone"].modem):eq("net_spec_other")
+                end)
+
+                net.cell.setEnabled(false)
+                for name in pairs(present) do detach(name) end
+                clean()
+                if not ok then error(err, 0) end
+            end)
+        end)
+
+        it("listens for cells without a SIM, once told to, from when the computer starts too", function()
+            if not crypto then return end
+            local with_enclave = require "support.net_helpers".with_enclave
+            local getupvalue = require "support.debug_ext".getupvalue
+            local s = getupvalue(net.run, "load")()
+            local cellular = getupvalue(net.run, "cellular_api")
+            local function phone() return getupvalue(cellular.start_phone, "phone_instance") end
+            local function read(path)
+                local file = fs.open(path, "r")
+                if not file then return nil end
+                local value = textutils.unserialise(file.readAll())
+                file.close()
+                return value
+            end
+
+            -- A pretend wireless modem, which the network stack sees come and go.
+            local present = {}
+            local has_type, call = peripheral.hasType, peripheral.call
+            stub(peripheral, "hasType", function(side, kind)
+                if present[side] then return kind == "modem" end
+                return has_type(side, kind)
+            end)
+            stub(peripheral, "call", function(side, method, ...)
+                if present[side] then return method == "isWireless" or nil end
+                return call(side, method, ...)
+            end)
+            local function attach(name)
+                present[name] = true
+                os.queueEvent("peripheral", name)
+                local _, up, what
+                repeat _, up, what = os.pullEvent("net_interface") until up == name and what == "up"
+            end
+            local function detach(name)
+                present[name] = nil
+                os.queueEvent("peripheral_detach", name)
+                os.queueEvent("net_spec_marker")
+                os.pullEvent("net_spec_marker")
+            end
+
+            with_enclave(function()
+                local ok, err = pcall(function()
+                    -- Nothing another test left listening.
+                    net.cell.setEnabled(false)
+                    clean()
+
+                    -- Without a SIM, nothing starts, even with a modem.
+                    attach("net_spec_radio")
+                    expect(phone()):eq(nil)
+                    expect({ net.cell.info().state, net.cell.info().enabled }):same { "none", false }
+
+                    -- Told to, it listens, and keeps that.
+                    expect(net.cell.setEnabled(true)):eq(true)
+                    local info = net.cell.info()
+                    expect({ info.state, info.enabled, info.network }):same { "inactive", true, nil }
+                    expect(phone().operator):eq(nil)
+                    expect(s.interfaces["cell.phone"].modem):eq("net_spec_radio")
+                    expect(read("/.net/phone")):same { listen = true }
+
+                    -- Turned off, it stops, and doesn't start with the computer.
+                    expect(net.cell.setEnabled(false)):eq(true)
+                    expect(phone()):eq(nil)
+                    expect({ net.cell.info().state, net.cell.info().enabled }):same { "none", false }
+                    expect(read("/.net/phone")):same { off = true }
+                    cellular.start_phone()
+                    expect(phone()):eq(nil)
+
+                    -- Told to listen, it starts listening with the computer.
+                    write("/.net/phone", { listen = true })
+                    cellular.start_phone()
+                    expect(phone().state):eq("inactive")
+
+                    -- Told to without a modem, it keeps that, and starts once one comes.
+                    net.cell.setEnabled(false)
+                    detach("net_spec_radio")
+                    expect({ net.cell.setEnabled(true) }):same { nil, "This needs a wireless modem" }
+                    expect(read("/.net/phone")):same { listen = true }
+                    expect(net.cell.info().enabled):eq(true)
+                    attach("net_spec_radio")
+                    expect(phone().state):eq("inactive")
                 end)
 
                 net.cell.setEnabled(false)

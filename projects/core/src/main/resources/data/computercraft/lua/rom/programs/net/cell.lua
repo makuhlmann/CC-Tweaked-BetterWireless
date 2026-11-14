@@ -27,9 +27,9 @@ if not crypto or not enclave then
 end
 
 local STATES = {
-    none = "No SIM: activate one with 'cell activate'",
+    none = "No SIM: activate one with 'cell activate', or listen for cells with 'cell on'",
     off = "Cell service is turned off",
-    inactive = "Not activated",
+    inactive = "No SIM: listening for cells",
     activating = "Activating",
     searching = "Searching for a cell",
     attaching = "Attaching",
@@ -56,7 +56,7 @@ local function monitor()
     end
 
     local SHORT_STATES = {
-        none = "No SIM", off = "Turned off", inactive = "Not activated", activating = "Activating", searching = "Searching",
+        none = "No SIM", off = "Turned off", inactive = "No SIM", activating = "Activating", searching = "Searching",
         attaching = "Attaching", attached = "Attached", rejected = "Rejected",
     }
     local STATE_COLOURS = {
@@ -131,6 +131,9 @@ local function monitor()
         for _, cell in ipairs(heard) do
             if cell.serving then serving = cell end
         end
+        -- Without a SIM, the strongest cell around stands in for the one in use.
+        local shown = serving
+        if not info.network and type(info.strongest) == "table" then shown = info.strongest end
 
         line(" Cell monitor", colours.white, HEADER_BG)
         right(os.date("%H:%M:%S "), colours.white, HEADER_BG)
@@ -138,9 +141,9 @@ local function monitor()
         local state = SHORT_STATES[info.state] or tostring(info.state)
         if info.state == "attached" and info.roaming then state = "Roaming" end
         line(state, STATE_COLOURS[info.state])
-        if serving then
+        if shown then
             -- Four bars, then a space.
-            local count, x = bars(serving.signal), w - 4
+            local count, x = bars(shown.signal), w - 4
             at(x, ("|"):rep(count), STATE_COLOURS.attached)
             at(x + count, ("."):rep(4 - count), colours.grey)
         end
@@ -150,7 +153,13 @@ local function monitor()
         row("Net", network)
         row("No.", info.subscriber and ("%s (%s)"):format(info.subscriber.number, info.subscriber.id) or "-")
         row("IP", info.address or "-")
-        row("Cell", serving and ("#%d, %d dBm"):format(serving.id, round(serving.signal)) or "-")
+        if serving then
+            row("Cell", ("#%d, %d dBm"):format(serving.id, round(serving.signal)))
+        elseif shown then
+            row("Cell", ("#%d %s, %d dBm"):format(shown.id, tostring(shown.network), round(shown.signal)))
+        else
+            row("Cell", "-")
+        end
 
         -- Share what's left between the cells and the events, giving either the other's spare lines.
         local left = h - y - 2
@@ -177,8 +186,12 @@ local function monitor()
                 fg = colours.white
             end
             if not cell.fresh then fg = colours.grey end
-            local id, signal = fit("#" .. cell.id, 5), ("%4d"):format(round(cell.signal))
-            line(mark .. id .. " " .. fit(cell.network, math.max(1, w - 8 - #signal)) .. " " .. signal, fg)
+            -- Its band and signal on the right; after its network, SMS if it only carries messages.
+            local id, tail = fit("#" .. cell.id, 5), (" %-3s %4d"):format(tostring(cell.band or "-"), round(cell.signal))
+            local name_width = math.max(1, w - 7 - #tail)
+            local name = tostring(cell.network)
+            if cell.service == "sms" then name = fit(name, math.max(1, name_width - 4)):gsub(" +$", "") .. " SMS" end
+            line(mark .. id .. " " .. fit(name, name_width) .. tail, fg)
         end
 
         line(" Events", colours.white, HEADER_BG)
@@ -278,6 +291,11 @@ elseif command == nil then
         print("The cells around run a newer version of the network than this phone. Update its software.")
     end
     if info.network then print("Network:  " .. info.network) end
+    -- Without a SIM, the strongest cell around.
+    local strongest = not info.network and info.strongest
+    if strongest then
+        print(("Strongest: #%s %s, %d dBm"):format(strongest.id, tostring(strongest.network), math.floor(strongest.signal + 0.5)))
+    end
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
     if info.messages_only then print("Messages only: this cell carries no packets") end
     if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end
@@ -401,8 +419,13 @@ elseif (command == "on" or command == "off") and #args == 1 then
     local ok, err = net.cell.setEnabled(command == "on")
     if not ok then
         printError(err)
+    elseif command == "off" then
+        print("Cell service is turned off.")
+    elseif net.cell.info().network == nil then
+        -- Without a SIM, the phone listens for cells, and shows the strongest.
+        print("No SIM: listening for cells, from when the computer starts too.")
     else
-        print(command == "on" and "Cell service is turned on." or "Cell service is turned off.")
+        print("Cell service is turned on.")
     end
 else
     usage()

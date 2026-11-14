@@ -1562,14 +1562,16 @@ read or deleted, say.
 cell = {
     --[[- Get the phone's state.
 
-    @treturn table `state` (`"none"` with no SIM, `"off"` when cell service is turned off, `"inactive"`, `"activating"`,
-    `"searching"`, `"attaching"`, `"attached"` or `"rejected"`); `network`, the SIM's own; `subscriber` (`id` and
+    @treturn table `state` (`"none"` with no SIM, `"off"` when cell service is turned off, `"inactive"` (no SIM, but
+    listening for cells), `"activating"`, `"searching"`, `"attaching"`, `"attached"` or `"rejected"`); `network`, the
+    SIM's own; `subscriber` (`id` and
     `number`, and `full`, the number other networks' phones reach it at, once it has attached, if its network has a
     number prefix); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
     with `id` and `signal`; `networks`, the names of the networks around; why it was rejected or activation failed
     (`rejected`, `activation_error`);
 
-     - `enabled`: whether cell service is turned on (see `net.cell.setEnabled`);
+     - `enabled`: whether cell service is turned on (see `net.cell.setEnabled`): without a SIM, whether the phone
+       listens for cells;
      - `signal` and `serving_network`: the signal strength (dBm) and network of the cell it's using, when attached;
      - `messages_only`: whether that cell only carries messages (a satellite, say), so there's no route for packets;
      - `roaming`: whether that's another network than the SIM's own (and not one it treats as its own);
@@ -1588,19 +1590,24 @@ cell = {
        phone uses it), and `verified`: for cells of the phone's
        own network, whether their system information came from the operator (`false` may mean a fake cell), or `nil`
        for other networks;
+     - `strongest`: the strongest cell heard lately, of any network, as `heard` has it (the first of those heard lately
+       enough to use), if there is one: without a SIM, the status bar shows its signal;
      - `events`: the last 20 things which happened, oldest first. Each has `kind` and `time` (as `os.epoch("utc")`
        gives it): `"activated"` (with `network`), `"activation_failed"` (`reason`), `"attached"` (`cell`),
        `"handover"` (`from` and `to`), `"home"` (back to its own network, `from`), `"service"` (off a cell which only
        carries messages, `from`), `"lost"` (`cell`) or `"rejected"` (`reason`).
 
-    A computer without a SIM only hears cells once it listens, with `net.cell.listen` (or tries to activate).
+    A computer without a SIM only hears cells once it listens: from when it starts, once cell service is turned on
+    (see `net.cell.setEnabled`), or until it restarts, with `net.cell.listen` (or while it activates).
     ]]
     info = function()
         return cellular().info()
     end,
 
     --[[- Listen for cells, so `net.cell.info` lists them (`heard`) and the networks around, on a computer which isn't
-    activated yet. A phone which is activated listens already. This is for the `cell` program's monitor.
+    activated yet, until it restarts. A phone which is activated (or turned on without a SIM) listens already: it then
+    listens on every carrier for a few seconds, as it otherwise only listens on those it heard lately. This is for the
+    `cell` program's monitor.
 
     @treturn[1] true If it's listening.
     @treturn[2] nil If it can't.
@@ -1635,6 +1642,10 @@ cell = {
 
     --[[- Activate this computer's SIM on a network, with a code from the network's administrator. Activating again, with
     a new code, moves a subscription to this computer.
+
+    A phone which has been listening for a while only listens on the carriers it heard lately, so it may not hear the
+    network yet: it then listens on every carrier for a few seconds, and says there's no cell of it in range. Ask again
+    then, as the `cell` program does.
 
     @tparam string network The network's name, as `net.cell.info().networks` lists them.
     @tparam string code The activation code, such as `"7Q2M-K4XD-9PRB-T6WN-HJ3C"`.
@@ -1708,6 +1719,11 @@ cell = {
 
     --[[- Turn cell service off or on. While it's off, the phone doesn't listen or send, has no address, and isn't
     started with the computer. The SIM and messages are kept.
+
+    Without a SIM, it's off until turned on. Then the phone only listens for cells, from when the computer starts too:
+    the status bar says there's no SIM, with the strongest cell's signal, `net.cell.info` lists the cells and networks
+    around, and `net.cell.locate` says where the computer is. That's kept even without a modem: the phone starts once
+    one comes, as with a SIM.
 
     @tparam boolean enabled Whether cell service should be on.
     @treturn[1] true If it's now as asked.

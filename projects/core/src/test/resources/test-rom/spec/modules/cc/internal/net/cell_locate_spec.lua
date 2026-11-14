@@ -91,6 +91,15 @@ describe("Cellular positions", function()
         expect({ other:locate() }):same { 20, 64, 30, 0 }
     end)
 
+    it("works out where a computer without a SIM is, from any cells", function()
+        math.randomseed(6)
+        local acme = operator(cells)
+        local phone = acme.add_phone(1, here, false, { activated = false })
+        acme.net.advance(5)
+        expect(phone.state):eq("inactive")
+        expect({ phone:locate() }):same { 20, 64, 30, 0 }
+    end)
+
     it("can't tell where it is without cells which say where they are", function()
         math.randomseed(5)
         local acme = operator { 0, 60 }

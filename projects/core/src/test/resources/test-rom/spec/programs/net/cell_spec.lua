@@ -36,10 +36,16 @@ describe("The cell program", function()
                 state = "attached", network = "ACME", subscriber = { id = "ACME-0042", number = "0042" },
                 address = "10.64.0.2", cell = 12,
                 heard = {
-                    { id = 12, network = "ACME", signal = -71.6, age = 0.5, fresh = true, verified = true, serving = true, area = 1 },
-                    { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, serving = false },
+                    {
+                        id = 12, network = "ACME", signal = -71.6, age = 0.5, fresh = true, verified = true, serving = true,
+                        area = 1, band = "b20",
+                    },
+                    { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, serving = false, band = "b3" },
                     { id = 66, network = "ACME", signal = -60, age = 1, fresh = true, verified = false, serving = false },
-                    { id = 77, network = "BETA-NETWORK-WITH-A-LONG-NAME", signal = -95, age = 2, fresh = true, serving = false },
+                    {
+                        id = 77, network = "BETA-NETWORK-WITH-A-LONG-NAME", signal = -95, age = 2, fresh = true,
+                        serving = false, band = "b20", service = "sms",
+                    },
                     { id = 13, network = "ACME", signal = -99, age = 10, fresh = false, verified = true, serving = false },
                 },
                 events = {
@@ -57,11 +63,11 @@ describe("The cell program", function()
                 "IP   10.64.0.2",
                 "Cell #12, -72 dBm",
                 " Cells                  5",
-                ">#12   ACME            -72",
-                " #11   ACME            -83",
-                "!#66   ACME            -60",
-                " #77   BETA-NETWORK-W  -95",
-                " #13   ACME            -99",
+                ">#12   ACME       b20  -72",
+                " #11   ACME       b3   -83",
+                "!#66   ACME       -    -60",
+                " #77   BETA-N SMS b20  -95",
+                " #13   ACME       -    -99",
             }
             expect({ table.unpack(lines, 13, 20) }):same {
                 " Events",
@@ -91,7 +97,7 @@ describe("The cell program", function()
             expect(lines[6]):eq("Cell -")
             -- Twelve lines are left: six each, the last cell's line saying how many more there are.
             expect(lines[7]):eq(" Cells                 12")
-            expect(lines[12]):eq(" #5    ACME            -65")
+            expect(lines[12]):eq(" #5    ACME       -    -65")
             expect(lines[13]):eq("  and 7 more")
             expect(lines[14]):eq(" Events")
             expect(lines[15]):str_match("Lost #12$")
@@ -101,7 +107,7 @@ describe("The cell program", function()
         it("works before the phone is activated", function()
             local lines = show({ state = "inactive", heard = {}, events = {} })
             expect({ table.unpack(lines, 2, 11) }):same {
-                "Not activated",
+                "No SIM",
                 "Net  -",
                 "No.  -",
                 "IP   -",
@@ -111,6 +117,25 @@ describe("The cell program", function()
                 " Events",
                 "Nothing yet",
                 "",
+            }
+        end)
+
+        it("shows the strongest cell without a SIM", function()
+            local strongest = { id = 21, network = "BETA", signal = -64.6, age = 0, fresh = true, band = "b3" }
+            local lines = show {
+                state = "inactive", strongest = strongest,
+                heard = { strongest, { id = 11, network = "ACME", signal = -90, age = 0, fresh = true, band = "b20" } },
+                events = {},
+            }
+            expect({ table.unpack(lines, 2, 9) }):same {
+                "No SIM               ||||",
+                "Net  -",
+                "No.  -",
+                "IP   -",
+                "Cell #21 BETA, -65 dBm",
+                " Cells                  2",
+                " #21   BETA       b3   -65",
+                " #11   ACME       b20  -90",
             }
         end)
 
@@ -217,16 +242,40 @@ describe("The cell program", function()
                 :matches { ok = true, output = "Cell service is turned off.\n", error = "" }
             expect(capture("/rom/programs/net/cell.lua on"))
                 :matches { ok = true, output = "Cell service is turned on.\n", error = "" }
+            -- Without a SIM, it listens for cells.
+            phone.info = { state = "inactive", enabled = true, selection = "auto", roaming = false }
+            expect(capture("/rom/programs/net/cell.lua on"))
+                :matches { ok = true, output = "No SIM: listening for cells, from when the computer starts too.\n", error = "" }
+            phone.info = { state = "attached", network = "ACME", selection = "auto", roaming = false }
             phone.no_modem = true
             expect(capture("/rom/programs/net/cell.lua on"))
                 :matches { ok = true, output = "", error = "This needs a wireless modem\n" }
-            expect(phone.calls):same { { "setEnabled", false }, { "setEnabled", true }, { "setEnabled", true } }
+            expect(phone.calls):same {
+                { "setEnabled", false }, { "setEnabled", true }, { "setEnabled", true }, { "setEnabled", true },
+            }
         end)
 
         it("says why a message can't be sent, without waiting", function()
             fake_phone()
             expect(capture("/rom/programs/net/cell.lua send 0042 Hello there"))
                 :matches { ok = true, output = "", error = "No SIM\n" }
+        end)
+
+        it("says which cell is strongest without a SIM", function()
+            local phone = fake_phone()
+            phone.info = {
+                state = "inactive", enabled = true, selection = "auto", roaming = false, networks = { "ACME", "BETA" },
+                strongest = { id = 21, network = "BETA", signal = -64.6 },
+            }
+            expect(capture("/rom/programs/net/cell.lua")):matches {
+                ok = true, error = "",
+                output = "No SIM: listening for cells\nStrongest: #21 BETA, -65 dBm\nNetworks in range: ACME, BETA\n",
+            }
+            phone.info = { state = "none", enabled = false, selection = "auto", roaming = false }
+            expect(capture("/rom/programs/net/cell.lua")):matches {
+                ok = true, error = "",
+                output = "No SIM: activate one with 'cell activate', or listen for cells with 'cell on'\n",
+            }
         end)
 
         it("says when the phone is roaming, or kept to one network", function()

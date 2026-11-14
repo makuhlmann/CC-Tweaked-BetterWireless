@@ -421,7 +421,8 @@ describe("Roaming", function()
         local activated
         local phone, stack = mvno.add_phone(1, 25, false, { activated = false, on_activated = function(info) activated = info end })
         local code = mvno.core:add_code("MVNO-1", "1")
-        net.advance(3)
+        -- Long enough to have heard every cell around: MVNO has none, so it asks through others'.
+        net.advance(4)
 
         -- It tries BETA's cell first, the strongest, which turns it away; then ACME's, which passes it on.
         assert(phone:activate("MVNO", code))
@@ -437,7 +438,7 @@ describe("Roaming", function()
 
         -- A network nobody here carries can't be reached.
         local lost = mvno.add_phone(2, 25, false, { activated = false })
-        net.advance(2)
+        net.advance(4)
         assert(lost:activate("NOWHERE", code))
         wait_until(net, function() return lost.state == "inactive" end, 30, "Giving up")
         expect(lost.activation_error):eq("ACME doesn't carry phones of that network")

@@ -839,12 +839,13 @@ local function home_screen(monitor)
             local items = {}
             if info.network then
                 local unread = tonumber(info.unread) or 0
-                local on = info.state ~= "off" and info.state ~= "none"
                 items[1] = { id = "messages", text = unread > 0 and (" Messages (%d new)"):format(unread) or " Messages" }
                 items[2] = { id = "compose", text = " New message" }
                 items[3] = { id = "networks", text = " Networks" }
-                items[4] = { id = "service", text = " Cell service: " .. (on and "On" or "Off") }
             end
+            -- Without a SIM, cell service on means listening for cells.
+            local on = info.enabled ~= false and info.state ~= "off" and info.state ~= "none"
+            items[#items + 1] = { id = "service", text = " Cell service: " .. (on and "On" or "Off") }
             items[#items + 1] = { id = "monitor", text = " Monitor" }
             items[#items + 1] = { id = "quit", text = " Quit" }
             return items
@@ -875,7 +876,7 @@ local function home_screen(monitor)
             elseif item.id == "networks" then
                 networks_screen()
             elseif item.id == "service" then
-                local on = info.state ~= "off" and info.state ~= "none"
+                local on = info.enabled ~= false and info.state ~= "off" and info.state ~= "none"
                 local ok, err = net.cell.setEnabled(not on)
                 if not ok then problem = tostring(err or "Cell service couldn't be turned on") end
                 bar.touch()
