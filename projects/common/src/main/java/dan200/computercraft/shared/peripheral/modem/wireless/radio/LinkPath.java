@@ -15,9 +15,10 @@ import org.jspecify.annotations.Nullable;
  * traced once ({@link PropagationModel#trace}) and then evaluated for each frequency it's used at: the two directions
  * of a link whose uplink and downlink use different frequencies, say.
  * <p>
- * The walks along the link stop once the signal is lost at every frequency for the strongest transmitter there is
+ * The walks along the link stop once the signal is lost at every frequency for the budget it was traced for
  * ({@link #budget()}). So the path's losses are exact for any link within that budget, and only lower bounds (which
- * are still more than the budget) for those beyond it.
+ * are still more than the budget) for those beyond it. A link within the budget at some frequency is exact at that
+ * frequency for any budget, so the path serves stronger transmitters too ({@link #serves(double, double)}).
  */
 public final class LinkPath {
     private final double distance;
@@ -66,12 +67,35 @@ public final class LinkPath {
     }
 
     /**
-     * The largest link budget this path was traced for. Links with a larger budget need tracing again.
+     * The link budget this path was traced for.
      *
      * @return The budget, in dB.
      */
     public double budget() {
         return budget;
+    }
+
+    /**
+     * Whether this path's loss at a frequency is right for a link with some budget. It is if the budget is no more
+     * than the path was traced for, or if the link is within the budget it was traced for at that frequency, as then
+     * walking further would change nothing.
+     *
+     * @param frequencyMHz The frequency, in MHz.
+     * @param budget       The link's budget, in dB.
+     * @return Whether the path serves the link.
+     */
+    public boolean serves(double frequencyMHz, double budget) {
+        return budget <= this.budget || evaluate(frequencyMHz).loss() <= this.budget;
+    }
+
+    /**
+     * Whether the blocks along the link were walked. They aren't when distance alone loses more than the budget at
+     * every frequency.
+     *
+     * @return Whether they were walked.
+     */
+    boolean walked() {
+        return walked;
     }
 
     /**

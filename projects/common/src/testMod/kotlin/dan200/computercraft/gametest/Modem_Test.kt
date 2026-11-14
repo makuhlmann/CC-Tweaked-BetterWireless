@@ -115,7 +115,8 @@ class Modem_Test {
     }
 
     /**
-     * Wireless modems refuse messages over the size limit, and say they aren't ender modems.
+     * Wireless modems refuse messages over the size limit, say they aren't ender modems, and transmit with the power
+     * programs set them to, within their limit.
      */
     @GameTest
     fun Wireless_rejects_large_messages(context: GameTestHelper) = context.sequence {
@@ -130,6 +131,15 @@ class Modem_Test {
             } catch (e: LuaException) {
                 assertEquals("Message too large (at most 65536 bytes)", e.message)
             }
+
+            // Programs set the power, within the limit for placed computers.
+            suspend fun power() = callPeripheral(modem, "getTransmitPower")!!.map { (it as Number).toDouble() }
+            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower), power())
+            assertEquals(Config.radioMaxTransmitPower, (callPeripheral(modem, "setTransmitPower", 1000)!![0] as Number).toDouble())
+            assertEquals(listOf(Config.radioMaxTransmitPower, Config.radioMaxTransmitPower), power())
+            assertEquals(-30.0, (callPeripheral(modem, "setTransmitPower", -1000)!![0] as Number).toDouble())
+            assertEquals(12.5, (callPeripheral(modem, "setTransmitPower", 12.5)!![0] as Number).toDouble())
+            assertEquals(12.5, power()[0])
         }
     }
 

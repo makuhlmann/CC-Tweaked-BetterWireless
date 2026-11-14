@@ -108,11 +108,28 @@ public final class RadioPropagationService {
      * Something which is waiting for a link to be evaluated.
      */
     private sealed interface Waiting permits Delivery, CrossDelivery {
+        /**
+         * The frequency the link is needed at.
+         *
+         * @return The frequency, in MHz.
+         */
+        double frequency();
+
+        /**
+         * How much the link may lose for this to be delivered: its power, less the weakest signal its receiver hears.
+         *
+         * @return The budget, in dB.
+         */
+        double budget();
     }
 
     private record Delivery(
         Packet packet, PacketReceiver receiver, double distance, boolean thundering, double frequency, double power
     ) implements Waiting {
+        @Override
+        public double budget() {
+            return power - RadioSettings.sensitivity(receiver);
+        }
     }
 
     /**
@@ -135,6 +152,16 @@ public final class RadioPropagationService {
             this.frequency = frequency;
             this.power = power;
             this.waiting = waiting;
+        }
+
+        @Override
+        public double frequency() {
+            return frequency;
+        }
+
+        @Override
+        public double budget() {
+            return power - RadioSettings.sensitivity(receiver);
         }
     }
 
@@ -166,14 +193,17 @@ public final class RadioPropagationService {
         final boolean crossDimension;
         final List<Waiting> deliveries = new ArrayList<>(1);
         @Nullable LongSet missing;
+        /** The largest budget of anything waiting for the link: how far to trace it. */
+        double budget;
 
-        Evaluation(LinkKey key, ServerLevel level, Vec3 from, Vec3 to, long started, boolean crossDimension) {
+        Evaluation(LinkKey key, ServerLevel level, Vec3 from, Vec3 to, long started, boolean crossDimension, double budget) {
             this.key = key;
             this.level = level;
             this.from = from;
             this.to = to;
             this.started = started;
             this.crossDimension = crossDimension;
+            this.budget = budget;
         }
     }
 
@@ -310,8 +340,9 @@ public final class RadioPropagationService {
     private void request(ServerLevel level, Vec3 from, Vec3 to, Waiting waiting, boolean crossDimension) {
         var key = LinkKey.of(level, from, to);
         var cached = links.get(key);
-        // A path traced for a smaller budget than devices may now have (the config changed) is traced again.
-        if (cached != null && cached.expires() > tick && cached.path().budget() >= settings.maxBudget()) {
+        // Links are only traced as far as what's waiting for them needs: a path traced for a weaker transmitter
+        // serves a stronger one only if the link was within its budget. Otherwise, it's traced again, further.
+        if (cached != null && cached.expires() > tick && cached.path().serves(waiting.frequency(), waiting.budget())) {
             complete(waiting, cached.path());
             return;
         }
@@ -324,10 +355,11 @@ public final class RadioPropagationService {
                 return;
             }
 
-            evaluation = new Evaluation(key, level, from, to, tick, crossDimension);
+            evaluation = new Evaluation(key, level, from, to, tick, crossDimension, waiting.budget());
             evaluating.put(key, evaluation);
             pending.add(evaluation);
         }
+        evaluation.budget = Math.max(evaluation.budget, waiting.budget());
         evaluation.deliveries.add(waiting);
     }
 
@@ -415,7 +447,7 @@ public final class RadioPropagationService {
 
         var from = evaluation.from;
         var to = evaluation.to;
-        var path = PropagationModel.trace(from.x, from.y, from.z, to.x, to.y, to.z, settings.maxBudget(), env, terrain);
+        var path = PropagationModel.trace(from.x, from.y, from.z, to.x, to.y, to.z, evaluation.budget, env, terrain);
 
         // Links evaluated with incomplete information are only cached briefly, so we try again once we know more.
         // Links between dimensions are mostly between computers which stay where they are, so are kept for longer.

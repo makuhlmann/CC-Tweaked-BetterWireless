@@ -197,6 +197,30 @@ public class PropagationModelTest {
     }
 
     @Test
+    public void linksTooFarForTheirBudgetAreNotWalked() {
+        // Two ground-level modems 5km apart are far beyond each other's reach on flat ground, whatever is in the way.
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        var weak = PropagationModel.trace(0.5, GROUND + 1, 0.5, 5000.5, GROUND + 1, 0.5, BUDGET, ENV, terrain);
+        assertFalse(weak.walked(), "Distance alone should rule the link out");
+
+        // A much stronger transmitter might still reach, so the same link is walked for that.
+        var strong = PropagationModel.trace(0.5, GROUND + 1, 0.5, 5000.5, GROUND + 1, 0.5, BUDGET + 40, ENV, terrain);
+        assertTrue(strong.walked());
+
+        // The weak path can't answer for the stronger transmitter, but can for anything weaker.
+        assertFalse(weak.serves(VHF, BUDGET + 40));
+        assertTrue(weak.serves(VHF, BUDGET - 10));
+    }
+
+    @Test
+    public void linksWithinBudgetServeStrongerTransmitters() {
+        var terrain = new FakeTerrain((x, z) -> GROUND);
+        var path = PropagationModel.trace(0.5, GROUND + 1, 0.5, 500.5, GROUND + 1, 0.5, BUDGET, ENV, terrain);
+        assertTrue(path.evaluate(VHF).loss() < BUDGET);
+        assertTrue(path.serves(VHF, BUDGET + 100), "A link within budget is exact whatever the budget");
+    }
+
+    @Test
     public void lostLinksAreLostAtEveryFrequency() {
         // A link traced for one budget, and lost, is lost however well the frequency penetrates.
         var terrain = new FakeTerrain((x, z) -> GROUND);

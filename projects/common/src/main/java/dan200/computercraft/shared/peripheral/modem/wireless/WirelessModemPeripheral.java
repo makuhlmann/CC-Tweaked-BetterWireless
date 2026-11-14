@@ -74,7 +74,7 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
      * every 6 dB more roughly doubles the range over open ground, though walls and hills still cost what they cost.
      * <p>
      * Each kind of device has a limit: pocket computers' is lower than placed computers', for instance. Power beyond
-     * the limit is reduced to it. The power lasts until it's set again, or the modem is removed.
+     * the limit is reduced to it. The power lasts until it's set again, or the modem is removed or its chunk unloads.
      * <p>
      * Ender modems transmit with less power than they're set to.
      *
