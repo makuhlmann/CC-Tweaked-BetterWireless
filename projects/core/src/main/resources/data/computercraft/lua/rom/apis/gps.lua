@@ -136,7 +136,9 @@ function locate(_nTimeout, _bDebug)
     -- Return the response
     if x then
         if _bDebug then
-            if nError > 0 then
+            if nError == math.huge then
+                print("Position is " .. x .. "," .. y .. "," .. z .. ", but it may be far off: the hosts say little about one direction")
+            elseif nError > 0 then
                 print("Position is " .. x .. "," .. y .. "," .. z .. ", within " .. nError .. " metres")
             else
                 print("Position is " .. x .. "," .. y .. "," .. z)
