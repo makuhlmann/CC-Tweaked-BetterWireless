@@ -66,6 +66,8 @@ local MAX_INBOX = 100
 -- How many sent messages may wait to be sent while cell service is off: as many as the phone keeps.
 local MAX_WAITING = 20
 local phone_instance
+-- The radio side of this computer's cell, if it is one, which its service starts once a core welcomes it.
+local tower_instance
 
 -- Messages received and sent, oldest first. Each has a number, `n`, which stays the same as others come and go.
 local function read_messages()
@@ -133,6 +135,22 @@ local function cell_interface()
             return interface.modem .. ":low"
         end
     end
+end
+
+--[[ A modem which goes away takes all its interfaces with it, including the low band one which the phone and the cell's
+tower are on, and which the network stack doesn't make again by itself. This happens whenever the modem's block is
+replaced, such as when it's moved (Sable copies a block to its new place, and then removes the old one). So when a
+modem comes, move them back onto a radio interface: the same one, if it's the same modem. Both look their interface up
+by name each time, so that's all they need. ]]
+local function restore_interface(radio)
+    if not radio or radio.stopped or stack.interfaces[radio.interface] then return end
+    local name = cell_interface()
+    if name then radio.interface = name end
+end
+
+local function restore_interfaces()
+    restore_interface(phone_instance)
+    restore_interface(tower_instance)
 end
 
 local function new_phone(operator, partners, equivalent)
@@ -299,16 +317,15 @@ local function start_cell_service(config)
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not cell_interface() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
-    local tower
-    background.cell = require("cc.internal.net.cell.cell_service").new {
+    background.cell =require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, id = os.getComputerID(), identity = getIdentity(),
         fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
             local name = cell_interface()
             if not name then error("A cell needs a wireless modem", 0) end
-            if not tower or tower.stopped then
-                tower = require("cc.internal.net.cell.tower").new {
+            if not tower_instance or tower_instance.stopped then
+                tower_instance = require("cc.internal.net.cell.tower").new {
                     stack = stack, crypto = crypto, interface = name, area = welcome.area,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
@@ -321,7 +338,7 @@ local function start_cell_service(config)
                     end,
                 }
             end
-            return tower:add_network(welcome.network, {
+            return tower_instance:add_network(welcome.network, {
                 certificate = welcome.certificate, core = address.parse(welcome.core), tunnel_key = welcome.tunnel_key,
                 control = control,
             })
@@ -900,13 +917,17 @@ end
 
 @tparam table context What the net API gives (see above).
 @treturn table The functions `net.cell` hands its work to (`api`), and ways to start the phone (`start_phone`) and
-the core and cell (`start_cellular`), and to pass an event to the services in the background (`resume`).
+the core and cell (`start_cellular`), to pass an event to the services in the background (`resume`), and to put the
+phone and cell back on the air when a modem comes (`restore_interfaces`).
 ]]
 local function new(context)
     stack, load, log_error, require_crypto = context.stack, context.load, context.log_error, context.require_crypto
     getIdentity, fingerprint, secure = context.getIdentity, context.fingerprint, context.secure
     check_timeout, add_interface = context.check_timeout, context.add_interface
-    return { api = api, start_phone = start_phone, start_cellular = start_cellular, resume = resume }
+    return {
+        api = api, start_phone = start_phone, start_cellular = start_cellular, resume = resume,
+        restore_interfaces = restore_interfaces,
+    }
 end
 
 return { new = new }

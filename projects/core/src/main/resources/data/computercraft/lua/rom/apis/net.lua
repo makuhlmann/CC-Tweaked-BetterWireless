@@ -401,9 +401,12 @@ function add_modem(name)
         log_error(("Cannot use modem %s: %s"):format(name, tostring(err)))
         stack:remove_modem(name)
     end
-    -- A phone whose modem was missing can start now.
+    -- A phone whose modem was missing can start now, and a phone or cell whose modem went away (or was replaced, as
+    -- when its block is moved) can go back on the air.
     if cellular_api then
         ok, err = pcall(cellular_api.start_phone)
+        if not ok then log_error(err) end
+        ok, err = pcall(cellular_api.restore_interfaces)
         if not ok then log_error(err) end
     end
 end

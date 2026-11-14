@@ -539,6 +539,69 @@ describe("The net library", function()
             expect(net.cell.info().selection):eq("auto")
             clean()
         end)
+
+        -- A modem's block may be replaced while the computer runs on, as when Sable moves it: the modem goes, and
+        -- comes back as a new peripheral. The phone's low band interface goes with it, and once stayed gone, so the
+        -- phone heard no cells.
+        it("keeps its phone on the air when its modem is replaced", function()
+            if not crypto then return end
+            local with_enclave = require "support.net_helpers".with_enclave
+            local getupvalue = require "support.debug_ext".getupvalue
+            local s = getupvalue(net.run, "load")()
+            local cellular = getupvalue(net.run, "cellular_api")
+            local function phone() return getupvalue(cellular.start_phone, "phone_instance") end
+
+            -- Pretend wireless modems, which the network stack sees come and go.
+            local present = {}
+            local has_type, call = peripheral.hasType, peripheral.call
+            stub(peripheral, "hasType", function(side, kind)
+                if present[side] then return kind == "modem" end
+                return has_type(side, kind)
+            end)
+            stub(peripheral, "call", function(side, method, ...)
+                if present[side] then return method == "isWireless" or nil end
+                return call(side, method, ...)
+            end)
+            local function attach(name)
+                present[name] = true
+                os.queueEvent("peripheral", name)
+                local _, up, what
+                repeat _, up, what = os.pullEvent("net_interface") until up == name and what == "up"
+            end
+            local function detach(name)
+                present[name] = nil
+                os.queueEvent("peripheral_detach", name)
+                os.queueEvent("net_spec_marker")
+                os.pullEvent("net_spec_marker")
+            end
+
+            with_enclave(function()
+                local ok, err = pcall(function()
+                    write("/.net/sim", { network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1" })
+                    attach("net_spec_radio")
+                    expect(net.cell.setEnabled(true)):eq(true)
+                    expect(phone().interface):eq("net_spec_radio:low")
+
+                    -- The same modem comes back: the phone is on its low band again.
+                    detach("net_spec_radio")
+                    expect(s.interfaces["net_spec_radio:low"]):eq(nil)
+                    attach("net_spec_radio")
+                    expect(phone().interface):eq("net_spec_radio:low")
+                    expect(s.interfaces["net_spec_radio:low"]):ne(nil)
+
+                    -- Another takes its place: the phone moves onto that.
+                    detach("net_spec_radio")
+                    attach("net_spec_other")
+                    expect(phone().interface):eq("net_spec_other:low")
+                    expect(s.interfaces["net_spec_other:low"]):ne(nil)
+                end)
+
+                net.cell.setEnabled(false)
+                for name in pairs(present) do detach(name) end
+                clean()
+                if not ok then error(err, 0) end
+            end)
+        end)
     end)
 
     describe("net.ping", function()
