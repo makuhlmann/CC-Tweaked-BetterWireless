@@ -64,6 +64,15 @@ describe("Cellular carriers", function()
         for _, stack in ipairs { one_stack, two_stack, cell.stack, neighbour.stack } do
             expect(net.not_for[stack] or 0):describe("Frames for others handed to #" .. stack.id):eq(0)
         end
+
+        -- Someone sends an attach in phone one's name: the cell sends its frames on the beacon channel again, which
+        -- every phone hears, but only until the phone's next packet, which says where it listens.
+        expect(cell.phones[1].dl_heard):eq(true)
+        cell.phones[1].dl_heard = false
+        net.not_for = {}
+        expect(net.ping(one_stack, ip("10.0.0.60"))):matches { done = true }
+        expect(cell.phones[1].dl_heard):eq(true)
+        expect(net.not_for[two_stack] or 0):eq(0)
         expect(net.errors):same {}
     end)
 

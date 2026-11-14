@@ -277,8 +277,8 @@ function Tower:radio(phone, message)
         local value = context.active and context.sealer:open(message.sealed)
         if type(value) ~= "table" then return end
         local link = context.link
-        -- The phone says it's listening on its own downlink channel: send it its frames there from now on. (Only
-        -- this one, and pings, which say so too: the phone may send other things before it hears of the channel.)
+        -- The phone says it's listening on its own downlink channel: send it its frames there from now on. (Its
+        -- packets, messages and pings say so too, once it has heard of the channel.)
         if value.dl ~= nil and value.dl == context.dl then context.dl_heard = true end
         if type(value.p) == "string" then
             -- Up the tunnel to the gateway.

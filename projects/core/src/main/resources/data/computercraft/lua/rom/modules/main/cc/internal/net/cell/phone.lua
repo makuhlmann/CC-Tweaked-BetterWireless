@@ -974,7 +974,8 @@ end
 function Phone:send_one(waiting)
     local here = self.here
     waiting.tries, waiting.sent = waiting.tries + 1, self.stack.clock()
-    self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ sms = { id = waiting.id, to = waiting.to, text = waiting.text } }) })
+    local sms = { id = waiting.id, to = waiting.to, text = waiting.text }
+    self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ sms = sms, dl = here.dl }) })
 end
 
 -- Send the messages the network hasn't said it has, again, while attached: all of them once we have service back, or
@@ -1086,7 +1087,9 @@ end
 function Phone:uplink(packet)
     if self.state ~= "attached" then return end
     local here = self.here
-    local sealed = here.sealer:seal({ p = codec.encode(packet) })
+    -- Saying which channel we listen on, so the cell sends there even if it had stopped (someone sent an attach in
+    -- our name, say).
+    local sealed = here.sealer:seal({ p = codec.encode(packet), dl = here.dl })
     if sealed then self:to_cell(here.cell, { op = "data", sealed = sealed }) end
 end
 

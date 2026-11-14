@@ -203,11 +203,12 @@ the design above:
   (`celld <core> band b3`), whichever of the network's carriers there has fewest cells. A cell which also serves
   another network keeps its carrier, telling that core which it is.
   - **Channels.** A cell sends its system information on its carrier's beacon channel (the middle of the block) and
-    listens on an uplink channel of its own, which the core picks and its system information names. Each phone attached
+    listens on an uplink channel of its own, which the core picks and its system information names (a carrier has
+    50: with more cells on one, some share, and hear each other's phones). Each phone attached
     to it gets a downlink channel of its own, the first which no other phone there has (with more than 49 phones,
     some share). The cell sends a phone's frames on the beacon channel until the phone says, sealed, that it listens
-    on its own channel (it says so when it hears it, and in each check that the cell still knows it), and after a
-    phone starts attaching again. So phones aren't woken by each other's packets, nor cells by each other's system
+    on its own channel (it says so when it hears it, and in each packet, message and check that the cell still knows
+    it), and after a phone starts attaching again. So phones aren't woken by each other's packets, nor cells by each other's system
     information, and the server isn't kept busy working out those links.
   - **Listening.** A phone which isn't attached listens on every carrier's beacon channel: 61, under a modem's 128.
     Attached, it listens on its cell's carrier, the carriers its own network (and those it treats as home, its
