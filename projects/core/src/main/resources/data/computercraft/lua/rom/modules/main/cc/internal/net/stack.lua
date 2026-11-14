@@ -15,6 +15,7 @@ to [`new`], so tests can connect several stacks together without any modems.
 
 local expect = require "cc.expect".expect
 local address = require "cc.net.address"
+local bands = require "cc.internal.net.bands"
 local link = require "cc.internal.net.link"
 local routing = require "cc.internal.net.routing"
 local udp = require "cc.internal.net.udp"
@@ -64,31 +65,26 @@ local INFINITY, usable, is_broadcast = routing.INFINITY, routing.usable, routing
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
 local EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST
 
--- Channels: a channel's number is its frequency in units of 100kHz. The low band is VHF, 136-174MHz (channels
--- 1360-1739), for range; the high band is 2.4GHz, 2400-2483.5MHz (channels 24000-24834). Each band's first channel is
--- its broadcast channel, and computers' unicast channels are the rest, by ID. Wired modems use the high band plan,
--- though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
-local BANDS = {
-    low = { first = 1360, last = 1739 },
-    high = { first = 24000, last = 24834 },
-}
+-- Channels: a channel's number is its frequency in units of 100kHz (see `cc.internal.net.bands`). The stack's own
+-- bands are low (VHF, 136-174MHz, channels 1360-1739), for range, and high (2.4GHz, channels 24000-24834). Each band's
+-- first channel is its broadcast channel, and computers' unicast channels are the rest, by ID. Wired modems use the
+-- high band plan, though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
+-- Other interfaces (a cellular network's, say) bring their own channels.
+local channels = bands.stack_channels
 
---- Get the channels used by a computer on a band.
---
--- @tparam number id The computer's ID.
--- @tparam string band `"low"` or `"high"`.
--- @treturn number The computer's unicast channel.
--- @treturn number The broadcast channel.
-local function channels(id, band)
-    local range = BANDS[band] or BANDS.high
-    return range.first + 1 + id % (range.last - range.first), range.first
-end
+--[[- The channels an interface on one of the stack's own bands uses: it listens on its unicast channel and the
+broadcast channel, sends to others on theirs, and asks for replies on its own.
 
-local function band_of(channel)
-    for name, range in pairs(BANDS) do
-        if channel >= range.first and channel <= range.last then return name end
-    end
-    return nil
+@tparam number id The computer's ID.
+@tparam string band `"low"` or `"high"`.
+@treturn table The plan, as [`Stack:add_interface`] takes it.
+]]
+local function stack_plan(id, band)
+    local unicast, broadcast = channels(id, band)
+    return {
+        band = band, unicast = unicast, broadcast = broadcast, reply = unicast, listen = { unicast, broadcast },
+        to = function(dst) return (channels(dst, band)) end,
+    }
 end
 
 local ERRORS = {
@@ -121,10 +117,12 @@ Stack.__index = Stack
     id = number,
     clock = function():number,
     transmit = function(modem:string, channel:number, reply:number, frame:table),
+    open? = function(modem:string, channel:number),
+    close? = function(modem:string, channel:number),
     wake = function(event:string, ...:any),
     log? = function(message:string),
-} options The computer's ID, a clock in seconds, how to send a frame, how to queue an event, and where to report
-errors in timers and handlers.
+} options The computer's ID, a clock in seconds, how to send a frame, how to open and close a channel on a modem as
+interfaces start and stop listening on it, how to queue an event, and where to report errors in timers and handlers.
 @treturn table The new stack.
 ]]
 local function new(options)
@@ -135,11 +133,15 @@ local function new(options)
         crypto = options.crypto,
         epoch = options.epoch or function() return options.clock() * 1000 end,
         _transmit = options.transmit,
+        _open = options.open,
+        _close = options.close,
         wake = options.wake,
         log = options.log or function() end,
 
         interfaces = {},
+        -- Interfaces by modem and name, and by modem and the channels they listen on.
         by_modem = {},
+        listening = {},
         protocols = {},
         error_handlers = {},
         address_lost = {},
@@ -172,26 +174,99 @@ local function new(options)
     return self
 end
 
---- Add an interface.
---
--- @tparam string name The interface's name.
--- @tparam string modem The modem's peripheral name.
--- @tparam string kind `"wired"`, `"wireless"` or `"ender"`.
--- @tparam string band `"low"` or `"high"`.
--- @treturn table The interface. Its `unicast` and `broadcast` channels must be opened on the modem.
-function Stack:add_interface(name, modem, kind, band)
-    if kind ~= "wireless" and kind ~= "ender" then band = "high" end
-    local unicast, broadcast = channels(self.id, band)
+--[[- Add an interface.
+
+An interface listens on some of the modem's channels, and sends each frame on a channel which depends on who it's for.
+On the stack's own bands, it listens on its unicast channel and the band's broadcast channel, and sends to other
+computers on theirs. Other interfaces bring their own plan: a cellular network's, say, where phones send on the
+uplink and listen on the downlink.
+
+@tparam string name The interface's name.
+@tparam string modem The modem's peripheral name.
+@tparam string kind `"wired"`, `"wireless"` or `"ender"`.
+@tparam string|{
+    band = string, listen = { number... }, broadcast? = number, reply = number,
+    to = function(id:number):number|nil, unicast? = number,
+} plan `"low"` or `"high"` for one of the stack's own bands (wired modems always use the high band's). Or a plan: the
+band's name, for people to read; the channels to listen on; the channel broadcasts go on, if any; the channel to ask
+for replies on; a function which gives the channel to send to a computer on (or `nil` if it can't be reached); and,
+if the interface has one, its own unicast channel, to show.
+@treturn table The interface. The stack opens its channels on the modem, through the `open` option it was made with.
+]]
+function Stack:add_interface(name, modem, kind, plan)
+    if type(plan) ~= "table" then
+        if kind ~= "wireless" and kind ~= "ender" then plan = "high" end
+        plan = stack_plan(self.id, plan)
+    end
+    local listening = self.listening[modem]
+    for _, channel in ipairs(plan.listen) do
+        local other = listening and listening[channel]
+        if other then error(("Channel %d is already %s's"):format(channel, other.name), 2) end
+    end
+
     local interface = {
-        name = name, modem = modem, kind = kind, band = band,
-        unicast = unicast, broadcast = broadcast,
+        name = name, modem = modem, kind = kind, band = plan.band,
+        unicast = plan.unicast, broadcast = plan.broadcast, reply = plan.reply, to = plan.to, listen = {},
         neighbours = {}, waiting = {}, neighbour_count = 0, waiting_count = 0,
         stats = { frames_in = 0, frames_out = 0, dropped = 0 },
     }
     self.interfaces[name] = interface
     self.by_modem[modem] = self.by_modem[modem] or {}
-    self.by_modem[modem][band] = interface
+    self.by_modem[modem][name] = interface
+    self:set_listening(name, plan.listen)
     return interface
+end
+
+--[[- Change the channels an interface listens on, opening and closing them on its modem as needed.
+
+Only one interface on a modem may listen on a channel.
+
+@tparam string name The interface's name.
+@tparam { number... } list The channels.
+]]
+function Stack:set_listening(name, list)
+    local interface = self.interfaces[name]
+    if not interface or not interface.modem then error("No interface named '" .. name .. "' with a modem", 2) end
+    local modem = interface.modem
+    local listening = self.listening[modem]
+    if not listening then
+        listening = {}
+        self.listening[modem] = listening
+    end
+
+    local wanted = {}
+    for _, channel in ipairs(list) do
+        local other = listening[channel]
+        if other and other ~= interface then
+            error(("Channel %d is already %s's"):format(channel, other.name), 2)
+        end
+        wanted[channel] = true
+    end
+
+    for channel in pairs(interface.listen) do
+        if not wanted[channel] then
+            interface.listen[channel] = nil
+            listening[channel] = nil
+            if self._close then self._close(modem, channel) end
+        end
+    end
+    for channel in pairs(wanted) do
+        if not interface.listen[channel] then
+            interface.listen[channel] = true
+            listening[channel] = interface
+            if self._open then self._open(modem, channel) end
+        end
+    end
+end
+
+--- Whether an interface listens on a channel of a modem.
+--
+-- @tparam string modem The modem's peripheral name.
+-- @tparam number channel The channel.
+-- @treturn boolean Whether a frame on that channel would be heard.
+function Stack:hears(modem, channel)
+    local listening = self.listening[modem]
+    return listening ~= nil and listening[channel] ~= nil
 end
 
 --[[- Add a virtual interface: one with no modem. Packets it sends go to a function, and packets it receives are given
@@ -223,8 +298,9 @@ end
 function Stack:remove_interface(name)
     local interface = self.interfaces[name]
     if not interface then return end
+    if interface.modem then self:set_listening(name, {}) end
     self.interfaces[name] = nil
-    if interface.modem and self.by_modem[interface.modem] then self.by_modem[interface.modem][interface.band] = nil end
+    if interface.modem and self.by_modem[interface.modem] then self.by_modem[interface.modem][name] = nil end
     if interface.address then self:lose_address(interface.address) end
 end
 
@@ -307,7 +383,9 @@ function Stack:remove_modem(modem)
         removed[#removed + 1] = interface.name
         if interface.address then self:lose_address(interface.address) end
     end
+    -- The modem has gone, and its channels with it.
     self.by_modem[modem] = nil
+    self.listening[modem] = nil
     table.sort(removed)
     return removed
 end
@@ -355,8 +433,13 @@ end
 function Stack:transmit(interface, id, kind, body, forwarded)
     -- Virtual interfaces have no frames: their packets go through send_on.
     if interface.virtual then return end
-    local channel = interface.broadcast
-    if id ~= BROADCAST_ID then channel = channels(id, interface.band) end
+    local channel
+    if id == BROADCAST_ID then channel = interface.broadcast else channel = interface.to(id) end
+    -- Some interfaces can't broadcast, or reach every computer (a phone only reaches cells it knows).
+    if not channel then
+        interface.stats.dropped = interface.stats.dropped + 1
+        return
+    end
     local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body, fwd = forwarded or nil }
     if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
 
@@ -371,7 +454,7 @@ function Stack:transmit(interface, id, kind, body, forwarded)
     end
 
     interface.stats.frames_out = interface.stats.frames_out + 1
-    self._transmit(interface.modem, channel, interface.unicast, frame)
+    self._transmit(interface.modem, channel, interface.reply or channel, frame)
 end
 
 --[[- Encrypt everything sent on an interface, and only accept frames encrypted with the same key.
@@ -415,9 +498,9 @@ end
 function Stack:receive(modem, channel, frame, signal)
     if type(frame) ~= "table" or frame.net ~= VERSION then return end
 
-    local bands = self.by_modem[modem]
-    local interface = bands and bands[band_of(channel)]
-    if not interface or (channel ~= interface.unicast and channel ~= interface.broadcast) then return end
+    local listening = self.listening[modem]
+    local interface = listening and listening[channel]
+    if not interface then return end
 
     -- Senders are computers' IDs: whole numbers. Anything else (NaN, say) would trip up whatever keeps track of them.
     local src, dst = frame.src, frame.dst
@@ -1080,9 +1163,12 @@ function Stack:interface_info()
         for _, neighbour in pairs(interface.neighbours) do
             if neighbour.expires > now then neighbours = neighbours + 1 end
         end
+        local listen = {}
+        for channel in pairs(interface.listen or {}) do listen[#listen + 1] = channel end
+        table.sort(listen)
         result[#result + 1] = {
             name = interface.name, modem = interface.modem, kind = interface.kind, band = interface.band,
-            id = self.id, unicast = interface.unicast, broadcast = interface.broadcast,
+            id = self.id, unicast = interface.unicast, broadcast = interface.broadcast, listen = listen,
             address = interface.address and address.format(interface.address),
             prefix = interface.prefix, duplicate = interface.duplicate, neighbours = neighbours,
             frames_in = interface.stats.frames_in, frames_out = interface.stats.frames_out, dropped = interface.stats.dropped,

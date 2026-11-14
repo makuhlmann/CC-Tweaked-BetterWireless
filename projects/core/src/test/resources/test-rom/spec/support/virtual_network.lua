@@ -10,8 +10,10 @@ need one link, "top", which [`add`] puts computers on.
 
 Links can be slow (`latency[link]`, in seconds), vary in speed so frames arrive out of order (`jitter[link]`, up to
 that many seconds more), lose frames (`loss[link]`, from 0 to 1) and deliver frames twice (`duplicate[link]`, from 0 to
-1). The network counts frames sent on each link (`frames[link]`) and events each computer queues
-(`wakes[stack][event]`), to measure floods.
+1). The network counts frames sent on each link (`frames[link]`), frames each computer is handed (`received[stack]`)
+and events each computer queues (`wakes[stack][event]`), to measure floods.
+
+As with real modems, a computer is only handed frames on channels it listens on.
 
 Who hears a frame can depend on where computers are: `reach(link, sender, receiver)`, if set, gives the signal strength
 a receiver hears a sender with, or `false` if it can't hear it at all. [`virtual_link`] joins two computers with
@@ -44,7 +46,7 @@ end
 return function()
     local self = {
         time = 0, queue = {}, stacks = {}, errors = {}, signals = {},
-        latency = {}, jitter = {}, loss = {}, duplicate = {}, frames = {}, wakes = {},
+        latency = {}, jitter = {}, loss = {}, duplicate = {}, frames = {}, wakes = {}, received = {},
         -- How many frames run() delivers, and how many steps advance() takes, before deciding something is looping.
         frame_limit = 1000, step_limit = 20000,
     }
@@ -171,7 +173,7 @@ return function()
                 local receivers = {}
                 local signals = {}
                 for _, stack in ipairs(self.stacks) do
-                    if stack ~= item.sender and stack.by_modem[item.link] then
+                    if stack ~= item.sender and stack:hears(item.link, item.channel) then
                         -- Who hears what may depend on where they are.
                         local signal = self.signals[item.link]
                         if self.reach then signal = self.reach(item.link, item.sender, stack) end
@@ -184,6 +186,7 @@ return function()
                 -- Each receiver gets its own copy, but a lone receiver can have the one made when it was sent.
                 for i, stack in ipairs(receivers) do
                     local frame = #receivers == 1 and item.frame or copy(item.frame)
+                    self.received[stack] = (self.received[stack] or 0) + 1
                     stack:receive(item.link, item.channel, frame, signals[i])
                 end
             end

@@ -220,6 +220,32 @@ Rednet listens on `id mod 65500`, which can land on another computer's unicast c
 other's messages, so this only costs the odd wasted wakeup. Every other channel is left for other programs. The ranges
 are fixed for now; settings to move them could be added if a server's programs conflict. Frames always carry a version field, so the stack ignores anything that isn't its own.
 
+**Interfaces with other plans.** Not every interface sends and listens on the same channels. Each has a *plan*: the
+channels it listens on, a function giving the channel to send to a computer on, a broadcast channel (if it may
+broadcast), and the channel to ask for replies on. The stack's own bands use the plan above. A cellular network's
+interfaces bring their own: phones send on a band's uplink and listen on its downlink, so phones never hear each
+other's frames and cells never hear each other's. The stack opens and closes an interface's channels on its modem as
+its plan changes (`Stack:set_listening`), so a computer only wakes for, and the server only works out links to, the
+channels it needs. Only one interface on a modem may listen on a channel. An interface which can't reach a computer
+(a phone, to anything but its cell) drops frames for it.
+
+**Bands** (`cc.internal.net.bands`): besides the stack's own, LTE's paired bands, with their real frequencies:
+
+| Band | Uplink, MHz | Downlink, MHz | Channels, uplink / downlink |
+|---|---|---|---|
+| 31 (450) | 452.5–457.5 | 462.5–467.5 | 4525–4575 / 4625–4675 |
+| 28 (700, as in Europe) | 703–733 | 758–788 | 7030–7330 / 7580–7880 |
+| 20 (800) | 832–862 | 791–821 | 8320–8620 / 7910–8210 |
+| 8 (900) | 880–915 | 925–960 | 8800–9150 / 9250–9600 |
+| 3 (1800) | 1710–1785 | 1805–1880 | 17100–17850 / 18050–18800 |
+| 1 (2100) | 1920–1980 | 2110–2170 | 19200–19800 / 21100–21700 |
+| 7 (2600) | 2500–2570 | 2620–2690 | 25000–25700 / 26200–26900 |
+
+In band 20 the uplink is above the downlink, as in LTE. Band 28 uses Europe's 2×30 MHz, as its full range would
+overlap band 20. Cells announce themselves on beacon channels on a raster coarser than the channels (as 5G's
+synchronisation raster is): the middle of each 5 MHz of a downlink, counted from its start. There are 61 across all
+the bands, so a phone can listen to every one at once, within a modem's 128 open channels.
+
 ### Frames
 
 A frame is the Lua table passed to `modem.transmit`:

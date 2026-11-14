@@ -34,6 +34,93 @@ describe("cc.internal.net.stack", function()
         expect(stack:add_interface("d", "d", "wired", "low")):matches { band = "high", unicast = 24006, broadcast = 24000 }
     end)
 
+    it("opens and closes the channels interfaces listen on", function()
+        local calls = {}
+        local stack = Stack.new {
+            id = 5, clock = function() return 0 end, transmit = function() end, wake = function() end,
+            open = function(modem, channel) calls[#calls + 1] = { "open", modem, channel } end,
+            close = function(modem, channel) calls[#calls + 1] = { "close", modem, channel } end,
+        }
+        stack:add_interface("a", "left", "wireless", "low")
+        table.sort(calls, function(a, b) return a[3] < b[3] end)
+        expect(calls):same { { "open", "left", 1360 }, { "open", "left", 1366 } }
+        expect(stack:hears("left", 1366)):eq(true)
+        expect(stack:hears("left", 1367)):eq(false)
+
+        calls = {}
+        stack:set_listening("a", { 1366, 1400 })
+        expect(calls):same { { "close", "left", 1360 }, { "open", "left", 1400 } }
+        expect(stack:hears("left", 1360)):eq(false)
+
+        -- Only one interface on a modem may listen on a channel.
+        expect.error(stack.add_interface, stack, "b", "left", "wireless", {
+            band = "b1", listen = { 1400 }, reply = 1400, to = function() return 1400 end,
+        }):str_match("Channel 1400 is already a's$")
+
+        calls = {}
+        stack:remove_interface("a")
+        table.sort(calls, function(a, b) return a[3] < b[3] end)
+        expect(calls):same { { "close", "left", 1366 }, { "close", "left", 1400 } }
+        expect(stack:hears("left", 1366)):eq(false)
+    end)
+
+    it("sends on the channels each interface's plan says", function()
+        -- A cell (10) and two phones (1 and 2), as a cellular band might have them: phones send on the uplink and
+        -- listen on the downlink, each on a channel of its own as well as the cell's beacon channel.
+        local net = network()
+        local cell, one, two = net.stack(10), net.stack(1), net.stack(2)
+        local downlink = { [1] = 21150, [2] = 21160 }
+        cell:add_interface("air", "air", "wireless", {
+            band = "b1", listen = { 19200 }, broadcast = 21125, reply = 19200,
+            to = function(id) return downlink[id] end,
+        })
+        for _, phone in ipairs { one, two } do
+            phone:add_interface("air", "air", "wireless", {
+                band = "b1", listen = { 21125, downlink[phone.id] }, reply = downlink[phone.id],
+                to = function(id) return id == 10 and 19200 or nil end,
+            })
+        end
+
+        local heard = {}
+        for _, stack in ipairs { cell, one, two } do
+            heard[stack] = {}
+            stack:on_frame("test", function(_, src, body) table.insert(heard[stack], { src, body }) end)
+        end
+
+        cell:send_frame("air", 1, "test", "for one")
+        cell:send_frame("air", -1, "test", "for all")
+        one:send_frame("air", 10, "test", "from one")
+        net.run()
+
+        expect(heard[one]):same { { 10, "for one" }, { 10, "for all" } }
+        expect(heard[two]):same { { 10, "for all" } }
+        expect(heard[cell]):same { { 1, "from one" } }
+        -- Phone two was never handed the frames which weren't for it, nor phone one's to the cell.
+        expect(net.received[two]):eq(1)
+
+        -- A phone can't broadcast, or reach another phone.
+        one:send_frame("air", -1, "test", "shout")
+        one:send_frame("air", 2, "test", "whisper")
+        net.run()
+        expect(heard[two]):same { { 10, "for all" } }
+        expect(one.interfaces.air.stats.dropped):eq(2)
+    end)
+
+    it("doesn't hand other computers frames which aren't for them", function()
+        local net = network()
+        local a = net.add(1, "10.0.0.1/24")
+        net.add(2, "10.0.0.2/24")
+        local bystander = net.add(3, "10.0.0.3/24")
+        -- Past the time new addresses are announced again.
+        net.advance(10)
+        expect(net.ping(a, ip("10.0.0.2"))):matches { done = true }
+
+        -- Now that they know each other, pings go straight to their channels.
+        local before = net.received[bystander]
+        expect(net.ping(a, ip("10.0.0.2"))):matches { done = true }
+        expect(net.received[bystander]):eq(before)
+    end)
+
     it("answers pings", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

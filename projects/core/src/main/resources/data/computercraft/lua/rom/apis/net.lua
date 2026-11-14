@@ -169,6 +169,15 @@ local function load()
             local ok, err = pcall(peripheral.call, modem, "transmit", channel, reply, frame)
             if not ok then log_error(err) end
         end,
+        open = function(modem, channel)
+            local ok, err = pcall(peripheral.call, modem, "open", channel)
+            if not ok then log_error(err) end
+        end,
+        close = function(modem, channel)
+            -- Rednet may listen on this computer's ID channel and its broadcast channels too: leave those open.
+            if channel == os.getComputerID() % 65500 or channel >= 65533 then return end
+            pcall(peripheral.call, modem, "close", channel)
+        end,
         wake = os.queueEvent,
         log = log_error,
     }
@@ -182,9 +191,10 @@ local function load()
     return stack
 end
 
+-- Open the channels an interface listens on again. The stack opens them itself as it starts listening; this is for
+-- when another program has closed them.
 local function open_channels(interface)
-    peripheral.call(interface.modem, "open", interface.unicast)
-    peripheral.call(interface.modem, "open", interface.broadcast)
+    for channel in pairs(interface.listen or {}) do peripheral.call(interface.modem, "open", channel) end
 end
 
 local function stop_dhcp(name, release)
@@ -360,8 +370,7 @@ local function apply_passphrase(name, passphrase)
 end
 
 local function add_interface(name, modem, kind, band)
-    local interface = stack:add_interface(name, modem, kind, band)
-    open_channels(interface)
+    stack:add_interface(name, modem, kind, band)
     -- Before the address, so the first announcement is encrypted too.
     apply_passphrase(name, settings.get("net." .. name .. ".psk"))
     local ok, err = apply(name, settings.get("net." .. name .. ".address"))
