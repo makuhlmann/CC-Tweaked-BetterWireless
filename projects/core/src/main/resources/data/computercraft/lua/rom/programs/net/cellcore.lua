@@ -29,6 +29,8 @@ local function usage()
     print(name .. " network <network> core <core>|none")
     print(name .. " network <network> forget")
     print(name .. " numbers <prefix>")
+    print(name .. " spectrum [carrier...]")
+    print(name .. " beacon [seconds]")
     print(name .. " remote <core> <command...>")
 end
 
@@ -107,7 +109,7 @@ end
 
 local known = {
     status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1, networks = 1,
-    network = 1, numbers = 1, stop = 1, restart = 1,
+    network = 1, numbers = 1, spectrum = 1, beacon = 1, stop = 1, restart = 1,
     -- As older versions had them: they show or change agreements with other networks, as 'network' does.
     roaming = 1, carry = 1, uncarry = 1, partner = 1, peers = 1, peer = 1, unpeer = 1,
 }
@@ -214,6 +216,7 @@ function commands.cells()
         print("Connected:")
         for _, cell in ipairs(status.cells) do
             print(("  #%d from %s, area %s, since %s"):format(cell.id, cell.address, tostring(cell.area or 0), since(cell.since)))
+            if cell.carrier then print(("    on %s, reached on channel %d"):format(cell.carrier, cell.ul)) end
             -- A relay: its backhaul goes through other cells.
             if cell.path and #cell.path > 0 then
                 local through = {}
@@ -544,6 +547,23 @@ function commands.numbers(prefix)
     if not prefix then return usage() end
     request({ op = "numbers", prefix = prefix })
     print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
+end
+
+-- See or set the carriers this network's cells use.
+function commands.spectrum(...)
+    local carriers = { ... }
+    local reply = request({ op = "spectrum", carriers = #carriers > 0 and carriers or nil })
+    print("Carriers: " .. table.concat(reply.carriers, ", "))
+    if reply.picked then print("(Picked from this network's name, as none were set.)") end
+    if #carriers > 0 then print("Cells move to them when they next connect.") end
+end
+
+-- See or set how often this network's cells send system information.
+function commands.beacon(seconds)
+    local interval = seconds and tonumber(seconds)
+    if seconds and not interval then return usage() end
+    local reply = request({ op = "beacon", interval = interval })
+    print(("Cells send system information every %s seconds."):format(reply.interval))
 end
 
 function commands.log()

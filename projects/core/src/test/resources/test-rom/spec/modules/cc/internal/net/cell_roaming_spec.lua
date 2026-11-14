@@ -507,7 +507,7 @@ describe("Roaming", function()
         net.remove(beta.towers[1].stack)
         net.remove(beta.towers[2].stack)
         local rogue = net.stack(66)
-        net.connect(rogue, "air", nil, "wireless")
+        local rogue_radio = beta.radio(rogue)
         acme.positions[66] = 300
         local rogue_private, rogue_public = crypto.generateKeyPair("ed25519")
         local fake = certificate.encode(certificate.issue {
@@ -516,9 +516,9 @@ describe("Roaming", function()
         })
         local function beacon()
             rogue:schedule(1, beacon)
-            rogue:send_frame("air", -1, common.FRAME, common.make_sib {
+            rogue:send_frame(rogue_radio, -1, common.FRAME, common.make_sib {
                 network = "BETA", cell = 66, area = 1, load = 0, time = acme.now(), certificate = fake,
-                sign = function(data) return crypto.sign(rogue_private, data) end,
+                sign = function(data) return crypto.sign(rogue_private, data) end, ul = beta.uplink, interval = 1,
             })
         end
         beacon()

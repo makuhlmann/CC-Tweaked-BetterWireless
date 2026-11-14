@@ -12,9 +12,14 @@ so it can be restarted, and its cells and other networks' cores join it again by
 
 Phones hear cells depending on how far away they are: `positions[id]` is where each computer is along a line.
 Several operators can share the air and the backhaul, to test roaming: give the second one `join`, the first.
+
+Each operator has carriers of its own (ACME band 20's first, BETA its second, and so on), and its cells send their
+system information every second, so tests needn't wait long: `carriers` and `interval` say otherwise. Phones and cells
+listen on the channels their carriers give them, as on a real modem, and `setup.inject` puts a frame on one of them.
 ]]
 
 local address = require "cc.net.address"
+local bands = require "cc.internal.net.bands"
 local noise = require "cc.internal.net.noise"
 local tcp = require "cc.internal.net.tcp"
 local files = require "cc.internal.net.files"
@@ -37,6 +42,9 @@ local CONTROL_PORT = 2123
 local DIR = "/.cell-harness"
 local made = 0
 fs.delete(DIR)
+
+-- Each test operator's carrier, so neighbouring networks don't share one unless a test says so.
+local CARRIERS = { ACME = "b20/1", BETA = "b20/2", MVNO = "b20/3", GAMMA = "b20/4" }
 
 local ip = helpers.ip
 local hex = helpers.hex
@@ -161,10 +169,11 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam { number... } cell_positions Where each cell is.
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
-    core_is_cell? = boolean, numbers? = string,
+    core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number, bands? = { string... },
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
-its first cell is on the core's computer; and its number prefix.
+its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
+cells send system information; and the band each cell asks to be on, by its index.
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -253,6 +262,7 @@ local function operator(cell_positions, options)
         local addr = address.format(stack.interfaces.backhaul.address)
         towers[i] = {
             index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address, public = cell_public,
+            band = options.bands and options.bands[i],
             sign = function(data) return crypto.sign(cell_private, data) end, shared = {},
             driver = new_driver(net, stack, ("%s's cell #%d"):format(name, id), key, addr),
         }
@@ -260,7 +270,14 @@ local function operator(cell_positions, options)
     end
     setup.towers = towers
 
-    files.write_table(fs.combine(dir, "config"), { network = name, prefix = prefix, number_prefix = options.numbers })
+    local spectrum = {}
+    for i, carrier in ipairs(options.carriers or { CARRIERS[name] or "b20/6" }) do
+        spectrum[i] = assert(bands.parse_carrier(carrier), carrier)
+    end
+    files.write_table(fs.combine(dir, "config"), {
+        network = name, prefix = prefix, number_prefix = options.numbers, spectrum = spectrum,
+        beacon_interval = options.interval or 1,
+    })
     files.write_table(fs.combine(dir, "cells"), allowed)
 
     local function start_core()
@@ -299,13 +316,15 @@ local function operator(cell_positions, options)
         return function(welcome, control)
             if not entry.tower or entry.tower.stopped then
                 entry.tower = cell_tower.new {
-                    stack = entry.stack, crypto = crypto, interface = "air", area = welcome.area, sign = entry.sign,
-                    epoch = now, can_serve = entry.can_serve,
+                    stack = entry.stack, crypto = crypto, modem = "air", kind = "wireless", area = welcome.area,
+                    sign = entry.sign, epoch = now, can_serve = entry.can_serve,
+                    carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
+                    fixed_interval = welcome.fixed_interval,
                 }
             end
             return entry.tower:add_network(welcome.network, {
                 certificate = welcome.certificate, core = ip(welcome.core), tunnel_key = welcome.tunnel_key,
-                control = control,
+                control = control, carriers = welcome.carriers,
             })
         end
     end
@@ -313,6 +332,7 @@ local function operator(cell_positions, options)
     local function start_cell(entry, driver, cores, connect_to)
         local service = cell_service.new {
             cores = cores, area = 1, id = entry.id, identity = driver.identity, fingerprint = fingerprint,
+            band = entry.band,
             signing = hex(entry.public), start_tower = start_tower(entry), sleep = driver.sleep, wake = driver.poke,
             connect = connect_to or function(text) return dial(driver, text) end,
         }
@@ -505,7 +525,7 @@ local function operator(cell_positions, options)
         local sim = phone_options.sim or x25519()
         if subscribed ~= false then setup.subscribers[hex(sim.public)] = { id = name .. "-" .. id, number = tostring(id) } end
         local phone = cell_phone.new {
-            stack = stack, crypto = crypto, interface = "air", epoch = now, sim = sim,
+            stack = stack, crypto = crypto, modem = "air", kind = "wireless", epoch = now, sim = sim,
             operator = phone_options.activated ~= false and { network = name, key = operator_key.public, signing = signing_public } or nil,
             on_message = phone_options.on_message, on_activated = phone_options.on_activated,
             on_sent = phone_options.on_sent, partners = phone_options.partners, selection = phone_options.selection,
@@ -557,6 +577,40 @@ local function operator(cell_positions, options)
     end
 
     setup.add_phone, setup.add_relay = add_phone, add_relay
+
+    --[[- Put a frame on the air, on a channel a computer's phone (or cell) listens on, as anyone in range could.
+
+    @tparam table stack The computer's network stack.
+    @param frame The frame.
+    @tparam[opt="phone"] string role `"phone"` or `"cell"`: which of the computer's interfaces should hear it.
+    ]]
+    function setup.inject(stack, frame, role)
+        local interface = stack.interfaces[role == "cell" and cell_tower.INTERFACE or cell_phone.INTERFACE]
+        local channel = interface and next(interface.listen)
+        if not channel then error("That computer isn't listening as a " .. (role or "phone"), 2) end
+        net.inject("air", channel, frame)
+    end
+
+    -- This network's first carrier (its beacon channel), and an uplink channel on it for made-up cells, away from those
+    -- real cells get.
+    setup.carrier = spectrum[1]
+    setup.uplink = bands.carrier(spectrum[1]).uplink[2]
+
+    --[[- Let a computer send as a cell of this network's first carrier would: system information on its beacon channel,
+    and anything else to a phone there too.
+
+    @tparam table stack The computer's network stack.
+    @treturn string The name of the interface to send on.
+    ]]
+    function setup.radio(stack)
+        local carrier = bands.carrier(setup.carrier)
+        stack:add_interface("radio", "air", "wireless", {
+            band = carrier.band, listen = { setup.uplink }, broadcast = setup.carrier, reply = setup.uplink,
+            to = function() return setup.carrier end,
+        })
+        return "radio"
+    end
+
     return setup
 end
 

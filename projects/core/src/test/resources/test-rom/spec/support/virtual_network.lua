@@ -10,8 +10,9 @@ need one link, "top", which [`add`] puts computers on.
 
 Links can be slow (`latency[link]`, in seconds), vary in speed so frames arrive out of order (`jitter[link]`, up to
 that many seconds more), lose frames (`loss[link]`, from 0 to 1) and deliver frames twice (`duplicate[link]`, from 0 to
-1). The network counts frames sent on each link (`frames[link]`), frames each computer is handed (`received[stack]`)
-and events each computer queues (`wakes[stack][event]`), to measure floods.
+1). The network counts frames sent on each link (`frames[link]`), frames each computer is handed (`received[stack]`),
+by whom they were sent (`from[stack][id]`) and how many were for another computer (`not_for[stack]`), and events each
+computer queues (`wakes[stack][event]`), to measure floods.
 
 As with real modems, a computer is only handed frames on channels it listens on.
 
@@ -46,7 +47,7 @@ end
 return function()
     local self = {
         time = 0, queue = {}, stacks = {}, errors = {}, signals = {},
-        latency = {}, jitter = {}, loss = {}, duplicate = {}, frames = {}, wakes = {}, received = {},
+        latency = {}, jitter = {}, loss = {}, duplicate = {}, frames = {}, wakes = {}, received = {}, from = {}, not_for = {},
         -- How many frames run() delivers, and how many steps advance() takes, before deciding something is looping.
         frame_limit = 1000, step_limit = 20000,
     }
@@ -187,6 +188,15 @@ return function()
                 for i, stack in ipairs(receivers) do
                     local frame = #receivers == 1 and item.frame or copy(item.frame)
                     self.received[stack] = (self.received[stack] or 0) + 1
+                    if item.sender then
+                        local from = self.from[stack] or {}
+                        self.from[stack] = from
+                        from[item.sender.id] = (from[item.sender.id] or 0) + 1
+                    end
+                    local dst = type(frame) == "table" and frame.dst
+                    if type(dst) == "number" and dst ~= -1 and dst ~= stack.id then
+                        self.not_for[stack] = (self.not_for[stack] or 0) + 1
+                    end
                     stack:receive(item.link, item.channel, frame, signals[i])
                 end
             end

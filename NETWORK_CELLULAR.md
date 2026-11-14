@@ -22,7 +22,7 @@ must keep running when nobody is nearby, so they call `os.setKeepLoaded(true)` (
 
 ## Radio
 
-- All cellular radio traffic uses the low band, for range.
+- All cellular radio traffic uses the low band, for range. (As built, cells use LTE's bands instead: see "Carriers".)
 - Cells broadcast system information on control channel 1001 every second. This is what `beacon.lua` does today.
 - Everything else goes between a phone and its cell over the link layer's unicast channels, as frames of type `cell`.
 
@@ -196,9 +196,36 @@ The modules are `cc.internal.net.cell.common`, `phone`, `tower`, `core`, `core_s
 programs `cell` (phones), `celld` (cells, in place of `beacon.lua`) and `cellcore` (the core). Where they differ from
 the design above:
 
-- **System information** goes out as a link-layer `cell` frame on the low band's broadcast channel (1360, 136 MHz),
-  rather than on a channel of its own: the stack only hears channels it has opened. A cell's certificate is issued by the core when the cell
-  connects, for the cell's own Ed25519 key (`cell.tower` in its enclave), signed by the operator's (`cell.signing`).
+- **Carriers** (version 4 of the protocols). Cells and phones use LTE's paired bands (NETWORK_STACK.md, Channels): a
+  network's cells are on its carriers, 5 MHz blocks of a band, named like `b20/1` (band 20's first, 791–796 MHz down
+  and 832–837 MHz up), up to 8 of them (`cellcore spectrum b20/1 b3/2`; with none set, one of band 20's picked by the
+  network's name). A cell is on one carrier, which its first core picks when it connects, in the band it asks for
+  (`celld <core> band b3`), whichever of the network's carriers there has fewest cells. A cell which also serves
+  another network keeps its carrier, telling that core which it is.
+  - **Channels.** A cell sends its system information on its carrier's beacon channel (the middle of the block) and
+    listens on an uplink channel of its own, which the core picks and its system information names. Each phone attached
+    to it gets a downlink channel of its own, the first which no other phone there has (with more than 49 phones,
+    some share). The cell sends a phone's frames on the beacon channel until the phone says, sealed, that it listens
+    on its own channel (it says so when it hears it, and in each check that the cell still knows it), and after a
+    phone starts attaching again. So phones aren't woken by each other's packets, nor cells by each other's system
+    information, and the server isn't kept busy working out those links.
+  - **Listening.** A phone which isn't attached listens on every carrier's beacon channel: 61, under a modem's 128.
+    Attached, it listens on its cell's carrier, the carriers its own network (and those it treats as home, its
+    cell's network, and partners' while roaming) were heard naming in the last five minutes, and its own downlink
+    channel; and on every carrier for five seconds each minute, to find other networks and new carriers. Two networks
+    on the same carrier hear each other's cells, so neighbouring networks should be given different ones.
+  - **System information** names, for each network, the carriers its cells use, so a phone listens for all of them
+    as soon as it hears one cell (as LTE's SIB5 does), and says how often it's sent. Cells send it every 2 seconds
+    unless the network's core says otherwise (`cellcore beacon 3`, 0.5 to 10 seconds) or the cell does
+    (`celld <core> interval 4`), starting at a random moment so cells which start together don't send together.
+    Phones take a cell to be gone after three intervals of silence (but never less than four seconds), and hand over
+    after a stronger cell has been so for an interval (but never less than two seconds). Anything sealed from a
+    phone's own cell counts as hearing it, and its signal too.
+- **System information** goes out as a link-layer `cell` frame on the cell's carrier's beacon channel. A cell's
+  certificate is issued by the core when the cell connects, for the cell's own Ed25519 key (`cell.tower` in its
+  enclave), signed by the operator's (`cell.signing`). Version 4 signs the cell's uplink channel, its interval and each
+  network's carriers too, and has room for a position and for saying the cell only carries messages (for later); a
+  phone ignores system information without a fit uplink channel and interval.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both

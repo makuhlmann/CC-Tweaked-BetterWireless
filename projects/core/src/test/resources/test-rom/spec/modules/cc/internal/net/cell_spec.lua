@@ -59,11 +59,11 @@ describe("Cellular networks", function()
         -- Its own network's cell is out of reach: there's only a newer one, which says things this phone can't read.
         local setup = operator { 1000 }
         local newer = setup.net.stack(66)
-        setup.net.connect(newer, "air", nil, "wireless")
+        local radio = setup.radio(newer)
         setup.positions[66] = 0
         for t = 0, 4 do
             newer:schedule(t, function()
-                newer:send_frame("air", -1, common.FRAME, { op = "sib", v = common.VERSION + 1, cell = 66, layout = "new" })
+                newer:send_frame(radio, -1, common.FRAME, { op = "sib", v = common.VERSION + 1, cell = 66, layout = "new" })
             end)
         end
         local phone = setup.add_phone(1, 0)
@@ -78,6 +78,7 @@ describe("Cellular networks", function()
         -- Cells say which version they speak.
         local sib = common.make_sib {
             network = "ACME", cell = 1, area = 0, load = 0, time = 0, certificate = "c", sign = function() return "" end,
+            ul = 8320, interval = 1,
         }
         expect(sib.v):eq(common.VERSION)
         expect({ common.is_newer(common.VERSION), common.is_newer(common.VERSION + 1), common.is_newer("3") }):same {
@@ -96,7 +97,7 @@ describe("Cellular networks", function()
         local function sib(time, load)
             return common.make_sib {
                 network = "ACME", cell = 5, area = 1, load = load or 0, time = time, certificate = cert,
-                sign = function(data) return crypto.sign(cell_private, data) end,
+                sign = function(data) return crypto.sign(cell_private, data) end, ul = 8320, interval = 1,
             }
         end
 
@@ -131,7 +132,7 @@ describe("Cellular networks", function()
         local setup = operator { 80 }
         -- A rogue tower, closer, with a certificate it made itself.
         local rogue = setup.net.stack(66)
-        setup.net.connect(rogue, "air", nil, "wireless")
+        local rogue_radio = setup.radio(rogue)
         setup.positions[66] = 0
         local rogue_private, rogue_public = crypto.generateKeyPair("ed25519")
         local fake = certificate.encode(certificate.issue {
@@ -140,16 +141,16 @@ describe("Cellular networks", function()
         })
         for t = 0, 4 do
             rogue:schedule(t, function()
-                rogue:send_frame("air", -1, common.FRAME, common.make_sib {
+                rogue:send_frame(rogue_radio, -1, common.FRAME, common.make_sib {
                     network = "ACME", cell = 66, area = 1, load = 0, time = setup.now(), certificate = fake,
-                    sign = function(data) return crypto.sign(rogue_private, data) end,
+                    sign = function(data) return crypto.sign(rogue_private, data) end, ul = setup.uplink, interval = 1,
                 })
             end)
         end
 
         -- And a cell of another network.
         local other = setup.net.stack(77)
-        setup.net.connect(other, "air", nil, "wireless")
+        local other_radio = setup.radio(other)
         setup.positions[77] = 40
         local other_private, other_public = crypto.generateKeyPair("ed25519")
         local other_certificate = certificate.encode(certificate.issue {
@@ -158,9 +159,9 @@ describe("Cellular networks", function()
         })
         for t = 0, 4 do
             other:schedule(t, function()
-                other:send_frame("air", -1, common.FRAME, common.make_sib {
+                other:send_frame(other_radio, -1, common.FRAME, common.make_sib {
                     network = "BETA", cell = 77, area = 2, load = 0.5, time = setup.now(), certificate = other_certificate,
-                    sign = function(data) return crypto.sign(other_private, data) end,
+                    sign = function(data) return crypto.sign(other_private, data) end, ul = setup.uplink - 1, interval = 1,
                 })
             end)
         end
@@ -300,10 +301,10 @@ describe("Cellular networks", function()
         setup.net.run()
         local forwarded = setup.core_stack.forwarded
 
-        setup.net.inject("air", setup.towers[1].stack.interfaces.air.unicast, captured)
+        setup.inject(setup.towers[1].stack, captured, "cell")
         local changed = copy(captured)
         changed.body.sealed.ct = changed.body.sealed.ct:sub(1, -2) .. "x"
-        setup.net.inject("air", setup.towers[1].stack.interfaces.air.unicast, changed)
+        setup.inject(setup.towers[1].stack, changed, "cell")
         setup.net.advance(1)
         expect(setup.core_stack.forwarded):eq(forwarded)
         expect(phone.state):eq("attached")
@@ -479,10 +480,10 @@ describe("Cellular networks", function()
                     local message = { op = op }
                     for k, v in pairs(template) do message[k] = v end
                     message[field] = value
-                    for _, target in ipairs { setup.towers[1].stack, stack } do
-                        setup.net.inject("air", target.interfaces.air.unicast, {
-                            net = 1, src = 9, dst = target.id, type = common.FRAME, body = message,
-                        })
+                    for _, target in ipairs { { setup.towers[1].stack, "cell" }, { stack, "phone" } } do
+                        setup.inject(target[1], {
+                            net = 1, src = 9, dst = target[1].id, type = common.FRAME, body = message,
+                        }, target[2])
                         count = count + 1
                     end
                 end
@@ -490,7 +491,7 @@ describe("Cellular networks", function()
             setup.net.advance(0.2)
         end
         for _, value in ipairs(bad) do
-            setup.net.inject("air", stack.interfaces.air.unicast, { net = 1, src = 11, dst = 1, type = common.FRAME, body = value })
+            setup.inject(stack, { net = 1, src = 11, dst = 1, type = common.FRAME, body = value })
         end
         setup.net.advance(2)
 

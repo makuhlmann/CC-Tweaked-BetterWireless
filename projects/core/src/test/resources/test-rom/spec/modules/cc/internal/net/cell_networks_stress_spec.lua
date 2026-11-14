@@ -31,10 +31,19 @@ describe("Several cellular networks, under stress,", function()
 
     local reaches_server = helpers.reaches_server
 
-    -- A frame on the air which says it's from a computer it isn't from.
-    local function spoof(net, target, src, body)
-        net.inject("air", target.interfaces.air.unicast, { net = 1, src = src, dst = target.id, type = common.FRAME, body = body })
+    -- A channel a computer's phone (or cell) listens on.
+    local function listened(stack, role)
+        local interface = stack.interfaces[role == "cell" and "cell.tower" or "cell.phone"]
+        return assert(interface and next(interface.listen), "Not listening")
     end
+
+    -- A frame on the air which says it's from a computer it isn't from.
+    local function spoof(net, target, src, body, role)
+        net.inject("air", listened(target, role), { net = 1, src = src, dst = target.id, type = common.FRAME, body = body })
+    end
+
+    -- An uplink channel on band 20's first carrier, for made-up cells.
+    local UPLINK = 8320
 
     local NIL = helpers.NIL
     local BAD = helpers.bad_values({ "a network's name", "BETA" }, { "our network's name", "ACME" })
@@ -291,9 +300,12 @@ describe("Several cellular networks, under stress,", function()
                 local id = 3000 + (round * cells + i) % 5000
                 local networks = {}
                 for n = 1, names do networks[n] = { network = ("FAKE%d-%d"):format(round, (i * names + n) % 977) } end
-                net.inject("air", target.interfaces.air.broadcast, {
+                net.inject("air", listened(target), {
                     net = 1, src = id, dst = -1, type = common.FRAME,
-                    body = { op = "sib", cell = id, area = 1, load = 0, time = 1.7e12 + net.time * 1000, networks = networks },
+                    body = {
+                        op = "sib", cell = id, area = 1, load = 0, time = 1.7e12 + net.time * 1000, networks = networks,
+                        ul = UPLINK, interval = 1,
+                    },
                 })
             end
         end
@@ -353,13 +365,19 @@ describe("Several cellular networks, under stress,", function()
             for round = 1, 120 do
                 flood(net, stack, round, 12, 8)
                 -- Some say they're our own network's, or our cell, without being able to sign for it.
-                net.inject("air", stack.interfaces.air.broadcast, {
+                net.inject("air", listened(stack), {
                     net = 1, src = 3000 + round, dst = -1, type = common.FRAME,
-                    body = { op = "sib", cell = 3000 + round, area = 1, load = 0, time = acme.now(), networks = { { network = "ACME" } } },
+                    body = {
+                        op = "sib", cell = 3000 + round, area = 1, load = 0, time = acme.now(), networks = { { network = "ACME" } },
+                        ul = UPLINK, interval = 1,
+                    },
                 })
-                net.inject("air", stack.interfaces.air.broadcast, {
+                net.inject("air", listened(stack), {
                     net = 1, src = phone.cell, dst = -1, type = common.FRAME,
-                    body = { op = "sib", cell = phone.cell, area = 1, load = 0, time = acme.now(), networks = { { network = "FAKE" } } },
+                    body = {
+                        op = "sib", cell = phone.cell, area = 1, load = 0, time = acme.now(), networks = { { network = "FAKE" } },
+                        ul = UPLINK, interval = 1,
+                    },
                 })
                 net.advance(1)
                 if round % 10 == 0 then yield() end
@@ -420,10 +438,11 @@ describe("Several cellular networks, under stress,", function()
                 return common.make_sib {
                     cell = entry.id, area = 1, load = 0, time = acme.now(), sign = entry.sign,
                     networks = { { network = "ACME", certificate = entry.certificate } },
+                    ul = entry.tower.ul, interval = entry.tower.interval,
                 }
             end
             local function send(body)
-                net.inject("air", stack.interfaces.air.broadcast, { net = 1, src = entry.id, dst = -1, type = common.FRAME, body = body })
+                net.inject("air", listened(stack), { net = 1, src = entry.id, dst = -1, type = common.FRAME, body = body })
             end
             local sent = 0
             for _, bad in ipairs(BAD) do
@@ -499,12 +518,12 @@ describe("Several cellular networks, under stress,", function()
                     for _, bad in ipairs(BAD) do
                         -- As a stranger, and as each of the phones it serves.
                         for _, src in ipairs { 999, 1, 4 } do
-                            spoof(net, cell, src, with(template, field, bad[2]))
+                            spoof(net, cell, src, with(template, field, bad[2]), "cell")
                             sent = sent + 1
                         end
                     end
                 end
-                for _, src in ipairs { 999, 1, 4 } do spoof(net, cell, src, template) end
+                for _, src in ipairs { 999, 1, 4 } do spoof(net, cell, src, template, "cell") end
                 net.advance(1)
                 yield()
             end

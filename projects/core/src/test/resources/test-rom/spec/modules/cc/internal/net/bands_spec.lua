@@ -72,6 +72,33 @@ describe("cc.internal.net.bands", function()
         end
     end)
 
+    it("names carriers, and finds the carrier a channel is in", function()
+        expect(bands.carrier_name(7935)):eq("b20/1")
+        expect(bands.carrier_name(7936)):eq(nil)
+        expect(bands.parse_carrier("b20/2")):eq(7985)
+        expect(bands.parse_carrier("B3")):eq(18075)
+        expect(bands.parse_carrier("b20/7")):eq(nil)
+        expect(bands.parse_carrier("low")):eq(nil)
+        expect(bands.parse_carrier(5)):eq(nil)
+
+        -- Downlink and uplink channels both belong to their carrier.
+        expect({ bands.carrier_of(7950) }):same { 7935, "b20" }
+        expect({ bands.carrier_of(8330) }):same { 7935, "b20" }
+        expect({ bands.carrier_of(8380) }):same { 7985, "b20" }
+        expect(bands.carrier(7935)):same { downlink = { 7910, 7959 }, uplink = { 8320, 8369 }, band = "b20" }
+        expect(bands.carrier(7936)):eq(nil)
+        -- Channels of the stack's own bands, and band 31's last, which isn't a whole block, are in none.
+        expect(bands.carrier_of(1500)):eq(nil)
+        expect(bands.carrier_of(4675)):eq(nil)
+        expect(bands.carrier_of("7935")):eq(nil)
+
+        -- Every beacon channel is its own carrier's.
+        for _, channel in ipairs(bands.beacon_channels()) do
+            expect(bands.carrier_of(channel)):eq(channel)
+            expect(bands.parse_carrier(bands.carrier_name(channel))):eq(channel)
+        end
+    end)
+
     it("gives callers copies", function()
         local band = bands.get("b1")
         band.downlink[1] = 0

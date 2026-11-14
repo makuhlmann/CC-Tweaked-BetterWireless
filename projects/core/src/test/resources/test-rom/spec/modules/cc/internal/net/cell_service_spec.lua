@@ -961,6 +961,15 @@ describe("Cellular services", function()
             return env
         end
 
+        -- What a core says about the cell's radio: band 20's first carrier, its first uplink channel.
+        local RADIO = { carrier = 7935, ul = 8320, interval = 1, carriers = { 7935 } }
+        local function welcome(fields)
+            local result = {}
+            for k, v in pairs(RADIO) do result[k] = v end
+            for k, v in pairs(fields) do result[k] = v end
+            return result
+        end
+
         it("waits to be allowed, serves, and connects again when it loses the core", function()
             local env = cell_setup()
             run(env.net, { env.service }, { function()
@@ -976,12 +985,13 @@ describe("Cellular services", function()
                     links = { { core = "core.acme", state = "waiting" } },
                 }
 
-                core:send({ network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
+                core:send(welcome { network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
                 wait_until(function() return env.service:info().state == "serving" end)
                 expect(env.service:info().network):eq("ACME")
                 local tower = env.towers[1]
                 expect(tower.welcome):same {
                     network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32), core = "10.0.0.1", area = 3,
+                    carrier = 7935, ul = 8320, interval = 1, fixed_interval = false, carriers = { 7935 },
                 }
 
                 -- Control messages go both ways.
@@ -1008,8 +1018,8 @@ describe("Cellular services", function()
                 local acme, beta = env.connections[1], env.connections[2]
                 expect(acme:receive(5).role):eq("cell")
                 expect(beta:receive(5).role):eq("cell")
-                acme:send({ network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
-                beta:send({ network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
+                acme:send(welcome { network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                beta:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
                 wait_until(function() return env.service:info().links[1].state == "serving" and env.service:info().links[2].state == "serving" end)
                 expect(env.service:info().links):same {
                     { core = "core.acme", state = "serving", network = "ACME" },
@@ -1033,7 +1043,7 @@ describe("Cellular services", function()
                 -- Another core of a network it serves already is one too many.
                 wait_until(function() return env.connections[3] end)
                 env.connections[3]:receive(5)
-                env.connections[3]:send({ network = "ACME", certificate = "c", tunnel_key = ("c"):rep(32) })
+                env.connections[3]:send(welcome { network = "ACME", certificate = "c", tunnel_key = ("c"):rep(32) })
                 wait_until(function() return env.service:info().links[2].state == "refused" end)
                 expect(env.service:info().links[2].error):eq("This cell serves ACME through the core core.acme already")
                 expect(#env.towers):eq(2)
@@ -1044,25 +1054,34 @@ describe("Cellular services", function()
             -- What a core says is broadcast every second with the other networks' parts, so a name or certificate
             -- which is far too long would keep the whole cell off the air.
             local unfit = {
-                { network = "BE TA", certificate = "b", tunnel_key = ("k"):rep(32) },
-                { network = ("B"):rep(5000), certificate = "b", tunnel_key = ("k"):rep(32) },
-                { network = "", certificate = "b", tunnel_key = ("k"):rep(32) },
-                { network = 7, certificate = "b", tunnel_key = ("k"):rep(32) },
-                { network = "BETA", certificate = ("c"):rep(100000), tunnel_key = ("k"):rep(32) },
-                { network = "BETA", certificate = {}, tunnel_key = ("k"):rep(32) },
-                { network = "BETA", certificate = "b", tunnel_key = "short" },
-                { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(33) },
-                { network = "BETA", certificate = "b" },
+                welcome { network = "BE TA", certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = ("B"):rep(5000), certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = "", certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = 7, certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = "BETA", certificate = ("c"):rep(100000), tunnel_key = ("k"):rep(32) },
+                welcome { network = "BETA", certificate = {}, tunnel_key = ("k"):rep(32) },
+                welcome { network = "BETA", certificate = "b", tunnel_key = "short" },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(33) },
+                welcome { network = "BETA", certificate = "b" },
+                -- Radio the cell couldn't use: no carrier, a channel which isn't one's beacon channel, an uplink
+                -- channel on another carrier (or a downlink one), an interval too long, and carriers which aren't.
+                { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), ul = 8320, interval = 1, carriers = { 7935 } },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), carrier = 7936 },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), ul = 8380 },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), ul = 7920 },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), interval = 300 },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), carriers = { 1500 } },
+                welcome { network = "BETA", certificate = "b", tunnel_key = ("k"):rep(32), carriers = "7935" },
             }
-            for i, welcome in ipairs(unfit) do
+            for i, answer in ipairs(unfit) do
                 local env = cell_setup({ "core.acme", "core.beta" })
                 run(env.net, { env.service }, { function()
                     wait_until(function() return env.connections[2] end)
                     local acme, beta = env.connections[1], env.connections[2]
                     acme:receive(5)
                     beta:receive(5)
-                    acme:send({ network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
-                    beta:send(welcome)
+                    acme:send(welcome { network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                    beta:send(answer)
                     wait_until(function() return env.service:info().links[2].state == "refused" end)
                     expect(env.service:info().links[2].error):describe("Answer " .. i):eq("The core's answer can't be used")
                     expect(env.service:info().links[1].state):eq("serving")
@@ -1102,7 +1121,7 @@ describe("Cellular services", function()
             run(env.net, { env.service }, { function()
                 core = env.connections[1]
                 core:receive(5)
-                core:send({ network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
+                core:send(welcome { network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
                 wait_until(function() return env.service:info().state == "serving" end)
             end, })
             env.service:stop()

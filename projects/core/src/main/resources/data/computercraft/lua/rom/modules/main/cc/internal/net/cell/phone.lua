@@ -48,6 +48,13 @@ network first, then the strongest cell. It says which network it chose when it a
 network's core. A shared cell may be a handover target for any network it serves, and a roaming phone whose cell also
 serves its own network goes home through that same cell.
 
+Cells are on carriers (5MHz of a cellular band; see `cc.internal.net.bands`). A cell's system information says which
+uplink channel reaches it, how often it's sent, and which carriers its network uses. While the phone isn't attached,
+it listens on every carrier's beacon channel, to find cells. Once attached, it only listens on its own carrier, the
+carriers of networks it may use now, and the downlink channel its cell gave it, with a short listen on every carrier
+every minute or so. It waits longer for a cell which sends its system information less often, and anything sealed its
+cell sends counts as hearing from it.
+
 Radio frames get lost, and cells and cores restart and forget their phones. So the phone checks its cell still knows
 it, every few seconds when nothing else has come from it, and attaches again if it doesn't. It says it has arrived at a
 new cell until the cell answers. And it sends each message until the network says it has it.
@@ -59,6 +66,7 @@ handshake message which doesn't read) never stops the phone waiting for the real
 ]]
 
 local codec = require "cc.net.codec"
+local bands = require "cc.internal.net.bands"
 local noise = require "cc.internal.net.noise"
 local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
@@ -109,6 +117,13 @@ local SCAN_TIME = 3
 local FAILED_TIME, MAX_FAILED_TIME = 30, 300
 -- How many cells to try activating through, at most. Each which doesn't answer takes ATTACH_TIMEOUT.
 local MAX_ACTIVATION_CELLS = 8
+-- How many intervals a cell may be silent before we give up on it (but never less than SILENCE).
+local SILENT_INTERVALS = 3
+-- While attached: how often to listen on every carrier, for other networks and new carriers, and for how long, in
+-- seconds; and how long to keep listening on a carrier our networks were last heard naming.
+local SCAN_PERIOD, SCAN_WINDOW, CARRIER_MEMORY = 60, 5, 300
+-- The name of the interface phones use, on their modem.
+local INTERFACE = "cell.phone"
 
 -- What a network is to us, best first: our own (or one we treat as home), a partner, or one we don't know to carry us.
 -- Cells an attach through which got no answer lately come after all of those, whatever their network.
@@ -120,7 +135,7 @@ Phone.__index = Phone
 --[[- Start a phone.
 
 @tparam {
-    stack = table, crypto = table, interface = string, epoch = function():number,
+    stack = table, crypto = table, modem = string, kind? = string, epoch = function():number,
     sim = { public = string, exchange = function(public:string):string },
     operator? = { network = string, key = string, signing = string },
     partners? = { [string] = string }, equivalent? = { [string] = boolean }, selection? = string,
@@ -129,7 +144,8 @@ Phone.__index = Phone
     on_message? = function(from:string, text:string),
     on_sent? = function(id:number, ok:boolean, reason:string|nil),
     on_activated? = function(info:table), relay? = function():boolean,
-} options The stack; the `crypto` API; the interface cells are heard on; the time, as `os.epoch("utc")` gives; the
+} options The stack; the `crypto` API; the modem cells are heard on, and what kind it is (`"wireless"` or
+`"ender"`); the time, as `os.epoch("utc")` gives; the
 phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; the
 networks it may roam on, by name, with their signing keys, as its operator last gave them, and which of those it
 treats as home; the only network it should use, if it has been told to use one; what to call when its operator gives it
@@ -143,7 +159,7 @@ many relays from the core as a chain may have).
 local function new(options)
     local stack = options.stack
     local self = setmetatable({
-        stack = stack, crypto = options.crypto, interface = options.interface, epoch = options.epoch,
+        stack = stack, crypto = options.crypto, interface = INTERFACE, epoch = options.epoch,
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
@@ -156,15 +172,111 @@ local function new(options)
         search = options.operator and { since = stack.clock(), retry = 2 } or nil,
         seen_messages = recent.new(MAX_SEEN), outbox = {}, next_message = math.random(0, 0x7FFFFFFF),
         started = stack.clock(),
+        -- How to reach each cell heard (its uplink channel); the carriers networks were heard naming, by beacon
+        -- channel, to each network and when; the channels we listen on, and when we last listened on every carrier.
+        uplinks = {}, carriers = {}, listening = {}, last_scan = stack.clock(),
     }, Phone)
 
-    -- A cell may share this computer (a relay), so frames from phones come here too: they're ignored, as they don't
-    -- come from our cell.
+    self:set_modem(options.modem, options.kind or "wireless")
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, signal)
         if interface.name == self.interface then self:radio(src, body, signal) end
     end, true)
     self.timer = stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
     return self
+end
+
+--[[- Put the phone's interface on a modem: when it starts, or when its modem was replaced (as when a block is moved).
+
+@tparam string modem The modem's peripheral name.
+@tparam string kind `"wireless"` or `"ender"`.
+]]
+function Phone:set_modem(modem, kind)
+    local stack = self.stack
+    if stack.interfaces[INTERFACE] then stack:remove_interface(INTERFACE) end
+    self.listening = {}
+    local interface = stack:add_interface(INTERFACE, modem, kind, {
+        band = "cellular", listen = {}, reply = 0,
+        to = function(cell) return self.uplinks[cell] end,
+    })
+    interface.no_rip = true
+    self.modem = modem
+    self:update_listening()
+end
+
+-- How long a cell may be silent before we give up on it: longer for one which sends its system information less often.
+local function silence(cell)
+    return math.max(SILENCE, SILENT_INTERVALS * (cell and cell.interval or 0))
+end
+
+-- Whether to listen on a network's carriers while attached: our own, those we treat as home, the one we're using, and
+-- partners' (for coming back to, or moving between) while we roam.
+function Phone:listens_for(network)
+    if self:home_class(network) or network == self.via or network == self.selection then return true end
+    return self.partners[network] ~= nil and self:roaming()
+end
+
+--[[- Work out which channels to listen on, and listen on them.
+
+While not attached, every carrier's beacon channel, to find cells. While attached: our cell's carrier, the carriers our
+networks were heard naming lately, and our own downlink channel; and every carrier, for a few seconds each minute,
+for other networks and carriers we don't know yet.
+]]
+function Phone:update_listening()
+    local now, wanted = self.stack.clock(), {}
+    local scanning = self.state ~= "attached" or now - self.last_scan >= SCAN_PERIOD
+    if self.state == "attached" and now - self.last_scan >= SCAN_PERIOD + SCAN_WINDOW then
+        self.last_scan, scanning = now, false
+    end
+    if scanning then
+        for _, channel in ipairs(bands.beacon_channels()) do wanted[channel] = true end
+    else
+        for carrier, networks in pairs(self.carriers) do
+            for network, heard in pairs(networks) do
+                if now - heard > CARRIER_MEMORY then
+                    networks[network] = nil
+                elseif self:listens_for(network) then
+                    wanted[carrier] = true
+                end
+            end
+            if next(networks) == nil then self.carriers[carrier] = nil end
+        end
+    end
+    local serving = self.cell and self.uplinks[self.cell]
+    if serving then wanted[bands.carrier_of(serving)] = true end
+    if self.state == "attached" and self.here.dl then wanted[self.here.dl] = true end
+
+    local changed = false
+    for channel in pairs(wanted) do
+        if not self.listening[channel] then changed = true end
+    end
+    for channel in pairs(self.listening) do
+        if not wanted[channel] then changed = true end
+    end
+    if not changed or not self.stack.interfaces[INTERFACE] then return end
+    local list = {}
+    for channel in pairs(wanted) do list[#list + 1] = channel end
+    table.sort(list)
+    self.stack:set_listening(INTERFACE, list)
+    self.listening = wanted
+    self.stack.interfaces[INTERFACE].reply = self.here.dl or list[1] or 0
+end
+
+--[[- Our cell gave us a downlink channel of our own: listen there, and tell it we are, so it sends our frames there.
+
+@tparam table here The state's table.
+@tparam number channel The channel.
+]]
+function Phone:set_downlink(here, channel)
+    local carrier = here.cell and self.uplinks[here.cell] and bands.carrier_of(self.uplinks[here.cell])
+    local downlink = carrier and bands.carrier(carrier)
+    if not common.is_id(channel) or not downlink or channel < downlink.downlink[1] or channel > downlink.downlink[2] then
+        return
+    end
+    if here.dl ~= channel then
+        here.dl = channel
+        self:update_listening()
+    end
+    if here.sealer then self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ dl = channel }) }) end
 end
 
 --[[ Go into a state. The phone is in one at a time: `inactive`, `activating`, `searching`, `attaching`, `attached` or
@@ -190,6 +302,9 @@ function Phone:enter(state, here)
     end
     self.cell, self.via = here.cell, here.via
     self.rejected = self.search and self.search.rejected or nil
+    -- Searching listened on every carrier already: the next listen on every carrier can wait.
+    if state == "attached" and old ~= "attached" then self.last_scan = self.stack.clock() end
+    self:update_listening()
     if old == state then return end
     if state == "attached" then
         self:event("attached", { cell = here.cell, roaming = self:roaming() and here.via or nil })
@@ -221,7 +336,7 @@ function Phone:hear(src, message, signal, networks)
                 self.heard[id] = nil
             else
                 count = count + 1
-                local strength = now - other.heard > SILENCE and -math.huge or other.signal
+                local strength = now - other.heard > silence(other) and -math.huge or other.signal
                 if id ~= self.cell and (not weakest_signal or strength < weakest_signal) then weakest, weakest_signal = id, strength end
             end
         end
@@ -239,14 +354,34 @@ function Phone:hear(src, message, signal, networks)
     cell.signal, cell.heard = total / #cell.samples, now
     cell.area = type(message.area) == "number" and message.area or nil
     cell.load = type(message.load) == "number" and message.load or nil
+    cell.interval, cell.ul, cell.pos, cell.service = message.interval, message.ul, message.pos, message.service
     -- Each network the cell names, now. One it stops naming (it lost that network's core) goes quiet, and is soon
     -- forgotten.
     for name, entry in pairs(cell.networks) do
-        if now - entry.heard > SILENCE then cell.networks[name] = nil end
+        if now - entry.heard > silence(cell) then cell.networks[name] = nil end
     end
+    -- How to reach the cell, which it may change when it starts again.
+    self.uplinks[src] = message.ul
+    local carrier = bands.carrier_of(message.ul)
     for _, entry in ipairs(networks) do
         cell.networks[entry.network] = { heard = now, verified = entry.verified, path = entry.path, cert = entry.cert }
+        -- Where to listen for the network's cells, once attached. A network's own cells may only claim carriers for
+        -- it if they check out (or we can't check them at all).
+        if entry.verified ~= false then
+            for _, named in ipairs(entry.carriers or {}) do self:heard_carrier(named, entry.network, now) end
+            self:heard_carrier(carrier, entry.network, now)
+        end
     end
+end
+
+-- A network was heard naming a carrier, or using it.
+function Phone:heard_carrier(carrier, network, now)
+    local networks = self.carriers[carrier]
+    if not networks then
+        networks = {}
+        self.carriers[carrier] = networks
+    end
+    networks[network] = now
 end
 
 function Phone:to_cell(cell, message)
@@ -271,7 +406,7 @@ end
 -- it's a network we may use.
 function Phone:usable(id, cell, network, now)
     local entry = cell.networks[network]
-    return entry ~= nil and not entry.unverified and now - entry.heard <= SILENCE and cell.signal >= NO_SERVICE
+    return entry ~= nil and not entry.unverified and now - entry.heard <= silence(cell) and cell.signal >= NO_SERVICE
         and self:path_ok(entry.path)
         and (self.selection == nil or network == self.selection)
         and (network == self.operator.network or self.partners[network] ~= nil)
@@ -334,11 +469,11 @@ function Phone:best(now, fits, others)
     if not others or (found and found.tier ~= FAILED) then return found end
     local chosen = self.selection
     for id, cell in pairs(self.heard) do
-        if now - cell.heard <= SILENCE and cell.signal >= NO_SERVICE and id ~= self.stack.id then
+        if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and id ~= self.stack.id then
             for name, entry in pairs(cell.networks) do
                 if name ~= own and not self.partners[name] and (chosen == nil or name == chosen)
                     and (chosen ~= nil or not self.forbidden:get(name))
-                    and now - entry.heard <= SILENCE and self:path_ok(entry.path) then
+                    and now - entry.heard <= silence(cell) and self:path_ok(entry.path) then
                     consider(id, name, cell.signal, OTHER, OTHER)
                 end
             end
@@ -353,7 +488,8 @@ local function sample(cell, message, signal, now)
     if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
     local total = 0
     for _, value in ipairs(cell.samples) do total = total + value end
-    cell.signal, cell.heard, cell.area = total / #cell.samples, now, message.area
+    cell.signal, cell.heard = total / #cell.samples, now
+    if message then cell.area, cell.interval, cell.ul = message.area, message.interval, message.ul end
 end
 
 --- Whether the network we're attached through is another network, which we don't treat as home.
@@ -413,7 +549,7 @@ function Phone:radio(src, message, signal)
             end
             -- The certificate is kept, unchecked, for activating: it says which operator the cell claims to be of.
             networks[i] = {
-                network = name, verified = verified, path = entry.path,
+                network = name, verified = verified, path = entry.path, carriers = entry.carriers,
                 cert = type(entry.cert) == "string" and entry.cert or nil,
             }
         end
@@ -442,7 +578,7 @@ function Phone:radio(src, message, signal)
     -- a message has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
     local handlers, here = from_cell[self.state], self.here
     local handle = handlers and handlers[op]
-    if handle and src == here.cell then handle(self, here, message) end
+    if handle and src == here.cell then handle(self, here, message, signal) end
 end
 
 function from_cell.attaching.attach_reply(self, here, message)
@@ -473,6 +609,7 @@ function from_cell.attaching.accept(self, here, message)
     end
     self:set_address(value.address)
     self.failed:remove(here.cell)
+    local downlink = value.dl
     -- What we keep while attached: the cell and the key we share with it; whether it still knows us (`last_heard`,
     -- `last_check`, `unanswered`, `fast_check`), and whether it knows we've arrived, after a handover (`confirming`);
     -- a cell to be handed over to (`candidate`); and how long our own network has been stronger (`home_since`).
@@ -480,6 +617,7 @@ function from_cell.attaching.accept(self, here, message)
         cell = here.cell, via = here.via, secret = here.secret, sealer = sealer,
         last_heard = self.stack.clock(), last_check = 0, unanswered = 0, fast_check = false,
     })
+    self:set_downlink(self.here, downlink)
     self:send_waiting()
 end
 
@@ -492,10 +630,12 @@ function from_cell.attaching.reject(self, here, message)
     end)
 end
 
-function from_cell.attached.data(self, here, message)
+function from_cell.attached.data(self, here, message, signal)
     local value = here.sealer:open(message.sealed)
     if type(value) ~= "table" then return end
-    self:heard_from_cell(here)
+    self:heard_from_cell(here, signal)
+    -- Our cell says which downlink channel is ours (after a handover, or when we asked whether it knows us).
+    if value.dl ~= nil and value.dl ~= here.dl then self:set_downlink(here, value.dl) end
     local packet = type(value.p) == "string" and codec.decode(value.p)
     if type(packet) == "table" then
         self.stack:inject("cell", packet)
@@ -522,7 +662,7 @@ function from_cell.attached.data(self, here, message)
     end
 end
 
-function from_cell.attached.handover(self, here, message)
+function from_cell.attached.handover(self, here, message, signal)
     local value = here.sealer:open(message.sealed)
     local target = type(value) == "table" and value.target
     -- Within the network we're on, to a cell which serves it.
@@ -530,9 +670,12 @@ function from_cell.attached.handover(self, here, message)
         or not self.cells[target].networks[here.via] then
         return
     end
-    -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same.
+    self:heard_from_cell(here, signal)
+    -- Move to the new cell, with the key we share with it, and say we're there. Our address stays the same. The new
+    -- cell gives us a downlink channel of its own when it answers.
     self:event("handover", { from = here.cell, to = target })
-    here.cell, here.candidate, self.cell = target, nil, target
+    here.cell, here.candidate, self.cell, here.dl = target, nil, target, nil
+    self:update_listening()
     here.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, target), common.UPLINK, common.DOWNLINK)
     -- The new cell may not hear us the first time, so we say so until it answers.
     self:heard_from_cell(here)
@@ -621,9 +764,17 @@ function Phone:set_partners(list)
     self.on_partners(partners, equivalent)
 end
 
--- Something came from our cell which only it could have sent: it knows us.
-function Phone:heard_from_cell(here)
-    here.last_heard, here.unanswered, here.fast_check, here.confirming = self.stack.clock(), 0, false, nil
+-- Something came from our cell which only it could have sent: it knows us, and it's still there, however long since we
+-- heard its system information. Its signal counts too.
+function Phone:heard_from_cell(here, signal)
+    local now = self.stack.clock()
+    here.last_heard, here.unanswered, here.fast_check, here.confirming = now, 0, false, nil
+    local cell = self.cells[here.cell]
+    local entry = cell and cell.networks[here.via]
+    if entry and type(signal) == "number" then
+        entry.heard = now
+        sample(cell, nil, signal, now)
+    end
 end
 
 --[[- Activate with a code from the network's administrator, through a cell of the network.
@@ -650,7 +801,7 @@ function Phone:activate(network, code)
     local now, ways, named = self.stack.clock(), {}, false
     for id, heard in pairs(self.heard) do
         for name, entry in pairs(heard.networks) do
-            if now - entry.heard <= SILENCE then
+            if now - entry.heard <= silence(heard) then
                 local cert = certificate.decode(entry.cert)
                 ways[#ways + 1] = {
                     id = id, signal = heard.signal, network = name,
@@ -927,6 +1078,7 @@ end
 -- Compare our cell with the others, every second.
 function Phone:measure()
     self.timer = self.stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
+    self:update_listening()
     if self.state == "attached" then self:check(self.here) end
 end
 
@@ -936,7 +1088,7 @@ function Phone:check(here)
     local now = self.stack.clock()
     local serving = self.cells[here.cell]
     local entry = serving and serving.networks[here.via]
-    if not entry or now - entry.heard > SILENCE or serving.signal < NO_SERVICE then
+    if not entry or now - entry.heard > silence(serving) or serving.signal < NO_SERVICE then
         -- Our cell has gone (or stopped serving our network): attach again through another, keeping our address.
         self:event("lost", { cell = here.cell })
         self:enter("searching")
@@ -962,7 +1114,8 @@ function Phone:check(here)
     if not confirming and now - here.last_heard >= interval and now - here.last_check >= interval then
         if here.unanswered >= misses then return self:forgotten(here) end
         here.unanswered, here.last_check = here.unanswered + 1, now
-        self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ ping = here.unanswered }) })
+        -- Saying which downlink channel we listen on, in case our cell didn't hear it.
+        self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ ping = here.unanswered, dl = here.dl }) })
     end
 
     self:send_waiting(true)
@@ -993,7 +1146,7 @@ function Phone:check(here)
     if target then
         if here.candidate ~= target.id then
             here.candidate, here.candidate_since = target.id, now
-        elseif now - here.candidate_since >= TIME_TO_TRIGGER and not here.reported then
+        elseif now - here.candidate_since >= math.max(TIME_TO_TRIGGER, self.cells[target.id].interval or 0) and not here.reported then
             here.reported = target.id
             self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ target = target.id }) })
             -- If the handover doesn't happen, ask again later.
@@ -1038,13 +1191,15 @@ function Phone:info()
         if now - cell.heard <= FORGET then
             for name, entry in pairs(cell.networks) do
                 local age = now - entry.heard
+                local _, band = bands.carrier_of(cell.ul or 0)
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
+                    band = band, interval = cell.interval,
                     -- Heard lately enough to use.
-                    fresh = age <= SILENCE,
+                    fresh = age <= silence(cell),
                     verified = entry.verified, serving = id == self.cell and name == self.via and self.state == "attached",
                 }
-                if age <= SILENCE and not names[name] then
+                if age <= silence(cell) and not names[name] then
                     names[name] = true
                     networks[#networks + 1] = name
                 end
@@ -1052,7 +1207,7 @@ function Phone:info()
         end
     end
     table.sort(heard, function(a, b)
-        if (a.age <= SILENCE) ~= (b.age <= SILENCE) then return a.age <= SILENCE end
+        if a.fresh ~= b.fresh then return a.fresh end
         if a.signal ~= b.signal then return a.signal > b.signal end
         if a.id ~= b.id then return a.id < b.id end
         return a.network < b.network
@@ -1085,9 +1240,11 @@ function Phone:stop()
     self.stack:off_frame(common.FRAME, self.frame_handler)
     self.stack:remove_routes(function(route) return route.source == "cell" end)
     self.stack:remove_interface("cell")
+    if self.stack.interfaces[INTERFACE] then self.stack:remove_interface(INTERFACE) end
 end
 
 return {
     new = new,
+    INTERFACE = INTERFACE,
     check_message = check_message,
 }

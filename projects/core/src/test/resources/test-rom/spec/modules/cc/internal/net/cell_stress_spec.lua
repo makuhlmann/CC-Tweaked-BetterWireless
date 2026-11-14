@@ -47,8 +47,8 @@ describe("Cellular networks, under stress,", function()
     end
 
     -- A frame on the air which says it's from a computer it isn't from.
-    local function spoof(setup, target, src, body)
-        setup.net.inject("air", target.interfaces.air.unicast, { net = 1, src = src, dst = target.id, type = common.FRAME, body = body })
+    local function spoof(setup, target, src, body, role)
+        setup.inject(target, { net = 1, src = src, dst = target.id, type = common.FRAME, body = body }, role)
     end
 
     describe("with someone pretending to be a phone's cell,", function()
@@ -84,7 +84,7 @@ describe("Cellular networks, under stress,", function()
                     crypto = crypto, pattern = "IK", initiator = true, prologue = cell_core.PROLOGUE .. "ACME",
                     static = stranger, remote_static = setup.operator_key.public,
                 }
-                spoof(setup, setup.towers[1].stack, 1, { op = "attach", network = "ACME", handshake = handshake:write(codec.encode({ v = 1 })) })
+                spoof(setup, setup.towers[1].stack, 1, { op = "attach", network = "ACME", handshake = handshake:write(codec.encode({ v = 1 })) }, "cell")
             end)
             setup.net.advance(4)
             expect(tries()):eq(1)
@@ -123,6 +123,7 @@ describe("Cellular networks, under stress,", function()
             local template = {
                 network = "ACME", handshake = "h", data = "d", tag = "TAG1", cell = 11, area = 1, load = 0, time = setup.now(),
                 sealed = { ctr = 1, ct = "c" }, cert = "c", sig = ("s"):rep(64), reason = "r", path = { 1 },
+                ul = setup.uplink, interval = 1, carriers = { setup.carrier },
             }
             local ops = {
                 "sib", "attach_reply", "accept", "data", "handover", "reject", "activate_reply", "activate_accept", "nonsense",
@@ -135,7 +136,7 @@ describe("Cellular networks, under stress,", function()
                         message.op = op
                         -- From its cell, and (for system information) as a broadcast from anyone.
                         spoof(setup, stack, 11, message)
-                        setup.net.inject("air", stack.interfaces.air.broadcast, {
+                        setup.inject(stack, {
                             net = 1, src = 77, dst = -1, type = common.FRAME, body = with(message, "cell", 77),
                         })
                         sent = sent + 2
@@ -147,7 +148,7 @@ describe("Cellular networks, under stress,", function()
             -- Frames whose sender isn't a computer's ID at all.
             for _, bad in ipairs(BAD) do
                 if bad[2] ~= NIL then
-                    setup.net.inject("air", stack.interfaces.air.broadcast, {
+                    setup.inject(stack, {
                         net = 1, src = bad[2], dst = -1, type = common.FRAME, body = with(template, "op", "sib"),
                     })
                 end
@@ -189,7 +190,7 @@ describe("Cellular networks, under stress,", function()
             values[#values + 1] = { sms = { from = "5", text = "no id" } }
             for i, value in ipairs(values) do
                 for _, op in ipairs { "data", "handover", "accept" } do
-                    setup.towers[1].stack:send_frame("air", 1, common.FRAME, { op = op, sealed = sealer:seal(value) })
+                    setup.towers[1].stack:send_frame("cell.tower", 1, common.FRAME, { op = op, sealed = sealer:seal(value) })
                 end
                 if i % 20 == 0 then setup.net.advance(0.2) end
             end
@@ -225,7 +226,7 @@ describe("Cellular networks, under stress,", function()
             end
             for i, value in ipairs(values) do
                 for _, op in ipairs { "data", "confirm" } do
-                    stack:send_frame("air", 11, common.FRAME, { op = op, sealed = phone.here.sealer:seal(value) })
+                    stack:send_frame("cell.phone", 11, common.FRAME, { op = op, sealed = phone.here.sealer:seal(value) })
                 end
                 if i % 20 == 0 then setup.net.advance(0.2) end
             end
@@ -498,12 +499,13 @@ describe("Cellular networks, under stress,", function()
             local random = math.random
             local ok, err = pcall(function()
                 local same = 0
-                math.random = function(low, high) -- luacheck: ignore
+                math.random = function(...) -- luacheck: ignore
+                    local low, high = ...
                     if low == 1 and high == 0x7FFFFFFF and same < 2 then
                         same = same + 1
                         return 4
                     end
-                    return random(low, high)
+                    return random(...)
                 end
                 setup.net.advance(8)
             end)
@@ -604,10 +606,10 @@ describe("Cellular networks, under stress,", function()
             local phone = setup.add_phone(1, 10, false, { activated = false })
             for _ = 1, 6 do
                 for id = 2000, 2299 do
-                    setup.net.inject("air", phone.stack.interfaces.air.broadcast, {
+                    setup.inject(phone.stack, {
                         net = 1, src = id, dst = -1, type = common.FRAME,
                         body = {
-                            op = "sib", cell = id, area = 1, load = 0, time = setup.now(),
+                            op = "sib", cell = id, area = 1, load = 0, time = setup.now(), ul = setup.uplink, interval = 1,
                             networks = { { network = "FAKE" .. id % 7 }, { network = "FAKE" .. id % 5 } },
                         },
                     })

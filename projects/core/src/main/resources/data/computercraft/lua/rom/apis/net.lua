@@ -1734,16 +1734,28 @@ cell = {
     each network while its core is there, naming each in its system information. Phones of each choose it as a cell of
     their network (or of one they roam on), and it takes them to that network's core.
 
+    The cell is on a carrier (5MHz of a cellular band), which its first core picks: in the band it asks for, if it
+    does. It sends its system information as often as its core says, unless it's told otherwise.
+
     @tparam string|{ string... } core The core's name or address, or those of several networks' cores.
-    @tparam[opt] number area The cell's tracking area.
+    @tparam[opt] number|{ area? = number, band? = string, interval? = number } settings The cell's tracking area; or
+    that, the cellular band it should be on (such as `"b20"`), and how often it sends system information, in seconds.
     @treturn[1] true If it started.
     @treturn[2] nil If it couldn't.
     @treturn[2] string Why not.
     ]]
-    startCell = function(core, area)
+    startCell = function(core, settings)
         expect(1, core, "string", "table")
-        expect(2, area, "number", "nil")
-        return cellular().startCell(core, area)
+        expect(2, settings, "number", "table", "nil")
+        if type(settings) == "table" then
+            for key, kind in pairs { area = "number", band = "string", interval = "number" } do
+                local value = settings[key]
+                if value ~= nil and type(value) ~= kind then
+                    error(("bad field '%s' (%s expected, got %s)"):format(key, kind, type(value)), 2)
+                end
+            end
+        end
+        return cellular().startCell(core, settings)
     end,
 
     --- Stop this computer's cell, and don't start it when the computer starts.

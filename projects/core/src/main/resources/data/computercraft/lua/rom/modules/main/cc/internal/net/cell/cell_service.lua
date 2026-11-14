@@ -16,6 +16,7 @@ kept on its own, and the cell serves each network while its core is there.
 ]]
 
 local tasks = require "cc.internal.net.tasks"
+local bands = require "cc.internal.net.bands"
 local common = require "cc.internal.net.cell.common"
 
 -- How long the core has to answer, and how long to wait to be allowed, in seconds. The core gives up waiting first.
@@ -41,17 +42,20 @@ Service.__index = Service
 --[[- Start a cell.
 
 @tparam {
-    core? = string, cores? = { string... }, area? = number, id = number, identity = string,
-    fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
+    core? = string, cores? = { string... }, area? = number, band? = string, interval? = number, id = number,
+    identity = string, fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
     start_tower = function(welcome:table, control:function):table,
     sleep = function(seconds:number), wake = function(),
 } options The core's name or address, or the names or addresses of several (for a cell which serves several
-networks); the cell's tracking area; this computer's ID and its key (as hexadecimal digits), and a way to get a key's
+networks); the cell's tracking area; the cellular band it should be on, if it matters; how often it sends system
+information, if not as its core says; this computer's ID and its key (as hexadecimal digits), and a way to get a key's
 fingerprint; the cell's own Ed25519 key, as hexadecimal digits, which each core certifies; a way to connect securely
 to a core's control port; a way to have the cell serve a network, given what its core said (`network`, `certificate`,
-`tunnel_key`, `core` and `area`) and a function to send that core control messages, which returns something to give
-the core's messages to (`control`) and to stop serving the network with (`stop`); a way to wait; and a way to wake
-tasks waiting for something to change.
+`tunnel_key`, `core`, `area`, the `carrier` and `ul` channel the cell is on, the `interval` and whether it was set for
+this cell (`fixed_interval`), and the network's `carriers`) and a function to send that core control messages, which
+returns something to give the core's messages to (`control`) and to stop serving the network with (`stop`); a way to
+wait; and a way to wake tasks waiting for something to change. A cell is on one carrier, whichever network it serves:
+the first core it reaches picks it, and it tells the others.
 @treturn table The service. Pass it every event with `resume`.
 ]]
 local function new(options)
@@ -90,9 +94,22 @@ function Service:run(link)
     end
 end
 
+-- The carrier the cell is on, and its uplink channel there, if it serves a network now. Every network it serves is
+-- served on the same one.
+function Service:radio()
+    for _, other in ipairs(self.links) do
+        local tower = other.handle and other.handle.tower
+        if tower and not tower.stopped then return tower.carrier, tower.ul end
+    end
+end
+
 function Service:serve(link, connection)
     local options = self.options
-    connection:send({ role = "cell", v = common.VERSION, id = options.id, signing = options.signing, area = options.area or 0 })
+    local carrier, ul = self:radio()
+    connection:send({
+        role = "cell", v = common.VERSION, id = options.id, signing = options.signing, area = options.area or 0,
+        band = options.band, carrier = carrier, ul = ul,
+    })
     local reply, err = connection:receive(HELLO_TIMEOUT)
     if type(reply) == "table" and reply.waiting then
         link.state = "waiting"
@@ -108,7 +125,9 @@ function Service:serve(link, connection)
     -- What the core says is broadcast, and used as a key. A cell may serve other networks too, which a core that
     -- says something unfit mustn't spoil.
     if not common.is_network(reply.network) or type(reply.certificate) ~= "string" or #reply.certificate > MAX_CERTIFICATE
-        or type(reply.tunnel_key) ~= "string" or #reply.tunnel_key ~= 32 then
+        or type(reply.tunnel_key) ~= "string" or #reply.tunnel_key ~= 32 or not common.is_id(reply.carrier)
+        or not bands.carrier(reply.carrier) or not common.is_uplink(reply.ul) or bands.carrier_of(reply.ul) ~= reply.carrier
+        or not common.is_interval(reply.interval) or not common.is_carriers(reply.carriers) then
         link.state, link.error = "refused", "The core's answer can't be used"
         return
     end
@@ -122,9 +141,14 @@ function Service:serve(link, connection)
 
     -- The cell sends control messages from inside the network stack, where nothing may wait: queue them.
     local send, stop_sending = self.tasks:sender(connection, options.wake)
+    -- On the carrier we're on already, if we serve another network. (That core picked it, and this one was told.)
+    carrier, ul = self:radio()
+    local interval = common.is_interval(options.interval) and options.interval or nil
     local handle = options.start_tower({
         network = reply.network, certificate = reply.certificate, tunnel_key = reply.tunnel_key,
         core = connection:getPeer(), area = options.area or 0,
+        carrier = carrier or reply.carrier, ul = ul or reply.ul, interval = interval or reply.interval,
+        fixed_interval = interval ~= nil, carriers = reply.carriers,
     }, send)
     link.handle, link.network, link.served, link.state = handle, reply.network, true, "serving"
 
@@ -165,9 +189,11 @@ function Service:info()
         if not best or STATE_ORDER[link.state] < STATE_ORDER[best.state] then best = link end
     end
     best = best or {}
+    local carrier, ul = self:radio()
     return {
         state = best.state, error = best.error, retry = best.retry, core = best.core, network = best.network,
         area = options.area or 0, id = options.id, fingerprint = options.fingerprint(options.identity), links = links,
+        carrier = carrier and bands.carrier_name(carrier), ul = ul, band = options.band,
     }
 end
 

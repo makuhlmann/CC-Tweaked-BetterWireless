@@ -541,8 +541,8 @@ describe("The net library", function()
         end)
 
         -- A modem's block may be replaced while the computer runs on, as when Sable moves it: the modem goes, and
-        -- comes back as a new peripheral. The phone's low band interface goes with it, and once stayed gone, so the
-        -- phone heard no cells.
+        -- comes back as a new peripheral. The phone's interface goes with it, and once stayed gone, so the phone heard
+        -- no cells.
         it("keeps its phone on the air when its modem is replaced", function()
             if not crypto then return end
             local with_enclave = require "support.net_helpers".with_enclave
@@ -580,20 +580,20 @@ describe("The net library", function()
                     write("/.net/sim", { network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1" })
                     attach("net_spec_radio")
                     expect(net.cell.setEnabled(true)):eq(true)
-                    expect(phone().interface):eq("net_spec_radio:low")
+                    expect(s.interfaces["cell.phone"].modem):eq("net_spec_radio")
 
-                    -- The same modem comes back: the phone is on its low band again.
+                    -- The same modem comes back: the phone is on it again.
                     detach("net_spec_radio")
-                    expect(s.interfaces["net_spec_radio:low"]):eq(nil)
+                    expect(s.interfaces["cell.phone"]):eq(nil)
                     attach("net_spec_radio")
-                    expect(phone().interface):eq("net_spec_radio:low")
-                    expect(s.interfaces["net_spec_radio:low"]):ne(nil)
+                    expect(phone().modem):eq("net_spec_radio")
+                    expect(s.interfaces["cell.phone"].modem):eq("net_spec_radio")
 
                     -- Another takes its place: the phone moves onto that.
                     detach("net_spec_radio")
                     attach("net_spec_other")
-                    expect(phone().interface):eq("net_spec_other:low")
-                    expect(s.interfaces["net_spec_other:low"]):ne(nil)
+                    expect(phone().modem):eq("net_spec_other")
+                    expect(s.interfaces["cell.phone"].modem):eq("net_spec_other")
                 end)
 
                 net.cell.setEnabled(false)

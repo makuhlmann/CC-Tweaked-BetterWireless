@@ -161,14 +161,20 @@ describe("Shared cells", function()
     it("takes a phone to the network it names, and to its only one only if it names none", function()
         local cell_tower = require "cc.internal.net.cell.tower"
         -- The cell only needs a stack to start, here.
-        local stack = { id = 7, log = function() end, clock = function() return 0 end }
+        local stack = { id = 7, log = function() end, clock = function() return 0 end, interfaces = {} }
         function stack:on_frame() return {} end
         function stack:udp_open() return {} end
         function stack:schedule() return {} end
         function stack:send_frame() end
+        function stack:add_interface(name)
+            self.interfaces[name] = { name = name }
+            return self.interfaces[name]
+        end
+        function stack:remove_interface(name) self.interfaces[name] = nil end
 
         local tower = cell_tower.new {
-            stack = stack, crypto = crypto, interface = "radio", sign = function() return "" end, epoch = function() return 0 end,
+            stack = stack, crypto = crypto, modem = "radio", kind = "wireless", carrier = 7935, ul = 8320,
+            sign = function() return "" end, epoch = function() return 0 end,
         }
         local function serve(name)
             return tower:add_network(name, { certificate = "c", core = 1, tunnel_key = ("k"):rep(32), control = function() end })

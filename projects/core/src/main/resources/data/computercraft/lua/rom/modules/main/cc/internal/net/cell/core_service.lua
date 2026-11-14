@@ -36,6 +36,7 @@ offers. A core we connect to needn't be allowed: being told where it is says we 
 ]]
 
 local address = require "cc.net.address"
+local bands = require "cc.internal.net.bands"
 local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
 local files = require "cc.internal.net.files"
@@ -65,6 +66,21 @@ local ROLES = {
 }
 
 local is_number_prefix = common.is_number_prefix
+
+-- The band a network's cells use when its administrator hasn't said: band 20 (800MHz), which reaches far.
+local DEFAULT_BAND = "b20"
+
+--- The carrier a network uses when its administrator hasn't said: one of band 20's, picked by its name, so neighbouring
+-- networks are unlikely to share one.
+--
+-- @tparam string network The network's name.
+-- @treturn number The carrier's beacon channel.
+local function default_carrier(network)
+    local raster = bands.raster(DEFAULT_BAND)
+    local hash = 0
+    for i = 1, #network do hash = (hash * 31 + network:byte(i)) % 0x1000000 end
+    return raster[hash % #raster + 1]
+end
 
 -- What another network's core offers, in words: "to carry this network's phones and exchange messages".
 local function offers(asks)
@@ -398,9 +414,87 @@ function Service:wait(connection, key, role, id, hello)
     end
 end
 
+--[[- The carriers this network's cells use, by their beacon channels: those its administrator set (`cellcore spectrum`),
+or one picked from its name.
+
+@treturn { number... } The carriers.
+@treturn boolean Whether they were picked, as none were set.
+]]
+function Service:spectrum()
+    local list = {}
+    for _, carrier in ipairs(type(self.config.spectrum) == "table" and self.config.spectrum or {}) do
+        if common.is_id(carrier) and bands.carrier(carrier) and #list < common.MAX_CARRIERS then list[#list + 1] = carrier end
+    end
+    if list[1] then return list, false end
+    return { default_carrier(self.config.network) }, true
+end
+
+--- How often this network's cells send system information, in seconds.
+--
+-- @treturn number The interval.
+function Service:beacon_interval()
+    local interval = self.config.beacon_interval
+    return common.is_interval(interval) and interval or common.DEFAULT_INTERVAL
+end
+
+--[[- Put a cell on a carrier, and give it its own uplink channel on it.
+
+A cell which already has a carrier, as it serves another network on it, keeps it. Otherwise it gets one of this
+network's carriers, in the band it asked for if it did: whichever has fewest cells. Its uplink channel is the first on
+the carrier which no other cell connected now uses.
+
+@tparam number id The cell's ID.
+@tparam table hello What the cell said: the `band` it wants, or the `carrier` and `ul` it has.
+@treturn[1] number The carrier's beacon channel.
+@treturn[1] number The cell's uplink channel.
+@treturn[2] nil If there's no carrier for it.
+@treturn[2] string Why not.
+]]
+function Service:place_cell(id, hello)
+    if common.is_id(hello.carrier) and bands.carrier(hello.carrier) and common.is_uplink(hello.ul)
+        and bands.carrier_of(hello.ul) == hello.carrier then
+        return hello.carrier, hello.ul
+    end
+
+    local spectrum = self:spectrum()
+    local count = {}
+    for other, cell in pairs(self.cells) do
+        if other ~= id and cell.carrier then count[cell.carrier] = (count[cell.carrier] or 0) + 1 end
+    end
+    local chosen
+    for _, carrier in ipairs(spectrum) do
+        local _, band = bands.carrier_of(carrier)
+        if (hello.band == nil or band == hello.band) and (not chosen or (count[carrier] or 0) < (count[chosen] or 0)) then
+            chosen = carrier
+        end
+    end
+    if not chosen then
+        return nil, ("%s has no carrier in band %s"):format(self.config.network, tostring(hello.band))
+    end
+
+    local used = {}
+    for other, cell in pairs(self.cells) do
+        if other ~= id and cell.ul then used[cell.ul] = true end
+    end
+    local uplink = bands.carrier(chosen).uplink
+    local ul = uplink[1]
+    for channel = uplink[1], uplink[2] do
+        if not used[channel] then
+            ul = channel
+            break
+        end
+    end
+    return chosen, ul
+end
+
 function Service:serve_cell(connection, key, hello, id)
     local signing = from_hex(hello.signing)
     if not signing or #signing ~= 32 or not id then return connection:abort() end
+    if hello.band ~= nil and not (type(hello.band) == "string" and bands.get(hello.band) and bands.get(hello.band).downlink) then
+        return refuse(connection, "There's no cellular band called " .. tostring(hello.band))
+    end
+    local carrier, ul = self:place_cell(id, hello)
+    if not carrier then return refuse(connection, ul) end
 
     local network = self.config.network
     local cert = certificate.encode(certificate.issue {
@@ -416,20 +510,27 @@ function Service:serve_cell(connection, key, hello, id)
     local send, stop_sending = self.tasks:sender(connection, self.options.wake)
     local peer = connection:getPeer()
     local tunnel_key = self.core:add_tower(id, address.parse(peer), send)
-    if not connection:send({ v = common.VERSION, network = network, certificate = cert, tunnel_key = tunnel_key }) then
+    local welcome = {
+        v = common.VERSION, network = network, certificate = cert, tunnel_key = tunnel_key,
+        carrier = carrier, ul = ul, interval = self:beacon_interval(), carriers = (self:spectrum()),
+    }
+    if not connection:send(welcome) then
         self.core:remove_tower(id, send)
         return connection:abort()
     end
 
     local area = common.is_id(hello.area) and hello.area or 0
-    local entry = { id = id, key = key, address = peer, area = area, since = self.options.epoch(), connection = connection }
+    local entry = {
+        id = id, key = key, address = peer, area = area, since = self.options.epoch(), connection = connection,
+        carrier = carrier, ul = ul,
+    }
     self.cells[id] = entry
     local known = self.allowed[key]
     if known and known.id ~= id then
         known.id = id
         self:save_allowed()
     end
-    self:log(("Cell #%d connected, from %s"):format(id, peer))
+    self:log(("Cell #%d connected, from %s, on %s"):format(id, peer, bands.carrier_name(carrier)))
 
     while true do
         local message = connection:receive()
@@ -743,12 +844,15 @@ function requests.status(self)
     local result = {
         network = self.config.network, prefix = self.config.prefix, messages = #self.core.messages, codes = 0,
         cells = {}, allowed = {}, waiting = {}, subscribers = {}, networks = {},
-        number_prefix = self.config.number_prefix,
+        number_prefix = self.config.number_prefix, interval = self:beacon_interval(),
     }
+    local spectrum, picked = self:spectrum()
+    result.spectrum, result.spectrum_picked = {}, picked
+    for i, carrier in ipairs(spectrum) do result.spectrum[i] = bands.carrier_name(carrier) end
     for id, cell in pairs(self.cells) do
         result.cells[#result.cells + 1] = {
             id = id, key = cell.key, address = cell.address, area = cell.area, since = cell.since,
-            path = self.core:path_of(id),
+            path = self.core:path_of(id), carrier = cell.carrier and bands.carrier_name(cell.carrier), ul = cell.ul,
         }
     end
     table.sort(result.cells, by_id)
@@ -1041,6 +1145,60 @@ function requests.numbers(self, request, by)
     end
     self:log(("This network's numbers now start %s%s"):format(prefix, self:by(by)))
     return { prefix = prefix }
+end
+
+-- Change a setting in the config file, which may have changed since the core started (it says whether the core starts
+-- with the computer).
+function Service:set_config(field, value)
+    local config = read_table(self.files.config)
+    config[field] = value
+    write_table(self.files.config, config)
+    self.config[field] = value
+end
+
+--[[- See or set the carriers this network's cells use (its spectrum), by name, such as `"b20/1"`. Cells connected now
+hear of them at once, and name them in their system information; a cell only moves to another carrier when it
+connects again.
+]]
+function requests.spectrum(self, request, by)
+    if request.carriers ~= nil then
+        if type(request.carriers) ~= "table" or #request.carriers > common.MAX_CARRIERS then
+            return { error = ("A network has 1 to %d carriers"):format(common.MAX_CARRIERS) }
+        end
+        local list, seen = {}, {}
+        for _, name in ipairs(request.carriers) do
+            local carrier = bands.parse_carrier(name)
+            if not carrier then return { error = ("There's no carrier called %s"):format(tostring(name)) } end
+            if not seen[carrier] then
+                seen[carrier] = true
+                list[#list + 1] = carrier
+            end
+        end
+        self:set_config("spectrum", list[1] and list or nil)
+        local spectrum = self:spectrum()
+        for id in pairs(self.cells) do self.core:send(id, { op = "carriers", carriers = spectrum }) end
+        local names = {}
+        for i, carrier in ipairs(spectrum) do names[i] = bands.carrier_name(carrier) end
+        self:log(("This network's carriers are now %s%s"):format(table.concat(names, ", "), self:by(by)))
+    end
+    local spectrum, picked = self:spectrum()
+    local names = {}
+    for i, carrier in ipairs(spectrum) do names[i] = bands.carrier_name(carrier) end
+    return { carriers = names, picked = picked }
+end
+
+--- See or set how often this network's cells send system information, in seconds. Cells connected now hear of it at
+-- once, unless they were told otherwise.
+function requests.beacon(self, request, by)
+    if request.interval ~= nil then
+        if not common.is_interval(request.interval) then
+            return { error = ("Cells send system information every %s to %s seconds"):format(common.MIN_INTERVAL, common.MAX_INTERVAL) }
+        end
+        self:set_config("beacon_interval", request.interval)
+        for id in pairs(self.cells) do self.core:send(id, { op = "interval", interval = request.interval }) end
+        self:log(("Cells now send system information every %s seconds%s"):format(request.interval, self:by(by)))
+    end
+    return { interval = self:beacon_interval() }
 end
 
 --- Make an activation code for a subscriber.

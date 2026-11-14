@@ -117,35 +117,31 @@ local function sim_key()
     return { public = public, exchange = function(peer) return enclave.exchange("sim", peer) end }
 end
 
--- Cellular radio uses a wireless modem's low band, for range: find (or make) an interface on it. An ender modem will
--- do too: it's a weaker radio, which also reaches cells and phones where its signal appears in other dimensions.
+-- Phones and cells use a radio modem, each with an interface of its own on cellular bands. An ender modem will do
+-- too: it's a weaker radio, which also reaches cells and phones where its signal appears in other dimensions. A
+-- wireless modem the network stack uses is picked first, and its first by name.
 local RADIO_KINDS = { wireless = true, ender = true }
-local function cell_interface()
+local function radio_modem()
     local names = {}
     for name in pairs(stack.interfaces) do names[#names + 1] = name end
     table.sort(names)
+    local found_ender
     for _, name in ipairs(names) do
         local interface = stack.interfaces[name]
-        if RADIO_KINDS[interface.kind] and interface.band == "low" then return name end
+        if interface.kind == "wireless" then return interface.modem, "wireless" end
+        if interface.kind == "ender" and not found_ender then found_ender = interface.modem end
     end
-    for _, name in ipairs(names) do
-        local interface = stack.interfaces[name]
-        if RADIO_KINDS[interface.kind] and interface.band == "high" and not stack.interfaces[interface.modem .. ":low"] then
-            add_interface(interface.modem .. ":low", interface.modem, interface.kind, "low")
-            return interface.modem .. ":low"
-        end
-    end
+    if found_ender then return found_ender, "ender" end
 end
 
---[[ A modem which goes away takes all its interfaces with it, including the low band one which the phone and the cell's
-tower are on, and which the network stack doesn't make again by itself. This happens whenever the modem's block is
-replaced, such as when it's moved (Sable copies a block to its new place, and then removes the old one). So when a
-modem comes, move them back onto a radio interface: the same one, if it's the same modem. Both look their interface up
-by name each time, so that's all they need. ]]
+--[[ A modem which goes away takes all its interfaces with it, including those the phone and the cell's tower are on,
+which the network stack doesn't make again by itself. This happens whenever the modem's block is replaced, such as
+when it's moved (Sable copies a block to its new place, and then removes the old one). So when a modem comes, put them
+back on a radio modem: the same one, if it's the same modem. ]]
 local function restore_interface(radio)
     if not radio or radio.stopped or stack.interfaces[radio.interface] then return end
-    local name = cell_interface()
-    if name then radio.interface = name end
+    local modem, kind = radio_modem()
+    if modem then radio:set_modem(modem, kind) end
 end
 
 local function restore_interfaces()
@@ -155,12 +151,12 @@ end
 
 local function new_phone(operator, partners, equivalent)
     -- A computer may be a phone and a cell at once: a relay, whose cell reaches the core through its phone.
-    local name = cell_interface()
-    if not name then return nil, "This needs a wireless modem" end
+    local modem, kind = radio_modem()
+    if not modem then return nil, "This needs a wireless modem" end
     local cell = require("cc.internal.net.cell.phone")
     local chosen = read_table(PHONE_FILE)
     phone_instance = cell.new {
-        stack = stack, crypto = crypto, interface = name, epoch = function() return os.epoch("utc") end,
+        stack = stack, crypto = crypto, modem = modem, kind = kind, epoch = function() return os.epoch("utc") end,
         sim = sim_key(), operator = operator, partners = partners, equivalent = equivalent,
         selection = type(chosen.network) == "string" and chosen.network or nil,
         -- The operator says which other networks the phone may use (and which it treats as home): remember them, for
@@ -315,18 +311,20 @@ local function start_cell_service(config)
     require_crypto()
     load()
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
-    if not cell_interface() then return nil, "A cell needs a wireless modem" end
+    if not radio_modem() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
-    background.cell =require("cc.internal.net.cell.cell_service").new {
-        cores = config.cores, area = config.area, id = os.getComputerID(), identity = getIdentity(),
-        fingerprint = fingerprint, signing = to_hex(signing),
+    background.cell = require("cc.internal.net.cell.cell_service").new {
+        cores = config.cores, area = config.area, band = config.band, interval = config.interval,
+        id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
-            local name = cell_interface()
-            if not name then error("A cell needs a wireless modem", 0) end
+            local modem, kind = radio_modem()
+            if not modem then error("A cell needs a wireless modem", 0) end
             if not tower_instance or tower_instance.stopped then
                 tower_instance = require("cc.internal.net.cell.tower").new {
-                    stack = stack, crypto = crypto, interface = name, area = welcome.area,
+                    stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area,
+                    carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
+                    fixed_interval = welcome.fixed_interval,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
                     -- A relay reaches a core through this computer's phone, so it can only serve that core's network
@@ -340,7 +338,7 @@ local function start_cell_service(config)
             end
             return tower_instance:add_network(welcome.network, {
                 certificate = welcome.certificate, core = address.parse(welcome.core), tunnel_key = welcome.tunnel_key,
-                control = control,
+                control = control, carriers = welcome.carriers,
             })
         end,
         sleep = sleep, wake = cell_wake,
@@ -361,7 +359,7 @@ function start_cellular()
     local cell = read_table(CELL_CONFIG)
     local cores = cell_cores(cell)
     if cores and cell.enabled ~= false then
-        local ok, err = start_cell_service({ cores = cores, area = cell.area })
+        local ok, err = start_cell_service({ cores = cores, area = cell.area, band = cell.band, interval = cell.interval })
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
 end
@@ -525,6 +523,31 @@ end
 function Manager:numbers(prefix)
     expect(1, prefix, "string")
     return self:request({ op = "numbers", prefix = prefix })
+end
+
+--- See or set the carriers this network's cells use: 5MHz blocks of cellular bands, by name, such as `"b20/1"` (a band
+-- on its own means its first). Cells connected now are told at once; a cell moves to another carrier when it next
+-- connects.
+--
+-- @tparam[opt] { string... } carriers The carriers, 1 to 8 of them.
+-- @treturn[1] table The `carriers`, by name, and whether they were `picked` as none were set.
+-- @treturn[2] nil If they couldn't be set.
+-- @treturn[2] string Why not.
+function Manager:spectrum(carriers)
+    expect(1, carriers, "table", "nil")
+    return self:request({ op = "spectrum", carriers = carriers })
+end
+
+--- See or set how often this network's cells send system information, in seconds. Cells connected now are told at
+-- once, unless their own setting says otherwise.
+--
+-- @tparam[opt] number interval The interval, from 0.5 to 10 seconds.
+-- @treturn[1] table The `interval`.
+-- @treturn[2] nil If it couldn't be set.
+-- @treturn[2] string Why not.
+function Manager:beacon(interval)
+    expect(1, interval, "number", "nil")
+    return self:request({ op = "beacon", interval = interval })
 end
 
 --- Exchange messages with another network's phones, by connecting to that network's core, which must allow it. This
@@ -801,7 +824,13 @@ function api.setNetwork(name)
     return true
 end
 
-function api.startCell(core, area)
+function api.startCell(core, settings)
+    local area, band, interval
+    if type(settings) == "table" then
+        area, band, interval = settings.area, settings.band, settings.interval
+    else
+        area = settings
+    end
     local cores = {}
     if type(core) == "string" then
         cores[1] = core
@@ -813,11 +842,12 @@ function api.startCell(core, area)
         if not cores[1] then error("bad argument #1 (expected at least one core)", 2) end
     end
     require_crypto()
-    local config = { cores = cores, area = area or 0 }
+    local config = { cores = cores, area = area or 0, band = band, interval = interval }
     local old = read_table(CELL_CONFIG)
     -- Start again with new settings, or to try again at once after losing a core.
     if background.cell then
         local again = table.concat(cell_cores(old) or {}, " ") ~= table.concat(cores, " ") or (old.area or 0) ~= config.area
+            or old.band ~= config.band or old.interval ~= config.interval
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end

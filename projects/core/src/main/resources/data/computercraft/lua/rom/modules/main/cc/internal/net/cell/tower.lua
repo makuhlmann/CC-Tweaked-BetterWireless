@@ -7,9 +7,16 @@
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use the `celld` program instead.
 
-A cell broadcasts signed system information every second, relays phones' attach handshakes to the core, and carries
-their packets: sealed with the key it shares with each phone over the radio, and sealed tunnels to the gateway behind
-it. When a phone reports a stronger cell, it asks the core to hand the phone over.
+A cell broadcasts signed system information every few seconds, relays phones' attach handshakes to the core, and
+carries their packets: sealed with the key it shares with each phone over the radio, and sealed tunnels to the gateway
+behind it. When a phone reports a stronger cell, it asks the core to hand the phone over.
+
+A cell is on a carrier: 5MHz of a cellular band, paired downlink and uplink (see `cc.internal.net.bands`). It sends
+its system information on the carrier's beacon channel, and listens on an uplink channel of its own, which phones
+learn from its system information. Each phone attached here gets a downlink channel of its own, unique here where
+there are enough, so phones aren't woken (nor the server kept busy) by each other's packets. The cell sends a phone's
+frames on the beacon channel, which every phone of the carrier listens on, until the phone says it's listening on its
+own channel.
 
 One cell may serve several networks, each with its own core, as operators who share a cell site do (like LTE's
 multi-operator core networks). Its system information names each network, with the certificate that network's
@@ -20,6 +27,7 @@ cell carries on serving the others.
 @local
 ]]
 
+local bands = require "cc.internal.net.bands"
 local common = require "cc.internal.net.cell.common"
 local recent = require "cc.internal.net.recent"
 
@@ -34,6 +42,9 @@ local MAX_ASKED = 256
 
 local is_id = common.is_id
 
+--- The name of the interface cells use, on their modem.
+local INTERFACE = "cell.tower"
+
 local Tower = {}
 Tower.__index = Tower
 
@@ -44,10 +55,14 @@ Link.__index = Link
 --[[- Start a cell.
 
 @tparam {
-    stack = table, crypto = table, interface = string, area? = number, sign = function(data:string):string,
+    stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number,
+    interval? = number, fixed_interval? = boolean, area? = number, sign = function(data:string):string,
     epoch = function():number, can_serve? = function(core:number):boolean,
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
-} options The stack; the `crypto` API; the interface phones are on (a low band wireless one); this cell's tracking
+    carriers? = { number... },
+} options The stack; the `crypto` API; the modem phones are on, and what kind it is (`"wireless"` or `"ender"`); the
+carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; how often to send system
+information, in seconds, and whether that was set for this cell, so its core can't change it; this cell's tracking
 area; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
 network's phones now, given the address of its core (a relay can't while its own phone has no service, and stops naming
 that network, so its phones move to another cell). It may also be given the first network to serve, as `add_network`
@@ -56,29 +71,97 @@ takes it.
 ]]
 local function new(options)
     local stack = options.stack
+    local carrier = bands.carrier(options.carrier)
+    if not carrier then error("Not a carrier: " .. tostring(options.carrier), 2) end
+    if bands.carrier_of(options.ul) ~= options.carrier or not common.is_uplink(options.ul) then
+        error("Not an uplink channel of the carrier: " .. tostring(options.ul), 2)
+    end
     local self = setmetatable({
-        stack = stack, crypto = options.crypto, interface = options.interface, area = options.area or 0,
+        stack = stack, crypto = options.crypto, interface = INTERFACE, area = options.area or 0,
         sign = options.sign, epoch = options.epoch, id = stack.id,
+        carrier = options.carrier, ul = options.ul, band = carrier.band, dl_range = carrier.downlink,
+        interval = common.is_interval(options.interval) and options.interval or common.DEFAULT_INTERVAL,
+        fixed_interval = options.fixed_interval == true,
         can_serve = options.can_serve or function() return true end,
-        links = {}, phones = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
+        links = {}, phones = {}, downlinks = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
     }, Tower)
 
+    self:set_modem(options.modem, options.kind)
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
         if interface.name == self.interface and dst == self.id then self:radio(src, body) end
     end, true)
     -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
     self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end, common.TUNNEL_LIMITS))
     if options.network then self:add_network(options.network, options) end
-    self:beacon()
+    -- Cells which start together don't send together, which would bunch up the work of delivering their system
+    -- information.
+    self.beacon_timer = stack:schedule(math.random() * self.interval, function() self:beacon() end)
     return self
+end
+
+--[[- Put the cell's interface on a modem: when it starts, or when its modem was replaced (as when a block is moved).
+
+@tparam string modem The modem's peripheral name.
+@tparam string kind `"wireless"` or `"ender"`.
+]]
+function Tower:set_modem(modem, kind)
+    local stack = self.stack
+    if stack.interfaces[INTERFACE] then stack:remove_interface(INTERFACE) end
+    local interface = stack:add_interface(INTERFACE, modem, kind, {
+        band = self.band, listen = { self.ul }, broadcast = self.carrier, reply = self.ul,
+        to = function(phone) return self:channel_to(phone) end,
+    })
+    -- Cells don't take part in the network stack's own business on this interface.
+    interface.no_rip = true
+    self.modem = modem
+end
+
+-- The channel to send a phone's frames on: its own, once it has said it's listening there, or else the beacon channel,
+-- which every phone of the carrier listens on.
+function Tower:channel_to(phone)
+    local context = self.phones[phone]
+    if context and context.dl and context.dl_heard then return context.dl end
+    return self.carrier
+end
+
+-- Give a phone a downlink channel of its own: the first which no other phone here has, or, if there are more phones
+-- than channels, the one the fewest share. The beacon channel is everyone's.
+function Tower:assign(context)
+    if context.dl then return context.dl end
+    local best, best_count
+    for channel = self.dl_range[1], self.dl_range[2] do
+        if channel ~= self.carrier then
+            local count = self.downlinks[channel] or 0
+            if count == 0 then
+                best = channel
+                break
+            end
+            if not best_count or count < best_count then best, best_count = channel, count end
+        end
+    end
+    context.dl, context.dl_heard = best, false
+    self.downlinks[best] = (self.downlinks[best] or 0) + 1
+    return best
+end
+
+-- A phone's downlink channel is free again.
+local function release(tower, context)
+    local channel = context.dl
+    if not channel then return end
+    context.dl = nil
+    local count = (tower.downlinks[channel] or 1) - 1
+    tower.downlinks[channel] = count > 0 and count or nil
 end
 
 -- Stop serving a network: its phones here lose service, and find another cell.
 local function drop(tower, link)
     tower.links[link.network] = nil
     for phone, context in pairs(tower.phones) do
-        if context.link == link then tower.phones[phone] = nil end
+        if context.link == link then
+            release(tower, context)
+            tower.phones[phone] = nil
+        end
     end
     for phone, asked in tower.asked:each() do
         if asked == link then tower.asked:remove(phone) end
@@ -89,9 +172,10 @@ end
 
 @tparam string network The network's name.
 @tparam {
-    certificate = string, core = number, tunnel_key = string, control = function(message:table),
+    certificate = string, core = number, tunnel_key = string, control = function(message:table), carriers? = { number... },
 } options The cell's certificate from the network's operator; the address of its core, and the key for the tunnel to
-it; and a way to send that core control messages.
+it; a way to send that core control messages; and the carriers that network's cells use, to name in our system
+information, so its phones listen for them.
 @treturn table The network's link: give it what the core sends (`link:control(message)`), and stop serving the network
 with `link:stop()`. Stopping the last network the cell serves stops the cell.
 ]]
@@ -101,6 +185,7 @@ function Tower:add_network(network, options)
     local link = setmetatable({
         tower = self, network = network, certificate = options.certificate, core = options.core,
         control_send = options.control, path = {}, by_teid = {},
+        carriers = common.is_carriers(options.carriers) and options.carriers or { self.carrier },
         tunnel = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
     }, Link)
     self.links[network] = link
@@ -132,9 +217,9 @@ function Tower:link_for(network)
     return nil
 end
 
--- Broadcast system information, every second, naming the networks we can serve phones of now.
+-- Broadcast system information, every few seconds, naming the networks we can serve phones of now.
 function Tower:beacon()
-    self.beacon_timer = self.stack:schedule(common.SIB_INTERVAL, function() self:beacon() end)
+    self.beacon_timer = self.stack:schedule(self.interval, function() self:beacon() end)
     local names = {}
     for name in pairs(self.links) do names[#names + 1] = name end
     table.sort(names)
@@ -143,7 +228,7 @@ function Tower:beacon()
         local link = self.links[name]
         -- A relay too many relays from the core can't carry the biggest packets, so doesn't serve.
         if #link.path <= common.MAX_PATH and self.can_serve(link.core) and #networks < common.MAX_SIB_NETWORKS then
-            networks[#networks + 1] = { network = name, certificate = link.certificate, path = link.path }
+            networks[#networks + 1] = { network = name, certificate = link.certificate, path = link.path, carriers = link.carriers }
         end
     end
     if not networks[1] then return end
@@ -151,7 +236,7 @@ function Tower:beacon()
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
-        sign = self.sign,
+        ul = self.ul, interval = self.interval, sign = self.sign,
     })
 end
 
@@ -170,6 +255,10 @@ function Tower:radio(phone, message)
         local link = self:link_for(message.via or message.network)
         if not link then return end
         if op == "attach" then self:ask(phone, link) end
+        -- A phone attaching (again) only listens on the beacon channel, not on the channel it had here before. (Anyone
+        -- can send this for the phone, which only costs it its own channel until it next says it's there.)
+        local context = self.phones[phone]
+        if context then context.dl_heard = false end
         link.control_send({
             op = op, phone = phone, handshake = message.handshake, tag = op == "activate" and message.tag or nil,
             network = message.network ~= link.network and message.network or nil,
@@ -188,6 +277,9 @@ function Tower:radio(phone, message)
         local value = context.active and context.sealer:open(message.sealed)
         if type(value) ~= "table" then return end
         local link = context.link
+        -- The phone says it's listening on its own downlink channel: send it its frames there from now on. (Only
+        -- this one, and pings, which say so too: the phone may send other things before it hears of the channel.)
+        if value.dl ~= nil and value.dl == context.dl then context.dl_heard = true end
         if type(value.p) == "string" then
             -- Up the tunnel to the gateway.
             local sealed = link.tunnel:seal({ teid = context.teid, packet = value.p })
@@ -200,8 +292,8 @@ function Tower:radio(phone, message)
         elseif value.sms_ack ~= nil then
             link.control_send({ op = "sms_ack", teid = context.teid, id = value.sms_ack })
         elseif value.ping ~= nil then
-            -- The phone is checking we still know it.
-            self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ pong = true }) })
+            -- The phone is checking we still know it. It may not have heard which channel is its own.
+            self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ pong = true, dl = context.dl }) })
         elseif is_id(value.target) and value.target ~= self.id
             and (not context.handing_over or self.stack.clock() - context.handing_over > 5) then
             -- The phone hears another cell better. If the handover doesn't happen, it may ask again later.
@@ -242,13 +334,15 @@ function Tower:confirm(phone, sealed)
         context.active = true
         context.link.control_send({ op = "path_switch", teid = context.teid })
     end
-    self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ confirmed = true }) })
+    -- The phone isn't listening on its own channel here yet: this goes on the beacon channel, and says what it is.
+    self:to_phone(phone, { op = "data", sealed = context.sealer:seal({ confirmed = true, dl = self:assign(context) }) })
 end
 
 -- Forget a phone's context.
 local function forget(tower, context)
     if context.link.by_teid[context.teid] == context then context.link.by_teid[context.teid] = nil end
     if tower.phones[context.phone] == context then tower.phones[context.phone] = nil end
+    release(tower, context)
 end
 
 --[[- Handle a control message from a core.
@@ -295,7 +389,8 @@ function Tower:control(message, link)
         self.phones[message.phone] = context
         link.by_teid[message.teid] = context
         if context.active then
-            local sealed = context.sealer:seal({ address = message.address })
+            -- Sent on the beacon channel, as the phone doesn't know its own yet.
+            local sealed = context.sealer:seal({ address = message.address, dl = self:assign(context) })
             if sealed then self:to_phone(message.phone, { op = "accept", sealed = sealed }) end
         end
         -- The phone may have arrived already.
@@ -310,6 +405,11 @@ function Tower:control(message, link)
     elseif op == "path" and common.is_path(message.path) then
         -- The relays our backhaul to this network's core goes through, which phones on them mustn't use us.
         link.path = message.path
+    elseif op == "carriers" and common.is_carriers(message.carriers) and message.carriers[1] then
+        -- The network's administrator changed its carriers.
+        link.carriers = message.carriers
+    elseif op == "interval" and common.is_interval(message.interval) then
+        if not self.fixed_interval then self.interval = message.interval end
     elseif op == "release" and is_id(message.teid) then
         local context = link.by_teid[message.teid]
         if context then forget(self, context) end
@@ -340,9 +440,11 @@ function Tower:stop()
     self.stack:cancel(self.beacon_timer)
     self.stack:udp_close(self.socket)
     self.stack:off_frame(common.FRAME, self.frame_handler)
-    self.links, self.phones, self.asked = {}, {}, recent.new(MAX_ASKED)
+    if self.stack.interfaces[INTERFACE] then self.stack:remove_interface(INTERFACE) end
+    self.links, self.phones, self.downlinks, self.asked = {}, {}, {}, recent.new(MAX_ASKED)
 end
 
 return {
     new = new,
+    INTERFACE = INTERFACE,
 }

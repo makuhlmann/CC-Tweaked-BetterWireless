@@ -100,6 +100,7 @@ end
 -- @treturn string|nil The band's name, or `nil` if it's in none.
 -- @treturn string|nil `"uplink"`, `"downlink"`, or `"both"` for the stack's bands.
 local function of(channel)
+    if type(channel) ~= "number" then return nil end
     for _, band in ipairs(BANDS) do
         if within(channel, band.channels) then return band.name, "both" end
         if within(channel, band.downlink) then return band.name, "downlink" end
@@ -146,6 +147,63 @@ local function beacon_channels()
     return result
 end
 
+--[[- The carrier a channel is in: the 5MHz block of a cellular band around one of its beacon channels, downlink and
+the uplink paired with it. A carrier is known by its beacon channel.
+
+@tparam number channel A downlink or uplink channel.
+@treturn number|nil The carrier's beacon channel, or `nil` if the channel isn't in one.
+@treturn string|nil The band's name.
+]]
+local function carrier_of(channel)
+    local name, part = of(channel)
+    local band = BY_NAME[name]
+    if not band or not band.downlink then return nil end
+    local downlink = channel
+    if part == "uplink" then downlink = band.downlink[1] + (channel - band.uplink[1]) end
+    local block = math.floor((downlink - band.downlink[1]) / RASTER)
+    local beacon = band.downlink[1] + block * RASTER + RASTER / 2
+    -- A band's last few channels may be less than a whole block, so no carrier's.
+    if beacon + RASTER / 2 > band.downlink[2] then return nil end
+    return beacon, name
+end
+
+--[[- A carrier's channels.
+
+@tparam number beacon The carrier's beacon channel.
+@treturn { downlink = { number, number }, uplink = { number, number }, band = string }|nil The first and last channel of
+its downlink and uplink, and its band's name, or `nil` if it isn't a carrier's beacon channel.
+]]
+local function carrier(beacon)
+    local found, name = carrier_of(beacon)
+    if found ~= beacon then return nil end
+    local band = BY_NAME[name]
+    local first = beacon - RASTER / 2
+    local up = band.uplink[1] + (first - band.downlink[1])
+    return { downlink = { first, first + RASTER - 1 }, uplink = { up, up + RASTER - 1 }, band = name }
+end
+
+--- A carrier's name, for people to read: its band and which 5MHz of it, from 1.
+--
+-- @tparam number beacon The carrier's beacon channel.
+-- @treturn string|nil The name, such as `"b20/2"`, or `nil` if it isn't a carrier's beacon channel.
+local function carrier_name(beacon)
+    local found, name = carrier_of(beacon)
+    if found ~= beacon then return nil end
+    return ("%s/%d"):format(name, (beacon - RASTER / 2 - BY_NAME[name].downlink[1]) / RASTER + 1)
+end
+
+--- Read a carrier's name, as [`carrier_name`] gives it. A band on its own means its first carrier.
+--
+-- @tparam string text The name, such as `"b20/2"` or `"b3"`.
+-- @treturn number|nil The carrier's beacon channel, or `nil` if there's no such carrier.
+local function parse_carrier(text)
+    if type(text) ~= "string" then return nil end
+    local name, index = text:lower():match("^(b%d+)/(%d+)$")
+    if not name then name, index = text:lower():match("^(b%d+)$"), "1" end
+    local channels = name and raster(name)
+    return channels and channels[tonumber(index)]
+end
+
 --- A computer's channels on one of the network stack's own bands.
 --
 -- @tparam number id The computer's ID.
@@ -167,5 +225,9 @@ return {
     uplink_of = uplink_of,
     raster = raster,
     beacon_channels = beacon_channels,
+    carrier_of = carrier_of,
+    carrier = carrier,
+    carrier_name = carrier_name,
+    parse_carrier = parse_carrier,
     stack_channels = stack_channels,
 }

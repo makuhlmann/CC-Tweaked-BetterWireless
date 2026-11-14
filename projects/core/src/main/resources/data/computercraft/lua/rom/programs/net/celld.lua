@@ -10,7 +10,7 @@ local name = arg[0] or fs.getName(shell.getRunningProgram())
 
 local function usage()
     print("Usages:")
-    print(name .. " <core> [core...] [area]")
+    print(name .. " <core> [core...] [area] [band <band>] [interval <seconds>]")
     print(name)
     print(name .. " stop")
 end
@@ -46,6 +46,7 @@ end
 local function show(info)
     if info.links and #info.links > 1 then
         print(("Cell #%d, area %d, for %d networks:"):format(info.id, info.area, #info.links))
+        if info.carrier then print(("On %s, reached on channel %d."):format(info.carrier, info.ul)) end
         for _, link in ipairs(info.links) do show_link(info, link) end
         return
     end
@@ -60,6 +61,7 @@ local function show(info)
         print("  " .. tostring(info.fingerprint))
     elseif info.state == "serving" then
         print(("Cell #%d of %s, area %d, through the core %s."):format(info.id, info.network, info.area, info.core))
+        if info.carrier then print(("On %s, reached on channel %d."):format(info.carrier, info.ul)) end
     elseif info.state == "refused" then
         printError(("The core %s refused this cell: %s"):format(info.core, tostring(info.error)))
     elseif info.state == "lost" then
@@ -78,13 +80,29 @@ elseif args[1] == "stop" then
     return
 end
 
--- Cores, and the area last if it's given.
-local cores, area = {}, nil
-for i, arg in ipairs(args) do
-    if i == #args and i > 1 and arg:match("^%d+$") then area = tonumber(arg) else cores[#cores + 1] = arg end
+-- Cores, then the area if it's given, and options: the band, and how often to send system information.
+local cores, settings, i = {}, {}, 1
+while i <= #args do
+    local arg = args[i]
+    if (arg == "band" or arg == "interval") and args[i + 1] and #cores > 0 then
+        if arg == "band" then
+            settings.band = args[i + 1]:lower()
+        else
+            settings.interval = tonumber(args[i + 1])
+            if not settings.interval then return usage() end
+        end
+        i = i + 2
+    elseif #cores > 0 and arg:match("^%d+$") then
+        settings.area = tonumber(arg)
+        i = i + 1
+    else
+        cores[#cores + 1] = arg
+        i = i + 1
+    end
 end
+if #cores == 0 then return usage() end
 
-local ok, err = net.cell.startCell(#cores == 1 and cores[1] or cores, area)
+local ok, err = net.cell.startCell(#cores == 1 and cores[1] or cores, settings)
 if not ok then
     printError(err)
     return
