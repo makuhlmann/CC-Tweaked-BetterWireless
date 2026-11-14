@@ -530,8 +530,11 @@ public final class PropagationModel {
                 loss += least[material.ordinal()] * length;
             }
 
-            // Stop once we've escaped and covered the through section, or once nothing can get through anyway.
-            return loss <= cap && (escape == null || exit < throughLength);
+            // Stop once we've escaped and covered the through section, or once nothing can get through anyway. Until we
+            // escape, keep going whatever it costs (the walk is short): whether the ray reaches open air, and where,
+            // decides whether the signal goes straight up instead. That mustn't depend on how far the link is traced,
+            // or a link traced for a weak transmitter could go up and over where one traced further doesn't.
+            return escape == null || (loss <= cap && exit < throughLength);
         }
 
         private RadioMaterial guessMaterial(int x, int y, int z) {

@@ -4,11 +4,14 @@
 
 package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
+import net.jqwik.api.ForAll;
+import net.jqwik.api.Property;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.function.IntBinaryOperator;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -312,6 +315,117 @@ public class PropagationModelTest {
         var rock = RadioMaterial.ROCK.attenuation(VHF);
         assertTrue(link.through() > rock * 5, "The ceiling should cost as much as rock: " + link.through());
         assertTrue(link.through() < rock * 12, "The space beneath it shouldn't: " + link.through());
+    }
+
+    /** Frequencies across the whole range radios may use, and the bands in between. */
+    private static final double[] FREQUENCIES = {
+        RadioMaterial.MIN_FREQUENCY, VHF, 450, 800, 1575.42, UHF, 2600, RadioMaterial.MAX_FREQUENCY,
+    };
+
+    /**
+     * Rolling hills, with a wall of wood or rock across them, or none.
+     *
+     * @param random Where to get random numbers.
+     * @return The terrain.
+     */
+    private static FakeTerrain randomTerrain(Random random) {
+        var big = random.nextDouble() * 40;
+        var wide = 20 + random.nextDouble() * 200;
+        var small = random.nextDouble() * 15;
+        var narrow = 5 + random.nextDouble() * 50;
+        var phase = random.nextDouble() * 1000;
+        var kind = random.nextInt(3);
+        var wallX = random.nextInt(1200) - 300;
+        var wallTop = GROUND + random.nextInt(60);
+        IntBinaryOperator hills = (x, z) -> GROUND + (int) Math.floor(big * Math.sin((x + phase) / wide) + small * Math.cos((z - phase) / narrow + x / (2 * narrow)));
+        var terrain = new FakeTerrain(kind == 0 ? hills : (x, z) -> x == wallX ? Math.max(wallTop, hills.applyAsInt(x, z)) : hills.applyAsInt(x, z));
+        if (kind > 0) {
+            var material = kind == 1 ? RadioMaterial.WOOD : RadioMaterial.ROCK;
+            terrain.solid = (x, y, z) -> x == wallX && y < wallTop ? BlockRadioInfo.full(material) : null;
+        }
+        return terrain;
+    }
+
+    /**
+     * Two antennas: a few blocks to 1500 apart, above the ground or now and then a little below it.
+     *
+     * @param tx The first antenna's X position.
+     * @param ty The first antenna's Y position.
+     * @param tz The first antenna's Z position.
+     * @param rx The second antenna's X position.
+     * @param ry The second antenna's Y position.
+     * @param rz The second antenna's Z position.
+     */
+    private record Link(double tx, double ty, double tz, double rx, double ry, double rz) {
+        static Link random(Random random, TerrainView terrain) {
+            var tx = random.nextInt(400) - 200 + 0.5;
+            var tz = random.nextInt(400) - 200 + 0.5;
+            var angle = random.nextDouble() * 2 * Math.PI;
+            var length = 3 + random.nextDouble() * 1500;
+            var rx = Math.floor(tx + Math.cos(angle) * length) + 0.5;
+            var rz = Math.floor(tz + Math.sin(angle) * length) + 0.5;
+            return new Link(tx, height(random, terrain, tx, tz), tz, rx, height(random, terrain, rx, rz), rz);
+        }
+
+        private static double height(Random random, TerrainView terrain, double x, double z) {
+            var ground = terrain.groundHeight((int) Math.floor(x), (int) Math.floor(z));
+            return ground + (random.nextInt(8) == 0 ? -random.nextInt(6) : 1 + random.nextInt(40)) + 0.5;
+        }
+
+        LinkPath trace(double budget, TerrainView terrain) {
+            return PropagationModel.trace(tx, ty, tz, rx, ry, rz, budget, ENV, terrain);
+        }
+
+        LinkPath back(double budget, TerrainView terrain) {
+            return PropagationModel.trace(rx, ry, rz, tx, ty, tz, budget, ENV, terrain);
+        }
+    }
+
+    @Property(tries = 300)
+    public void cachedPathsAnswerAsAFreshTraceWould(@ForAll long seed) {
+        // The link cache keeps one traced path for each pair of blocks, and answers packets of any frequency and
+        // budget from it when it says it serves them.
+        var random = new Random(seed);
+        var terrain = randomTerrain(random);
+        var link = Link.random(random, terrain);
+        var traced = BUDGET - 20 + random.nextDouble() * 120;
+        var path = link.trace(traced, terrain);
+        for (var frequency : FREQUENCIES) {
+            var budget = traced - 40 + random.nextDouble() * 120;
+            if (!path.serves(frequency, budget)) continue;
+            var cached = path.evaluate(frequency).loss();
+            var fresh = link.trace(budget, terrain).evaluate(frequency).loss();
+            var what = link + " at " + frequency + "MHz, traced for " + traced + ", asked for " + budget;
+            assertEquals(fresh <= budget, cached <= budget, "Whether it's heard: " + what + ", " + fresh + " vs " + cached);
+            if (fresh <= budget) assertEquals(fresh, cached, 1e-6, what);
+        }
+    }
+
+    @Property(tries = 300)
+    public void linksAreNumbersWhicheverWayRound(@ForAll long seed) {
+        var random = new Random(seed);
+        var terrain = randomTerrain(random);
+        var link = Link.random(random, terrain);
+        var budget = BUDGET + random.nextDouble() * 100;
+        var forward = link.trace(budget, terrain);
+        var backward = link.back(budget, terrain);
+        var lastBase = Double.NEGATIVE_INFINITY;
+        for (var frequency : FREQUENCIES) {
+            var there = forward.evaluate(frequency);
+            var back = backward.evaluate(frequency);
+            var what = link + " at " + frequency + "MHz: " + there + " / " + back;
+            for (var value : new double[]{ there.loss(), there.baseLoss(), there.through(), there.diffraction() }) {
+                assertFalse(Double.isNaN(value), "NaN in " + what);
+            }
+            assertTrue(there.baseLoss() >= 0 && there.through() >= 0 && there.diffraction() >= 0, "Negative loss in " + what);
+            assertTrue(there.loss() >= there.baseLoss() - 1e-9, "Less loss than distance alone in " + what);
+            assertTrue(there.baseLoss() >= lastBase - 1e-9, "Distance costs less at a higher frequency in " + what);
+            lastBase = there.baseLoss();
+            // The cache answers either way round from one path, so both should agree, at least on whether it's heard.
+            if (there.loss() <= budget - 1 || back.loss() <= budget - 1) {
+                assertEquals(there.loss(), back.loss(), 1.0, "Not reciprocal: " + what);
+            }
+        }
     }
 
     private static LinkResult evaluate(TerrainView terrain, int fromX, int fromZ, int toX, double frequency) {
