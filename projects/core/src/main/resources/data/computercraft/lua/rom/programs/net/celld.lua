@@ -10,7 +10,7 @@ local name = arg[0] or fs.getName(shell.getRunningProgram())
 
 local function usage()
     print("Usages:")
-    print(name .. " <core> [core...] [area] [band <band>] [interval <seconds>]")
+    print(name .. " <core> [core...] [area] [band <band>] [interval <seconds>] [pos <x> <y> <z>] [power <dBm>]")
     print(name)
     print(name .. " stop")
 end
@@ -42,11 +42,18 @@ local function show_link(info, link)
     end
 end
 
+-- Say where the cell says it is, and how strongly it sends, if that was set.
+local function show_settings(info)
+    if info.pos then print(("At %d, %d, %d."):format(info.pos[1], info.pos[2], info.pos[3])) end
+    if info.power then print(("Sending with %g dBm."):format(info.power)) end
+end
+
 -- Say what the cell is doing.
 local function show(info)
     if info.links and #info.links > 1 then
         print(("Cell #%d, area %d, for %d networks:"):format(info.id, info.area, #info.links))
         if info.carrier then print(("On %s, reached on channel %d."):format(info.carrier, info.ul)) end
+        show_settings(info)
         for _, link in ipairs(info.links) do show_link(info, link) end
         return
     end
@@ -62,6 +69,7 @@ local function show(info)
     elseif info.state == "serving" then
         print(("Cell #%d of %s, area %d, through the core %s."):format(info.id, info.network, info.area, info.core))
         if info.carrier then print(("On %s, reached on channel %d."):format(info.carrier, info.ul)) end
+        show_settings(info)
     elseif info.state == "refused" then
         printError(("The core %s refused this cell: %s"):format(info.core, tostring(info.error)))
     elseif info.state == "lost" then
@@ -80,11 +88,21 @@ elseif args[1] == "stop" then
     return
 end
 
--- Cores, then the area if it's given, and options: the band, and how often to send system information.
+-- Cores, then the area if it's given, and options: the band, how often to send system information, where the cell is,
+-- and the power to send with.
 local cores, settings, i = {}, {}, 1
 while i <= #args do
     local arg = args[i]
-    if (arg == "band" or arg == "interval") and args[i + 1] and #cores > 0 then
+    if arg == "pos" and #cores > 0 then
+        local x, y, z = tonumber(args[i + 1]), tonumber(args[i + 2]), tonumber(args[i + 3])
+        if not x or not y or not z then return usage() end
+        settings.pos = { x, y, z }
+        i = i + 4
+    elseif arg == "power" and #cores > 0 then
+        settings.power = tonumber(args[i + 1])
+        if not settings.power then return usage() end
+        i = i + 2
+    elseif (arg == "band" or arg == "interval") and args[i + 1] and #cores > 0 then
         if arg == "band" then
             settings.band = args[i + 1]:lower()
         else

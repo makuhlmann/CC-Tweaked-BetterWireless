@@ -56,14 +56,16 @@ Link.__index = Link
 
 @tparam {
     stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number,
-    interval? = number, fixed_interval? = boolean, area? = number, sign = function(data:string):string,
+    interval? = number, fixed_interval? = boolean, area? = number, pos? = { number, number, number },
+    sign = function(data:string):string,
     epoch = function():number, can_serve? = function(core:number):boolean,
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
     carriers? = { number... },
 } options The stack; the `crypto` API; the modem phones are on, and what kind it is (`"wireless"` or `"ender"`); the
 carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; how often to send system
 information, in seconds, and whether that was set for this cell, so its core can't change it; this cell's tracking
-area; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
+area; where it is (its computer's block position), which it says in its system information so phones can work out
+where they are, if it's given; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
 network's phones now, given the address of its core (a relay can't while its own phone has no service, and stops naming
 that network, so its phones move to another cell). It may also be given the first network to serve, as `add_network`
 takes it.
@@ -82,6 +84,7 @@ local function new(options)
         carrier = options.carrier, ul = options.ul, band = carrier.band, dl_range = carrier.downlink,
         interval = common.is_interval(options.interval) and options.interval or common.DEFAULT_INTERVAL,
         fixed_interval = options.fixed_interval == true,
+        pos = common.is_position(options.pos) and { options.pos[1], options.pos[2], options.pos[3] } or nil,
         can_serve = options.can_serve or function() return true end,
         links = {}, phones = {}, downlinks = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
@@ -236,7 +239,7 @@ function Tower:beacon()
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
-        ul = self.ul, interval = self.interval, sign = self.sign,
+        ul = self.ul, interval = self.interval, pos = self.pos, sign = self.sign,
     })
 end
 

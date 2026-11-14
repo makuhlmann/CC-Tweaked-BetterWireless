@@ -15,6 +15,7 @@ local function usage()
     print(name .. " network <name>|auto")
     print(name .. " on|off")
     print(name .. " monitor")
+    print(name .. " locate")
     print(name .. " gui")
     print(name .. " bar [program] [arguments]")
     print(name .. " bar on|off")
@@ -230,6 +231,28 @@ if command == "monitor" and #args == 1 then
     monitor()
 elseif command == "gui" and #args == 1 then
     require("cc.internal.net.cell.gui").run(monitor)
+elseif command == "locate" and #args == 1 then
+    -- Where this computer is, from the cells around which say where they are. One which isn't listening yet starts,
+    -- and gives the cells a few seconds to be heard.
+    if net.cell.info().state == "none" then
+        local ok, err = net.cell.listen()
+        if not ok then
+            printError(err)
+            return
+        end
+        print("Listening for cells...")
+        sleep(5)
+    end
+    local x, y, z, off = net.cell.locate()
+    if not x then
+        printError(y)
+    elseif off == 0 then
+        print(("Position is %s,%s,%s"):format(x, y, z))
+    elseif off == math.huge then
+        print(("Position is %s,%s,%s, but it may be far off: the cells around say little about one direction"):format(x, y, z))
+    else
+        print(("Position is %s,%s,%s, within %s blocks"):format(x, y, z, off))
+    end
 elseif command == "bar" and #args == 2 and (args[2] == "on" or args[2] == "off") then
     -- Show the status bar or not, from when the computer starts too. A bar shown now comes or goes at once.
     local on = args[2] == "on"

@@ -10,7 +10,8 @@ connect to each other as the game's do, over pipes (`support.pipe`) which stand 
 cell, which reaches its core through its own phone, connects over TCP. Each core keeps its files in a folder of its own,
 so it can be restarted, and its cells and other networks' cores join it again by themselves.
 
-Phones hear cells depending on how far away they are: `positions[id]` is where each computer is along a line.
+Phones hear cells depending on how far away they are: `positions[id]` is where each computer is along a line, or in
+space (as `{ x, y, z }`). A cell placed in space says where it is in its system information.
 Several operators can share the air and the backhaul, to test roaming: give the second one `join`, the first.
 
 Each operator has carriers of its own (ACME band 20's first, BETA its second, and so on), and its cells send their
@@ -162,11 +163,20 @@ local function tcp_end(net, connection, driver, peer_key)
     return self
 end
 
+-- How far apart two computers are: along the line, or in space.
+local function separation(a, b)
+    if not a or not b then return nil end
+    if type(a) == "number" and type(b) == "number" then return math.abs(a - b) end
+    if type(a) == "number" then a = { a, 0, 0 } end
+    if type(b) == "number" then b = { b, 0, 0 } end
+    return math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2)
+end
+
 --[[- Make an operator: by default ACME, with a core (computer 50, which is also the gateway, at 10.0.0.1) and cells
 along a line (computers 11 and up), all on a wired backhaul with a server (computer 60). Phones are on the radio link
 "air", and hear cells depending on how far away they are: `positions[id]` is where each computer is along the line.
 
-@tparam { number... } cell_positions Where each cell is.
+@tparam table cell_positions Where each cell is: a number, along the line, or `{ x, y, z }`, in space.
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number, bands? = { string... },
@@ -189,11 +199,15 @@ local function operator(cell_positions, options)
         net.frame_limit = 5000
         net.reach = function(link, sender, receiver)
             if link ~= "air" or not sender then return -50 end
-            local a, b = positions[sender.id], positions[receiver.id]
-            if not a or not b then return false end
-            local signal = -50 - math.abs(a - b) * 0.5
+            local apart = separation(positions[sender.id], positions[receiver.id])
+            if not apart then return false end
+            local signal = -50 - apart * 0.5
             if signal < -110 then return false end
             return signal
+        end
+        net.distance = function(link, sender, receiver)
+            if link ~= "air" then return nil end
+            return separation(positions[sender.id], positions[receiver.id])
         end
     end
     -- The operators which share the backhaul, and which pairs of cores can't reach each other.
@@ -262,7 +276,7 @@ local function operator(cell_positions, options)
         local addr = address.format(stack.interfaces.backhaul.address)
         towers[i] = {
             index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address, public = cell_public,
-            band = options.bands and options.bands[i],
+            band = options.bands and options.bands[i], pos = type(position) == "table" and position or nil,
             sign = function(data) return crypto.sign(cell_private, data) end, shared = {},
             driver = new_driver(net, stack, ("%s's cell #%d"):format(name, id), key, addr),
         }
@@ -319,7 +333,7 @@ local function operator(cell_positions, options)
                     stack = entry.stack, crypto = crypto, modem = "air", kind = "wireless", area = welcome.area,
                     sign = entry.sign, epoch = now, can_serve = entry.can_serve,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval,
+                    fixed_interval = welcome.fixed_interval, pos = entry.pos,
                 }
             end
             return entry.tower:add_network(welcome.network, {

@@ -488,7 +488,7 @@ function run()
 
     local function handle(event, a, b, c, d, e, f)
         if event == "modem_message" then
-            s:receive(a, b, d, f)
+            s:receive(a, b, d, f, e)
         elseif event == "timer" then
             if a == timer then
                 timer, timer_at = nil, nil
@@ -1581,9 +1581,11 @@ cell = {
 
      - `heard`: every cell it has heard in the last 30 seconds, of any network, the ones heard in the last few seconds
        first, then strongest first. Each has `id`, `network`, `signal` (dBm), `area`, `load` (0 to 1), `age` (seconds
-       since it was last heard), `serving` (whether the phone uses it), and `verified`: for cells of the phone's own
-       network, whether their system information came from the operator (`false` may mean a fake cell), or `nil` for
-       other networks;
+       since it was last heard), `band` (such as `"b20"`), `interval` (how often it sends system information, in
+       seconds), `pos` (where it says it is, as `{ x, y, z }`, if it does) and `distance` (how far away it was, in
+       blocks, if it says where it is), `serving` (whether the phone uses it), and `verified`: for cells of the phone's
+       own network, whether their system information came from the operator (`false` may mean a fake cell), or `nil`
+       for other networks;
      - `events`: the last 20 things which happened, oldest first. Each has `kind` and `time` (as `os.epoch("utc")`
        gives it): `"activated"` (with `network`), `"activation_failed"` (`reason`), `"attached"` (`cell`),
        `"handover"` (`from` and `to`), `"lost"` (`cell`) or `"rejected"` (`reason`).
@@ -1603,6 +1605,27 @@ cell = {
     ]]
     listen = function()
         return cellular().listen()
+    end,
+
+    --[[- Work out where this computer is, from the cells around which say where they are (see `celld`), and how far
+    away each is, as GPS does with its hosts. Cells of the phone's own network (and partners') are used if they're
+    enough: their system information is signed, so it can be trusted. Otherwise any which say where they are, which
+    anyone could fake.
+
+    The phone hears each cell every few seconds, at its own time. A phone which stays put is found exactly. One which
+    moves heard each cell from somewhere else, so it's found less well, and the error says how far off it may be.
+    Cells far apart from each other, and at different heights, give the best positions; cells all at one height can't
+    say which side of them the phone is.
+
+    @treturn[1] number This computer's `x` position.
+    @treturn[1] number Its `y` position.
+    @treturn[1] number Its `z` position.
+    @treturn[1] number How far off that may be, in blocks: 0 if it's exact.
+    @treturn[2] nil If it can't tell.
+    @treturn[2] string Why not.
+    ]]
+    locate = function()
+        return cellular().locate()
     end,
 
     --[[- Activate this computer's SIM on a network, with a code from the network's administrator. Activating again, with
@@ -1738,8 +1761,10 @@ cell = {
     does. It sends its system information as often as its core says, unless it's told otherwise.
 
     @tparam string|{ string... } core The core's name or address, or those of several networks' cores.
-    @tparam[opt] number|{ area? = number, band? = string, interval? = number } settings The cell's tracking area; or
-    that, the cellular band it should be on (such as `"b20"`), and how often it sends system information, in seconds.
+    @tparam[opt] number|{ area? = number, band? = string, interval? = number, pos? = { number, number, number },
+    power? = number } settings The cell's tracking area; or that, the cellular band it should be on (such as `"b20"`),
+    how often it sends system information, in seconds, where it is (its computer's block position, which it says in its
+    system information, so phones can work out where they are), and the power its modem sends with, in dBm.
     @treturn[1] true If it started.
     @treturn[2] nil If it couldn't.
     @treturn[2] string Why not.
@@ -1748,7 +1773,7 @@ cell = {
         expect(1, core, "string", "table")
         expect(2, settings, "number", "table", "nil")
         if type(settings) == "table" then
-            for key, kind in pairs { area = "number", band = "string", interval = "number" } do
+            for key, kind in pairs { area = "number", band = "string", interval = "number", pos = "table", power = "number" } do
                 local value = settings[key]
                 if value ~= nil and type(value) ~= kind then
                     error(("bad field '%s' (%s expected, got %s)"):format(key, kind, type(value)), 2)
@@ -1768,7 +1793,8 @@ cell = {
     @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
     why; the `core`; the `network` it serves; its `area`; its `id` and `fingerprint`, which the core's administrator
-    checks before allowing it; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
+    checks before allowing it; where it says it is (`pos`, as `{ x, y, z }`) and the power it sends with (`power`, in
+    dBm), if they were set; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
     for each core, for a cell which serves several networks. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()

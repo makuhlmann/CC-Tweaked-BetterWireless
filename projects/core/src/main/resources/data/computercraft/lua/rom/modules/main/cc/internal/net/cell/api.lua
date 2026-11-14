@@ -15,6 +15,7 @@ here.
 local address = require "cc.net.address"
 local expect = require "cc.expect".expect
 local files = require "cc.internal.net.files"
+local common = require "cc.internal.net.cell.common"
 
 local to_hex, from_hex, read_table = files.hex.encode, files.hex.decode, files.read_table
 
@@ -140,7 +141,10 @@ back on a radio modem: the same one, if it's the same modem. ]]
 local function restore_interface(radio)
     if not radio or radio.stopped or stack.interfaces[radio.interface] then return end
     local modem, kind = radio_modem()
-    if modem then radio:set_modem(modem, kind) end
+    if modem then
+        radio:set_modem(modem, kind)
+        if radio.apply_power then radio.apply_power(modem) end
+    end
 end
 
 local function restore_interfaces()
@@ -312,6 +316,10 @@ local function start_cell_service(config)
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not radio_modem() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
+    -- The power the cell sends with, if it was set: a modem forgets it when it's replaced, or its chunk unloads.
+    local function apply_power(modem)
+        if type(config.power) == "number" then pcall(peripheral.call, modem, "setTransmitPower", config.power) end
+    end
     background.cell = require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, band = config.band, interval = config.interval,
         id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
@@ -323,7 +331,7 @@ local function start_cell_service(config)
                 tower_instance = require("cc.internal.net.cell.tower").new {
                     stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval,
+                    fixed_interval = welcome.fixed_interval, pos = config.pos,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
                     -- A relay reaches a core through this computer's phone, so it can only serve that core's network
@@ -334,6 +342,8 @@ local function start_cell_service(config)
                         return not (interface and interface.name == "cell")
                     end,
                 }
+                tower_instance.apply_power = apply_power
+                apply_power(modem)
             end
             return tower_instance:add_network(welcome.network, {
                 certificate = welcome.certificate, core = address.parse(welcome.core), tunnel_key = welcome.tunnel_key,
@@ -358,7 +368,9 @@ function start_cellular()
     local cell = read_table(CELL_CONFIG)
     local cores = cell_cores(cell)
     if cores and cell.enabled ~= false then
-        local ok, err = start_cell_service({ cores = cores, area = cell.area, band = cell.band, interval = cell.interval })
+        local ok, err = start_cell_service({
+            cores = cores, area = cell.area, band = cell.band, interval = cell.interval, pos = cell.pos, power = cell.power,
+        })
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
 end
@@ -824,12 +836,16 @@ function api.setNetwork(name)
 end
 
 function api.startCell(core, settings)
-    local area, band, interval
+    local area, band, interval, pos, power
     if type(settings) == "table" then
-        area, band, interval = settings.area, settings.band, settings.interval
+        area, band, interval, pos, power = settings.area, settings.band, settings.interval, settings.pos, settings.power
     else
         area = settings
     end
+    if pos ~= nil and not common.is_position(pos) then
+        return nil, "A cell's position is three whole numbers: its computer's x, y and z"
+    end
+    pos = pos and { pos[1], pos[2], pos[3] }
     local cores = {}
     if type(core) == "string" then
         cores[1] = core
@@ -841,12 +857,14 @@ function api.startCell(core, settings)
         if not cores[1] then error("bad argument #1 (expected at least one core)", 2) end
     end
     require_crypto()
-    local config = { cores = cores, area = area or 0, band = band, interval = interval }
+    local config = { cores = cores, area = area or 0, band = band, interval = interval, pos = pos, power = power }
     local old = read_table(CELL_CONFIG)
     -- Start again with new settings, or to try again at once after losing a core.
     if background.cell then
+        local function place(p) return p and table.concat(p, ",") or "" end
         local again = table.concat(cell_cores(old) or {}, " ") ~= table.concat(cores, " ") or (old.area or 0) ~= config.area
-            or old.band ~= config.band or old.interval ~= config.interval
+            or old.band ~= config.band or old.interval ~= config.interval or place(old.pos) ~= place(config.pos)
+            or old.power ~= config.power
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end
@@ -872,13 +890,26 @@ function api.stopCell()
 end
 
 function api.cellInfo()
-    if background.cell then return background.cell:info() end
     local config = read_table(CELL_CONFIG)
-    local cores = cell_cores(config)
-    return {
-        state = "stopped", core = cores and cores[1], cores = cores, area = config.area, id = os.getComputerID(),
-        fingerprint = crypto and enclave and fingerprint(getIdentity()) or nil,
-    }
+    local info
+    if background.cell then
+        info = background.cell:info()
+    else
+        local cores = cell_cores(config)
+        info = {
+            state = "stopped", core = cores and cores[1], cores = cores, area = config.area, id = os.getComputerID(),
+            fingerprint = crypto and enclave and fingerprint(getIdentity()) or nil,
+        }
+    end
+    info.pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil
+    info.power = type(config.power) == "number" and config.power or nil
+    return info
+end
+
+function api.locate()
+    load()
+    if not phone_instance then return nil, "Not listening for cells" end
+    return phone_instance:locate()
 end
 
 function api.startCore()

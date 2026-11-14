@@ -321,9 +321,10 @@ end
 cell, say): each is called with every frame, and ignores those which aren't for it.
 
 @tparam string kind The frame type.
-@tparam function(interface:table, src:number, body:any, signal:number|nil, dst:number) handler Called with each frame of
-this type: the interface it arrived on, the sending computer's ID, the frame's body, the signal strength, and who it was
-sent to (our ID, or `-1` for everyone).
+@tparam function(interface:table, src:number, body:any, signal:number|nil, dst:number, distance:number|nil) handler
+Called with each frame of this type: the interface it arrived on, the sending computer's ID, the frame's body, the
+signal strength, who it was sent to (our ID, or `-1` for everyone), and how far away the sender's modem is (for radio
+frames from the same dimension).
 @tparam[opt] boolean unsealed Whether frames of this type are sent and accepted unencrypted, even on an encrypted link.
 Only for frames which protect themselves.
 @treturn function The handler, to stop it with [`Stack:off_frame`].
@@ -495,7 +496,8 @@ end
 -- @tparam number channel The channel the frame arrived on.
 -- @param frame The frame.
 -- @tparam[opt] number signal The signal strength, for radio messages.
-function Stack:receive(modem, channel, frame, signal)
+-- @tparam[opt] number distance How far away the sender's modem is, in blocks, for radio messages in the same dimension.
+function Stack:receive(modem, channel, frame, signal, distance)
     if type(frame) ~= "table" or frame.net ~= VERSION then return end
 
     local listening = self.listening[modem]
@@ -538,7 +540,7 @@ function Stack:receive(modem, channel, frame, signal)
         if handlers then
             -- A handler may start or stop others, so go through a copy.
             for _, handler in ipairs({ table.unpack(handlers) }) do
-                local ok, err = pcall(handler, interface, src, body, signal, dst)
+                local ok, err = pcall(handler, interface, src, body, signal, dst, distance)
                 if not ok then self.log(err) end
             end
         end

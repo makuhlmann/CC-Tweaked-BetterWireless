@@ -227,11 +227,23 @@ the design above:
     Phones take a cell to be gone after three intervals of silence (but never less than four seconds), and hand over
     after a stronger cell has been so for an interval (but never less than two seconds). Anything sealed from a
     phone's own cell counts as hearing it, and its signal too.
+  - **Positions.** A cell may say where it is (`celld <core> pos 120 70 -340`: its computer's block position), in its
+    signed system information. A phone keeps how far away each such cell was when it last heard it (the distance a
+    modem message has, as GPS uses) and works out where it is from them (`cell locate`, `net.cell.locate()`), with
+    the solver GPS uses (`cc.internal.locate`): the cells whose system information checked out (its own network's,
+    and partners') if they're enough, otherwise any, which anyone could fake. A phone which stays put is found
+    exactly. One which moves heard each cell at another time, from somewhere else: from two beacons of a cell it
+    knows how fast it moved towards or away from it, at least, so each distance may be off by that speed times its
+    age, and the error says how far off the position may be along the direction the cells say least about. Cells at
+    much the same height, seen from far away, say little about the phone's height; cells all at one height can't say
+    which side of them it is. A cell may also send with more power (`celld <core> power 30`, in dBm), which it sets
+    again whenever its modem is replaced.
 - **System information** goes out as a link-layer `cell` frame on the cell's carrier's beacon channel. A cell's
   certificate is issued by the core when the cell connects, for the cell's own Ed25519 key (`cell.tower` in its
   enclave), signed by the operator's (`cell.signing`). Version 4 signs the cell's uplink channel, its interval and each
-  network's carriers too, and has room for a position and for saying the cell only carries messages (for later); a
-  phone ignores system information without a fit uplink channel and interval.
+  network's carriers too, and the cell's position if it has one (three whole numbers), and has room for saying the
+  cell only carries messages (for later); a phone ignores system information without a fit uplink channel and
+  interval.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both

@@ -17,7 +17,8 @@ computer queues (`wakes[stack][event]`), to measure floods.
 As with real modems, a computer is only handed frames on channels it listens on.
 
 Who hears a frame can depend on where computers are: `reach(link, sender, receiver)`, if set, gives the signal strength
-a receiver hears a sender with, or `false` if it can't hear it at all. [`virtual_link`] joins two computers with
+a receiver hears a sender with, or `false` if it can't hear it at all; `distance(link, sender, receiver)`, if set, how
+far apart they are, as a modem says. [`virtual_link`] joins two computers with
 virtual interfaces instead of a modem.
 ]]
 
@@ -197,7 +198,8 @@ return function()
                     if type(dst) == "number" and dst ~= -1 and dst ~= stack.id then
                         self.not_for[stack] = (self.not_for[stack] or 0) + 1
                     end
-                    stack:receive(item.link, item.channel, frame, signals[i])
+                    local distance = self.distance and item.sender and self.distance(item.link, item.sender, stack)
+                    stack:receive(item.link, item.channel, frame, signals[i], distance or nil)
                 end
             end
 

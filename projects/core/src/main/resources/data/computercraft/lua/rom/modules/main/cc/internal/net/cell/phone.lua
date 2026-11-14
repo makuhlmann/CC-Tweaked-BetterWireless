@@ -72,6 +72,7 @@ local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
 local recent = require "cc.internal.net.recent"
 local core = require "cc.internal.net.cell.core"
+local solver = require "cc.internal.locate"
 local PROLOGUE, ACTIVATE_PROLOGUE = core.PROLOGUE, core.ACTIVATE_PROLOGUE
 
 -- Signals below this, in dBm, are too weak to use.
@@ -87,6 +88,8 @@ local SAMPLES = 3
 -- How many cells (of any network) to remember, and for how long after they go quiet, in seconds. Anyone can send
 -- system information, so there's a limit.
 local MAX_HEARD, FORGET = 32, 30
+-- How long how fast we were moving towards or away from a cell says how fast we may be moving now, in seconds.
+local SPEED_MEMORY = 10
 -- How many events (attaching, moving between cells, losing service) to remember.
 local MAX_EVENTS = 20
 -- How often to ask a quiet cell whether it still knows us, in seconds, and how many times in a row it may not answer.
@@ -192,8 +195,8 @@ local function new(options)
     }, Phone)
 
     self:set_modem(options.modem, options.kind or "wireless")
-    self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, signal)
-        if interface.name == self.interface then self:radio(src, body, signal) end
+    self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, signal, _, distance)
+        if interface.name == self.interface then self:radio(src, body, signal, distance) end
     end, true)
     self.timer = stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
     return self
@@ -338,7 +341,7 @@ end
 
 -- Remember a cell we heard, of any network (or of several: a cell may be shared), and average its signal. Whether its
 -- system information checked out is only known for networks whose keys we have.
-function Phone:hear(src, message, signal, networks)
+function Phone:hear(src, message, signal, networks, distance)
     local now = self.stack.clock()
     local cell = self.heard[src]
     if not cell then
@@ -368,7 +371,19 @@ function Phone:hear(src, message, signal, networks)
     cell.signal, cell.heard = total / #cell.samples, now
     cell.area = type(message.area) == "number" and message.area or nil
     cell.load = type(message.load) == "number" and message.load or nil
-    cell.interval, cell.ul, cell.pos, cell.service = message.interval, message.ul, message.pos, message.service
+    -- Where the cell says it is, and how far away it was, to work out where we are; and from the last two, how fast we
+    -- were moving towards or away from it, at least. A cell which moved (or another with its ID) starts again.
+    local pos = message.pos
+    if not (cell.pos and pos and cell.pos[1] == pos[1] and cell.pos[2] == pos[2] and cell.pos[3] == pos[3]) then
+        cell.distance, cell.distance_at, cell.speed = nil, nil, nil
+    end
+    if pos and type(distance) == "number" then
+        if cell.distance and now > cell.distance_at then
+            cell.speed = math.abs(distance - cell.distance) / (now - cell.distance_at)
+        end
+        cell.distance, cell.distance_at = distance, now
+    end
+    cell.interval, cell.ul, cell.pos, cell.service = message.interval, message.ul, pos, message.service
     -- Each network the cell names, now. One it stops naming (it lost that network's core) goes quiet, and is soon
     -- forgotten.
     for name, entry in pairs(cell.networks) do
@@ -540,7 +555,7 @@ end
 -- state's table.
 local from_cell = { activating = {}, attaching = {}, attached = {} }
 
-function Phone:radio(src, message, signal)
+function Phone:radio(src, message, signal, distance)
     if type(message) ~= "table" then return end
     local op = message.op
 
@@ -568,7 +583,7 @@ function Phone:radio(src, message, signal)
                 cert = type(entry.cert) == "string" and entry.cert or nil,
             }
         end
-        self:hear(src, message, signal, networks)
+        self:hear(src, message, signal, networks, distance)
 
         -- The networks we may use the cell through: those whose part checked out, and one we're trying (or using)
         -- before we can check it.
@@ -1218,7 +1233,8 @@ function Phone:info()
                 local _, band = bands.carrier_of(cell.ul or 0)
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
-                    band = band, interval = cell.interval,
+                    band = band, interval = cell.interval, distance = cell.distance,
+                    pos = cell.pos and { cell.pos[1], cell.pos[2], cell.pos[3] },
                     -- Heard lately enough to use.
                     fresh = age <= silence(cell),
                     verified = entry.verified, serving = id == self.cell and name == self.via and self.state == "attached",
@@ -1256,6 +1272,45 @@ function Phone:info()
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
         newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,
     }
+end
+
+--[[- Work out where we are, from the cells heard which say where they are, and how far away each was. Cells whose
+system information checked out (our network's, and partners') are used if they're enough; otherwise any which say
+where they are, which anyone could fake.
+
+@treturn[1] number Our `x` position.
+@treturn[1] number Our `y` position.
+@treturn[1] number Our `z` position.
+@treturn[1] number How far off that may be, in blocks: 0 if it's exact (we haven't moved lately).
+@treturn[2] nil If we can't tell.
+@treturn[2] string Why not.
+]]
+function Phone:locate()
+    local now, ids = self.stack.clock(), {}
+    for id in pairs(self.heard) do ids[#ids + 1] = id end
+    table.sort(ids)
+    local checked, all, speed = {}, {}, 0
+    for _, id in ipairs(ids) do
+        local cell = self.heard[id]
+        if cell.pos and cell.distance and now - cell.heard <= FORGET then
+            local fix = {
+                x = cell.pos[1], y = cell.pos[2], z = cell.pos[3], distance = cell.distance, age = now - cell.distance_at,
+            }
+            all[#all + 1] = fix
+            for _, entry in pairs(cell.networks) do
+                if entry.verified then
+                    checked[#checked + 1] = fix
+                    break
+                end
+            end
+            if cell.speed and fix.age <= SPEED_MEMORY then speed = math.max(speed, cell.speed) end
+        end
+    end
+    local x, y, z, off = solver.locate(checked, speed)
+    if not x and #all > #checked then x, y, z, off = solver.locate(all, speed) end
+    if x then return x, y, z, off end
+    if y == "ambiguous" then return nil, "The cells around are all at one height: this could be above or below them" end
+    return nil, "Too few cells around say where they are"
 end
 
 --- Stop the phone, giving up its address.
