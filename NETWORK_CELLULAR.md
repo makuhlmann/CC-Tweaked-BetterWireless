@@ -259,6 +259,14 @@ the design above:
     them after a week. Phones remember the last 128 messages they've had, to drop repeats. The core numbers messages
     from a random place each time it starts, so a new message is never taken for an old one.
   - They're only kept in memory, so restarting the core loses undelivered ones.
+- **Two networks with the same name.** A name only labels a network: phones go by its operator's keys. Once activated,
+  a phone only believes cells certified by its own operator (or a partner), so another network's cells which give the
+  same name show as fakes, and it never uses them. Activating is different, as the phone has no keys yet, and only the
+  network which made the code knows it: the other network's core doesn't answer at all. So the phone tries the
+  strongest cell of each operator with that name (as the cells' certificates say: they can't be checked yet), then the
+  others, as a cell may not hear the phone. It moves on from a cell which hasn't answered within 5 seconds. Once a
+  network's core has answered, its other cells are left out: they would say the same, and each wrong code counts
+  against the code. At most 8 cells are tried.
 - **Keeping in touch:** a cell which restarts, or whose core does, forgets its phones, though it may be broadcasting
   again before they notice. So a phone which has heard nothing from its cell for 5 seconds asks whether it's still
   known (a sealed `ping`, answered with a sealed `pong`). After four unanswered, it attaches again, keeping its

@@ -289,7 +289,8 @@ elseif command == "activate" and #args >= 3 then
     end
 
     print("Activating...")
-    local timer = os.startTimer(30)
+    -- The phone gives up by itself, once it has tried up to 8 cells: this is only in case it doesn't.
+    local timer = os.startTimer(60)
     while true do
         local event, state = os.pullEvent()
         if event == "cell_state" and (state == "searching" or state == "attaching" or state == "attached") then

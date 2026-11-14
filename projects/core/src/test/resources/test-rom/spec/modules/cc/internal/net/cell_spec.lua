@@ -356,6 +356,79 @@ describe("Cellular networks", function()
         expect({ phone:activate("ACME", "not a code") }):same { nil, "That isn't an activation code" }
     end)
 
+    -- Two unrelated networks called ACME: this one, with cells 11 (at 0) and 12 (at 20), and another, whose cell 21 (at
+    -- 15) is the strongest a phone at 9 hears. Only this one made the code.
+    local function same_names()
+        local setup = operator { 0, 20 }
+        local other = operator({ 15 }, { join = setup, core_id = 51, core_host = 2, cell_base = 20, prefix = "10.65.0.0/16" })
+        return setup, other
+    end
+    -- The cells a phone asks to pass its activation on, in order.
+    local function activations_sent(phone)
+        local cells, to_cell = {}, phone.to_cell
+        function phone.to_cell(self, cell, body)
+            if body.op == "activate" then cells[#cells + 1] = cell end
+            return to_cell(self, cell, body)
+        end
+        return cells
+    end
+
+    it("activates on the network which made the code, when another has the same name", function()
+        math.randomseed(3)
+        local setup = same_names()
+        -- This network's cell 11 doesn't hear the phone, so it's cell 12 which gets through.
+        local reach = setup.net.reach
+        setup.net.reach = function(link, sender, receiver)
+            if sender and sender.id == 1 and receiver.id == 11 then return false end
+            return reach(link, sender, receiver)
+        end
+        local code = setup.core:add_code("ACME-0007", "0007")
+        local activated
+        local phone = setup.add_phone(1, 9, false, { activated = false, on_activated = function(info) activated = info end })
+        local asked = activations_sent(phone)
+        setup.net.advance(3)
+        expect(phone:info().networks):same { "ACME" }
+
+        -- The other network's core doesn't know the code, so doesn't answer; nor does cell 11. Cell 12 does.
+        assert(phone:activate("ACME", code))
+        helpers.wait_until(setup.net, function() return phone.state == "attached" end, 40, "Activating and attaching")
+        expect(asked):same { 21, 11, 12 }
+        expect(activated.signing):eq(setup.signing_public)
+        expect(phone.subscriber):same { id = "ACME-0007", number = "0007" }
+        expect(phone.cell):eq(12)
+
+        -- From then on, the other network's cell shows as a fake.
+        setup.net.advance(2)
+        local verified = {}
+        for _, cell in ipairs(phone:info().heard) do verified[cell.id] = cell.verified end
+        expect(verified):same { [11] = true, [12] = true, [21] = false }
+        expect(setup.net.errors):same {}
+    end)
+
+    it("counts a wrong code once, though another network has the same name", function()
+        math.randomseed(4)
+        local setup = same_names()
+        local code = setup.core:add_code("ACME-0008", "0008")
+        local tag = code:sub(1, 4)
+        local phone = setup.add_phone(1, 9, false, { activated = false })
+        local asked = activations_sent(phone)
+        setup.net.advance(3)
+
+        -- The other network doesn't answer. This one's cell 11 does, and the core doesn't take the code; so cell 12,
+        -- whose core would say the same, isn't asked.
+        assert(phone:activate("ACME", tag .. "-0000-0000-0000-0000"))
+        helpers.wait_until(setup.net, function() return phone.state == "inactive" end, 30, "Giving up")
+        expect(asked):same { 21, 11 }
+        expect(phone.activation_error):eq("No answer: check the code")
+        expect(setup.core.codes[tag].tries):eq(1)
+
+        -- The right code still works.
+        assert(phone:activate("ACME", code))
+        helpers.wait_until(setup.net, function() return phone.state == "attached" end, 30, "Activating and attaching")
+        expect(asked):same { 21, 11, 21, 11 }
+        expect(setup.net.errors):same {}
+    end)
+
     it("delivers messages, keeping them until the phone is reachable", function()
         local setup = operator { 0 }
         local inbox_a, inbox_b = {}, {}

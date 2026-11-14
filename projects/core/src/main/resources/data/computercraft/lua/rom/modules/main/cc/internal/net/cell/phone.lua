@@ -60,6 +60,7 @@ handshake message which doesn't read) never stops the phone waiting for the real
 
 local codec = require "cc.net.codec"
 local noise = require "cc.internal.net.noise"
+local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
 local recent = require "cc.internal.net.recent"
 local core = require "cc.internal.net.cell.core"
@@ -106,6 +107,8 @@ local SCAN_TIME = 3
 -- How long to leave a cell an attach through it got no answer from, in seconds: at first, then twice as long each time it
 -- happens again, up to the most.
 local FAILED_TIME, MAX_FAILED_TIME = 30, 300
+-- How many cells to try activating through, at most. Each which doesn't answer takes ATTACH_TIMEOUT.
+local MAX_ACTIVATION_CELLS = 8
 
 -- What a network is to us, best first: our own (or one we treat as home), a partner, or one we don't know to carry us.
 -- Cells an attach through which got no answer lately come after all of those, whatever their network.
@@ -242,7 +245,7 @@ function Phone:hear(src, message, signal, networks)
         if now - entry.heard > SILENCE then cell.networks[name] = nil end
     end
     for _, entry in ipairs(networks) do
-        cell.networks[entry.network] = { heard = now, verified = entry.verified, path = entry.path }
+        cell.networks[entry.network] = { heard = now, verified = entry.verified, path = entry.path, cert = entry.cert }
     end
 end
 
@@ -408,7 +411,11 @@ function Phone:radio(src, message, signal)
                     network = name, signing = signing, now = epoch, sender = src, certificates = self.certificates,
                 }) == true
             end
-            networks[i] = { network = name, verified = verified, path = entry.path }
+            -- The certificate is kept, unchecked, for activating: it says which operator the cell claims to be of.
+            networks[i] = {
+                network = name, verified = verified, path = entry.path,
+                cert = type(entry.cert) == "string" and entry.cert or nil,
+            }
         end
         self:hear(src, message, signal, networks)
 
@@ -577,10 +584,7 @@ function from_cell.activating.reject(self, here, message)
     -- the real answer still counts if it comes soon.
     here.refusal = type(message.reason) == "string" and message.reason:sub(1, 100) or "Rejected"
     self.stack:schedule(REJECT_GRACE, function()
-        if self.here == here and not here.finished then
-            here.activation.refusal = here.refusal
-            self:try_activation(here.activation)
-        end
+        if self.here == here and not here.finished then self:activation_over(here) end
     end)
 end
 
@@ -622,9 +626,15 @@ function Phone:heard_from_cell(here)
     here.last_heard, here.unanswered, here.fast_check, here.confirming = self.stack.clock(), 0, false, nil
 end
 
---[[- Activate with a code from the network's administrator, through the strongest cell of the network. Where the
-network has no cells in range (or none at all, as a full MVNO), it may be reached through another network's cell, if
-that network carries its phones: the phone tries the strongest cell of each network around, until one passes it on.
+--[[- Activate with a code from the network's administrator, through a cell of the network.
+
+Two networks may have the same name, and only the one which made the code knows it. So the phone tries the strongest
+cell of each operator of that name, as the cells' certificates name them (they can't be checked yet), then the others
+(one may not hear the phone), until a network takes the code. Once a network's core has answered, its other cells are
+left out: they'd say the same, and each wrong code counts against the code.
+
+Where the network has no cells in range (or none at all, as a full MVNO), it may be reached through another network's
+cell, if that network carries its phones: the phone tries every network's cells the same way, until one passes it on.
 
 @tparam string network The network's name.
 @tparam string code The activation code.
@@ -635,61 +645,106 @@ that network carries its phones: the phone tries the strongest cell of each netw
 function Phone:activate(network, code)
     local tag, secret = common.parse_code(code)
     if not tag then return nil, "That isn't an activation code" end
-    -- The strongest cell of each network.
-    local now, strongest = self.stack.clock(), {}
+    -- Each cell we hear, through each network it serves, with the operator its certificate for that network names: a
+    -- network's cells all name the same one. A cell without a certificate is an operator of its own.
+    local now, ways, named = self.stack.clock(), {}, false
     for id, heard in pairs(self.heard) do
         for name, entry in pairs(heard.networks) do
-            local other = strongest[name]
-            if now - entry.heard <= SILENCE and (not other or heard.signal > other.signal) then
-                strongest[name] = { id = id, signal = heard.signal, network = name }
+            if now - entry.heard <= SILENCE then
+                local cert = certificate.decode(entry.cert)
+                ways[#ways + 1] = {
+                    id = id, signal = heard.signal, network = name,
+                    operator = name .. "\0" .. (cert and cert.issuer or "cell " .. id),
+                }
+                if name == network then named = true end
             end
         end
     end
-    local candidates = {}
-    if strongest[network] then
-        candidates[1] = strongest[network]
-    else
-        for _, candidate in pairs(strongest) do candidates[#candidates + 1] = candidate end
-        table.sort(candidates, function(a, b)
-            if a.signal ~= b.signal then return a.signal > b.signal end
-            return a.network < b.network
-        end)
+    table.sort(ways, function(a, b)
+        if a.signal ~= b.signal then return a.signal > b.signal end
+        if a.network ~= b.network then return a.network < b.network end
+        return a.id < b.id
+    end)
+
+    -- The network's own cells if we hear any, else every network's: the strongest of each operator, then the others.
+    local candidates, others, seen = {}, {}, {}
+    for _, way in ipairs(ways) do
+        if not named or way.network == network then
+            if seen[way.operator] then
+                others[#others + 1] = way
+            else
+                seen[way.operator] = true
+                candidates[#candidates + 1] = way
+            end
+        end
     end
+    for _, way in ipairs(others) do candidates[#candidates + 1] = way end
     if not candidates[1] then return nil, "No cell of " .. network .. " in range" end
+    for i = #candidates, MAX_ACTIVATION_CELLS + 1, -1 do candidates[i] = nil end
 
     self.activation_error = nil
+    -- The operators whose cores have answered (`answered`), and whether any did (`replied`).
     local activation = {
         network = network, tag = tag, key = common.activation_key(self.crypto, secret), candidates = candidates, next = 1,
+        answered = {}, replied = false,
     }
     if not self:try_activation(activation) then return nil, "The SIM can't be used" end
     return true
 end
 
--- Ask the next cell to pass our activation on, or give up if none is left. Returns false if the SIM can't be used.
+-- Ask the next cell to pass our activation on, or give up if none is left. Cells of an operator whose core has answered
+-- are left out. Returns false if the SIM can't be used.
 function Phone:try_activation(activation)
-    local candidate = activation.candidates[activation.next]
+    local candidate
+    repeat
+        candidate = activation.candidates[activation.next]
+        activation.next = activation.next + 1
+    until not candidate or not activation.answered[candidate.operator]
     if not candidate then
-        self:activation_failed(activation.refusal or "No answer: check the code")
+        -- A core which answered, but didn't take the code, says more than one which turned us away.
+        self:activation_failed(not activation.replied and activation.refusal or "No answer: check the code")
         return true
     end
-    activation.next = activation.next + 1
     local handshake = noise.new {
         crypto = self.crypto, pattern = "XXpsk3", initiator = true, prologue = ACTIVATE_PROLOGUE .. activation.network,
         static = self.sim, psk = activation.key,
     }
     local message = handshake:write("")
     if not message then return false end
-    -- What we keep while activating through one cell: the activation, the cell and the network we asked through, and
-    -- the handshake; then whether we've finished it, and a refusal, which may not be the real answer.
-    local here = { activation = activation, cell = candidate.id, via = candidate.network, handshake = handshake }
+    -- What we keep while activating through one cell: the activation, the cell, the network we asked through and the
+    -- operator we take it to be of, and the handshake; then whether we've finished it, and a refusal, which may not be
+    -- the real answer.
+    local here = {
+        activation = activation, cell = candidate.id, via = candidate.network, operator = candidate.operator,
+        handshake = handshake,
+    }
     self:enter("activating", here)
     self:to_cell(here.cell, {
         op = "activate", network = activation.network, via = here.via, tag = activation.tag, handshake = message,
     })
+    -- A core which doesn't know the code doesn't answer (nor does one the cell doesn't reach, or a cell which doesn't
+    -- hear us): try the next cell. One which answered has as long again to take the code.
+    self.stack:schedule(ATTACH_TIMEOUT, function()
+        if self.here == here and not here.finished then self:activation_over(here) end
+    end)
     self.stack:schedule(ATTACH_TIMEOUT * 2, function()
-        if self.here == here then self:activation_failed("No answer: check the code") end
+        if self.here == here then self:activation_over(here) end
     end)
     return true
+end
+
+-- Activating through a cell (`here`) is over, without the code being taken: try the next cell. A core which answered
+-- (or something which said it was the core: anyone can) knows the code's first group, so it's the network which made
+-- the code, and its other cells are left out.
+function Phone:activation_over(here)
+    local activation = here.activation
+    if here.finished then
+        activation.replied = true
+        activation.answered[here.operator] = true
+    elseif here.refusal then
+        activation.refusal = here.refusal
+    end
+    if not self:try_activation(activation) then self:activation_failed("The SIM can't be used") end
 end
 
 function Phone:activation_failed(reason)
