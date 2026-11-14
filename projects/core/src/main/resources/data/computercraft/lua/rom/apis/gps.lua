@@ -87,7 +87,22 @@ function locate(_nTimeout, _bDebug)
     -- Listen to the hosts. Each fix is a host's position, how far away it was, and when: all of them count, as a host
     -- heard twice says how we're moving.
     local tFixes, tHosts, nHosts = {}, {}, 0
-    local x, y, z, nError, tOne, tOther
+    local x, y, z, nError, tOne, tOther, bStale
+
+    -- Work out where we are from what we've heard: the newest answer knows the most.
+    local function solve()
+        bStale = false
+        local tList, nNow = {}, os.clock()
+        for i, tHeard in ipairs(tFixes) do
+            tList[i] = { x = tHeard.x, y = tHeard.y, z = tHeard.z, distance = tHeard.distance, age = nNow - tHeard.time }
+        end
+        local nX, nY, nZ, nOff = solver.locate(tList)
+        if nX then
+            x, y, z, nError = nX, nY, nZ, nOff
+        elseif nY == "ambiguous" then
+            tOne, tOther = nZ, nOff
+        end
+    end
     local timeout = os.startTimer(_nTimeout or 5)
     while true do
         local e, p1, p2, p3, p4, p5 = os.pullEvent()
@@ -104,23 +119,20 @@ function locate(_nTimeout, _bDebug)
                 end
                 tFixes[#tFixes + 1] = tFix
                 local sKey = tFix.x .. "," .. tFix.y .. "," .. tFix.z
-                if not tHosts[sKey] then
+                local bNewHost = not tHosts[sKey]
+                if bNewHost then
                     tHosts[sKey] = true
                     nHosts = nHosts + 1
                 end
 
-                local tList, nNow = {}, os.clock()
-                for i, tHeard in ipairs(tFixes) do
-                    tList[i] = { x = tHeard.x, y = tHeard.y, z = tHeard.z, distance = tHeard.distance, age = nNow - tHeard.time }
-                end
-                local nX, nY, nZ, nOff = solver.locate(tList)
-                if nX then
-                    -- The newest answer, which knows the most. Within a block is good enough to stop, and so is having
-                    -- heard each host twice: by then we know how we're moving, and waiting longer won't say more.
-                    x, y, z, nError = nX, nY, nZ, nOff
-                    if nError <= 1 or (nHosts >= 4 and #tFixes >= 2 * nHosts) then break end
-                elseif nY == "ambiguous" then
-                    tOne, tOther = nZ, nOff
+                -- Working it out takes a while for a computer on the move, so only when it may let us stop: a new host
+                -- may be what we needed (and a computer which stays put then knows exactly), and once each host has
+                -- been heard twice, we know how we're moving, and waiting longer won't say more.
+                local bTwice = nHosts >= 4 and #tFixes >= 2 * nHosts
+                bStale = true
+                if bNewHost or bTwice then
+                    solve()
+                    if x and (nError <= 1 or bTwice) then break end
                 end
             end
 
@@ -128,6 +140,8 @@ function locate(_nTimeout, _bDebug)
             -- We received a timeout
             local timer = p1
             if timer == timeout then
+                -- What we heard since we last worked it out counts too.
+                if bStale then solve() end
                 break
             end
 
