@@ -276,6 +276,11 @@ describe("The cell program", function()
                 ok = true, error = "",
                 output = "No SIM: activate one with 'cell activate', or listen for cells with 'cell on'\n",
             }
+            -- With a SIM, but no modem to run the phone on.
+            phone.info = { state = "none", enabled = true, network = "ACME", selection = "auto", roaming = false }
+            expect(capture("/rom/programs/net/cell.lua")):matches {
+                ok = true, error = "", output = "Not running: this needs a wireless modem\nNetwork:  ACME\n",
+            }
         end)
 
         it("says when the phone is roaming, or kept to one network", function()

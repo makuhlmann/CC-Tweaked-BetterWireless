@@ -286,7 +286,12 @@ elseif command == "bar" then
     require("cc.internal.net.cell.bar").run(shell.execute, table.unpack(args, 2))
 elseif command == nil then
     local info = net.cell.info()
-    print(STATES[info.state] or info.state)
+    if info.state == "none" and info.network then
+        -- It has a SIM, but the phone isn't running.
+        print("Not running: this needs a wireless modem")
+    else
+        print(STATES[info.state] or info.state)
+    end
     if info.state == "searching" and info.newer then
         print("The cells around run a newer version of the network than this phone. Update its software.")
     end
