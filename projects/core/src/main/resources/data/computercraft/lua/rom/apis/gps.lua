@@ -12,8 +12,10 @@ from theirs (with a process known as
 [trilateration](https://en.wikipedia.org/wiki/Trilateration)). It sends
 nothing itself, so it works as far away as the hosts can be heard.
 
-A computer which stays put is found exactly. One which moves while it listens
-hears each host from somewhere else, so it is found less well, and
+A computer which stays put is found exactly. One which moves while it
+listens hears each host from somewhere else: once it has heard the hosts for a
+few seconds, it works out how it is moving too, which finds it exactly again if
+it goes steadily in a straight line. Otherwise it is found less well, and
 [`gps.locate`] says how far off it may be. Hosts far apart from each other (and
 at different heights) give the best positions.
 
@@ -30,10 +32,13 @@ CHANNEL_GPS = 65534
 
 --- Tries to retrieve the computer or turtles own location.
 --
--- It listens for GPS hosts until it hears enough of them to know where it is
--- (or the time is up). Hosts send their positions every two seconds.
+-- It listens for GPS hosts until it knows where it is to within a block (or
+-- the time is up, when it gives the best it knows). Hosts send their positions
+-- every two seconds, so a computer which stays put knows within two seconds.
+-- One which moves listens until it has heard each host twice, to work out how
+-- it is moving.
 --
--- @tparam[opt=3] number timeout The maximum time in seconds taken to establish our
+-- @tparam[opt=5] number timeout The maximum time in seconds taken to establish our
 -- position.
 -- @tparam[opt=false] boolean debug Print debugging messages
 -- @treturn[1] number This computer's `x` position.
@@ -79,11 +84,11 @@ function locate(_nTimeout, _bDebug)
         bCloseChannel = true
     end
 
-    -- Listen to the hosts. Each fix is a host's position, how far away it was, and when. A host heard twice says how
-    -- fast we are moving towards or away from it, at least.
-    local tFixes, nSpeed = {}, 0
+    -- Listen to the hosts. Each fix is a host's position, how far away it was, and when: all of them count, as a host
+    -- heard twice says how we're moving.
+    local tFixes, tHosts, nHosts = {}, {}, 0
     local x, y, z, nError, tOne, tOther
-    local timeout = os.startTimer(_nTimeout or 3)
+    local timeout = os.startTimer(_nTimeout or 5)
     while true do
         local e, p1, p2, p3, p4, p5 = os.pullEvent()
         if e == "modem_message" then
@@ -97,22 +102,25 @@ function locate(_nTimeout, _bDebug)
                 if _bDebug then
                     print(tFix.distance .. " metres from " .. tFix.x .. "," .. tFix.y .. "," .. tFix.z)
                 end
+                tFixes[#tFixes + 1] = tFix
                 local sKey = tFix.x .. "," .. tFix.y .. "," .. tFix.z
-                local tOlder = tFixes[sKey]
-                if tOlder and tFix.time > tOlder.time then
-                    nSpeed = math.max(nSpeed, math.abs(tFix.distance - tOlder.distance) / (tFix.time - tOlder.time))
+                if not tHosts[sKey] then
+                    tHosts[sKey] = true
+                    nHosts = nHosts + 1
                 end
-                tFixes[sKey] = tFix
 
                 local tList, nNow = {}, os.clock()
-                for _, tHeard in pairs(tFixes) do
-                    tList[#tList + 1] = { x = tHeard.x, y = tHeard.y, z = tHeard.z, distance = tHeard.distance, age = nNow - tHeard.time }
+                for i, tHeard in ipairs(tFixes) do
+                    tList[i] = { x = tHeard.x, y = tHeard.y, z = tHeard.z, distance = tHeard.distance, age = nNow - tHeard.time }
                 end
-                x, y, z, nError = solver.locate(tList, nSpeed)
-                if x then
-                    break
-                elseif y == "ambiguous" then
-                    tOne, tOther = z, nError
+                local nX, nY, nZ, nOff = solver.locate(tList)
+                if nX then
+                    -- The newest answer, which knows the most. Within a block is good enough to stop, and so is having
+                    -- heard each host twice: by then we know how we're moving, and waiting longer won't say more.
+                    x, y, z, nError = nX, nY, nZ, nOff
+                    if nError <= 1 or (nHosts >= 4 and #tFixes >= 2 * nHosts) then break end
+                elseif nY == "ambiguous" then
+                    tOne, tOther = nZ, nOff
                 end
             end
 

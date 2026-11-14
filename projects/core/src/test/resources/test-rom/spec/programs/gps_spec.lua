@@ -22,6 +22,6 @@ describe("The gps program", function()
 
         expect(capture("gps locate"))
             :matches { ok = true, output = "Some debugging information.\n", error = "" }
-        expect(locate):called_with(3, true)
+        expect(locate):called_with(5, true)
     end)
 end)

@@ -31,10 +31,12 @@ Additionally, you will need another computer and a wireless modem, in order to t
 ## Picking an area
 First, choose a place to build your GPS constellation. This should be a 10x10x10 cube, though you can make this smaller
 if needed. A computer which stays put is found exactly, even far from a small constellation. One which moves while it
-listens (a player walking with a pocket computer) hears each host from somewhere else, and is found less well: the
-further it is from the constellation compared to the constellation's size, the worse. [`gps.locate`] says how far off
-it may be. Hosts far apart from each other, and at different heights (on hills, or towers, hundreds of blocks apart),
-serve moving computers much better than a cube does.
+listens (a player walking with a pocket computer) hears each host from somewhere else, so it listens until it has heard
+each host twice (about four seconds) and works out how it's moving as well as where it is: exactly, if it went steadily
+in a straight line. It may have turned since the last few hosts it heard, which they can't show yet, and
+[`gps.locate`] allows for that in how far off it says it may be (a few blocks at walking pace). Turns earlier on make
+the fit worse, and more so far from a small constellation: hosts far apart from each other, and at different heights
+(on hills, or towers, hundreds of blocks apart), serve moving computers better than a cube does.
 
 Every computer must be loaded in order for other computers to use GPS, so it is recommended to build your GPS
 constellation in a single chunk that will always be loaded. You may want to choose an area in an already chunk-loaded

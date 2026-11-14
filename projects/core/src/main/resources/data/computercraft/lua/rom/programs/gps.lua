@@ -23,7 +23,7 @@ end
 if sCommand == "locate" then
     -- "gps locate"
     -- Just locate this computer (this will print the results)
-    gps.locate(3, true)
+    gps.locate(5, true)
 
 elseif sCommand == "host" then
     -- "gps host"
@@ -71,7 +71,7 @@ elseif sCommand == "host" then
         print("Position is " .. x .. "," .. y .. "," .. z)
     else
         -- Position is to be determined using locate
-        x, y, z = gps.locate(3, true)
+        x, y, z = gps.locate(5, true)
         if x == nil then
             print("Run \"gps host <x> <y> <z>\" to set position manually")
             return

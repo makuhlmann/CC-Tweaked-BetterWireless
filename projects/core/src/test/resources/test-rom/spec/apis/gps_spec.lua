@@ -120,13 +120,16 @@ describe("The gps library", function()
             end
         end)
 
-        it("says how far off it may be when it moves while listening", function()
-            -- Hosts send at 0.2, 0.7, 1.2 and 1.7 seconds, while the computer walks along.
+        it("works out how it's moving while it walks, and so where it is", function()
+            -- Hosts send at 0.2, 0.7, 1.2 and 1.7 seconds, and every two seconds after, while the computer walks along
+            -- at 4 blocks a second.
             local starts = { 0.1, 0.35, 0.6, 0.85 }
             stub(math, "random", function() return table.remove(starts, 1) end)
-            local result
-            local computer, modem = gps_receiver(12, 23, 52, function(env)
+            local result, where
+            local computer, modem
+            computer, modem = gps_receiver(12, 23, 52, function(env)
                 result = { env.gps.locate() }
+                where = computer.position
             end)
             local computers = gps_hosts(computer, modem, {
                 { 5, 5, 5 },
@@ -136,13 +139,15 @@ describe("The gps library", function()
             })
 
             fake_computer.run_all(computers, false)
-            for step = 1, 8 do
+            for step = 1, 20 do
                 computer.position = vector.new(12 + step, 23, 52)
                 fake_computer.advance_all(computers, 0.25)
                 fake_computer.run_all(computers, false)
             end
+            -- Once it has heard each host twice, it knows. It might have turned since, which it can't hear yet.
             expect(result and #result):eq(4)
-            expect(result[4] > 0):describe("The error, " .. tostring(result[4])):eq(true)
+            expect({ result[1], result[2], result[3] }):same { where.x, where.y, where.z }
+            expect(result[4] > 0 and result[4] <= 8):describe("The error, " .. tostring(result[4])):eq(true)
         end)
 
         it("fails to locate a computer with insufficient hosts", function()
@@ -160,7 +165,7 @@ describe("The gps library", function()
             fake_computer.run_all(computers, false)
             fake_computer.advance_all(computers, 2)
             fake_computer.run_all(computers, false)
-            fake_computer.advance_all(computers, 1)
+            fake_computer.advance_all(computers, 3)
             fake_computer.run_all(computers, { computer })
         end)
 

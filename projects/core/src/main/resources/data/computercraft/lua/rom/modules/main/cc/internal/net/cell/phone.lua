@@ -88,8 +88,9 @@ local SAMPLES = 3
 -- How many cells (of any network) to remember, and for how long after they go quiet, in seconds. Anyone can send
 -- system information, so there's a limit.
 local MAX_HEARD, FORGET = 32, 30
--- How long how fast we were moving towards or away from a cell says how fast we may be moving now, in seconds.
-local SPEED_MEMORY = 10
+-- How far away each cell which says where it is was, lately, to work out where we are and how we're moving: for how
+-- long, in seconds, how many times at most, and how far apart in time at least (frames from our cell come in bursts).
+local TRACK_WINDOW, TRACK_SAMPLES, TRACK_SPACING = 10, 8, 0.4
 -- How many events (attaching, moving between cells, losing service) to remember.
 local MAX_EVENTS = 20
 -- How often to ask a quiet cell whether it still knows us, in seconds, and how many times in a row it may not answer.
@@ -371,19 +372,14 @@ function Phone:hear(src, message, signal, networks, distance)
     cell.signal, cell.heard = total / #cell.samples, now
     cell.area = type(message.area) == "number" and message.area or nil
     cell.load = type(message.load) == "number" and message.load or nil
-    -- Where the cell says it is, and how far away it was, to work out where we are; and from the last two, how fast we
-    -- were moving towards or away from it, at least. A cell which moved (or another with its ID) starts again.
+    -- Where the cell says it is, and how far away it was, to work out where we are. A cell which moved (or another with
+    -- its ID) starts again.
     local pos = message.pos
     if not (cell.pos and pos and cell.pos[1] == pos[1] and cell.pos[2] == pos[2] and cell.pos[3] == pos[3]) then
-        cell.distance, cell.distance_at, cell.speed = nil, nil, nil
-    end
-    if pos and type(distance) == "number" then
-        if cell.distance and now > cell.distance_at then
-            cell.speed = math.abs(distance - cell.distance) / (now - cell.distance_at)
-        end
-        cell.distance, cell.distance_at = distance, now
+        cell.track, cell.distance = nil, nil
     end
     cell.interval, cell.ul, cell.pos, cell.service = message.interval, message.ul, pos, message.service
+    if pos then self:measured(cell, distance, now) end
     -- Each network the cell names, now. One it stops naming (it lost that network's core) goes quiet, and is soon
     -- forgotten.
     for name, entry in pairs(cell.networks) do
@@ -401,6 +397,18 @@ function Phone:hear(src, message, signal, networks, distance)
             self:heard_carrier(carrier, entry.network, now)
         end
     end
+end
+
+-- How far away a cell which says where it is was, now (`distance`, as the modem said, if it did).
+function Phone:measured(cell, distance, now)
+    if type(distance) ~= "number" then return end
+    local track = cell.track or {}
+    cell.track = track
+    local last = track[#track]
+    if last and now - last.at < TRACK_SPACING then return end
+    track[#track + 1] = { distance = distance, at = now }
+    while #track > 1 and (#track > TRACK_SAMPLES or now - track[1].at > TRACK_WINDOW) do table.remove(track, 1) end
+    cell.distance = distance
 end
 
 -- A network was heard naming a carrier, or using it.
@@ -608,7 +616,7 @@ function Phone:radio(src, message, signal, distance)
     -- a message has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
     local handlers, here = from_cell[self.state], self.here
     local handle = handlers and handlers[op]
-    if handle and src == here.cell then handle(self, here, message, signal) end
+    if handle and src == here.cell then handle(self, here, message, signal, distance) end
 end
 
 function from_cell.attaching.attach_reply(self, here, message)
@@ -660,10 +668,10 @@ function from_cell.attaching.reject(self, here, message)
     end)
 end
 
-function from_cell.attached.data(self, here, message, signal)
+function from_cell.attached.data(self, here, message, signal, distance)
     local value = here.sealer:open(message.sealed)
     if type(value) ~= "table" then return end
-    self:heard_from_cell(here, signal)
+    self:heard_from_cell(here, signal, distance)
     -- Our cell says which downlink channel is ours (after a handover, or when we asked whether it knows us).
     if value.dl ~= nil and value.dl ~= here.dl then self:set_downlink(here, value.dl) end
     local packet = type(value.p) == "string" and codec.decode(value.p)
@@ -796,7 +804,7 @@ end
 
 -- Something came from our cell which only it could have sent: it knows us, and it's still there, however long since we
 -- heard its system information. Its signal counts too.
-function Phone:heard_from_cell(here, signal)
+function Phone:heard_from_cell(here, signal, distance)
     local now = self.stack.clock()
     here.last_heard, here.unanswered, here.fast_check, here.confirming = now, 0, false, nil
     local cell = self.cells[here.cell]
@@ -805,6 +813,9 @@ function Phone:heard_from_cell(here, signal)
         entry.heard = now
         sample(cell, nil, signal, now)
     end
+    -- And how far away it is, which says where we are between its system information.
+    local heard = self.heard[here.cell]
+    if heard and heard.pos then self:measured(heard, distance, now) end
 end
 
 --[[- Activate with a code from the network's administrator, through a cell of the network.
@@ -1274,9 +1285,9 @@ function Phone:info()
     }
 end
 
---[[- Work out where we are, from the cells heard which say where they are, and how far away each was. Cells whose
-system information checked out (our network's, and partners') are used if they're enough; otherwise any which say
-where they are, which anyone could fake.
+--[[- Work out where we are, from the cells heard which say where they are, and how far away each was lately (which
+also says how we're moving). Cells whose system information checked out (our network's, and partners') are used if
+they're enough; otherwise any which say where they are, which anyone could fake.
 
 @treturn[1] number Our `x` position.
 @treturn[1] number Our `y` position.
@@ -1289,25 +1300,25 @@ function Phone:locate()
     local now, ids = self.stack.clock(), {}
     for id in pairs(self.heard) do ids[#ids + 1] = id end
     table.sort(ids)
-    local checked, all, speed = {}, {}, 0
+    local checked, all = {}, {}
     for _, id in ipairs(ids) do
         local cell = self.heard[id]
-        if cell.pos and cell.distance and now - cell.heard <= FORGET then
-            local fix = {
-                x = cell.pos[1], y = cell.pos[2], z = cell.pos[3], distance = cell.distance, age = now - cell.distance_at,
-            }
-            all[#all + 1] = fix
+        if cell.pos and cell.track and now - cell.heard <= FORGET then
+            local verified = false
             for _, entry in pairs(cell.networks) do
-                if entry.verified then
-                    checked[#checked + 1] = fix
-                    break
-                end
+                if entry.verified then verified = true end
             end
-            if cell.speed and fix.age <= SPEED_MEMORY then speed = math.max(speed, cell.speed) end
+            for _, seen in ipairs(cell.track) do
+                local fix = {
+                    x = cell.pos[1], y = cell.pos[2], z = cell.pos[3], distance = seen.distance, age = now - seen.at,
+                }
+                all[#all + 1] = fix
+                if verified then checked[#checked + 1] = fix end
+            end
         end
     end
-    local x, y, z, off = solver.locate(checked, speed)
-    if not x and #all > #checked then x, y, z, off = solver.locate(all, speed) end
+    local x, y, z, off = solver.locate(checked)
+    if not x and #all > #checked then x, y, z, off = solver.locate(all) end
     if x then return x, y, z, off end
     if y == "ambiguous" then return nil, "The cells around are all at one height: this could be above or below them" end
     return nil, "Too few cells around say where they are"

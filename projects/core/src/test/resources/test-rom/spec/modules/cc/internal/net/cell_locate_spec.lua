@@ -35,27 +35,29 @@ describe("Cellular positions", function()
         expect(acme.net.errors):same {}
     end)
 
-    it("says how far off a phone which moves may be, and is exact again once it stops", function()
+    it("works out how a phone is moving, and is exact again once it stops", function()
         math.randomseed(2)
         local acme = operator(cells)
         local phone = acme.add_phone(1, here)
         acme.net.advance(5)
 
-        -- Walking along at 2 blocks a second.
+        -- Walking along at 2 blocks a second, hearing each cell every second.
         local x = here[1]
-        for _ = 1, 12 do
-            x = x + 1
+        for _ = 1, 60 do
+            x = x + 0.2
             acme.positions[1] = { x, 64, 30 }
-            acme.net.advance(0.5)
+            acme.net.advance(0.1)
         end
         local lx, ly, lz, off = phone:locate()
         local miss = distance({ lx, ly, lz }, { x, 64, 30 })
         expect(off > 0):describe("The error, " .. tostring(off)):eq(true)
         expect(miss <= off):describe(("Off by %.2f, said %.2f"):format(miss, off)):eq(true)
+        -- No more than it could have gone another way since it last heard three cells, and then some.
+        expect(off < 5):describe("The error, " .. tostring(off)):eq(true)
 
         -- Standing still, it's exact once each cell has been heard twice from where it stands.
         acme.net.advance(3)
-        expect({ phone:locate() }):same { x, 64, 30, 0 }
+        expect({ phone:locate() }):same { math.floor(x * 100 + 0.5) / 100, 64, 30, 0 }
     end)
 
     it("only takes other networks' cells' word for it when its own aren't enough", function()

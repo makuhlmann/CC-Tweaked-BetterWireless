@@ -232,9 +232,12 @@ the design above:
     modem message has, as GPS uses) and works out where it is from them (`cell locate`, `net.cell.locate()`), with
     the solver GPS uses (`cc.internal.locate`): the cells whose system information checked out (its own network's,
     and partners') if they're enough, otherwise any, which anyone could fake. A phone which stays put is found
-    exactly. One which moves heard each cell at another time, from somewhere else: from two beacons of a cell it
-    knows how fast it moved towards or away from it, at least, so each distance may be off by that speed times its
-    age, and the error says how far off the position may be along the direction the cells say least about. Cells at
+    exactly. One which moves heard each cell at another time, from somewhere else, so it keeps each cell's distances
+    of the last 10 seconds (up to 8, from system information and, for its own cell, from what it sends, no closer
+    than 0.4 seconds apart), and from 8 or more of at least 4 cells works out how it's moving as well as where it is:
+    exactly, if it went steadily in a straight line. The error allows for a turn since the third newest cell it heard
+    (up to twice its speed for that long), and for how badly the distances fit (as for one turned earlier). With too
+    few distances for that, each may be off by its speed (from a cell's two newest distances) times its age. Cells at
     much the same height, seen from far away, say little about the phone's height; cells all at one height can't say
     which side of them it is. A cell may also send with more power (`celld <core> power 30`, in dBm), which it sets
     again whenever its modem is replaced.

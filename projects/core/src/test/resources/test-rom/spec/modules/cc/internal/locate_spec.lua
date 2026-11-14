@@ -4,6 +4,7 @@
 
 describe("cc.internal.locate", function()
     local locate = require "cc.internal.locate".locate
+    local yield = require "support.yield"
 
     local function distance(a, b)
         return math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2)
@@ -94,6 +95,78 @@ describe("cc.internal.locate", function()
         it("is exact again for fixes heard at once", function()
             local list = fixes(hosts, { 300, 80, 20 })
             expect({ locate(list, 5) }):same { 300, 80, 20, 0 }
+        end)
+    end)
+
+    describe("working out how it's moving", function()
+        -- Fixes of places in turn, one every 0.4 seconds, the newest just now, heard from where `at(age)` says we were.
+        local function heard(places, count, at)
+            local list = {}
+            for k = 1, count do
+                local place, age = places[(k - 1) % #places + 1], (count - k) * 0.4
+                local from = at(age)
+                list[k] = { x = place[1], y = place[2], z = place[3], distance = distance(place, from), age = age }
+            end
+            return list
+        end
+        local spread = { { 0, 300, 0 }, { 2000, 0, 0 }, { 0, 0, 1000 }, { 2000, 300, 1000 }, { 1000, 250, -500 }, { 1000, 10, 1500 } }
+
+        -- Where it is, and the error: no more than a turn since the third newest place's fix (0.8 seconds) could
+        -- account for, at its speed.
+        local function exactly(list, where, speed)
+            local x, y, z, off = locate(list)
+            expect({ x, y, z }):same(where)
+            expect(off <= 2 * speed * 0.8 + 0.01):describe("The error, " .. tostring(off)):eq(true)
+        end
+
+        it("finds a computer going steadily in a straight line exactly", function()
+            local function at(age) return { 1000 - 5 * age, 70 + 0.5 * age, 400 + 3 * age } end
+            exactly(heard(spread, 12, at), { 1000, 70, 400 }, math.sqrt(5 ^ 2 + 0.5 ^ 2 + 3 ^ 2))
+        end)
+
+        it("finds a computer walking past a small constellation", function()
+            -- A 10-block cube 300 blocks away, each host heard twice.
+            local cube = { { 0, 70, 0 }, { 10, 70, 0 }, { 0, 70, 10 }, { 0, 80, 0 } }
+            local function at(age) return { 300 - 4 * age, 64, 100 } end
+            exactly(heard(cube, 8, at), { 300, 64, 100 }, 4)
+        end)
+
+        it("says how far off a computer which turned may be", function()
+            -- North for a while, then east for the last two seconds.
+            local function at(age)
+                if age <= 2 then return { 1000 - 4 * age, 70, 400 } end
+                return { 992, 70, 400 + 4 * (age - 2) }
+            end
+            local x, y, z, off = locate(heard(spread, 12, at))
+            local miss = distance({ x, y, z }, at(0))
+            expect(off > 0):describe("The error, " .. tostring(off)):eq(true)
+            expect(miss <= off):describe(("Off by %.2f, said %.2f"):format(miss, off)):eq(true)
+        end)
+
+        it("doesn't say it's closer than it is, wherever it turns", function()
+            local layouts = {
+                spread,
+                { { 900, 70, 300 }, { 910, 70, 300 }, { 900, 70, 310 }, { 900, 80, 300 } },
+                { { 700, 90, 200 }, { 1300, 140, 300 }, { 900, 60, 800 }, { 1200, 110, 700 } },
+            }
+            for _, places in ipairs(layouts) do
+                for _, turn in ipairs { 0.5, 1, 2, 4 } do
+                    for _, way in ipairs { { 0, 1 }, { 0.7, 0.7 }, { -1, 0 } } do
+                        -- Going one way for the last `turn` seconds, and another before.
+                        local function at(age)
+                            if age <= turn then return { 1000 - 4 * age, 70, 400 } end
+                            local back = age - turn
+                            return { 1000 - 4 * turn - 4 * way[1] * back, 70, 400 - 4 * way[2] * back }
+                        end
+                        local x, y, z, off = locate(heard(places, 12, at))
+                        local miss = distance({ x, y, z }, at(0))
+                        expect(miss <= off):describe(("Turning %s, %s after %s seconds: off by %.2f, said %.2f"):format(
+                            way[1], way[2], turn, miss, off
+                        )):eq(true)
+                        yield()
+                    end
+                end
+            end
         end)
     end)
 

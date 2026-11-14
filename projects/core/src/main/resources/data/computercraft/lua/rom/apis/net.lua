@@ -1613,7 +1613,9 @@ cell = {
     anyone could fake.
 
     The phone hears each cell every few seconds, at its own time. A phone which stays put is found exactly. One which
-    moves heard each cell from somewhere else, so it's found less well, and the error says how far off it may be.
+    moves heard each cell from somewhere else, so from the last few seconds' distances it works out how it's moving as
+    well as where it is: exactly, if it goes steadily in a straight line. The error allows for a turn too recent for
+    the distances to show (a few blocks at walking pace), and for how badly they fit after an earlier one.
     Cells far apart from each other, and at different heights, give the best positions; cells all at one height can't
     say which side of them the phone is.
 
