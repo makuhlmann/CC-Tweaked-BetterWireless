@@ -1007,9 +1007,13 @@ function api.configureCell(changes)
     for _, key in ipairs(CELL_SETTINGS) do new[key] = old[key] end
     local cores = service and running_cell.cores or cell_cores(config) or {}
     if changes.cores ~= nil then
+        -- A core it has already, spelt another way, is the same core: keep it as it is, so it isn't removed and added.
+        local known = {}
+        for _, core in ipairs(cores) do known[core:lower()] = core end
         local err
         cores, err = check_cores(changes.cores)
         if not cores then return nil, err end
+        for i, core in ipairs(cores) do cores[i] = known[core:lower()] or core end
     end
     for _, key in ipairs(CELL_SETTINGS) do
         local value = changes[key]

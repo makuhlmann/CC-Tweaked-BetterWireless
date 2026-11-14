@@ -531,6 +531,10 @@ describe("The net library", function()
                     -- Cores once each, whatever case they're written in.
                     net.cell.configureCell({ cores = { "core.acme", "CORE.ACME", "core.beta" } })
                     expect(net.cell.cellInfo().cores):same { "core.acme", "core.beta" }
+                    -- One it has, spelt another way, stays as it was (so a running cell wouldn't drop its network).
+                    net.cell.configureCell({ cores = { "Core.Beta", "CORE.ACME", "core.gamma" } })
+                    expect(net.cell.cellInfo().cores):same { "core.beta", "core.acme", "core.gamma" }
+                    net.cell.configureCell({ cores = { "core.acme", "core.beta" } })
 
                     -- Each back as it is when it's not set, and the cores stay.
                     net.cell.configureCell({ area = false, band = false, interval = false, pos = false, power = false, service = false })
