@@ -636,17 +636,22 @@ function api.info()
         info = phone_instance:info()
         info.address = info.address and address.format(info.address)
     else
-        info = { state = "none", network = sim.network }
+        -- What the SIM file says, if it makes sense: anything may have written it.
+        info = { state = "none", network = type(sim.network) == "string" and sim.network or nil }
     end
     if off then info.state = "off" end
     if not info.partners then
         info.partners, info.equivalent = {}, {}
-        for network in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do info.partners[network] = true end
+        for network in pairs(type(sim.roaming) == "table" and sim.roaming or {}) do
+            if type(network) == "string" then info.partners[network] = true end
+        end
         for network in pairs(type(sim.equivalent) == "table" and sim.equivalent or {}) do
             if info.partners[network] then info.equivalent[network] = true end
         end
     end
-    if not info.subscriber and sim.id then info.subscriber = { id = sim.id, number = sim.number } end
+    if not info.subscriber and type(sim.id) == "string" and type(sim.number) == "string" then
+        info.subscriber = { id = sim.id, number = sim.number }
+    end
     -- Without a SIM, cell service is only on once it's told to listen for cells.
     info.enabled = chosen.off ~= true and (type(sim.network) == "string" or chosen.listen == true)
     info.selection = type(chosen.network) == "string" and chosen.network or "auto"

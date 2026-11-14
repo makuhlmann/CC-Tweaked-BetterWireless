@@ -491,6 +491,28 @@ describe("The net library", function()
             end
         end)
 
+        it("copes with files it can't make sense of", function()
+            for _, path in ipairs(FILES) do
+                local file = fs.open(path, "w")
+                file.write("not { a table")
+                file.close()
+            end
+            local info = net.cell.info()
+            expect({ info.state, info.enabled, info.selection, info.unread }):same { "none", false, "auto", 0 }
+            expect(net.cell.messages()):same {}
+
+            -- Tables, with nothing in them as it should be.
+            write("/.net/phone", { listen = "yes", off = 1, network = 5 })
+            write("/.net/sim", { network = {}, key = 5, signing = true, roaming = { "x", [true] = 1 }, equivalent = 3, id = {} })
+            write("/.net/messages", { 1, "two", { text = 3 }, { from = {}, text = "odd", time = "now" } })
+            info = net.cell.info()
+            expect({ info.state, info.enabled, info.selection, info.network }):same { "none", false, "auto", nil }
+            expect(net.cell.networks()):same {}
+            expect(#net.cell.messages()):eq(1)
+            expect({ net.cell.send("1", "hello") }):same { nil, "No SIM" }
+            clean()
+        end)
+
         it("lists networks the SIM treats as its own with it", function()
             write("/.net/sim", {
                 network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1",
