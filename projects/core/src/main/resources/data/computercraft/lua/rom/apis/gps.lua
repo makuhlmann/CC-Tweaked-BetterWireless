@@ -85,7 +85,9 @@ function locate(_nTimeout, _bDebug)
     end
 
     -- Listen to the hosts. Each fix is a host's position, how far away it was, and when: all of them count, as a host
-    -- heard twice says how we're moving.
+    -- heard twice says how we're moving. Anyone can make up hosts, as many as they like: only the first few count, and
+    -- only so many fixes, the newest, so working out where we are never takes too long.
+    local MAX_HOSTS, MAX_FIXES = 32, 256
     local tFixes, tHosts, nHosts = {}, {}, 0
     local x, y, z, nError, tOne, tOther, bStale
 
@@ -114,23 +116,28 @@ function locate(_nTimeout, _bDebug)
                     x = tonumber(tMessage[1]), y = tonumber(tMessage[2]), z = tonumber(tMessage[3]),
                     distance = nDistance, time = os.clock(),
                 }
-                if _bDebug then
-                    print(tFix.distance .. " metres from " .. tFix.x .. "," .. tFix.y .. "," .. tFix.z)
-                end
-                tFixes[#tFixes + 1] = tFix
                 local sKey = tFix.x .. "," .. tFix.y .. "," .. tFix.z
                 local bNewHost = not tHosts[sKey]
-                if bNewHost then
+                if bNewHost and nHosts < MAX_HOSTS then
                     tHosts[sKey] = true
                     nHosts = nHosts + 1
+                end
+                if tHosts[sKey] then
+                    if _bDebug then
+                        print(tFix.distance .. " metres from " .. tFix.x .. "," .. tFix.y .. "," .. tFix.z)
+                    end
+                    tFixes[#tFixes + 1] = tFix
+                    if #tFixes > MAX_FIXES then table.remove(tFixes, 1) end
+                else
+                    bNewHost = false
                 end
 
                 -- Working it out takes a while for a computer on the move, so only when it may let us stop: a new host
                 -- may be what we needed (and a computer which stays put then knows exactly), and once each host has
                 -- been heard twice, we know how we're moving, and waiting longer won't say more.
                 local bTwice = nHosts >= 4 and #tFixes >= 2 * nHosts
-                bStale = true
-                if bNewHost or bTwice then
+                bStale = bStale or tHosts[sKey] ~= nil
+                if bNewHost or (bTwice and tHosts[sKey]) then
                     solve()
                     if x and (nError <= 1 or bTwice) then break end
                 end

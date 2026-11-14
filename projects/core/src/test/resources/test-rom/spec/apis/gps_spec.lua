@@ -169,6 +169,63 @@ describe("The gps library", function()
             fake_computer.run_all(computers, { computer })
         end)
 
+        -- A computer at 8, 8, 8 which sends what it likes on the GPS channel, half a second in.
+        local function liar(computers, modem, send)
+            local host = fake_computer.make_computer(98, function(env)
+                env.os.sleep(0.5)
+                send(function(message) env.peripheral.call("back", "transmit", gps.CHANNEL_GPS, gps.CHANNEL_GPS, message) end)
+            end)
+            host.position = vector.new(8, 8, 8)
+            fake_computer.add_modem_edge(modem, fake_computer.add_modem(host, "back"))
+            table.insert(computers, 1, host)
+        end
+
+        local function finite(x) return type(x) == "number" and x == x and x ~= math.huge and x ~= -math.huge end
+
+        it("isn't broken by hosts which say odd things", function()
+            local result
+            local computer, modem = gps_receiver(12, 23, 52, function(env) result = table.pack(pcall(env.gps.locate)) end)
+            local computers = gps_hosts(computer, modem, { { 5, 5, 5 }, { 10, 5, 5 }, { 5, 10, 5 }, { 5, 5, 10 } })
+            liar(computers, modem, function(transmit)
+                for _, message in ipairs {
+                    { 0 / 0, 1, 1 }, { "1e400", 2, 3 }, { 1e308, 0, 0 }, { "x", "y", "z" }, { 1, 2 }, { 1, 2, 3, 4 },
+                    { {}, 1, 1 }, "hello", 5, { math.huge, -math.huge, 0 }, { "0x10", " 5 ", "1e2" }, { -1e308, 1e308, 0 },
+                } do
+                    transmit(message)
+                end
+            end)
+
+            fake_computer.run_all(computers, false)
+            for _ = 1, 25 do
+                fake_computer.advance_all(computers, 0.25)
+                fake_computer.run_all(computers, false)
+            end
+            expect(result and result[1]):describe(tostring(result and result[2])):eq(true)
+            if result[2] ~= nil then
+                expect(finite(result[2]) and finite(result[3]) and finite(result[4])):eq(true)
+                expect(result[5] == math.huge or (finite(result[5]) and result[5] >= 0)):eq(true)
+            end
+        end)
+
+        it("keeps up with a flood of made-up hosts", function()
+            local result
+            local computer, modem = gps_receiver(12, 23, 52, function(env) result = table.pack(pcall(env.gps.locate)) end)
+            local computers = gps_hosts(computer, modem, { { 5, 5, 5 }, { 10, 5, 5 }, { 5, 10, 5 }, { 5, 5, 10 } })
+            liar(computers, modem, function(transmit)
+                for i = 1, 2000 do transmit({ i, 64 + i % 50, -i }) end
+            end)
+
+            local start = os.epoch("utc")
+            fake_computer.run_all(computers, false)
+            for _ = 1, 25 do
+                fake_computer.advance_all(computers, 0.25)
+                fake_computer.run_all(computers, false)
+            end
+            local took = os.epoch("utc") - start
+            expect(result and result[1]):describe(tostring(result and result[2])):eq(true)
+            expect(took < 3000):describe(("Took %d ms"):format(took)):eq(true)
+        end)
+
         it("doesn't fail on duplicate hosts", function()
             local computer, modem = gps_receiver(12, 23, 52, function(env)
                 local x, y, z = env.gps.locate()

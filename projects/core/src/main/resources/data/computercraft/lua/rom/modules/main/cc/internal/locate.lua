@@ -31,6 +31,12 @@ local RECENT = 2.5
 -- How much worse than the best fit, in units of how far the fixes disagree (squared, on average), where we are may still
 -- fit: 8 is where we'd be about 95% of the time, if they disagreed at random.
 local DISAGREEMENT = 8
+-- The most fixes to work from, the newest: more say little more, and take long enough to work through that a computer
+-- given thousands (by someone making up GPS hosts, say) would stop answering.
+local MAX_FIXES = 256
+-- The furthest a place may be from the origin, and a fix from its place, in blocks: well beyond any world's edge, and
+-- small enough that squaring it is exact.
+local LIMIT = 2 ^ 31
 
 local function sub(a, b) return { a[1] - b[1], a[2] - b[2], a[3] - b[3] } end
 local function add(a, b) return { a[1] + b[1], a[2] + b[2], a[3] + b[3] } end
@@ -514,6 +520,26 @@ local function moving(fixes, from, speed)
     return state[1], state[2], state[3], off + 2 * math.max(speed, velocity) * unseen, fit
 end
 
+-- Whether a value is a number we can work with: not NaN, and not too big.
+local function fit(value) return type(value) == "number" and value == value and math.abs(value) <= LIMIT end
+
+-- The fixes we can work with: each with a place, a distance (not less than nothing) and an age, which are numbers; and
+-- only the newest, if there are too many.
+local function usable(fixes)
+    local list = {}
+    for _, fix in ipairs(fixes) do
+        local age = type(fix) == "table" and (fix.age == nil and 0 or fix.age)
+        if age and fit(fix.x) and fit(fix.y) and fit(fix.z) and fit(fix.distance) and fix.distance >= 0 and fit(age) then
+            list[#list + 1] = { x = fix.x, y = fix.y, z = fix.z, distance = fix.distance, age = math.max(0, age) }
+        end
+    end
+    if #list > MAX_FIXES then
+        table.sort(list, function(a, b) return a.age < b.age end)
+        for i = #list, MAX_FIXES + 1, -1 do list[i] = nil end
+    end
+    return list
+end
+
 --[[- Find where we are.
 
 Each fix of a place counts, even several of one place: from how the distance to it changed, we know how fast we're
@@ -533,7 +559,8 @@ are all in a plane, as hosts at one height are, and we're off it, so we might be
 @treturn[2] table|nil The other.
 ]]
 local function locate(fixes, speed)
-    speed = speed or 0
+    speed = type(speed) == "number" and speed == speed and speed >= 0 and math.min(speed, LIMIT) or 0
+    fixes = usable(fixes)
 
     -- How fast we've lately been moving towards or away from each place heard more than once: between its two newest
     -- fixes.

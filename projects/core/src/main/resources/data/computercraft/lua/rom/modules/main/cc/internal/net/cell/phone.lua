@@ -126,6 +126,8 @@ local SILENT_INTERVALS = 3
 -- While camped (attached, or listening without a SIM): how often to listen on every carrier, for other networks and new
 -- carriers, and for how long, in seconds; and how long to keep listening on a carrier a network was last heard naming.
 local SCAN_PERIOD, SCAN_WINDOW, CARRIER_MEMORY = 60, 5, 300
+-- How many networks to remember each carrier being named by. Anyone can make up networks, as many as they like.
+local MAX_CARRIER_NETWORKS = 16
 --- The name of the interface phones use, on their modem.
 local INTERFACE = "cell.phone"
 
@@ -273,19 +275,19 @@ function Phone:update_listening()
     elseif self.scan_since then
         self.scan_since, self.scan_ended = nil, now
     end
+    -- Forget carriers networks haven't named lately, whatever we're doing.
+    for carrier, networks in pairs(self.carriers) do
+        for network, heard in pairs(networks) do
+            if now - heard > CARRIER_MEMORY then
+                networks[network] = nil
+            elseif not scanning and self:listens_for(network) then
+                wanted[carrier] = true
+            end
+        end
+        if next(networks) == nil then self.carriers[carrier] = nil end
+    end
     if scanning then
         for _, channel in ipairs(bands.beacon_channels()) do wanted[channel] = true end
-    else
-        for carrier, networks in pairs(self.carriers) do
-            for network, heard in pairs(networks) do
-                if now - heard > CARRIER_MEMORY then
-                    networks[network] = nil
-                elseif self:listens_for(network) then
-                    wanted[carrier] = true
-                end
-            end
-            if next(networks) == nil then self.carriers[carrier] = nil end
-        end
     end
     local serving = self.cell and self.uplinks[self.cell]
     if serving then wanted[bands.carrier_of(serving)] = true end
@@ -444,7 +446,9 @@ end
 
 -- How far away a cell which says where it is was, now (`distance`, as the modem said, if it did).
 function Phone:measured(cell, distance, now)
-    if type(distance) ~= "number" then return end
+    -- A modem says how far away the sender was, unless it's in another dimension: never anything odd, but take no
+    -- chances with what we'll work out where we are from.
+    if type(distance) ~= "number" or distance ~= distance or distance < 0 or distance > 2 ^ 31 then return end
     local track = cell.track or {}
     cell.track = track
     local last = track[#track]
@@ -460,6 +464,16 @@ function Phone:heard_carrier(carrier, network, now)
     if not networks then
         networks = {}
         self.carriers[carrier] = networks
+    end
+    -- With as many as we remember, the one heard longest ago makes way. A network's real cells name its carriers every
+    -- few seconds, so it's soon back.
+    if networks[network] == nil then
+        local count, oldest = 0, nil
+        for name, heard in pairs(networks) do
+            count = count + 1
+            if not oldest or heard < networks[oldest] then oldest = name end
+        end
+        if count >= MAX_CARRIER_NETWORKS then networks[oldest] = nil end
     end
     networks[network] = now
 end
@@ -765,6 +779,8 @@ function from_cell.attached.handover(self, here, message, signal)
     self:event("handover", { from = here.cell, to = target })
     here.cell, here.candidate, self.cell, here.dl = target, nil, target, nil
     self:update_listening()
+    -- Off a cell which only carries messages, we have a route for packets again at once.
+    self:update_route()
     here.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, target), common.UPLINK, common.DOWNLINK)
     -- The new cell may not hear us the first time, so we say so until it answers.
     self:heard_from_cell(here)
@@ -1200,10 +1216,23 @@ end
 -- Compare our cell with the others, every second.
 function Phone:measure()
     self.timer = self.stack:schedule(MEASURE_INTERVAL, function() self:measure() end)
+    self:forget()
     self:update_listening()
     if self.state == "attached" then
         self:update_route()
         self:check(self.here)
+    end
+end
+
+-- Forget cells which have been quiet too long, and how to reach cells we no longer know of: anyone can make up cells,
+-- as many as they like.
+function Phone:forget()
+    local now = self.stack.clock()
+    for id, cell in pairs(self.heard) do
+        if now - cell.heard > FORGET and id ~= self.cell then self.heard[id] = nil end
+    end
+    for id in pairs(self.uplinks) do
+        if not self.heard[id] and not self.cells[id] and id ~= self.cell then self.uplinks[id] = nil end
     end
 end
 
