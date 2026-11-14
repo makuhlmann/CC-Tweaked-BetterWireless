@@ -20,6 +20,7 @@ import dan200.computercraft.shared.platform.PlatformHelper;
 import dan200.computercraft.shared.util.*;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.UUIDUtil;
 import net.minecraft.core.component.DataComponentGetter;
 import net.minecraft.core.component.DataComponentMap;
 import net.minecraft.core.component.DataComponents;
@@ -46,8 +47,17 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
     private static final String NBT_ON = "On";
     private static final String NBT_KEEP_LOADED = "KeepLoaded";
     private static final String NBT_CAPACITY = "Capacity";
+    private static final String NBT_INSTANCE = "InstanceId";
 
     private @Nullable UUID instanceID = null;
+
+    /**
+     * The running computer whose block entity this was copied from, which we should take over when we next tick.
+     *
+     * @see #canHandOverComputer()
+     */
+    private @Nullable UUID handOverFrom = null;
+
     private int computerID = -1;
     protected @Nullable String label = null;
     protected boolean keepLoaded = false;
@@ -71,9 +81,28 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
     protected void unload() {
         if (getLevel().isClientSide()) return;
 
+        // Shut the computer down, unless a copy of this block entity is taking it over.
         var computer = getServerComputer();
-        if (computer != null) computer.close();
+        if (computer != null && !ServerContext.get(computer.getLevel().getServer()).registry().release(computer)) {
+            computer.close();
+        }
         instanceID = null;
+    }
+
+    /**
+     * Whether a copy of this block entity may take over its running computer.
+     * <p>
+     * Some mods move blocks by copying their block entity to the new position, and then removing the original. Sable
+     * does this when it turns blocks into a moving object. Without this, the original would shut its computer down, and
+     * the copy start a new one. With it, the copy carries the computer's instance ID, and the computer is handed over
+     * (see {@link dan200.computercraft.shared.computer.core.ServerComputerRegistry#reserve(UUID)}).
+     * <p>
+     * This is only possible when the computer doesn't depend on the block entity, as a turtle's does on its brain.
+     *
+     * @return Whether this block entity's computer can be handed over to a copy.
+     */
+    protected boolean canHandOverComputer() {
+        return false;
     }
 
     @Override
@@ -168,6 +197,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         if (storageCapacity > 0) nbt.putLong(NBT_CAPACITY, storageCapacity);
         nbt.putBoolean(NBT_ON, on);
         if (keepLoaded) nbt.putBoolean(NBT_KEEP_LOADED, true);
+        if (instanceID != null && canHandOverComputer()) nbt.store(NBT_INSTANCE, UUIDUtil.CODEC, instanceID);
 
         lockCode.addToTag(nbt);
 
@@ -193,6 +223,17 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         keepLoaded = nbt.getBooleanOr(NBT_KEEP_LOADED, false);
 
         lockCode = LockCode.fromTag(nbt);
+
+        // A block entity loaded into a level (rather than with its chunk) may be a copy of a running computer's, which we
+        // should take over if the original is removed.
+        handOverFrom = null;
+        if (level instanceof ServerLevel serverLevel && canHandOverComputer()) {
+            var instance = nbt.read(NBT_INSTANCE, UUIDUtil.CODEC).orElse(null);
+            if (instance != null && !instance.equals(instanceID)) {
+                handOverFrom = instance;
+                ServerContext.get(serverLevel.getServer()).registry().reserve(instance);
+            }
+        }
     }
 
     @Override
@@ -230,6 +271,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         tag.discard(NBT_ID);
         tag.discard(NBT_LABEL);
         tag.discard(NBT_CAPACITY);
+        tag.discard(NBT_INSTANCE);
         tag.discard(LockCode.TAG_LOCK);
     }
 
@@ -386,7 +428,24 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
 
         var changed = false;
 
-        var computer = ServerContext.get(server).registry().get(instanceID);
+        var registry = ServerContext.get(server).registry();
+        var computer = registry.get(instanceID);
+
+        // Take over the computer this block entity was copied from, if its old block was removed.
+        if (computer == null && handOverFrom != null) {
+            var original = registry.claim(handOverFrom);
+            handOverFrom = null;
+            if (original != null && original.getID() == computerID && original.getFamily() == getFamily()) {
+                computer = original;
+                computer.setPosition((ServerLevel) getLevel(), getBlockPos());
+                instanceID = computer.getInstanceUUID();
+                fresh = true;
+                changed = true;
+            } else if (original != null) {
+                original.close();
+            }
+        }
+
         if (computer == null) {
             if (computerID < 0) {
                 computerID = ComputerCraftAPI.createUniqueNumberedSaveDir(server, IDAssigner.COMPUTER);

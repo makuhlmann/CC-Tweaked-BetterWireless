@@ -15,6 +15,7 @@ import dan200.computercraft.core.apis.TermAPI
 import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.shared.ModRegistry
+import dan200.computercraft.shared.computer.blocks.ComputerBlockEntity
 import dan200.computercraft.shared.computer.core.ServerContext
 import dan200.computercraft.shared.computer.enclave.EnclaveAPI
 import dan200.computercraft.test.core.assertArrayEquals
@@ -23,14 +24,18 @@ import net.minecraft.client.input.KeyEvent
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.util.ProblemReporter
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LeverBlock
 import net.minecraft.world.level.block.RedstoneLampBlock
+import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import java.nio.ByteBuffer
@@ -110,6 +115,76 @@ class Computer_Test {
         }
 
         thenOnComputer("computer") { getApi<OSAPI>().setKeepLoaded(false) }
+    }
+
+    /**
+     * Check a computer keeps running when its block is moved by copying its block entity and then removing the
+     * original, as Sable does when it turns blocks into a moving object.
+     */
+    @GameTest
+    fun Keeps_running_when_moved(context: GameTestHelper) = context.sequence {
+        val from = BlockPos(1, 1, 2)
+        val to = BlockPos(3, 1, 2)
+        var instance: UUID? = null
+        var clock = 0.0
+
+        thenOnComputer { clock = getApi<OSAPI>().clock() }
+        thenExecute {
+            instance = context.getBlockEntity(from, ComputerBlockEntity::class.java).serverComputer?.instanceUUID
+            context.copyBlock(from, to)
+            context.setBlock(from, Blocks.AIR)
+        }
+        thenIdle(2)
+        thenExecute {
+            val computer = context.getBlockEntity(to, ComputerBlockEntity::class.java).serverComputer
+            assertEquals(instance, computer?.instanceUUID, "The copy should have taken over the computer")
+            assertEquals(context.absolutePos(to), computer?.position, "The computer should know where it is now")
+        }
+        thenOnComputer { assertTrue(getApi<OSAPI>().clock() > clock, "The computer should not have restarted") }
+    }
+
+    /**
+     * Check a copy of a computer starts its own computer if the original stays, as with `/clone`.
+     */
+    @GameTest
+    fun Copy_starts_own_computer(context: GameTestHelper) = context.sequence {
+        val from = BlockPos(1, 1, 2)
+        val to = BlockPos(3, 1, 2)
+        var instance: UUID? = null
+
+        thenWaitUntil {
+            val computer = context.getBlockEntity(from, ComputerBlockEntity::class.java).serverComputer
+            if (computer == null || !computer.isOn) context.abort("Computer has not started")
+        }
+        thenExecute {
+            instance = context.getBlockEntity(from, ComputerBlockEntity::class.java).serverComputer?.instanceUUID
+            context.copyBlock(from, to)
+        }
+        thenIdle(2)
+        thenExecute {
+            val original = context.getBlockEntity(from, ComputerBlockEntity::class.java).serverComputer
+            val copy = context.getBlockEntity(to, ComputerBlockEntity::class.java).serverComputer
+            assertEquals(instance, original?.instanceUUID, "The original should keep its computer")
+            assertEquals(true, original?.isOn, "The original computer should still be on")
+            assertEquals(context.absolutePos(from), original?.position, "The original computer should not have moved")
+            assertNotEquals(null, copy, "The copy should have a computer")
+            assertNotEquals(instance, copy?.instanceUUID, "The copy should have its own computer")
+        }
+    }
+
+    /**
+     * Copy a block and its block entity, the way Sable moves blocks: place the block, and then load the old block
+     * entity's data into the new one.
+     */
+    private fun GameTestHelper.copyBlock(from: BlockPos, to: BlockPos) {
+        val source = absolutePos(from)
+        val target = absolutePos(to)
+        val tag = level.getBlockEntity(source)!!.saveWithFullMetadata(level.registryAccess())
+        tag.putInt("x", target.x)
+        tag.putInt("y", target.y)
+        tag.putInt("z", target.z)
+        level.setBlock(target, level.getBlockState(source), Block.UPDATE_ALL)
+        level.getBlockEntity(target)!!.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag))
     }
 
     /**

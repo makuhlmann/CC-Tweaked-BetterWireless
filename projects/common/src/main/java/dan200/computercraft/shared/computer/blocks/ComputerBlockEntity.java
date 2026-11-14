@@ -70,6 +70,12 @@ public class ComputerBlockEntity extends AbstractComputerBlockEntity {
     }
 
     @Override
+    protected boolean canHandOverComputer() {
+        // The computer only knows our position, so a copy can take it over.
+        return true;
+    }
+
+    @Override
     protected ServerComputer createComputer(int id) {
         return new ServerComputer((ServerLevel) getLevel(), getBlockPos(), ServerComputer.properties(id, getFamily())
             .label(getLabel())
