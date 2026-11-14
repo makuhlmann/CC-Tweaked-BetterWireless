@@ -200,8 +200,12 @@ the design above:
   network's cells are on its carriers, 5 MHz blocks of a band, named like `b20/1` (band 20's first, 791–796 MHz down
   and 832–837 MHz up), up to 8 of them (`cellcore spectrum b20/1 b3/2`; with none set, one of band 20's picked by the
   network's name). A cell is on one carrier, which its first core picks when it connects, in the band it asks for
-  (`celld <core> band b3`), whichever of the network's carriers there has fewest cells. A cell which also serves
-  another network keeps its carrier, telling that core which it is.
+  (`celld set band b3`), whichever of the network's carriers there has fewest cells; with no band asked for, whichever
+  of all the network's carriers has fewest cells. A cell which also serves another network keeps its carrier, telling
+  that core which it is, and that core takes it as it is. A cell is one carrier, and can't serve several bands: its
+  identity on the air is its computer's ID, which phones remember cells by (and hand over between), and its computer
+  has one cell interface, with one beacon channel and one uplink channel. A site with several bands has a cell (a
+  computer) for each, as an LTE site has a cell for each carrier.
   - **Channels.** A cell sends its system information on its carrier's beacon channel (the middle of the block) and
     listens on an uplink channel of its own, which the core picks and its system information names (a carrier has
     50: with more cells on one, some share, and hear each other's phones). Each phone attached
@@ -223,11 +227,11 @@ the design above:
   - **System information** names, for each network, the carriers its cells use, so a phone listens for all of them
     as soon as it hears one cell (as LTE's SIB5 does), and says how often it's sent. Cells send it every 2 seconds
     unless the network's core says otherwise (`cellcore beacon 3`, 0.5 to 10 seconds) or the cell does
-    (`celld <core> interval 4`), starting at a random moment so cells which start together don't send together.
+    (`celld set interval 4`), starting at a random moment so cells which start together don't send together.
     Phones take a cell to be gone after three intervals of silence (but never less than four seconds), and hand over
     after a stronger cell has been so for an interval (but never less than two seconds). Anything sealed from a
     phone's own cell counts as hearing it, and its signal too.
-  - **Positions.** A cell may say where it is (`celld <core> pos 120 70 -340`: its computer's block position), in its
+  - **Positions.** A cell may say where it is (`celld set pos 120 70 -340`: its computer's block position), in its
     signed system information. A phone keeps how far away each such cell was when it last heard it (the distance a
     modem message has, as GPS uses) and works out where it is from them (`cell locate`, `net.cell.locate()`), with
     the solver GPS uses (`cc.internal.locate`): the cells whose system information checked out (its own network's,
@@ -239,9 +243,9 @@ the design above:
     (up to twice its speed for that long), and for how badly the distances fit (as for one turned earlier). With too
     few distances for that, each may be off by its speed (from a cell's two newest distances) times its age. Cells at
     much the same height, seen from far away, say little about the phone's height; cells all at one height can't say
-    which side of them it is. A cell may also send with more power (`celld <core> power 30`, in dBm), which it sets
+    which side of them it is. A cell may also send with more power (`celld set power 30`, in dBm), which it sets
     again whenever its modem is replaced.
-  - **Cells which only carry messages** (`celld <core> sms`, or `service = "sms"` in `net.cell.startCell`'s settings)
+  - **Cells which only carry messages** (`celld set service sms`, or `service = "sms"` in `net.cell.startCell`'s settings)
     are for when nothing better will do: a satellite (up high, strong, sending system information every 10 seconds),
     for off-grid or emergency messages. The cell says so in its signed system information, carries its phones'
     messages, and drops their packets both ways; a phone on it has no default route, so programs hear at once that
@@ -282,7 +286,7 @@ the design above:
   still can't tunnel, rather than dropping it unseen.
 - **Relays** (like LTE's relay nodes, or IAB) are cells whose backhaul is the cellular network itself: a computer which
   is both a phone of the network and a cell, so a tower needs no other link. Its phone gets an address and a default
-  route as any phone does, and its cell reaches the core through them (`celld 10.64.0.1`, the gateway's address, always
+  route as any phone does, and its cell reaches the core through them (`celld add 10.64.0.1`, the gateway's address, always
   works). Relays can chain.
   - The stack lets several handlers share a frame type (`on_frame` and `off_frame`), so the phone and the cell both hear
     `cell` frames. Each ignores the other's: the phone only takes frames from its own cell, and the cell only
@@ -351,8 +355,13 @@ the design above:
 - **Addresses** are kept for the core's lifetime: a phone which attaches again gets the same one. Restarting the core
   gives phones new addresses, which ends their connections.
 - **The core and cells run in the background process,** as the phone does, so the computer stays free, and they start
-  with it. `cellcore setup` (or `cellcore start`) and `celld <core>` start them and remember to; `cellcore stop` and
-  `celld stop` stop them. `net.run` passes every event to each service after the stack has handled it, and services
+  with it. `cellcore setup` (or `cellcore start`) and `celld add <core>` (or `celld start`) start them and remember
+  to; `cellcore stop` and `celld stop` stop them. A cell keeps its cores and settings (`/.cell/cell`), and `celld`
+  changes one at a time (`celld add`, `remove`, `set` and `unset`, through `net.cell.configureCell`), checking it
+  first, so a mistake changes nothing. Most changes are made while it runs, without its phones noticing: a core added
+  or removed (the other networks carry on), and where it says it is, its service, interval and power. Its area, and a
+  band other than the one it's on, are said to each core as it connects, so for those it starts again. It won't go to
+  a band none of its networks has a carrier in. `net.run` passes every event to each service after the stack has handled it, and services
   never see `terminate`. A service is a set of coroutines (`cc.internal.net.tasks`) which use connections as programs
   do; anything the stack itself sends them is queued, with a `net_cell` event (at most one queued) to wake them.
 - **Managing the core** happens while it runs, over the same port: a connection's hello says whether it's a cell or an
@@ -458,7 +467,8 @@ the design above:
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
 - **Shared cells** (like LTE's multi-operator core networks): one cell may serve several networks, whose operators
-  plan a site together where neither would build alone. `celld core.acme core.beta` connects the cell to each core,
+  plan a site together where neither would build alone. `celld add core.acme` and `celld add core.beta` connect the
+  cell to each core,
   each of which allows and certifies it as one of its own cells, and gives it a tunnel key.
   - **System information** names each network the cell serves (up to eight), each with its own part: the certificate
     that network's operator gave the cell, the cell's path to that core (relays are per network), and a signature

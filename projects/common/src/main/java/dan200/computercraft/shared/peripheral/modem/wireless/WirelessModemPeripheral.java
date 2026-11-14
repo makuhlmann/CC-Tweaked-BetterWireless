@@ -14,6 +14,8 @@ import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioAntenna;
 
+import java.util.Optional;
+
 public abstract class WirelessModemPeripheral extends ModemPeripheral implements RadioAntenna {
     public static final String NORMAL_ADJECTIVE = "upgrade.computercraft.wireless_modem_normal.adjective";
     public static final String ADVANCED_ADJECTIVE = "upgrade.computercraft.wireless_modem_advanced.adjective";
@@ -75,10 +77,11 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
      * <p>
      * Each kind of device has a limit: pocket computers' is lower than placed computers', for instance. Power beyond
      * the limit is reduced to it. The power lasts until it's set again, or the modem is removed or its chunk unloads.
+     * Without a power, the modem goes back to its default.
      * <p>
      * Ender modems transmit with less power than they're set to.
      *
-     * @param power The power, in dBm. The default for a placed computer's modem is about 8 dBm.
+     * @param power The power, in dBm, or {@code nil} for the modem's default: about 8 dBm for a placed computer's.
      * @return The power the modem now transmits with, in dBm, once reduced to the limit.
      * @throws LuaException If the power isn't a number.
      * @cc.usage Transmit with as much power as this modem allows.
@@ -89,9 +92,13 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
      * }</pre>
      */
     @LuaFunction
-    public final double setTransmitPower(double power) throws LuaException {
-        if (Double.isNaN(power)) throw new LuaException("Expected a number");
-        var set = Math.clamp(power, MIN_TRANSMIT_POWER, Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()));
+    public final double setTransmitPower(Optional<Double> power) throws LuaException {
+        if (power.isEmpty()) {
+            getModemState().setTransmitPower(Double.NaN);
+            return getSetTransmitPower();
+        }
+        if (Double.isNaN(power.get())) throw new LuaException("Expected a number");
+        var set = Math.clamp(power.get(), MIN_TRANSMIT_POWER, Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()));
         getModemState().setTransmitPower(set);
         return set;
     }

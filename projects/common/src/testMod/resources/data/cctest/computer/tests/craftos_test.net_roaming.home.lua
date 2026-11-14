@@ -7,7 +7,7 @@
 net.setAddress(peripheral.getName(peripheral.find("modem", function(_, modem) return not modem.isWireless() end)), "10.0.0.2/24")
 if not shell.run("cellcore", "setup", "HOME", "10.64.0.0/16") then error("Couldn't set the core up", 0) end
 if not shell.run("cellcore", "add", "HOME-1", "100", "code.txt") then error("Couldn't make a code", 0) end
-if not shell.run("celld", "127.0.0.1") then error("Couldn't start the cell", 0) end
+if not shell.run("celld", "add", "127.0.0.1") then error("Couldn't start the cell", 0) end
 
 parallel.waitForAll(function()
     -- Hand the phone its code.

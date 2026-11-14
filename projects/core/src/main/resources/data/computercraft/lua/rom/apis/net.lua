@@ -1781,7 +1781,10 @@ cell = {
     The cell is on a carrier (5MHz of a cellular band), which its first core picks: in the band it asks for, if it
     does. It sends its system information as often as its core says, unless it's told otherwise.
 
-    @tparam string|{ string... } core The core's name or address, or those of several networks' cores.
+    Given no core, it starts as it's set up: with the cores and settings it had, and every change made since with
+    `net.cell.configureCell`. Given cores, they and the settings replace everything it had.
+
+    @tparam[opt] string|{ string... } core The core's name or address, or those of several networks' cores.
     @tparam[opt] number|{ area? = number, band? = string, interval? = number, pos? = { number, number, number },
     power? = number, service? = string } settings The cell's tracking area; or that, the cellular band it should be on
     (such as `"b20"`), how often it sends system information, in seconds, where it is (its computer's block position,
@@ -1793,7 +1796,7 @@ cell = {
     @treturn[2] string Why not.
     ]]
     startCell = function(core, settings)
-        expect(1, core, "string", "table")
+        expect(1, core, "string", "table", "nil")
         expect(2, settings, "number", "table", "nil")
         if type(settings) == "table" then
             for key, kind in pairs {
@@ -1808,6 +1811,56 @@ cell = {
         return cellular().startCell(core, settings)
     end,
 
+    --[[- Change this computer's cell: the cores it connects to, or one of its settings, keeping everything else as it
+    was. Everything is checked before anything changes, so a value which won't do changes nothing.
+
+    While the cell runs, most changes are made at once, and its phones keep their service: a core added is connected
+    to, and one removed (with its network) no longer served, while the other networks carry on; and where the cell
+    says it is, whether it only carries messages, how often it sends system information and its power change on the
+    air. The area, and a band other than the one it's on, are said to its cores only as it connects: so for them it
+    starts again, and its phones lose service for a moment. It won't go to a band none of the networks it serves has
+    a carrier in. A cell left with no cores stops.
+
+    The cell doesn't start for this: that's `net.cell.startCell`.
+
+    @tparam { cores? = { string... }, area? = number|boolean, band? = string|boolean, interval? = number|boolean,
+    pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean } changes What to
+    change, as `net.cell.startCell` takes it, and `cores`, every core it should connect to. `false` puts a setting back
+    as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, the modem's own power,
+    and carrying everything.
+    @treturn[1] true If it changed.
+    @treturn[1] boolean Whether the cell started again for it.
+    @treturn[2] nil If it couldn't.
+    @treturn[2] string Why not.
+    @usage Say where the cell is, keeping its cores and other settings.
+
+    ```lua
+    net.cell.configureCell({ pos = { 120, 70, -340 } })
+    ```
+    ]]
+    configureCell = function(changes)
+        expect(1, changes, "table")
+        if changes.cores ~= nil then
+            if type(changes.cores) ~= "table" then
+                error(("bad field 'cores' (table expected, got %s)"):format(type(changes.cores)), 2)
+            end
+            for i, core in ipairs(changes.cores) do
+                if type(core) ~= "string" then
+                    error(("bad field 'cores' (core %d is a %s, not a string)"):format(i, type(core)), 2)
+                end
+            end
+        end
+        for key, kind in pairs {
+            area = "number", band = "string", interval = "number", pos = "table", power = "number", service = "string",
+        } do
+            local value = changes[key]
+            if value == true or value ~= nil and value ~= false and type(value) ~= kind then
+                error(("bad field '%s' (%s or false expected, got %s)"):format(key, kind, type(value)), 2)
+            end
+        end
+        return cellular().configureCell(changes)
+    end,
+
     --- Stop this computer's cell, and don't start it when the computer starts.
     stopCell = function()
         return cellular().stopCell()
@@ -1817,10 +1870,13 @@ cell = {
 
     @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
-    why; the `core`; the `network` it serves; its `area`; its `id` and `fingerprint`, which the core's administrator
-    checks before allowing it; where it says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in
-    dBm) and `service` (`"sms"` if it only carries messages), if they were set; and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and `network`)
-    for each core, for a cell which serves several networks. Then the cell's own state is the best of its cores'.
+    why; the `core`; the `network` it serves; its `id` and `fingerprint`, which the core's administrator checks before
+    allowing it; every core it connects to (`cores`, or `nil` if it has none); whether it starts with the computer
+    (`enabled`: false once it was stopped); its settings, if they were set: `area` (0 if not), `band`, `interval`, where it
+    says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm) and `service` (`"sms"` if it only
+    carries messages); while it's on the air, how often it sends system information now (`current_interval`, in
+    seconds), and the `carrier` it's on and its `ul` channel there; and, while it runs, `links`: the same (`core`,
+    `state`, `error`, `retry` and `network`) for each core. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()
         return cellular().cellInfo()

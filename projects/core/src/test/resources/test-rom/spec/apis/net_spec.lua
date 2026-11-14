@@ -491,6 +491,106 @@ describe("The net library", function()
             end
         end)
 
+        describe("a cell's settings", function()
+            local CELL = "/.cell/cell"
+            local function contents()
+                local file = fs.open(CELL, "r")
+                if not file then return nil end
+                local text = file.readAll()
+                file.close()
+                return text
+            end
+            -- Run a test with no cell set up, and none afterwards.
+            local function fresh(fn)
+                fs.delete("/.cell")
+                local ok, err = pcall(fn)
+                fs.delete("/.cell")
+                if not ok then error(err, 0) end
+            end
+            local function settings_of(info)
+                return {
+                    cores = info.cores, enabled = info.enabled, area = info.area, band = info.band, interval = info.interval,
+                    pos = info.pos, power = info.power, service = info.service,
+                }
+            end
+
+            it("change one at a time, keeping everything else", function()
+                fresh(function()
+                    expect(settings_of(net.cell.cellInfo())):same { enabled = true, area = 0 }
+                    expect({ net.cell.configureCell({ cores = { "core.acme" } }) }):same { true, false }
+                    expect({ net.cell.configureCell({ pos = { 1, 2, 3 } }) }):same { true, false }
+                    expect({ net.cell.configureCell({ band = "B3" }) }):same { true, false }
+                    expect({ net.cell.configureCell({ interval = 4, power = 30, service = "sms", area = 2 }) }):same { true, false }
+                    local info = net.cell.cellInfo()
+                    expect(info.state):eq("stopped")
+                    expect(settings_of(info)):same {
+                        cores = { "core.acme" }, enabled = true, area = 2, band = "b3", interval = 4, pos = { 1, 2, 3 },
+                        power = 30, service = "sms",
+                    }
+
+                    -- Cores once each, whatever case they're written in.
+                    net.cell.configureCell({ cores = { "core.acme", "CORE.ACME", "core.beta" } })
+                    expect(net.cell.cellInfo().cores):same { "core.acme", "core.beta" }
+
+                    -- Each back as it is when it's not set, and the cores stay.
+                    net.cell.configureCell({ area = false, band = false, interval = false, pos = false, power = false, service = false })
+                    expect(settings_of(net.cell.cellInfo())):same { cores = { "core.acme", "core.beta" }, enabled = true, area = 0 }
+
+                    -- With no cores, there's nothing to start.
+                    net.cell.configureCell({ cores = {} })
+                    expect(net.cell.cellInfo().cores):eq(nil)
+                    expect({ net.cell.startCell() }):same { nil, "The cell has no cores to connect to" }
+                end)
+            end)
+
+            it("change nothing when anything won't do", function()
+                fresh(function()
+                    net.cell.configureCell({ cores = { "core.acme" }, band = "b20", pos = { 1, 2, 3 }, interval = 2 })
+                    local before = contents()
+                    local nine = {}
+                    for i = 1, 9 do nine[i] = "core" .. i end
+                    for _, case in ipairs {
+                        { { band = "b33" }, "There's no cellular band called b33: they're b31, b28, b20, b8, b3, b1 and b7" },
+                        { { band = "low" }, "There's no cellular band called low: they're b31, b28, b20, b8, b3, b1 and b7" },
+                        { { interval = 0.1 }, "A cell sends its system information every 0.5 to 10 seconds" },
+                        { { interval = 11 }, "A cell sends its system information every 0.5 to 10 seconds" },
+                        { { pos = { 1.5, 2, 3 } }, "A cell's position is three whole numbers: its computer's x, y and z" },
+                        { { pos = { 1, 2 } }, "A cell's position is three whole numbers: its computer's x, y and z" },
+                        { { power = 0 / 0 }, "A cell's power is a number of dBm" },
+                        { { power = math.huge }, "A cell's power is a number of dBm" },
+                        { { service = "full" }, "A cell's service is \"sms\" (messages only), or everything" },
+                        { { area = -1 }, "A cell's area is a whole number, 0 or more" },
+                        { { area = 1.5 }, "A cell's area is a whole number, 0 or more" },
+                        { { cores = { "core acme" } }, "Core 1 isn't a name or an address" },
+                        { { cores = { "core.acme", "" } }, "Core 2 isn't a name or an address" },
+                        { { cores = nine }, "A cell serves at most 8 networks" },
+                        -- One which would do, with one which won't: neither.
+                        { { pos = { 4, 5, 6 }, band = "b33" }, "There's no cellular band called b33: they're b31, b28, b20, b8, b3, b1 and b7" },
+                    } do
+                        expect({ net.cell.configureCell(case[1]) }):describe(case[2]):same { nil, case[2] }
+                        expect(contents()):describe(case[2]):eq(before)
+                    end
+
+                    expect.error(net.cell.configureCell, "x"):eq("bad argument #1 (table expected, got string)")
+                    expect.error(net.cell.configureCell, { cores = "core.acme" }):eq("bad field 'cores' (table expected, got string)")
+                    expect.error(net.cell.configureCell, { cores = { 5 } }):eq("bad field 'cores' (core 1 is a number, not a string)")
+                    expect.error(net.cell.configureCell, { area = "1" }):eq("bad field 'area' (number or false expected, got string)")
+                    expect.error(net.cell.configureCell, { pos = true }):eq("bad field 'pos' (table or false expected, got boolean)")
+                    expect(contents()):eq(before)
+                end)
+            end)
+
+            it("are read from older versions' files, keeping what makes sense", function()
+                fresh(function()
+                    write(CELL, { core = "core.old", area = 3, band = "b33", pos = "here", interval = 2, enabled = false })
+                    expect(settings_of(net.cell.cellInfo())):same { cores = { "core.old" }, enabled = false, area = 3, interval = 2 }
+                    expect(net.cell.configureCell({ power = 20 })):eq(true)
+                    local saved = textutils.unserialise(contents())
+                    expect(saved):same { cores = { "core.old" }, area = 3, interval = 2, power = 20, enabled = false }
+                end)
+            end)
+        end)
+
         it("copes with files it can't make sense of", function()
             for _, path in ipairs(FILES) do
                 local file = fs.open(path, "w")

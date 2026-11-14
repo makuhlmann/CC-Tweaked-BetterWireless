@@ -1,18 +1,22 @@
 celld runs a cell of a cellular network: a tower which phones attach through. It runs in the background, starts with the computer, and keeps the computer running when nobody is nearby. It reaches the network's core over any route (a cable, a radio link, or the cell's own computer), and tries again if it loses the core.
 
+The cell keeps its cores and settings. Each command changes one thing, and checks it first: a mistyped command or value changes nothing. While the cell runs, most changes are made at once, and its phones keep their service.
+
 The first time, the core must allow the cell: celld shows the command to run on the core, and the fingerprint to check there.
 
-A cell can be a relay, with no link of its own to the core: activate the computer as a phone of the network first (with "cell activate"), then run "celld 10.64.0.1" (the core's gateway address, or any of the core's addresses), and the cell reaches the core through its own phone. A relay's phone never uses a cell behind it, and the relay only serves phones while its own phone has service.
+A cell can be a relay, with no link of its own to the core: activate the computer as a phone of the network first (with "cell activate"), then run "celld add 10.64.0.1" (the core's gateway address, or any of the core's addresses), and the cell reaches the core through its own phone. A relay's phone never uses a cell behind it, and the relay only serves phones while its own phone has service.
 
 ex:
-"celld core.acme" runs a cell of the network whose core is core.acme.
-"celld 10.64.0.1" runs a relay, through this computer's own phone.
-"celld 10.0.0.1 3" runs a cell in tracking area 3.
-"celld core.acme band b3" runs a cell on one of the network's carriers in band 3 (1800MHz). Each cell is on one carrier, which its first core picks, and phones reach it on a channel of its own there. Lower bands (b31, b28, b20, b8) reach further and through more; higher ones (b3, b1, b7) carry phones in a busy place. A site with several bands has a cell (a computer) for each.
-"celld core.acme interval 4" runs a cell which sends its system information every 4 seconds, whatever its core says.
-"celld core.acme pos 120 70 -340" runs a cell which says where it is (its computer's position, as F3 shows the block), so phones can work out where they are from how far away each cell is ("cell locate"). Cells far apart, and at different heights, give phones the best positions.
-"celld core.sat sms interval 10 power 50" runs a cell which only carries messages, as a satellite does: up high, strong, and heard far away, it's for when there's nothing else (off-grid, or in an emergency). Phones use their own network's full cells first, and partners', and only then such a cell (or another network's, only once nothing else will do), and go back as soon as they can, unless told to use its network. On it, they send and receive messages, but have no route for packets.
-"celld core.acme power 30" runs a cell which sends with 30 dBm (placed computers may go up to 50), to reach further. Phones send with their own, weaker, power, so a cell much stronger than its phones hears them less far than they hear it.
-"celld core.acme core.beta" runs one cell for two networks, whose operators share it (as for a cell site in a quiet area, which neither would build alone). It connects to both cores, each of which must allow it, and serves each network's phones, and phones roaming on either. Each network sees the cell as one of its own. If one core is lost, the cell carries on serving the other network.
-"celld" shows how the cell is doing.
-"celld stop" stops the cell.
+"celld" shows how the cell is doing, and its settings.
+"celld add core.acme" runs a cell of the network whose core is core.acme. Any name or address will do, whatever it's called.
+"celld add core.beta" makes it one cell for two networks, whose operators share it (as for a cell site in a quiet area, which neither would build alone). It connects to both cores, each of which must allow it, and serves each network's phones, and phones roaming on either. Each network sees the cell as one of its own. If one core is lost, the cell carries on serving the other network. Adding a core doesn't disturb the networks it serves already.
+"celld remove core.beta" stops serving that core's network (or give the network's name), and carries on serving the others. A cell with no cores left stops.
+"celld set area 3" puts the cell in tracking area 3 (0 at first).
+"celld set band b3" puts the cell on one of its core's carriers in band 3 (1800MHz): "b3", "3" and "1800" all mean it. Each cell is on one carrier, which its first core picks, and phones reach it on a channel of its own there. Lower bands (b31, b28, b20, b8) reach further and through more; higher ones (b3, b1, b7) carry phones in a busy place. A site with several bands has a cell (a computer) for each. The cell won't go to a band none of its networks has a carrier in ("cellcore spectrum" on the core adds one).
+"celld set interval 4" makes the cell send its system information every 4 seconds (0.5 to 10), whatever its core says.
+"celld set pos 120 70 -340" makes the cell say where it is (its computer's position, as F3 shows the block), so phones can work out where they are from how far away each cell is ("cell locate"). Cells far apart, and at different heights, give phones the best positions.
+"celld set power 30" makes the cell send with 30 dBm (placed computers may go up to 50), to reach further. Phones send with their own, weaker, power, so a cell much stronger than its phones hears them less far than they hear it.
+"celld set service sms" makes the cell only carry messages, as a satellite does: up high, strong, and heard far away, it's for when there's nothing else (off-grid, or in an emergency). Phones use their own network's full cells first, and partners', and only then such a cell (or another network's, only once nothing else will do), and go back as soon as they can, unless told to use its network. On it, they send and receive messages, but have no route for packets. "celld set service full" makes it carry everything again.
+"celld unset pos" puts a setting back as it is when it's not set: area 0, any band, as often as the core says, not saying where it is, the modem's own power, and carrying everything.
+"celld stop" stops the cell, and it doesn't start with the computer. "celld start" starts it again.
+"celld restart" starts the cell again at once, connecting to each core afresh. Its phones lose service for a moment. So does changing its area, or its band to another, as the cell says them to its cores when it connects.

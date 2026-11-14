@@ -16,6 +16,7 @@ local address = require "cc.net.address"
 local expect = require "cc.expect".expect
 local files = require "cc.internal.net.files"
 local common = require "cc.internal.net.cell.common"
+local bands = require "cc.internal.net.bands"
 
 local to_hex, from_hex, read_table = files.hex.encode, files.hex.decode, files.read_table
 
@@ -315,6 +316,29 @@ local function cell_cores(config)
     return cores[1] and cores or nil
 end
 
+-- A cell's settings, besides its cores, as its file keeps them: what doesn't make sense is left out (as an older
+-- version, or someone editing the file, might have it).
+local function cell_settings(config)
+    local band = type(config.band) == "string" and bands.get(config.band)
+    return {
+        area = common.is_id(config.area) and config.area or 0,
+        band = band and band.downlink and config.band or nil,
+        interval = common.is_interval(config.interval) and config.interval or nil,
+        pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil,
+        power = type(config.power) == "number" and config.power == config.power and math.abs(config.power) ~= math.huge
+            and config.power or nil,
+        service = config.service == "sms" and "sms" or nil,
+    }
+end
+
+-- The settings of the cell which runs now, which its tower and modem follow.
+local running_cell
+
+-- The power the cell sends with, if it was set: a modem forgets it when it's replaced, or its chunk unloads.
+local function apply_power(modem)
+    if running_cell and running_cell.power then pcall(peripheral.call, modem, "setTransmitPower", running_cell.power) end
+end
+
 -- Run a cell in the background: one cell, which serves the network of each core it reaches.
 local function start_cell_service(config)
     if background.cell then return true end
@@ -323,12 +347,10 @@ local function start_cell_service(config)
     if not settings.get("net.enabled") then return nil, "The network stack is turned off" end
     if not radio_modem() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
-    -- The power the cell sends with, if it was set: a modem forgets it when it's replaced, or its chunk unloads.
-    local function apply_power(modem)
-        if type(config.power) == "number" then pcall(peripheral.call, modem, "setTransmitPower", config.power) end
-    end
+    running_cell = config
     background.cell = require("cc.internal.net.cell.cell_service").new {
-        cores = config.cores, area = config.area, band = config.band, interval = config.interval,
+        cores = config.cores, area = config.area, band = config.band, interval = config.interval, pos = config.pos,
+        service = config.service,
         id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
@@ -338,7 +360,8 @@ local function start_cell_service(config)
                 tower_instance = require("cc.internal.net.cell.tower").new {
                     stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval, pos = config.pos, service = config.service,
+                    fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
+                    service = welcome.service,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
                     -- A relay reaches a core through this computer's phone, so it can only serve that core's network
@@ -375,10 +398,9 @@ function start_cellular()
     local cell = read_table(CELL_CONFIG)
     local cores = cell_cores(cell)
     if cores and cell.enabled ~= false then
-        local ok, err = start_cell_service({
-            cores = cores, area = cell.area, band = cell.band, interval = cell.interval, pos = cell.pos, power = cell.power,
-            service = cell.service,
-        })
+        local config = cell_settings(cell)
+        config.cores = cores
+        local ok, err = start_cell_service(config)
         if not ok then log_error("Cannot start the cell: " .. tostring(err)) end
     end
 end
@@ -853,38 +875,114 @@ function api.setNetwork(name)
     return true
 end
 
+-- A cell's settings, besides its cores, in the order they're checked.
+local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service" }
+
+-- The cellular bands, by name, for saying which there are.
+local function band_names()
+    local names = {}
+    for _, band in ipairs(bands.cellular()) do names[#names + 1] = band.name end
+    return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
+end
+
+-- What's wrong with a value for one of a cell's settings, if it won't do.
+local function check_setting(key, value)
+    if key == "area" then
+        if not common.is_id(value) then return "A cell's area is a whole number, 0 or more" end
+    elseif key == "band" then
+        local band = type(value) == "string" and bands.get(value)
+        if not band or not band.downlink then
+            return ("There's no cellular band called %s: they're %s"):format(tostring(value), band_names())
+        end
+    elseif key == "interval" then
+        if not common.is_interval(value) then
+            return ("A cell sends its system information every %g to %g seconds"):format(common.MIN_INTERVAL, common.MAX_INTERVAL)
+        end
+    elseif key == "pos" then
+        if not common.is_position(value) then return "A cell's position is three whole numbers: its computer's x, y and z" end
+    elseif key == "power" then
+        if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then
+            return "A cell's power is a number of dBm"
+        end
+    elseif key == "service" then
+        if value ~= "sms" then return "A cell's service is \"sms\" (messages only), or everything" end
+    end
+end
+
+-- A cell's cores, checked: each once (names aren't case sensitive), as many as a cell can name in its system
+-- information. Gives the list, or nil and why it won't do.
+local function check_cores(cores)
+    local list, seen = {}, {}
+    for i, core in ipairs(cores) do
+        if type(core) ~= "string" or core == "" or #core > 255 or core:find("[%s%c]") then
+            return nil, ("Core %d isn't a name or an address"):format(i)
+        end
+        if not seen[core:lower()] then
+            seen[core:lower()] = true
+            list[#list + 1] = core
+        end
+    end
+    if #list > common.MAX_SIB_NETWORKS then
+        return nil, ("A cell serves at most %d networks"):format(common.MAX_SIB_NETWORKS)
+    end
+    return list
+end
+
+-- The least and most power this computer's radio modem may send with, if it has one.
+local function power_limits()
+    local modem = radio_modem()
+    if not modem then return nil end
+    local ok, _, most = pcall(peripheral.call, modem, "getTransmitPower")
+    if not ok or type(most) ~= "number" then return nil end
+    return -30, most
+end
+
 function api.startCell(core, settings)
-    local area, band, interval, pos, power, service
-    if type(settings) == "table" then
-        area, band, interval, pos, power = settings.area, settings.band, settings.interval, settings.pos, settings.power
-        service = settings.service
-    else
-        area = settings
+    if core == nil then
+        -- As it was set up: with each core added, and each setting set, since.
+        local config = read_table(CELL_CONFIG)
+        local cores = cell_cores(config)
+        if not cores then return nil, "The cell has no cores to connect to" end
+        require_crypto()
+        if config.enabled == false then
+            config.enabled = nil
+            write_table(CELL_CONFIG, config)
+        end
+        local start = cell_settings(config)
+        start.cores = cores
+        return start_cell_service(start)
     end
-    if pos ~= nil and not common.is_position(pos) then
-        return nil, "A cell's position is three whole numbers: its computer's x, y and z"
+
+    local given = type(settings) == "table" and settings or { area = settings }
+    local config = { area = 0 }
+    for _, key in ipairs(CELL_SETTINGS) do
+        local value = given[key]
+        if key == "band" and type(value) == "string" then value = value:lower() end
+        if value ~= nil then
+            local err = check_setting(key, value)
+            if err then return nil, err end
+            config[key] = key == "pos" and { value[1], value[2], value[3] } or value
+        end
     end
-    pos = pos and { pos[1], pos[2], pos[3] }
-    if service ~= nil and service ~= "sms" then return nil, "A cell's service is \"sms\" (messages only), or everything" end
-    local cores = {}
+    local names = {}
     if type(core) == "string" then
-        cores[1] = core
+        names[1] = core
     else
         for i, name in ipairs(core) do
             if type(name) ~= "string" then error(("bad argument #1 (core %d is a %s, not a string)"):format(i, type(name)), 2) end
-            cores[i] = name
+            names[i] = name
         end
-        if not cores[1] then error("bad argument #1 (expected at least one core)", 2) end
+        if not names[1] then error("bad argument #1 (expected at least one core)", 2) end
     end
+    local cores, err = check_cores(names)
+    if not cores then return nil, err end
+    config.cores = cores
     require_crypto()
-    local config = {
-        cores = cores, area = area or 0, band = band, interval = interval, pos = pos, power = power, service = service,
-    }
-    local old = read_table(CELL_CONFIG)
     -- Start again with new settings, or to try again at once after losing a core.
     if background.cell then
+        local old = running_cell
         local function place(p) return p and table.concat(p, ",") or "" end
-        local again = table.concat(cell_cores(old) or {}, " ") ~= table.concat(cores, " ") or (old.area or 0) ~= config.area
+        local again = table.concat(old.cores, " ") ~= table.concat(cores, " ") or old.area ~= config.area
             or old.band ~= config.band or old.interval ~= config.interval or place(old.pos) ~= place(config.pos)
             or old.power ~= config.power or old.service ~= config.service
         for _, link in ipairs(background.cell:info().links) do
@@ -899,6 +997,95 @@ function api.startCell(core, settings)
     return start_cell_service(config)
 end
 
+function api.configureCell(changes)
+    load()
+    local config = read_table(CELL_CONFIG)
+    local service = background.cell
+    -- What the cell runs with now, or would start with.
+    local old = service and running_cell or cell_settings(config)
+    local new = {}
+    for _, key in ipairs(CELL_SETTINGS) do new[key] = old[key] end
+    local cores = service and running_cell.cores or cell_cores(config) or {}
+    if changes.cores ~= nil then
+        local err
+        cores, err = check_cores(changes.cores)
+        if not cores then return nil, err end
+    end
+    for _, key in ipairs(CELL_SETTINGS) do
+        local value = changes[key]
+        if key == "band" and type(value) == "string" then value = value:lower() end
+        if value == false then
+            new[key] = key == "area" and 0 or nil
+        elseif value ~= nil then
+            local err = check_setting(key, value)
+            if err then return nil, err end
+            new[key] = key == "pos" and { value[1], value[2], value[3] } or value
+        end
+    end
+    if changes.power then
+        local least, most = power_limits()
+        if least and (new.power < least or new.power > most) then
+            return nil, ("This computer's modem sends with %g to %g dBm"):format(least, most)
+        end
+    end
+    -- A band the networks the cell serves have no carrier in would take it off the air: their cores would refuse it.
+    if service and changes.band and new.band ~= old.band then
+        local have = service:bands()
+        if have and not have[new.band] then
+            local names = {}
+            for band in pairs(have) do names[#names + 1] = band end
+            table.sort(names)
+            return nil, ("No network this cell serves has a carrier in band %s, only in %s"):format(
+                new.band, table.concat(names, ", ")
+            )
+        end
+    end
+
+    config.core = nil
+    config.cores = cores[1] and cores or nil
+    for _, key in ipairs(CELL_SETTINGS) do config[key] = new[key] end
+    write_table(CELL_CONFIG, config)
+    if not service then return true, false end
+
+    if not cores[1] then
+        service:stop()
+        background.cell, running_cell = nil, nil
+        return true, false
+    end
+    -- The area, and a band other than the one it's on, are said to each core when the cell connects: so connect again.
+    local _, on_band = bands.carrier_of(service:radio() or -1)
+    if new.area ~= old.area or (new.band ~= old.band and new.band ~= nil and new.band ~= on_band) then
+        service:stop()
+        background.cell = nil
+        local start = {}
+        for _, key in ipairs(CELL_SETTINGS) do start[key] = new[key] end
+        start.cores = cores
+        local ok, err = start_cell_service(start)
+        if not ok then return nil, err end
+        return true, true
+    end
+
+    -- Everything else changes at once, without disturbing the networks the cell serves (but those it stops serving).
+    local wanted = {}
+    for _, core in ipairs(cores) do wanted[core] = true end
+    for _, core in ipairs(running_cell.cores) do
+        if not wanted[core] then service:remove_core(core) end
+    end
+    for _, core in ipairs(cores) do service:add_core(core) end
+    running_cell.cores = cores
+    for _, key in ipairs(CELL_SETTINGS) do running_cell[key] = new[key] end
+    service:configure(new)
+    if new.power ~= old.power and tower_instance and not tower_instance.stopped then
+        if new.power then
+            apply_power(tower_instance.modem)
+        else
+            -- Back to the modem's own power.
+            pcall(peripheral.call, tower_instance.modem, "setTransmitPower", nil)
+        end
+    end
+    return true, false
+end
+
 function api.stopCell()
     local config = read_table(CELL_CONFIG)
     if cell_cores(config) then
@@ -907,25 +1094,25 @@ function api.stopCell()
     end
     if background.cell then
         background.cell:stop()
-        background.cell = nil
+        background.cell, running_cell = nil, nil
     end
 end
 
 function api.cellInfo()
     local config = read_table(CELL_CONFIG)
+    local saved, cores = cell_settings(config), cell_cores(config)
     local info
     if background.cell then
         info = background.cell:info()
+        if tower_instance and not tower_instance.stopped then info.current_interval = tower_instance.interval end
     else
-        local cores = cell_cores(config)
         info = {
-            state = "stopped", core = cores and cores[1], cores = cores, area = config.area, id = os.getComputerID(),
+            state = "stopped", core = cores and cores[1], id = os.getComputerID(),
             fingerprint = crypto and enclave and fingerprint(getIdentity()) or nil,
         }
     end
-    info.pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil
-    info.power = type(config.power) == "number" and config.power or nil
-    info.service = config.service == "sms" and "sms" or nil
+    info.cores, info.enabled = cores, config.enabled ~= false
+    for _, key in ipairs(CELL_SETTINGS) do info[key] = saved[key] end
     return info
 end
 

@@ -75,7 +75,7 @@ if command == "setup" then
     if config.number_prefix then
         print(("Other networks' phones reach its phones at %s<number>, once they exchange messages."):format(config.number_prefix))
     end
-    print("Cells join with 'celld <this computer's address>', and wait for you to allow them here.")
+    print("Cells join with 'celld add <this computer's address>', and wait for you to allow them here.")
     return
 elseif command == "start" then
     if #args ~= 1 then return usage() end
@@ -262,7 +262,7 @@ function commands.allow(who, label)
         end
         local found = find(candidates, who)
         if #found == 0 then
-            error(("Nothing called %s is waiting. Start 'celld <core>' on the cell ('cellcore remote <core>' on a computer to manage this one from, or 'cellcore network <this network> core <this core>' on another network's core) first."):format(who), 0)
+            error(("Nothing called %s is waiting. Start 'celld add <core>' on the cell ('cellcore remote <core>' on a computer to manage this one from, or 'cellcore network <this network> core <this core>' on another network's core) first."):format(who), 0)
         elseif #found > 1 then
             print("More than one computer matches:")
             for _, entry in ipairs(found) do print("  " .. describe(entry)) end

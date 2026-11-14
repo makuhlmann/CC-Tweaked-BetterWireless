@@ -7,9 +7,17 @@
 net.setAddress(peripheral.getName(peripheral.find("modem", function(_, modem) return not modem.isWireless() end)), "10.0.0.2/24")
 if not shell.run("cellcore", "setup", "TEST", "10.64.0.0/16") then error("Couldn't set the core up", 0) end
 if not shell.run("cellcore", "add", "TEST-1", "100", "code.txt") then error("Couldn't make a code", 0) end
-if not shell.run("celld", "127.0.0.1") then error("Couldn't start the cell", 0) end
+if not shell.run("celld", "add", "127.0.0.1") then error("Couldn't start the cell", 0) end
 local info = net.cell.cellInfo()
 if info.state ~= "serving" then error("The cell isn't serving: " .. tostring(info.state) .. " " .. tostring(info.error), 0) end
+
+-- Its settings change one at a time while it serves. A band the network has no carrier in changes nothing.
+if shell.run("celld", "set", "band", "b3") then error("The cell took a band its network has no carrier in", 0) end
+if not shell.run("celld", "set", "pos", "1", "2", "3") then error("Couldn't say where the cell is", 0) end
+info = net.cell.cellInfo()
+if info.state ~= "serving" or info.band or not info.pos or info.pos[3] ~= 3 or info.cores[1] ~= "127.0.0.1" then
+    error("The cell's settings aren't as they should be: " .. textutils.serialise(info), 0)
+end
 
 -- Hand the phone its code.
 local listener = assert(net.tcp.listen(9030))

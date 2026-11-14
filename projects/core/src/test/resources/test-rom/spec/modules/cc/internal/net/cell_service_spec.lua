@@ -932,11 +932,15 @@ describe("Cellular services", function()
             local net = network()
             local key, core_key = new_key(), new_key()
             local _, signing = crypto.generateKeyPair("ed25519")
-            local env = { net = net, connections = {}, towers = {}, key = key }
+            -- One radio, whichever networks the cell serves, as the net API has it.
+            local radio = { configured = {} }
+            function radio.configure(_, settings) radio.configured[#radio.configured + 1] = settings end
+            local env = { net = net, connections = {}, towers = {}, key = key, radio = radio, tries = 0 }
             env.service = cell_service.new {
                 core = not cores and "core.acme" or nil, cores = cores,
                 area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing),
                 connect = function(core)
+                    env.tries = env.tries + 1
                     if env.unreachable then return nil, "No route to host" end
                     local mine, theirs = pipe(function() return net.time end,
                         { key = key, address = "10.0.0.11" }, { key = core_key, address = "10.0.0.1" })
@@ -945,7 +949,7 @@ describe("Cellular services", function()
                     return mine
                 end,
                 start_tower = function(welcome, control)
-                    local tower = { welcome = welcome, send = control, messages = {} }
+                    local tower = { welcome = welcome, send = control, messages = {}, tower = radio }
                     function tower.control(_, message) tower.messages[#tower.messages + 1] = message end
                     function tower.stop() tower.stopped = true end
                     env.towers[#env.towers + 1] = tower
@@ -991,7 +995,7 @@ describe("Cellular services", function()
                 local tower = env.towers[1]
                 expect(tower.welcome):same {
                     network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32), core = "10.0.0.1", area = 3,
-                    carrier = 7935, ul = 8320, interval = 1, fixed_interval = false, carriers = { 7935 },
+                    carrier = 7935, ul = 8320, interval = 1, fixed_interval = false, core_interval = 1, carriers = { 7935 },
                 }
 
                 -- Control messages go both ways.
@@ -1113,6 +1117,113 @@ describe("Cellular services", function()
             -- Two seconds, then four.
             expect(math.floor(times[2] - times[1] + 0.5)):eq(2)
             expect(math.floor(times[3] - times[2] + 0.5)):eq(4)
+        end)
+
+        it("adds and removes cores while it serves the others, and stops trying cores it no longer has", function()
+            local env = cell_setup({ "core.acme" })
+            local acme
+            run(env.net, { env.service }, { function()
+                acme = env.connections[1]
+                acme:receive(5)
+                acme:send(welcome { network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                wait_until(function() return env.service:info().state == "serving" end)
+
+                -- Another core is connected to at once, while ACME's network carries on.
+                expect(env.service:add_core("core.beta")):eq(true)
+                expect(env.service:add_core("core.beta")):eq(false)
+                wait_until(function() return env.connections[2] end)
+                expect(env.core_name):eq("core.beta")
+                local beta = env.connections[2]
+                expect(beta:receive(5).role):eq("cell")
+                beta:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
+                wait_until(function() return env.service:info().links[2].state == "serving" end)
+                expect({ env.towers[1].stopped, #env.connections }):same { nil, 2 }
+
+                -- Removing ACME's core stops serving ACME at once, and BETA's network carries on.
+                expect(env.service:remove_core("core.acme")):eq(true)
+                expect(env.service:remove_core("core.acme")):eq(false)
+                expect({ env.towers[1].stopped, env.towers[2].stopped }):same { true, nil }
+                expect(env.service:info().links):same { { core = "core.beta", state = "serving", network = "BETA" } }
+                expect({ env.service:info().state, env.service:info().network }):same { "serving", "BETA" }
+
+                -- A core it can't reach, removed while it waits to try again, isn't tried again.
+                env.unreachable = true
+                env.service:add_core("core.gamma")
+                wait_until(function() return env.service:info().links[2] and env.service:info().links[2].state == "lost" end)
+                expect(env.service:remove_core("core.gamma")):eq(true)
+                local tries = env.tries
+                local done = env.net.time + 30
+                wait_until(function() return env.net.time >= done end)
+                expect(env.tries):eq(tries)
+                expect(#env.service:info().links):eq(1)
+            end, }, 300)
+            expect(acme.is_gone()):eq(true)
+            expect(env.service.error):eq(nil)
+        end)
+
+        it("changes what it says about itself at once, and says its band and area as it connects", function()
+            local env = cell_setup({ "core.acme", "core.beta" })
+            run(env.net, { env.service }, { function()
+                wait_until(function() return env.connections[2] end)
+                local acme, beta = env.connections[1], env.connections[2]
+                acme:receive(5)
+                beta:receive(5)
+                acme:send(welcome { network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                beta:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
+                wait_until(function() return env.service:info().links[2].state == "serving" end)
+
+                -- One radio serves both networks, and hears of it once. Neither network stops.
+                env.service:configure { area = 5, band = "b3", interval = 4, pos = { 1, 2, 3 }, service = "sms" }
+                expect(env.radio.configured):same { { interval = 4, pos = { 1, 2, 3 }, service = "sms" } }
+                expect({ env.towers[1].stopped, env.towers[2].stopped }):same { nil, nil }
+
+                -- A core it connects to again hears the new area and band, and its network's part of the cell is told
+                -- the rest.
+                beta:abort()
+                wait_until(function() return env.connections[3] end)
+                expect(env.connections[3]:receive(5)):same {
+                    role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 5, band = "b3",
+                }
+                env.connections[3]:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
+                wait_until(function() return env.towers[3] end)
+                local told = env.towers[3].welcome
+                expect({ told.interval, told.fixed_interval, told.core_interval, told.pos, told.service, told.area })
+                    :same { 4, true, 1, { 1, 2, 3 }, "sms", 5 }
+
+                -- Unset, it does as its cores say.
+                env.service:configure { area = 5 }
+                expect(env.radio.configured[2]):same {}
+            end, }, 300)
+            expect(env.service.error):eq(nil)
+        end)
+
+        it("knows which bands the networks it serves have carriers in", function()
+            local env = cell_setup({ "core.acme", "core.beta" })
+            run(env.net, { env.service }, { function()
+                expect(env.service:bands()):eq(nil)
+                wait_until(function() return env.connections[2] end)
+                local acme, beta = env.connections[1], env.connections[2]
+                acme:receive(5)
+                beta:receive(5)
+                acme:send(welcome { network = "ACME", certificate = "a", tunnel_key = ("a"):rep(32) })
+                wait_until(function() return env.service:info().links[1].state == "serving" end)
+                expect(env.service:bands()):same { b20 = true }
+
+                -- Band 20's first carrier, and band 3's.
+                beta:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32), carriers = { 7935, 18075 } })
+                wait_until(function() return env.service:info().links[2].state == "serving" end)
+                expect(env.service:bands()):same { b20 = true, b3 = true }
+
+                -- ACME's administrator moves it to band 7.
+                acme:send({ op = "carriers", carriers = { 26225 } })
+                wait_until(function() return env.service:bands().b7 end)
+                expect(env.service:bands()):same { b3 = true, b7 = true, b20 = true }
+
+                -- Only networks it serves count.
+                beta:abort()
+                wait_until(function() return env.service:info().links[2].state == "lost" end)
+                expect(env.service:bands()):same { b7 = true }
+            end, }, 300)
         end)
 
         it("stops when told", function()

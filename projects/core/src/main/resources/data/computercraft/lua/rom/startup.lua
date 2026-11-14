@@ -147,7 +147,25 @@ shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, ind
         return completion.choice(shell, text, previous, cellcore_commands)
     end
 end)
-shell.setCompletionFunction("rom/programs/net/celld.lua", completion.build({ completion.choice, { "stop" } }))
+local celld_settings = { "area", "band", "interval", "pos", "power", "service" }
+shell.setCompletionFunction("rom/programs/net/celld.lua", function(shell, index, text, previous)
+    if index == 1 then
+        return completion.choice(shell, text, previous, { "status", "add ", "remove ", "set ", "unset ", "start", "stop", "restart" })
+    elseif index == 2 and previous[2] == "set" then
+        return completion.choice(shell, text, previous, celld_settings, true)
+    elseif index == 2 and previous[2] == "unset" then
+        return completion.choice(shell, text, previous, celld_settings)
+    elseif index == 2 and previous[2] == "remove" then
+        local ok, info = pcall(net.cell.cellInfo)
+        return completion.choice(shell, text, previous, ok and info.cores or {})
+    elseif index == 3 and previous[2] == "set" and previous[3] == "band" then
+        local names = {}
+        for _, band in ipairs(require("cc.internal.net.bands").cellular()) do names[#names + 1] = band.name end
+        return completion.choice(shell, text, previous, names)
+    elseif index == 3 and previous[2] == "set" and previous[3] == "service" then
+        return completion.choice(shell, text, previous, { "sms", "full" })
+    end
+end)
 shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, text, previous)
     if index == 1 then
         return completion.choice(shell, text, previous, {

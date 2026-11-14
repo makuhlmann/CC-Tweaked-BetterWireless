@@ -56,14 +56,16 @@ Link.__index = Link
 
 @tparam {
     stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number,
-    interval? = number, fixed_interval? = boolean, area? = number, pos? = { number, number, number },
+    interval? = number, fixed_interval? = boolean, core_interval? = number, area? = number,
+    pos? = { number, number, number },
     service? = string, sign = function(data:string):string,
     epoch = function():number, can_serve? = function(core:number):boolean,
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
     carriers? = { number... },
 } options The stack; the `crypto` API; the modem phones are on, and what kind it is (`"wireless"` or `"ender"`); the
 carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; how often to send system
-information, in seconds, and whether that was set for this cell, so its core can't change it; this cell's tracking
+information, in seconds, whether that was set for this cell, so its core can't change it, and how often its core said
+(to go back to if it's no longer set for this cell); this cell's tracking
 area; where it is (its computer's block position), which it says in its system information so phones can work out
 where they are, if it's given; `"sms"` for a cell which only carries messages (a satellite, say: phones use it only
 when nothing better will do, and it carries none of their packets); a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
@@ -85,12 +87,14 @@ local function new(options)
         carrier = options.carrier, ul = options.ul, band = carrier.band, dl_range = carrier.downlink,
         interval = common.is_interval(options.interval) and options.interval or common.DEFAULT_INTERVAL,
         fixed_interval = options.fixed_interval == true,
+        core_interval = common.is_interval(options.core_interval) and options.core_interval or nil,
         pos = common.is_position(options.pos) and { options.pos[1], options.pos[2], options.pos[3] } or nil,
         service = options.service == "sms" and "sms" or nil,
         can_serve = options.can_serve or function() return true end,
         links = {}, phones = {}, downlinks = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
     }, Tower)
+    self.core_interval = self.core_interval or self.interval
 
     self:set_modem(options.modem, options.kind)
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
@@ -120,6 +124,27 @@ function Tower:set_modem(modem, kind)
     -- Cells don't take part in the network stack's own business on this interface.
     interface.no_rip = true
     self.modem = modem
+end
+
+--[[- Change what the cell says about itself, at once: phones here keep their service, and hear of it in the next
+system information.
+
+@tparam { interval? = number, pos? = { number, number, number }, service? = string } settings How often to send system
+information, in seconds (or `nil`, as the core says); where the cell is (or `nil` not to say); and `"sms"` if it only
+carries messages.
+]]
+function Tower:configure(settings)
+    self.pos = common.is_position(settings.pos) and { settings.pos[1], settings.pos[2], settings.pos[3] } or nil
+    self.service = settings.service == "sms" and "sms" or nil
+    local interval, fixed = self.core_interval, false
+    if common.is_interval(settings.interval) then interval, fixed = settings.interval, true end
+    self.fixed_interval = fixed
+    if interval ~= self.interval then
+        -- Sending more often starts now, not once the old wait is over.
+        self.interval = interval
+        self.stack:cancel(self.beacon_timer)
+        self.beacon_timer = self.stack:schedule(math.random() * interval, function() self:beacon() end)
+    end
 end
 
 -- The channel to send a phone's frames on: its own, once it has said it's listening there, or else the beacon channel,
@@ -416,6 +441,7 @@ function Tower:control(message, link)
         -- The network's administrator changed its carriers.
         link.carriers = message.carriers
     elseif op == "interval" and common.is_interval(message.interval) then
+        self.core_interval = message.interval
         if not self.fixed_interval then self.interval = message.interval end
     elseif op == "release" and is_id(message.teid) then
         local context = link.by_teid[message.teid]

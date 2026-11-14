@@ -336,7 +336,8 @@ local function operator(cell_positions, options)
                     stack = entry.stack, crypto = crypto, modem = "air", kind = "wireless", area = welcome.area,
                     sign = entry.sign, epoch = now, can_serve = entry.can_serve,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
-                    fixed_interval = welcome.fixed_interval, pos = entry.pos, service = entry.service_kind,
+                    fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
+                    service = welcome.service,
                 }
             end
             return entry.tower:add_network(welcome.network, {
@@ -349,7 +350,7 @@ local function operator(cell_positions, options)
     local function start_cell(entry, driver, cores, connect_to)
         local service = cell_service.new {
             cores = cores, area = 1, id = entry.id, identity = driver.identity, fingerprint = fingerprint,
-            band = entry.band,
+            band = entry.band, pos = entry.pos, service = entry.service_kind,
             signing = hex(entry.public), start_tower = start_tower(entry), sleep = driver.sleep, wake = driver.poke,
             connect = connect_to or function(text) return dial(driver, text) end,
         }

@@ -140,6 +140,9 @@ class Modem_Test {
             assertEquals(-30.0, (callPeripheral(modem, "setTransmitPower", -1000)!![0] as Number).toDouble())
             assertEquals(12.5, (callPeripheral(modem, "setTransmitPower", 12.5)!![0] as Number).toDouble())
             assertEquals(12.5, power()[0])
+            // And back to the default, given none.
+            assertEquals(Config.radioTransmitPower, (callPeripheral(modem, "setTransmitPower")!![0] as Number).toDouble())
+            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower), power())
         }
     }
 

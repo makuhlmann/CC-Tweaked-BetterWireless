@@ -7,7 +7,8 @@ waits for the core to allow it if it must, and then runs the cell. When it loses
 each time.
 
 A cell may serve several networks, connecting to each one's core (operators sharing a cell site): each connection is
-kept on its own, and the cell serves each network while its core is there.
+kept on its own, and the cell serves each network while its core is there. Cores may be added and removed while it
+runs, and what it says about itself changed, without disturbing the networks it serves.
 
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use the `celld` program instead.
@@ -42,40 +43,82 @@ Service.__index = Service
 --[[- Start a cell.
 
 @tparam {
-    core? = string, cores? = { string... }, area? = number, band? = string, interval? = number, id = number,
+    core? = string, cores? = { string... }, area? = number, band? = string, interval? = number,
+    pos? = { number, number, number }, service? = string, id = number,
     identity = string, fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
     start_tower = function(welcome:table, control:function):table,
     sleep = function(seconds:number), wake = function(),
 } options The core's name or address, or the names or addresses of several (for a cell which serves several
 networks); the cell's tracking area; the cellular band it should be on, if it matters; how often it sends system
-information, if not as its core says; this computer's ID and its key (as hexadecimal digits), and a way to get a key's
-fingerprint; the cell's own Ed25519 key, as hexadecimal digits, which each core certifies; a way to connect securely
-to a core's control port; a way to have the cell serve a network, given what its core said (`network`, `certificate`,
-`tunnel_key`, `core`, `area`, the `carrier` and `ul` channel the cell is on, the `interval` and whether it was set for
-this cell (`fixed_interval`), and the network's `carriers`) and a function to send that core control messages, which
-returns something to give the core's messages to (`control`) and to stop serving the network with (`stop`); a way to
-wait; and a way to wake tasks waiting for something to change. A cell is on one carrier, whichever network it serves:
-the first core it reaches picks it, and it tells the others.
+information, if not as its core says; where it says it is, and `"sms"` if it only carries messages; this computer's ID
+and its key (as hexadecimal digits), and a way to get a key's fingerprint; the cell's own Ed25519 key, as hexadecimal
+digits, which each core certifies; a way to connect securely to a core's control port; a way to have the cell serve a
+network, given what its core said (`network`, `certificate`, `tunnel_key`, `core`, `area`, the `carrier` and `ul`
+channel the cell is on, the `interval`, whether it was set for this cell (`fixed_interval`) and what the core said
+(`core_interval`), the network's `carriers`, and the cell's `pos` and `service`) and a function to send that core
+control messages, which returns something to give the core's messages to (`control`), to stop serving the network with
+(`stop`), and the cell's radio (`tower`, which `configure` changes); a way to wait; and a way to wake tasks waiting for
+something to change. A cell is on one carrier, whichever network it serves: the first core it reaches picks it, and it
+tells the others.
 @treturn table The service. Pass it every event with `resume`.
 ]]
 local function new(options)
     local self = setmetatable({ options = options, links = {} }, Service)
     self.tasks = tasks.new(function(err) self.error = tostring(err) end)
-    for i, core in ipairs(options.cores or { options.core }) do
-        local link = { core = core, state = "connecting" }
-        self.links[i] = link
-        self.tasks:spawn(function() self:run(link) end)
-    end
+    for _, core in ipairs(options.cores or { options.core }) do self:add_core(core) end
     return self
+end
+
+--[[- Serve another core's network too, connecting to it now. The networks the cell serves already carry on as they
+were.
+
+@tparam string core The core's name or address.
+@treturn boolean Whether it was added: false if the cell connects to it already.
+]]
+function Service:add_core(core)
+    for _, link in ipairs(self.links) do
+        if link.core == core then return false end
+    end
+    local link = { core = core, state = "connecting" }
+    self.links[#self.links + 1] = link
+    if not self.stopped then self.tasks:spawn(function() self:run(link) end) end
+    return true
+end
+
+--[[- Stop serving a core's network, and stop connecting to it. Its phones here lose service, and find another cell;
+the other networks' carry on. Removing the last network the cell serves takes it off the air.
+
+@tparam string core The core's name or address, as it was added.
+@treturn boolean Whether it was removed: false if the cell doesn't connect to it.
+]]
+function Service:remove_core(core)
+    for i, link in ipairs(self.links) do
+        if link.core == core then
+            table.remove(self.links, i)
+            link.removed = true
+            if link.handle then
+                link.handle:stop()
+                link.handle = nil
+            end
+            if link.connection then link.connection:abort() end
+            return true
+        end
+    end
+    return false
 end
 
 -- Keep a core connected: connect, serve its network, and connect again once it's lost, less often each time.
 function Service:run(link)
     local delay = FIRST_DELAY
-    while not self.stopped do
+    while not self.stopped and not link.removed do
         link.state, link.error = "connecting", nil
         local connected, connection, err = pcall(self.options.connect, link.core)
         if not connected then connection, err = nil, tostring(connection) end
+        -- Removed while connecting: there's nothing to serve.
+        if connection and (self.stopped or link.removed) then
+            connection:abort()
+            return
+        end
         if connection then
             link.connection = connection
             local ok, reason = pcall(self.serve, self, link, connection)
@@ -87,7 +130,7 @@ function Service:run(link)
         else
             link.state, link.error = "lost", err
         end
-        if self.stopped then return end
+        if self.stopped or link.removed then return end
         link.retry = delay
         self.options.sleep(delay)
         delay = math.min(delay * 2, MAX_DELAY)
@@ -148,9 +191,11 @@ function Service:serve(link, connection)
         network = reply.network, certificate = reply.certificate, tunnel_key = reply.tunnel_key,
         core = connection:getPeer(), area = options.area or 0,
         carrier = carrier or reply.carrier, ul = ul or reply.ul, interval = interval or reply.interval,
-        fixed_interval = interval ~= nil, carriers = reply.carriers,
+        fixed_interval = interval ~= nil, core_interval = reply.interval, carriers = reply.carriers,
+        pos = options.pos, service = options.service,
     }, send)
     link.handle, link.network, link.served, link.state = handle, reply.network, true, "serving"
+    link.carriers = reply.carriers
 
     local reason
     local ok, failure = pcall(function()
@@ -160,14 +205,60 @@ function Service:serve(link, connection)
                 reason = receive_err or "The core closed the connection"
                 break
             end
+            -- The network's carriers, which its administrator may change: a band the cell is asked to go on must be
+            -- one of them.
+            if type(message) == "table" and message.op == "carriers" and common.is_carriers(message.carriers)
+                and message.carriers[1] then
+                link.carriers = message.carriers
+            end
             handle:control(message)
         end
     end)
     stop_sending()
-    link.handle = nil
+    link.handle, link.carriers = nil, nil
     handle:stop()
     if not ok then error(failure, 0) end
     return reason
+end
+
+--[[- Change the cell's settings. What it says about itself (where it is, whether it only carries messages, and how
+often it sends system information) changes on the air at once, and its phones keep their service. The band and area are
+only said to a core when the cell connects to it.
+
+@tparam {
+    area? = number, band? = string, interval? = number, pos? = { number, number, number }, service? = string,
+} settings Every setting, as `new` takes them: one which is missing is unset.
+]]
+function Service:configure(settings)
+    local options = self.options
+    options.area, options.band, options.interval = settings.area, settings.band, settings.interval
+    options.pos, options.service = settings.pos, settings.service
+    local done = {}
+    for _, link in ipairs(self.links) do
+        local tower = link.handle and link.handle.tower
+        if tower and not done[tower] then
+            done[tower] = true
+            tower:configure { interval = options.interval, pos = options.pos, service = options.service }
+        end
+    end
+end
+
+--[[- The bands the networks the cell serves have carriers in, as their cores said.
+
+@treturn { [string] = true }|nil Each band, by name, or `nil` if the cell serves no network now.
+]]
+function Service:bands()
+    local result
+    for _, link in ipairs(self.links) do
+        if link.handle and link.carriers then
+            result = result or {}
+            for _, carrier in ipairs(link.carriers) do
+                local _, band = bands.carrier_of(carrier)
+                if band then result[band] = true end
+            end
+        end
+    end
+    return result
 end
 
 --[[- Describe the cell.
