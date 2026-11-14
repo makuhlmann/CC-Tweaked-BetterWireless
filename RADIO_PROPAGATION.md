@@ -169,9 +169,11 @@ Three kinds of message have frequencies of their own, whatever their channel:
   at a different frequency from the message it answers. Broadcasts, lookups and repeaters are rednet's too. Rednet is
   also sent with 20 dB less power (`rednet_power_offset`), which keeps it short range: ~260 blocks over flat ground at
   the default power, as before.
-- **GPS's channel**, 65534 (150 MHz, `gps_frequency`). GPS asks hosts for their positions, so a pocket computer's
-  own weak transmitter limits how far it works; at GPS's real L1 frequency (1575.42 MHz) that would be about a third
-  less far. GPS can move there once hosts broadcast their positions, and nothing needs to reach them.
+- **GPS's channel**, 65534 (GPS's L1, 1575.42 MHz, `gps_frequency`). Hosts send their positions every 2 seconds and
+  computers only listen, so a pocket computer's weak transmitter doesn't limit how far GPS works: the hosts' power
+  does (`gps host <x> <y> <z> power 30`). At the default power, a host 30 blocks up reaches pocket computers about
+  1.8km away over flat ground (about 2.7km at 150 MHz, where GPS was while computers asked hosts for their positions);
+  at 30 dBm, about 9km.
 - **Other messages on rednet's channels** (65533 and 65535), which are taken for rednet's.
 
 **Each modem transmits with a power programs set** (`modem.setTransmitPower`, in dBm), up to a limit for each kind of
@@ -183,8 +185,8 @@ device:
 | Pocket computer | −1.6 dBm | 23 dBm (a phone's) | −93 dBm |
 | Turtle | −1.6 dBm | 30 dBm | −93 dBm |
 
-The defaults are what the old offsets gave, so the old low band (now channels 300–1739, say), GPS and rednet reach as
-far as they did. What used to be the high band (channels 1024 and up, 20 dB weaker) has no penalty of its own any more: it
+The defaults are what the old offsets gave, so the old low band (now channels 300–1739, say) and rednet reach as far
+as they did (GPS has moved to L1, above). What used to be the high band (channels 1024 and up, 20 dB weaker) has no penalty of its own any more: it
 reaches as far as any frequency over open ground at the same power, and only loses more to walls and hills. Ender
 modems radiate 10 dB less than they're set to. Power captured when a packet is sent counts, even if a program
 changes it before the packet is delivered. A link is traced as far as the packets waiting for it need, at every
@@ -248,7 +250,7 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    waiting for the link, so a path serves every frequency. That makes walks through rock or forest go a few times
    further than a walk for one frequency would. The micro-benchmark above hasn't been run again since.
 4. Paths are cached for `cache_ticks` (5s) per *unordered* pair of block positions, whatever the frequency. Path loss
-   is reciprocal, so the reply to a rednet message or GPS ping is a cache hit, as are repeated messages between
+   is reciprocal, so the reply to a rednet message is a cache hit, as are repeated messages between
    stationary computers, and the two directions of a link whose uplink and downlink use different frequencies.
    Concurrent requests for the same link share one trace, as far as the strongest of them needs. A path traced for a
    weaker transmitter is traced again for a stronger one, unless the link was within the weaker one's budget (its
@@ -340,7 +342,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `pocket_receive_offset`, `turtle_receive_offset` | -7, -7 | How much worse they hear than placed computers, in dB. |
 | `ender_power_offset` | -10 | How much less ender modems radiate than they're set to, in dB. |
 | `rednet_frequency`, `rednet_power_offset` | 2400, -20 | Rednet's frequency in MHz, and how much less power it's sent with, in dB. |
-| `gps_frequency` | 150 | The frequency of GPS's channel, in MHz. |
+| `gps_frequency` | 1575.42 | The frequency of GPS's channel, in MHz: GPS's L1. |
 | `metres_per_block`, `metres_per_block_vertical` | 1, 1 | For worlds at reduced scale. |
 | `earth_radius` | 0 | Planet radius in km for curvature (6371 for Earth-scale Tellus). |
 | `ground_reflection` | `true` | Two-ray model (height matters) vs free space only. |

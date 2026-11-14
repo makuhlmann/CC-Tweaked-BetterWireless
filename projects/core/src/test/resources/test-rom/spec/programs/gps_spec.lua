@@ -7,7 +7,7 @@ local capture = require "test_helpers".capture_program
 describe("The gps program", function()
     it("displays its usage when given no arguments", function()
         expect(capture("gps"))
-            :matches { ok = true, output = "Usages:\ngps host\ngps host <x> <y> <z>\ngps locate\n", error = "" }
+            :matches { ok = true, output = "Usages:\ngps host [power <dBm>]\ngps host <x> <y> <z> [power <dBm>]\ngps locate\n", error = "" }
     end)
 
     it("fails on a pocket computer", function()
@@ -22,6 +22,6 @@ describe("The gps program", function()
 
         expect(capture("gps locate"))
             :matches { ok = true, output = "Some debugging information.\n", error = "" }
-        expect(locate):called_with(2, true)
+        expect(locate):called_with(3, true)
     end)
 end)

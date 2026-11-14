@@ -1534,7 +1534,7 @@ secure = {
 function make_cellular()
     return env_require("cc.internal.net.cell.api").new {
         stack = stack, load = load, log_error = log_error, require_crypto = require_crypto, getIdentity = getIdentity,
-        fingerprint = fingerprint, secure = secure, check_timeout = check_timeout, add_interface = add_interface,
+        fingerprint = fingerprint, secure = secure, check_timeout = check_timeout,
     }
 end
 

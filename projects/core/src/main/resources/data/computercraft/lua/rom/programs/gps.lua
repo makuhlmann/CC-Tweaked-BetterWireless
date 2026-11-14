@@ -2,11 +2,14 @@
 --
 -- SPDX-License-Identifier: LicenseRef-CCPL
 
+-- How often a host sends its position, in seconds.
+local INTERVAL = 2
+
 local function printUsage()
     local programName = arg[0] or fs.getName(shell.getRunningProgram())
     print("Usages:")
-    print(programName .. " host")
-    print(programName .. " host <x> <y> <z>")
+    print(programName .. " host [power <dBm>]")
+    print(programName .. " host <x> <y> <z> [power <dBm>]")
     print(programName .. " locate")
 end
 
@@ -20,7 +23,7 @@ end
 if sCommand == "locate" then
     -- "gps locate"
     -- Just locate this computer (this will print the results)
-    gps.locate(2, true)
+    gps.locate(3, true)
 
 elseif sCommand == "host" then
     -- "gps host"
@@ -28,6 +31,25 @@ elseif sCommand == "host" then
     if pocket then
         print("GPS Hosts must be stationary")
         return
+    end
+
+    -- The position, if given, and then the power to send with, if given.
+    local x, y, z, nPower
+    local nNext = 2
+    if #tArgs >= 4 and tArgs[2] ~= "power" then
+        x, y, z = tonumber(tArgs[2]), tonumber(tArgs[3]), tonumber(tArgs[4])
+        if x == nil or y == nil or z == nil then
+            printUsage()
+            return
+        end
+        nNext = 5
+    end
+    if tArgs[nNext] ~= nil then
+        nPower = tArgs[nNext] == "power" and tonumber(tArgs[nNext + 1])
+        if not nPower or tArgs[nNext + 2] ~= nil then
+            printUsage()
+            return
+        end
     end
 
     -- Find a modem
@@ -45,50 +67,42 @@ elseif sCommand == "host" then
     end
 
     -- Determine position
-    local x, y, z
-    if #tArgs >= 4 then
-        -- Position is manually specified
-        x = tonumber(tArgs[2])
-        y = tonumber(tArgs[3])
-        z = tonumber(tArgs[4])
-        if x == nil or y == nil or z == nil then
-            printUsage()
-            return
-        end
+    if x then
         print("Position is " .. x .. "," .. y .. "," .. z)
     else
         -- Position is to be determined using locate
-        x, y, z = gps.locate(2, true)
+        x, y, z = gps.locate(3, true)
         if x == nil then
             print("Run \"gps host <x> <y> <z>\" to set position manually")
             return
         end
     end
 
-    -- Open a channel
     local modem = peripheral.wrap(sModemSide)
-    print("Opening channel on modem " .. sModemSide)
-    modem.open(gps.CHANNEL_GPS)
+    if nPower then
+        print(("Transmitting at %.1f dBm"):format(modem.setTransmitPower(nPower)))
+    end
 
-    -- Serve requests indefinitely
-    local nServed = 0
+    -- Send our position on the GPS channel every two seconds, indefinitely, for anyone listening. Hosts start at a
+    -- moment of their own, so they don't all send at once, and keep to their time.
+    print("Sending position on modem " .. sModemSide)
+    local nServed, nAt = 0, os.clock() + math.random() * INTERVAL
+    local timer = os.startTimer(nAt - os.clock())
     while true do
-        local e, p1, p2, p3, p4, p5 = os.pullEvent("modem_message")
-        if e == "modem_message" then
-            -- We received a message from a modem
-            local sSide, sChannel, sReplyChannel, sMessage, nDistance = p1, p2, p3, p4, p5
-            if sSide == sModemSide and sChannel == gps.CHANNEL_GPS and sMessage == "PING" and nDistance then
-                -- We received a ping message on the GPS channel, send a response
-                modem.transmit(sReplyChannel, gps.CHANNEL_GPS, { x, y, z })
+        local _, id = os.pullEvent("timer")
+        if id == timer then
+            modem.transmit(gps.CHANNEL_GPS, gps.CHANNEL_GPS, { x, y, z })
 
-                -- Print the number of requests handled
-                nServed = nServed + 1
-                if nServed > 1 then
-                    local _, y = term.getCursorPos()
-                    term.setCursorPos(1, y - 1)
-                end
-                print(nServed .. " GPS requests served")
+            nAt = math.max(nAt + INTERVAL, os.clock())
+            timer = os.startTimer(nAt - os.clock())
+
+            -- Print the number of times we've sent it
+            nServed = nServed + 1
+            if nServed > 1 then
+                local _, y = term.getCursorPos()
+                term.setCursorPos(1, y - 1)
             end
+            print("Position sent " .. nServed .. " times")
         end
     end
 else

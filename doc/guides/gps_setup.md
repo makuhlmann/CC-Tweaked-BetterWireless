@@ -10,9 +10,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Setting up GPS
 The [`gps`] API allows a computer to find its current position using a [wireless modem][`modem`]. This works by
-communicating with other computers (called *GPS hosts*) that already know their position, finding the distance to those
-computers (with [`modem_message`]), and using that to derive its position from theirs (with a process known as
-[trilateration](https://en.wikipedia.org/wiki/Trilateration).
+listening to other computers (called *GPS hosts*) that already know their position and send it every two seconds,
+finding the distance to those computers (with [`modem_message`]), and using that to derive its position from theirs
+(with a process known as [trilateration](https://en.wikipedia.org/wiki/Trilateration)). Computers only listen, so how
+far GPS works depends on the hosts: on where they are, and on how much power they send with.
 
 In order for this to work, we need our GPS hosts set up in a specific pattern, each one differing in position on at
 least one axis. This guide takes you through the process of setting up a *constellation* of GPS hosts, and using them to
@@ -29,8 +30,11 @@ Additionally, you will need another computer and a wireless modem, in order to t
 
 ## Picking an area
 First, choose a place to build your GPS constellation. This should be a 10x10x10 cube, though you can make this smaller
-if needed. The larger a constellation is, the more accurate it is over large distances, but even a 5x5x5 constellation
-should serve a several thousand block radius.
+if needed. A computer which stays put is found exactly, even far from a small constellation. One which moves while it
+listens (a player walking with a pocket computer) hears each host from somewhere else, and is found less well: the
+further it is from the constellation compared to the constellation's size, the worse. [`gps.locate`] says how far off
+it may be. Hosts far apart from each other, and at different heights (on hills, or towers, hundreds of blocks apart),
+serve moving computers much better than a cube does.
 
 Every computer must be loaded in order for other computers to use GPS, so it is recommended to build your GPS
 constellation in a single chunk that will always be loaded. You may want to choose an area in an already chunk-loaded
@@ -66,6 +70,13 @@ Now that the structure of your constellation is built, we need to configure each
 
     ```lua
     shell.run("gps", "host", x, y, z)
+    ```
+
+    To reach further, give the host more power (in dBm: 30 reaches several times as far as the default, and placed
+    computers may go up to 50):
+
+    ```lua
+    shell.run("gps", "host", x, y, z, "power", 30)
     ```
  5. Save the file, and then reboot the computer (hold <kbd>Ctrl+R</kbd> or run the `reboot` program) to run the startup
     program.

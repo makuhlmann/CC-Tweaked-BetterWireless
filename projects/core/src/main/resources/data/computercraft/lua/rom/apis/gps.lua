@@ -5,10 +5,17 @@
 --[[- Use [modems][`modem`] to locate the position of the current turtle or
 computers.
 
-This works by communicating with other computers (called GPS hosts) that already
-know their position, finding the distance to those computers (with
-[`modem_message`]), and using that to derive its position from theirs (with a
-process known as [trilateration](https://en.wikipedia.org/wiki/Trilateration).
+This works by listening to other computers (called GPS hosts) that already
+know their position, and send it every two seconds. It finds the distance to
+those computers (with [`modem_message`]), and uses that to derive its position
+from theirs (with a process known as
+[trilateration](https://en.wikipedia.org/wiki/Trilateration)). It sends
+nothing itself, so it works as far away as the hosts can be heard.
+
+A computer which stays put is found exactly. One which moves while it listens
+hears each host from somewhere else, so it is found less well, and
+[`gps.locate`] says how far off it may be. Hosts far apart from each other (and
+at different heights) give the best positions.
 
 @module gps
 @since 1.31
@@ -16,79 +23,32 @@ process known as [trilateration](https://en.wikipedia.org/wiki/Trilateration).
 ]]
 
 local expect = dofile("rom/modules/main/cc/expect.lua").expect
+local solver = dofile("rom/modules/main/cc/internal/locate.lua")
 
---- The channel which GPS requests and responses are broadcast on.
+--- The channel which GPS hosts send their positions on.
 CHANNEL_GPS = 65534
-
-local function trilaterate(A, B, C)
-    local a2b = B.vPosition - A.vPosition
-    local a2c = C.vPosition - A.vPosition
-
-    if math.abs(a2b:normalize():dot(a2c:normalize())) > 0.999 then
-        return nil
-    end
-
-    local d = a2b:length()
-    local ex = a2b:normalize( )
-    local i = ex:dot(a2c)
-    local ey = (a2c - ex * i):normalize()
-    local j = ey:dot(a2c)
-    local ez = ex:cross(ey)
-
-    local r1 = A.nDistance
-    local r2 = B.nDistance
-    local r3 = C.nDistance
-
-    local x = (r1 * r1 - r2 * r2 + d * d) / (2 * d)
-    local y = (r1 * r1 - r3 * r3 - x * x + (x - i) * (x - i) + j * j) / (2 * j)
-
-    local result = A.vPosition + ex * x + ey * y
-
-    local zSquared = r1 * r1 - x * x - y * y
-    if zSquared > 0 then
-        local z = math.sqrt(zSquared)
-        local result1 = result + ez * z
-        local result2 = result - ez * z
-
-        local rounded1, rounded2 = result1:round(0.01), result2:round(0.01)
-        if rounded1.x ~= rounded2.x or rounded1.y ~= rounded2.y or rounded1.z ~= rounded2.z then
-            return rounded1, rounded2
-        else
-            return rounded1
-        end
-    end
-    return result:round(0.01)
-
-end
-
-local function narrow(p1, p2, fix)
-    local dist1 = math.abs((p1 - fix.vPosition):length() - fix.nDistance)
-    local dist2 = math.abs((p2 - fix.vPosition):length() - fix.nDistance)
-
-    if math.abs(dist1 - dist2) < 0.01 then
-        return p1, p2
-    elseif dist1 < dist2 then
-        return p1:round(0.01)
-    else
-        return p2:round(0.01)
-    end
-end
 
 --- Tries to retrieve the computer or turtles own location.
 --
--- @tparam[opt=2] number timeout The maximum time in seconds taken to establish our
+-- It listens for GPS hosts until it hears enough of them to know where it is
+-- (or the time is up). Hosts send their positions every two seconds.
+--
+-- @tparam[opt=3] number timeout The maximum time in seconds taken to establish our
 -- position.
 -- @tparam[opt=false] boolean debug Print debugging messages
 -- @treturn[1] number This computer's `x` position.
 -- @treturn[1] number This computer's `y` position.
 -- @treturn[1] number This computer's `z` position.
+-- @treturn[1] number How far off that position may be, in blocks: 0 if it is
+-- exact, as it is for a computer which doesn't move.
 -- @treturn[2] nil If the position could not be established.
 function locate(_nTimeout, _bDebug)
     expect(1, _nTimeout, "number", "nil")
     expect(2, _bDebug, "boolean", "nil")
     -- Let command computers use their magic fourth-wall-breaking special abilities
     if commands then
-        return commands.getBlockPosition()
+        local x, y, z = commands.getBlockPosition()
+        return x, y, z, 0
     end
 
     -- Find a modem
@@ -111,7 +71,7 @@ function locate(_nTimeout, _bDebug)
         print("Finding position...")
     end
 
-    -- Open GPS channel to listen for ping responses
+    -- Open GPS channel to listen for hosts
     local modem = peripheral.wrap(sModemSide)
     local bCloseChannel = false
     if not modem.isOpen(CHANNEL_GPS) then
@@ -119,50 +79,40 @@ function locate(_nTimeout, _bDebug)
         bCloseChannel = true
     end
 
-    -- Send a ping to listening GPS hosts
-    modem.transmit(CHANNEL_GPS, CHANNEL_GPS, "PING")
-
-    -- Wait for the responses
-    local tFixes = {}
-    local pos1, pos2 = nil, nil
-    local timeout = os.startTimer(_nTimeout or 2)
+    -- Listen to the hosts. Each fix is a host's position, how far away it was, and when. A host heard twice says how
+    -- fast we are moving towards or away from it, at least.
+    local tFixes, nSpeed = {}, 0
+    local x, y, z, nError, tOne, tOther
+    local timeout = os.startTimer(_nTimeout or 3)
     while true do
         local e, p1, p2, p3, p4, p5 = os.pullEvent()
         if e == "modem_message" then
-            -- We received a reply from a modem
             local sSide, sChannel, sReplyChannel, tMessage, nDistance = p1, p2, p3, p4, p5
-            if sSide == sModemSide and sChannel == CHANNEL_GPS and sReplyChannel == CHANNEL_GPS and nDistance then
-                -- Received the correct message from the correct modem: use it to determine position
-                if type(tMessage) == "table" and #tMessage == 3 and tonumber(tMessage[1]) and tonumber(tMessage[2]) and tonumber(tMessage[3]) then
-                    local tFix = { vPosition = vector.new(tMessage[1], tMessage[2], tMessage[3]), nDistance = nDistance }
-                    if _bDebug then
-                        print(tFix.nDistance .. " metres from " .. tostring(tFix.vPosition))
-                    end
-                    if tFix.nDistance == 0 then
-                        pos1, pos2 = tFix.vPosition, nil
-                    else
-                        -- Insert our new position in our table, with a maximum of three items. If this is close to a
-                        -- previous position, replace that instead of inserting.
-                        local insIndex = math.min(3, #tFixes + 1)
-                        for i, older in pairs(tFixes) do
-                            if (older.vPosition - tFix.vPosition):length() < 1 then
-                                insIndex = i
-                                break
-                            end
-                        end
-                        tFixes[insIndex] = tFix
+            if sSide == sModemSide and sChannel == CHANNEL_GPS and sReplyChannel == CHANNEL_GPS and type(nDistance) == "number"
+                and type(tMessage) == "table" and #tMessage == 3 and tonumber(tMessage[1]) and tonumber(tMessage[2]) and tonumber(tMessage[3]) then
+                local tFix = {
+                    x = tonumber(tMessage[1]), y = tonumber(tMessage[2]), z = tonumber(tMessage[3]),
+                    distance = nDistance, time = os.clock(),
+                }
+                if _bDebug then
+                    print(tFix.distance .. " metres from " .. tFix.x .. "," .. tFix.y .. "," .. tFix.z)
+                end
+                local sKey = tFix.x .. "," .. tFix.y .. "," .. tFix.z
+                local tOlder = tFixes[sKey]
+                if tOlder and tFix.time > tOlder.time then
+                    nSpeed = math.max(nSpeed, math.abs(tFix.distance - tOlder.distance) / (tFix.time - tOlder.time))
+                end
+                tFixes[sKey] = tFix
 
-                        if #tFixes >= 3 then
-                            if not pos1 then
-                                pos1, pos2 = trilaterate(tFixes[1], tFixes[2], tFixes[3])
-                            else
-                                pos1, pos2 = narrow(pos1, pos2, tFixes[3])
-                            end
-                        end
-                    end
-                    if pos1 and not pos2 then
-                        break
-                    end
+                local tList, nNow = {}, os.clock()
+                for _, tHeard in pairs(tFixes) do
+                    tList[#tList + 1] = { x = tHeard.x, y = tHeard.y, z = tHeard.z, distance = tHeard.distance, age = nNow - tHeard.time }
+                end
+                x, y, z, nError = solver.locate(tList, nSpeed)
+                if x then
+                    break
+                elseif y == "ambiguous" then
+                    tOne, tOther = z, nError
                 end
             end
 
@@ -184,17 +134,21 @@ function locate(_nTimeout, _bDebug)
     os.cancelTimer(timeout)
 
     -- Return the response
-    if pos1 and pos2 then
+    if x then
+        if _bDebug then
+            if nError > 0 then
+                print("Position is " .. x .. "," .. y .. "," .. z .. ", within " .. nError .. " metres")
+            else
+                print("Position is " .. x .. "," .. y .. "," .. z)
+            end
+        end
+        return x, y, z, nError
+    elseif tOne and tOther then
         if _bDebug then
             print("Ambiguous position")
-            print("Could be " .. pos1.x .. "," .. pos1.y .. "," .. pos1.z .. " or " .. pos2.x .. "," .. pos2.y .. "," .. pos2.z)
+            print("Could be " .. tOne[1] .. "," .. tOne[2] .. "," .. tOne[3] .. " or " .. tOther[1] .. "," .. tOther[2] .. "," .. tOther[3])
         end
         return nil
-    elseif pos1 then
-        if _bDebug then
-            print("Position is " .. pos1.x .. "," .. pos1.y .. "," .. pos1.z)
-        end
-        return pos1.x, pos1.y, pos1.z
     else
         if _bDebug then
             print("Could not determine position")

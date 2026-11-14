@@ -512,7 +512,7 @@ function Service:serve_cell(connection, key, hello, id)
     local tunnel_key = self.core:add_tower(id, address.parse(peer), send)
     local welcome = {
         v = common.VERSION, network = network, certificate = cert, tunnel_key = tunnel_key,
-        carrier = carrier, ul = ul, interval = self:beacon_interval(), carriers = (self:spectrum()),
+        carrier = carrier, ul = ul, interval = self:beacon_interval(), carriers = self:spectrum(),
     }
     if not connection:send(welcome) then
         self.core:remove_tower(id, send)

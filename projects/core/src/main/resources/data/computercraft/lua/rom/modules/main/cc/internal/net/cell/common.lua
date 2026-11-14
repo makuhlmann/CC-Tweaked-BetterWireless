@@ -41,9 +41,12 @@ local CONTROL_PORT = 2123
 -- too, within `MIN_INTERVAL` and `MAX_INTERVAL`. Phones wait longer for a cell which sends less often.
 local DEFAULT_INTERVAL = 2
 
---- The least and most time a cell may leave between sending system information, in seconds. Phones take a cell to be
--- gone after a few intervals of silence, so a long one would keep them on a dead cell.
-local MIN_INTERVAL, MAX_INTERVAL = 0.5, 10
+--- The least time a cell may leave between sending system information, in seconds.
+local MIN_INTERVAL = 0.5
+
+--- The most time a cell may leave between sending system information, in seconds. Phones take a cell to be gone after a
+-- few intervals of silence, so a long one would keep them on a dead cell.
+local MAX_INTERVAL = 10
 
 --- How many of its network's carriers a cell names in its system information, so phones can listen for that network's
 -- cells on them.

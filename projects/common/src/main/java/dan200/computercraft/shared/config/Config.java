@@ -31,7 +31,7 @@ public final class Config {
     public static double radioMaxTransmitPower = 50;
     public static double radioRednetFrequency = 2400;
     public static double radioRednetPowerOffset = -20;
-    public static double radioGpsFrequency = 150;
+    public static double radioGpsFrequency = 1575.42;
     public static double radioMetresPerBlock = 1;
     public static double radioMetresPerBlockVertical = 1;
     public static double radioEarthRadius = 0;

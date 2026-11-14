@@ -45,7 +45,7 @@ These facts about CC: Tweaked (as of 1.121.0, on this branch) shape the design:
 | A modem sends a Lua value on one of 65,536 channels to every modem in range that has that channel open. Functions and metatables are dropped. | The physical layer is a broadcast medium carrying Lua values, not bytes. Channels only filter what wakes a computer up. |
 | A modem can have at most 128 channels open. | Each computer can only listen on a few channels, so addresses can't map one-to-one to channels. |
 | `modem_message` gives the side, channel, reply channel, message and distance, and on this branch the signal strength in dBm for radio messages. | Link quality is visible to the stack and can feed routing and cell selection. |
-| On this branch, a channel's number is its frequency in units of 100 kHz (channel 1500 is 150 MHz, 24000 is 2.4 GHz). Lower frequencies go further through walls and over hills. Rednet's messages have their own frequency (2.4 GHz) and less power, whatever their channel, and GPS's channel has its own (150 MHz). Programs set a modem's transmit power, within a limit for each kind of device. | Which channels the stack uses decides how its signal gets through; its power decides how far. Wired modems ignore both. |
+| On this branch, a channel's number is its frequency in units of 100 kHz (channel 1500 is 150 MHz, 24000 is 2.4 GHz). Lower frequencies go further through walls and over hills. Rednet's messages have their own frequency (2.4 GHz) and less power, whatever their channel, and GPS's channel has its own (1575.42 MHz, GPS's L1). Programs set a modem's transmit power, within a limit for each kind of device. | Which channels the stack uses decides how its signal gets through; its power decides how far. Wired modems ignore both. |
 | Radio messages arrive at the next server tick. Wired messages arrive immediately. Ender modems hear everything, in every dimension. | Each radio hop takes at least 50 ms. Timers should be measured in ticks. |
 | Anyone can open any channel, and the sender of a message is whatever the message says. | Without cryptography there is no privacy and no authentication. |
 | Each computer's event queue holds 256 events. Further events are silently dropped. | A flood of messages loses some of them. The stack must keep its queue short and treat drops as loss. |
@@ -817,7 +817,7 @@ a world as a datapack (§1) to try a newer version without replacing the jar.
 | `rednet.receive` with a protocol | A socket bound to a port |
 | `rednet.host`, `rednet.lookup` | DNS `SRV` records, or `.local` services |
 | The `repeat` program | Routers |
-| GPS | Unchanged. It needs the physical distance between modems, which only raw modem messages have. |
+| GPS | Stays. It needs the physical distance between modems, which only raw modem messages have. Hosts send their positions every 2 seconds, and computers only listen. |
 
 Rednet can stay in the ROM, running alongside, while programs move over. The two never interpret each other's messages.
 Over radio, rednet always uses the short-range high band, so long-range wireless links need the stack.

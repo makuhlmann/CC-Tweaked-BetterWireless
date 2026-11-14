@@ -65,7 +65,7 @@ local INFINITY, usable, is_broadcast = routing.INFINITY, routing.usable, routing
 -- Datagram ports. Ports from 49152 up are handed out to sockets which don't ask for one.
 local EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST
 
--- Channels: a channel's number is its frequency in units of 100kHz (see `cc.internal.net.bands`). The stack's own
+--- Channels: a channel's number is its frequency in units of 100kHz (see `cc.internal.net.bands`). The stack's own
 -- bands are low (VHF, 136-174MHz, channels 1360-1739), for range, and high (2.4GHz, channels 24000-24834). Each band's
 -- first channel is its broadcast channel, and computers' unicast channels are the rest, by ID. Wired modems use the
 -- high band plan, though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.

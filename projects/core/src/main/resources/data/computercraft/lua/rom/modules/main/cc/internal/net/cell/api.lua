@@ -19,9 +19,9 @@ local files = require "cc.internal.net.files"
 local to_hex, from_hex, read_table = files.hex.encode, files.hex.decode, files.read_table
 
 -- What the net API gives: its network stack, and its ways to load it, to keep errors, to check for crypto and the
--- enclave, to know this computer's key and keys' fingerprints, to connect securely, to check a timeout, and to add an
--- interface. Set by `new`.
-local stack, load, log_error, require_crypto, getIdentity, fingerprint, secure, check_timeout, add_interface
+-- enclave, to know this computer's key and keys' fingerprints, to connect securely, and to check a timeout. Set by
+-- `new`.
+local stack, load, log_error, require_crypto, getIdentity, fingerprint, secure, check_timeout
 
 -- The functions `net.cell` hands its work to, and the ways to start the phone, and the core and cell.
 local api = {}
@@ -120,7 +120,6 @@ end
 -- Phones and cells use a radio modem, each with an interface of its own on cellular bands. An ender modem will do
 -- too: it's a weaker radio, which also reaches cells and phones where its signal appears in other dimensions. A
 -- wireless modem the network stack uses is picked first, and its first by name.
-local RADIO_KINDS = { wireless = true, ender = true }
 local function radio_modem()
     local names = {}
     for name in pairs(stack.interfaces) do names[#names + 1] = name end
@@ -953,7 +952,7 @@ phone and cell back on the air when a modem comes (`restore_interfaces`).
 local function new(context)
     stack, load, log_error, require_crypto = context.stack, context.load, context.log_error, context.require_crypto
     getIdentity, fingerprint, secure = context.getIdentity, context.fingerprint, context.secure
-    check_timeout, add_interface = context.check_timeout, context.add_interface
+    check_timeout = context.check_timeout
     return {
         api = api, start_phone = start_phone, start_cellular = start_cellular, resume = resume,
         restore_interfaces = restore_interfaces,

@@ -53,8 +53,7 @@ describe("The gps library", function()
 
         it("locates a computer", function()
             local computer, modem = gps_receiver(12, 23, 52, function(env)
-                local x, y, z = env.gps.locate()
-                expect({ x, y, z }):same { 12, 23, 52 }
+                expect({ env.gps.locate() }):same { 12, 23, 52, 0 }
             end)
             local computers = gps_hosts(computer, modem, {
                 { 5, 5, 5 },
@@ -109,7 +108,7 @@ describe("The gps library", function()
 
 
                 if
-                    position.n ~= 3 or
+                    position.n ~= 4 or
                     math.abs(position[1] - x) > accuracy or
                     math.abs(position[2] - y) > accuracy or
                     math.abs(position[3] - z) > accuracy
@@ -119,6 +118,31 @@ describe("The gps library", function()
 
                 if i % 1000 == 0 then os.queueEvent("yield") os.pullEvent("yield") end
             end
+        end)
+
+        it("says how far off it may be when it moves while listening", function()
+            -- Hosts send at 0.2, 0.7, 1.2 and 1.7 seconds, while the computer walks along.
+            local starts = { 0.1, 0.35, 0.6, 0.85 }
+            stub(math, "random", function() return table.remove(starts, 1) end)
+            local result
+            local computer, modem = gps_receiver(12, 23, 52, function(env)
+                result = { env.gps.locate() }
+            end)
+            local computers = gps_hosts(computer, modem, {
+                { 5, 5, 5 },
+                { 10, 5, 5 },
+                { 5, 10, 5 },
+                { 5, 5, 10 },
+            })
+
+            fake_computer.run_all(computers, false)
+            for step = 1, 8 do
+                computer.position = vector.new(12 + step, 23, 52)
+                fake_computer.advance_all(computers, 0.25)
+                fake_computer.run_all(computers, false)
+            end
+            expect(result and #result):eq(4)
+            expect(result[4] > 0):describe("The error, " .. tostring(result[4])):eq(true)
         end)
 
         it("fails to locate a computer with insufficient hosts", function()
@@ -132,8 +156,11 @@ describe("The gps library", function()
                 { 5, 10, 5 },
             })
 
+            -- It hears all three, and gives up once its time is up.
             fake_computer.run_all(computers, false)
             fake_computer.advance_all(computers, 2)
+            fake_computer.run_all(computers, false)
+            fake_computer.advance_all(computers, 1)
             fake_computer.run_all(computers, { computer })
         end)
 

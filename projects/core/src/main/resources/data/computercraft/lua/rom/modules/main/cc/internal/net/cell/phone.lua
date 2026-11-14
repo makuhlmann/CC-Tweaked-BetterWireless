@@ -122,7 +122,7 @@ local SILENT_INTERVALS = 3
 -- While attached: how often to listen on every carrier, for other networks and new carriers, and for how long, in
 -- seconds; and how long to keep listening on a carrier our networks were last heard naming.
 local SCAN_PERIOD, SCAN_WINDOW, CARRIER_MEMORY = 60, 5, 300
--- The name of the interface phones use, on their modem.
+--- The name of the interface phones use, on their modem.
 local INTERFACE = "cell.phone"
 
 -- What a network is to us, best first: our own (or one we treat as home), a partner, or one we don't know to carry us.
