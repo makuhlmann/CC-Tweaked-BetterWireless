@@ -211,6 +211,19 @@ describe("The cell program's GUI", function()
                 info.rejected = random(1, 3) == 1 and "Not allowed here, for a reason which goes on and on" or nil
                 phone.refuse = random(1, 4) == 1 and "No service" or nil
                 phone.no_modem = random(1, 4) == 1
+                -- The cells it hears, for the monitor: some on a band, some only carrying messages; and, maybe, the
+                -- strongest, as a phone without a SIM shows it.
+                info.heard = {}
+                for i = 1, random(0, 6) do
+                    info.heard[i] = {
+                        id = random(1, 999), network = pick(NAMES), signal = -random(40, 130) - random(0, 9) / 10,
+                        age = random(0, 30), fresh = random(1, 4) > 1, serving = random(1, 6) == 1,
+                        verified = ({ true, false, nil })[random(1, 3)],
+                        band = random(1, 3) > 1 and pick { "b20", "b3", "b1", "b28", "b31" } or nil,
+                        service = random(1, 4) == 1 and "sms" or nil,
+                    }
+                end
+                info.strongest = random(1, 3) == 1 and (info.heard[1] or { id = 5, network = pick(NAMES), signal = -77 }) or nil
 
                 phone.networks = {}
                 for i = 1, random(0, 12) do
