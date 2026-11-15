@@ -326,6 +326,13 @@ elseif command == nil then
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end
     if info.address then print("Address:  " .. info.address) end
+    -- A router's own network, which its network routes to it.
+    local routed = info.subscriber and info.subscriber.routed
+    if routed then
+        print(("Routes:   %s (%s)"):format(
+            tostring(routed.network), routed.kind == "range" and "a range of the network's addresses" or "a network of its own"
+        ))
+    end
     if info.cell and info.state == "attached" then print("Cell:     #" .. cell_label(info.cell)) end
     if info.rejected then printError(info.rejected) end
     if info.activation_error then printError(info.activation_error) end

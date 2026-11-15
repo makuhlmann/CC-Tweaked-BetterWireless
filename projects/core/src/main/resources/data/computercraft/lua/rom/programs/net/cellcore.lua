@@ -21,6 +21,7 @@ local function usage()
     print(name .. " subscribers")
     print(name .. " remove <id|number>")
     print(name .. " set <id|number> barred|roaming yes|no")
+    print(name .. " set <id|number> range|subnet <network>|none")
     print(name .. " cells")
     print(name .. " allow <computer> [label]")
     print(name .. " deny <computer>")
@@ -327,6 +328,13 @@ function commands.remove(who)
 end
 
 function commands.set(who, what, value)
+    -- A network of the subscriber's own, behind their phone: a range of this network's addresses, or a subnet which
+    -- isn't its own.
+    if who and (what == "range" or what == "subnet") and value then
+        local reply = request({ op = "set", subscriber = who, [what] = value ~= "none" and value or false })
+        for _, line in ipairs(core_menu.routed_lines(reply)) do print(line) end
+        return
+    end
     local values = { yes = true, on = true, ["true"] = true, no = false, off = false, ["false"] = false }
     if not who or (what ~= "barred" and what ~= "roaming") or values[value or ""] == nil then return usage() end
     local reply = request({ op = "set", subscriber = who, [what] = values[value] })

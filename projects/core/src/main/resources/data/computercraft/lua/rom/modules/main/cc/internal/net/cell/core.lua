@@ -95,6 +95,8 @@ local is_id = common.is_id
 local Core = {}
 Core.__index = Core
 
+local routed_of
+
 local to_hex = require "cc.internal.net.files".hex.encode
 
 --[[- Start a cellular core on a network stack.
@@ -293,6 +295,108 @@ function Core:send(tower_id, message)
     if tower then tower.send(message) end
 end
 
+--[[- A subscriber's own network, if they have one.
+
+Most subscribers are a phone, with one address. A subscriber may instead be a router with a network behind it, which
+we route to their phone (which has an address like any other, the router's way to us): a `range` of our own addresses,
+for a small site which needs no addresses of its own; or a `subnet` of theirs, which isn't ours, for a site which has
+its own and bridges it to the rest through us.
+
+@tparam table subscriber The subscriber.
+@treturn number|nil The network's address, or `nil` if they have none (or what's kept isn't one).
+@treturn number|nil Its prefix length.
+@treturn string|nil `"range"` or `"subnet"`.
+]]
+function routed_of(subscriber)
+    local kind = type(subscriber.range) == "string" and "range" or type(subscriber.subnet) == "string" and "subnet"
+    if not kind then return nil end
+    local network, prefix = address.parse(subscriber[kind])
+    if not network or not prefix or prefix < 1 or prefix > 30 then return nil end
+    return address.network(network, prefix), prefix, kind
+end
+
+-- Whether two networks have an address in common.
+local function overlaps(network, prefix, other, other_prefix)
+    return address.contains(network, prefix, other) or address.contains(other, other_prefix, network)
+end
+
+--[[- Give a subscriber a network of their own, or take it away: see [`routed_of`]. Their phone, if it's attached, is
+cut off, and hears of it when it attaches again; and so are phones with addresses in a range which is now theirs.
+
+@tparam string sim The subscriber's SIM key, as hexadecimal digits.
+@tparam string|nil kind `"range"` (of our addresses) or `"subnet"` (of their own), or `nil` for neither.
+@tparam[opt] string text The network, such as `"10.64.5.0/28"`.
+@treturn[1] string|boolean The network, as it's kept: or `true`, if they now have none.
+@treturn[2] nil If they can't have it.
+@treturn[2] string Why not.
+]]
+function Core:set_network(sim, kind, text)
+    local subscriber = self.subscribers[sim]
+    if not subscriber then return nil, "There's no such subscriber" end
+    local kept
+    if kind ~= nil then
+        local given, prefix = address.parse(text)
+        if kind ~= "range" and kind ~= "subnet" then return nil, "Expected a range or a subnet" end
+        if not given or not prefix then return nil, "Expected a network, such as 10.64.5.0/28" end
+        if prefix > 30 then return nil, "A network needs room for two computers at least: /30 or bigger" end
+        local network = address.network(given, prefix)
+        if kind == "range" then
+            if prefix <= self.prefix or not address.contains(self.network_address, self.prefix, network) then
+                return nil, ("A range is part of this network's own addresses, %s/%d"):format(
+                    address.format(self.network_address), self.prefix
+                )
+            end
+            if address.contains(network, prefix, self.network_address + 1) then
+                return nil, "That range has the gateway's own address in it"
+            end
+        else
+            if prefix < 8 or address.contains(0, 8, network) or not address.check_host(network + 1, prefix)
+                or address.is_link_local(network) then
+                return nil, "That isn't a network computers can have addresses in"
+            end
+            if overlaps(network, prefix, self.network_address, self.prefix) then
+                return nil, "That's part of this network's own addresses: give the subscriber a range of them instead"
+            end
+        end
+        for other_sim, other in pairs(self.subscribers) do
+            local other_network, other_prefix = routed_of(other)
+            if other_sim ~= sim and other_network and overlaps(network, prefix, other_network, other_prefix) then
+                return nil, ("%s has %s already"):format(tostring(other.id), other.range or other.subnet)
+            end
+        end
+        kept = ("%s/%d"):format(address.format(network), prefix)
+        -- Phones with addresses in a range which is now this subscriber's get others when they attach again.
+        if kind == "range" then
+            for other_sim, session in pairs(self.sessions) do
+                if other_sim ~= sim and address.contains(network, prefix, session.address) then self:detach(other_sim) end
+            end
+        end
+    end
+    subscriber.range, subscriber.subnet = kind == "range" and kept or nil, kind == "subnet" and kept or nil
+    -- The subscriber's phone hears of its network as it attaches.
+    self:detach(sim)
+    self:update_routes()
+    return kept or true
+end
+
+--[[- Route each subscriber's own network to their phone, while it's attached: see [`routed_of`]. What a phone may
+send from is kept with its session.
+]]
+function Core:update_routes()
+    self.stack:remove_routes(function(route) return route.source == "subscriber" and route.interface == "cellular" end)
+    for sim, session in pairs(self.sessions) do
+        local subscriber = self.subscribers[sim]
+        local network, prefix
+        if session.teid and subscriber and not subscriber.barred then network, prefix = routed_of(subscriber) end
+        session.routed = network and { network, prefix } or nil
+        if network then
+            self.stack:add_route {
+                network = network, prefix = prefix, gateway = session.address, interface = "cellular", source = "subscriber",
+            }
+        end
+    end
+end
+
 --[[- Remove a subscriber. If their phone is attached, its cell forgets it, and it's refused when it tries again.
 
 @tparam string sim The subscriber's SIM key, as hexadecimal digits.
@@ -339,6 +443,7 @@ function Core:detach(sim)
     self.by_address[session.address] = nil
     self.sessions[sim] = nil
     self:update_paths()
+    if session.routed then self:update_routes() end
 end
 
 --- Stop the core: phones lose service, and the gateway's interface and port are freed, so it can be started again.
@@ -355,6 +460,7 @@ function Core:stop()
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
     self.stack:udp_close(self.roam_socket)
+    self.stack:remove_routes(function(route) return route.source == "subscriber" and route.interface == "cellular" end)
     self.stack:remove_interface("cellular")
     self.towers, self.sessions, self.by_teid, self.by_address, self.pending = {}, {}, {}, {}, {}
     self.activating, self.activating_count, self.activating_order = {}, 0, {}
@@ -365,6 +471,12 @@ function Core:session_for(sim)
     local session = self.sessions[sim]
     if session then return session end
 
+    -- The ranges of our addresses which are subscribers' own: no phone gets an address in one.
+    local ranges = {}
+    for _, subscriber in pairs(self.subscribers) do
+        local network, prefix, kind = routed_of(subscriber)
+        if kind == "range" then ranges[#ranges + 1] = { network, prefix } end
+    end
     -- Hosts 2 and up: 1 is the gateway.
     local host_count = 2 ^ (32 - self.prefix) - 2
     local addr
@@ -372,7 +484,9 @@ function Core:session_for(sim)
         local host = self.next_host
         self.next_host = host >= host_count and 2 or host + 1
         local candidate = self.network_address + host
-        if not self.by_address[candidate] then
+        local taken = self.by_address[candidate] ~= nil
+        for _, range in ipairs(ranges) do taken = taken or address.contains(range[1], range[2], candidate) end
+        if not taken then
             addr = candidate
             break
         end
@@ -903,9 +1017,12 @@ function Core:attach(tower, phone, message, visited_cell)
 
     -- Tell the phone which other networks it may use, and the keys their cells are certified with. Only the phone
     -- can read this, and only we could have written it.
+    -- And its own network, if it's a router with one behind it, which we route to it.
+    local network, prefix, kind = routed_of(subscriber)
     local reply = handshake:write(codec.encode({
         v = common.VERSION, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
         numbers = self.number_prefix,
+        routed = network and { kind = kind, network = ("%s/%d"):format(address.format(network), prefix) } or nil,
     }))
     if not reply then return end
     local _, receive = handshake:split()
@@ -955,6 +1072,7 @@ function Core:attach_complete(tower, phone, data)
         key = common.cell_key(self.crypto, session.secret, pending.cell or tower.id),
     })
     self:update_paths()
+    self:update_routes()
     self.on_event("attached", pending.sim, address.format(session.address), pending.cell or tower.id, tower.partner)
 
     -- Anything waiting for this phone can go now.
@@ -1050,8 +1168,11 @@ function Core:uplink(data, from)
         return
     end
     local packet = session.cell == tower.id and codec.decode(inner.packet)
-    -- A phone may only send from its own address.
-    if type(packet) == "table" and packet.src == session.address then self.stack:inject("cellular", packet) end
+    -- A phone may only send from its own address: or, if it's a router, from the network behind it.
+    if type(packet) == "table" and (packet.src == session.address or (session.routed and type(packet.src) == "number"
+        and packet.src % 1 == 0 and address.contains(session.routed[1], session.routed[2], packet.src))) then
+        self.stack:inject("cellular", packet)
+    end
 end
 
 --[[- Carry another network's phones: add its core, which we have connected to. To that core, we're one big cell (see

@@ -149,7 +149,8 @@ function Rip:routes_for(interface)
         if usable(other) and routable(other.network, other.prefix) then add(other.network, other.prefix, 0) end
     end
     for _, route in ipairs(self.stack.routes) do
-        if route.source == "rip" or route.source == "static" then
+        -- (And the networks a cellular core routes to its subscribers' phones: remote sites, reached through it.)
+        if route.source == "rip" or route.source == "static" or route.source == "subscriber" then
             local metric = route.metric
             -- Never advertise a route back over the link it goes through: the router there would send traffic straight
             -- back to us.

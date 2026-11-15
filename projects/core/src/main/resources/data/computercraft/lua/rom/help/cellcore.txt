@@ -11,6 +11,8 @@ ex:
 "cellcore add ACME-0042 0042" makes an activation code for a subscriber with the number 0042, for a day.
 "cellcore subscribers" lists the subscribers, and where their phones are.
 "cellcore remove ACME-0042" removes a subscriber.
+"cellcore set ACME-0042 range 10.64.5.0/28" makes a subscriber a router, for a small remote site: besides its phone's own address, that range of the network's addresses is sent to its phone. On the router, give an interface an address in the range ("ifconfig"), turn forwarding on, and hand the rest out to the computers behind it ("dhcpd"). The range is part of the network's addresses, not the part with the gateway's own in it, and nobody else's; no phone is given an address in it.
+"cellcore set ACME-0042 subnet 192.168.5.0/24" makes a subscriber a site with a network of its own behind its phone, which isn't one of this network's: the core sends that network to the phone, and tells routers which listen to it (RIP) that it's reached through the core. This bridges bigger networks, and gives a site a second way in. "cellcore set ACME-0042 range none" (or "subnet none") makes the subscriber a phone again, with one address. Changing any of this cuts the phone off for a moment: it attaches again, and "cell" on it shows what it routes.
 "cellcore set ACME-0042 barred yes" cuts a subscriber's phone off, and refuses it, without removing them. "cellcore set ACME-0042 roaming no" keeps them to this network's own cells.
 "cellcore cells" lists the cells, and the computers allowed in or refused.
 "cellcore allow 7" allows computer 7, which is waiting, after checking its fingerprint.

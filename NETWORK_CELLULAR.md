@@ -506,6 +506,21 @@ the design above:
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **Subscribers with a network of their own.** A subscriber is a phone, with one address, unless the core is told
+  otherwise (`cellcore set <id> range|subnet <network>|none`, or Type in its menu):
+  - **A router, with a range**: part of the core's own addresses (`10.64.5.0/28` of `10.64.0.0/16`, say), for a small
+    remote site which needs none of its own. The rest of the network already sends the core's addresses to the core,
+    so nothing else changes. No phone is given an address in a range, and those which had one get another.
+  - **A site, with a subnet**: a network which isn't the core's (`192.168.5.0/24`), for a site with addresses of its
+    own, bridged to the rest through the core, or given a second way in. Other routers need a route to it through
+    the core: the core's RIP tells them, as it does its fixed routes.
+  - **Either way** the phone has an address like any other, and while it's attached the core routes the network to
+    that address (a route on its gateway interface, more specific than its own network's), wherever the phone is,
+    roaming included. The phone may then send from addresses in its network as well as its own; anything else from
+    it is still dropped. It's told what it has as it attaches (in the core's sealed answer, so through any cell), and
+    `cell` shows it: using it is its user's business (an interface with an address in it, and forwarding on). A range
+    mustn't have the gateway's address in it, a subnet mustn't overlap the core's addresses, and no two subscribers'
+    networks overlap. Changing a subscriber's kind cuts their phone off, so it attaches again as what it now is.
 - **Menus.** `celld` and `cellcore`, run with nothing asked of them, open a menu (`celld status` and `cellcore
   status` say what they used to): how the cell or the network is doing, kept up to date, and everything the commands
   can change, to look through and change where it's shown. A cell's has its status, cores and settings; a core's its

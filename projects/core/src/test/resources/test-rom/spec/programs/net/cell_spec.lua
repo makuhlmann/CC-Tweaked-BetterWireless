@@ -271,10 +271,15 @@ describe("The cell program", function()
                 { "pinCell", 12 }, { "pinCell", 18075 * 2 ^ 31 + 12 }, { "pinCell", "none" },
             }
 
-            -- What it was told is in what it says about itself.
+            -- What it was told is in what it says about itself: and, for a router, the network behind it.
             phone.info.bands, phone.info.pinned = { "b20", "b3" }, 12
+            phone.info.address = "10.64.0.9"
+            phone.info.subscriber = { id = "ACME-7", number = "107", routed = { kind = "range", network = "10.64.5.0/28" } }
             local output = capture("/rom/programs/net/cell.lua").output
             expect(output):str_match("\nOnly uses the bands b20, b3\nPinned to cell #12\n")
+            expect(output):str_match("\nAddress:  10%.64%.0%.9\nRoutes:   10%.64%.5%.0/28 %(a range of the network's addresses%)\n")
+            phone.info.subscriber.routed = { kind = "subnet", network = "192.168.5.0/24" }
+            expect(capture("/rom/programs/net/cell.lua").output):str_match("\nRoutes:   192%.168%.5%.0/24 %(a network of its own%)\n")
         end)
 
         it("turns cell service off and on", function()

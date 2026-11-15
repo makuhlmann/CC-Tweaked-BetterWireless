@@ -528,6 +528,56 @@ describe("Cellular services", function()
             expect(read_table(fs.combine(DIR, "codes"))):same {}
         end)
 
+        it("gives subscribers a network of their own, and takes it away", function()
+            local one, two = new_key(), new_key()
+            local env = setup({ subscribers = { [one] = { id = "ACME-1", number = "1" }, [two] = { id = "ACME-2", number = "2" } } })
+            run(env.net, { env.service }, { function()
+                local admin = env.admin()
+                -- A range of the network's addresses: kept as the network it is.
+                expect(ask(admin, { op = "set", subscriber = "ACME-1", range = "10.64.5.9/28" })):same {
+                    id = "ACME-1", number = "1", barred = false, roaming = true, range = "10.64.5.0/28",
+                }
+                expect(read_table(fs.combine(DIR, "subscribers"))[one]):same { id = "ACME-1", number = "1", range = "10.64.5.0/28" }
+                local listed = ask(admin, { op = "status" }).subscribers
+                expect({ listed[1].range, listed[1].subnet, listed[2].range, listed[2].subnet }):same { "10.64.5.0/28" }
+                -- Or a subnet which isn't the network's, in its place.
+                expect(ask(admin, { op = "set", subscriber = "1", subnet = "192.168.5.0/24" })):same {
+                    id = "ACME-1", number = "1", barred = false, roaming = true, subnet = "192.168.5.0/24",
+                }
+                expect(read_table(fs.combine(DIR, "subscribers"))[one]):same { id = "ACME-1", number = "1", subnet = "192.168.5.0/24" }
+
+                -- What they can't have changes nothing, and the core says why.
+                for _, case in ipairs {
+                    { { range = "192.168.9.0/24" }, "A range is part of this network's own addresses, 10.64.0.0/16" },
+                    { { subnet = "10.64.9.0/24" }, "That's part of this network's own addresses: give the subscriber a range of them instead" },
+                    { { subnet = "192.168.5.128/25" }, "ACME-1 has 192.168.5.0/24 already" },
+                    { { range = "somewhere" }, "Expected a network, such as 10.64.5.0/28" },
+                    { { range = 28 }, "Expected range to be a network, such as 10.64.5.0/28, or false" },
+                    { { subnet = true }, "Expected subnet to be a network, such as 10.64.5.0/28, or false" },
+                    { { range = "10.64.6.0/28", subnet = "192.168.6.0/24" }, "A subscriber has a range or a subnet, not both" },
+                } do
+                    local request = { op = "set", subscriber = "ACME-2", barred = true }
+                    for k, v in pairs(case[1]) do request[k] = v end
+                    expect(ask(admin, request)):describe(case[2]):same { error = case[2] }
+                end
+                expect(ask(admin, { op = "set", subscriber = "ACME-9", range = "10.64.6.0/28" })):same { error = "There's no subscriber ACME-9" }
+                expect(read_table(fs.combine(DIR, "subscribers"))[two]):same { id = "ACME-2", number = "2" }
+
+                -- Taking away the kind they haven't leaves the one they have; taking away theirs leaves a phone.
+                expect(ask(admin, { op = "set", subscriber = "ACME-1", range = false }).subnet):eq("192.168.5.0/24")
+                expect(ask(admin, { op = "set", subscriber = "ACME-1", subnet = false })):same {
+                    id = "ACME-1", number = "1", barred = false, roaming = true,
+                }
+                expect(read_table(fs.combine(DIR, "subscribers"))[one]):same { id = "ACME-1", number = "1" }
+                admin:close()
+            end, })
+            local said = {}
+            for _, line in ipairs(env.service.lines) do said[#said + 1] = line.text end
+            expect(table.concat(said, "\n")):str_match("ACME%-1: has the range 10%.64%.5%.0/28")
+            expect(table.concat(said, "\n")):str_match("1: has the subnet 192%.168%.5%.0/24")
+            expect(table.concat(said, "\n")):str_match("ACME%-1: has no network of their own")
+        end)
+
         it("bars subscribers, and keeps them from roaming", function()
             local sim = new_key()
             local env = setup({ subscribers = { [sim] = { id = "ACME-1", number = "1" } } })

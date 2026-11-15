@@ -754,6 +754,13 @@ function from_cell.attaching.attach_reply(self, here, message)
     if type(info) ~= "table" then return end
     if common.is_newer(info.v) then self.newer_heard = self.stack.clock() end
     self.subscriber = { id = info.id, number = info.number }
+    -- A network of our own, behind this computer, which our network routes to us: a range of its addresses, or a
+    -- subnet which isn't its own. It's for whoever set this computer up as a router to use: we only say what it is.
+    local routed = info.routed
+    if type(routed) == "table" and (routed.kind == "range" or routed.kind == "subnet") and type(routed.network) == "string"
+        and #routed.network <= 18 and routed.network:find("^%d+%.%d+%.%d+%.%d+/%d+$") then
+        self.subscriber.routed = { kind = routed.kind, network = routed.network }
+    end
     -- Other networks' phones reach ours at our network's number prefix followed by our number.
     if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
         self.subscriber.full = info.numbers .. info.number

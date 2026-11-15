@@ -159,7 +159,33 @@ local function where_is(subscriber)
         )
     end
     if subscriber.may_roam == false then where = where .. " (no roaming)" end
+    -- A router, with a network behind it.
+    if subscriber.range or subscriber.subnet then where = where .. ", routes " .. (subscriber.range or subscriber.subnet) end
     return where
+end
+
+--[[- What kind of subscriber someone is, and what that means, in words: a phone; a router with a range of the
+network's addresses behind it; or a site with a subnet of its own.
+
+@tparam table subscriber The subscriber, as the core's status has them (or as it answers when one is changed).
+@treturn { string... } Each line to say.
+]]
+local function routed_lines(subscriber)
+    local id = tostring(subscriber.id)
+    if subscriber.range then
+        return {
+            ("%s is a router, with the range %s of this network's addresses behind it."):format(id, subscriber.range),
+            "The core sends that range to its phone, which has an address of its own besides. On the router, give an "
+                .. "interface an address in the range, and turn forwarding on: computers behind it use the rest.",
+        }
+    elseif subscriber.subnet then
+        return {
+            ("%s is a site, with its own network %s behind it."):format(id, subscriber.subnet),
+            "The core sends that network to its phone, and tells routers which listen to it (RIP) where it is: others "
+                .. "need a route to it through the core. On the site's router, turn forwarding on.",
+        }
+    end
+    return { ("%s is a phone: it has one address, and nothing behind it."):format(id) }
 end
 
 --[[- Set this computer up as a network's core, and start it: afresh, if it was one already.
@@ -551,6 +577,58 @@ local function run(options)
         ))
     end
 
+    -- What kind of subscriber someone is: a phone, a router with a range of our addresses, or a site with its own.
+    local function type_screen(id, subscriber)
+        local function network_for(kind, title, note)
+            menu.input_screen {
+                title = title, label = "Network:", max = 18, value = subscriber[kind] or "", note = note,
+                check = function(text)
+                    if text == "" then return "Enter a network, such as 10.64.5.0/28." end
+                    local reply, err = request({ op = "set", subscriber = id, [kind] = text })
+                    if not reply then return tostring(err) end
+                    say(table.concat(routed_lines(reply), " "))
+                    return nil
+                end,
+            }
+        end
+        menu.list_screen {
+            title = title_of("Type of " .. tostring(id)),
+            items = function()
+                local function now(is) return is and { { "now", colours.lightGrey } } or nil end
+                return {
+                    { text = "Phone: one address", id = "phone", tail = now(not subscriber.range and not subscriber.subnet) },
+                    { text = "Router: a range of our addresses...", id = "range", tail = now(subscriber.range ~= nil) },
+                    { text = "Site: a network of its own...", id = "subnet", tail = now(subscriber.subnet ~= nil) },
+                }
+            end,
+            choose = function(item)
+                if item.id == "phone" then
+                    if subscriber.range or subscriber.subnet then
+                        ask({ op = "set", subscriber = id, [subscriber.range and "range" or "subnet"] = false }, function(reply)
+                            return table.concat(routed_lines(reply), " ")
+                        end)
+                    end
+                elseif item.id == "range" then
+                    network_for("range", "Range for " .. tostring(id),
+                        ("Part of this network's addresses (%s), such as a /28 of them, which the core sends to the "
+                            .. "subscriber's phone: for a small site, whose router hands them out behind it."):format(
+                            status and status.prefix or "its prefix"
+                        ))
+                else
+                    network_for("subnet", "Network of " .. tostring(id),
+                        "A network which isn't this network's own, such as 192.168.5.0/24, which the core sends to the "
+                            .. "subscriber's phone: for a site with addresses of its own, bridged to the rest through here.")
+                end
+                refresh(true)
+                return "back"
+            end,
+            note = function()
+                return "Changing this cuts the subscriber's phone off for a moment: it attaches again, and hears what it is."
+            end,
+            hint = { "Enter: choose", "Q: back" },
+        }
+    end
+
     local function subscriber_screen(id)
         local function find()
             for _, each in ipairs(refresh() and status.subscribers or {}) do
@@ -568,6 +646,13 @@ local function run(options)
                 })
                 if subscriber.fingerprint then text_items(items, { "SIM: " .. subscriber.fingerprint }) end
                 items[#items + 1] = {
+                    text = "Type", id = "type",
+                    tail = { {
+                        subscriber.range and "router, " .. subscriber.range or subscriber.subnet and "site, " .. subscriber.subnet
+                            or "phone", colours.lightGrey,
+                    }, },
+                }
+                items[#items + 1] = {
                     text = "Barred", tail = { { subscriber.barred and "yes" or "no", colours.lightGrey } }, id = "barred",
                     value = not subscriber.barred,
                 }
@@ -579,7 +664,9 @@ local function run(options)
                 return items
             end,
             choose = function(item)
-                if item.id == "barred" then
+                if item.id == "type" then
+                    type_screen(id, find() or {})
+                elseif item.id == "barred" then
                     ask({ op = "set", subscriber = id, barred = item.value }, function(reply)
                         return reply.barred and ("%s is barred: their phone is cut off, and refused."):format(tostring(reply.id))
                             or ("%s is no longer barred."):format(tostring(reply.id))
@@ -1038,6 +1125,7 @@ return {
     network_lines = network_lines,
     status_lines = status_lines,
     where_is = where_is,
+    routed_lines = routed_lines,
     setup = setup,
     run = run,
 }

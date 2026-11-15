@@ -603,10 +603,23 @@ describe("The menus of celld and cellcore", function()
             end
             function answers.set(message)
                 local subscriber = find(status.subscribers, "id", message.subscriber)
+                    or find(status.subscribers, "number", message.subscriber)
                 if not subscriber then return nil, "There's no subscriber called " .. tostring(message.subscriber) end
                 if message.barred ~= nil then subscriber.barred = message.barred or nil end
                 if message.roaming ~= nil then subscriber.may_roam = message.roaming end
-                return { id = subscriber.id, barred = subscriber.barred == true, roaming = subscriber.may_roam }
+                for _, kind in ipairs { "range", "subnet" } do
+                    if message[kind] then
+                        if not message[kind]:match("^%d+%.%d+%.%d+%.%d+/%d+$") then return nil, "Expected a network, such as 10.64.5.0/28" end
+                        subscriber.range, subscriber.subnet = nil, nil
+                        subscriber[kind] = message[kind]
+                    elseif message[kind] == false then
+                        subscriber[kind] = nil
+                    end
+                end
+                return {
+                    id = subscriber.id, barred = subscriber.barred == true, roaming = subscriber.may_roam,
+                    range = subscriber.range, subnet = subscriber.subnet,
+                }
             end
             function answers.network(message)
                 local network, i = find(status.networks, "network", message.network)
@@ -841,6 +854,78 @@ describe("The menus of celld and cellcore", function()
                     expect(app.line(1)):str_match("^Subscribers")
                     expect(select(2, app.find("ACME-2"))):eq("Removed ACME-2.")
                 end)
+            end)
+        end)
+
+        it("makes a subscriber a router with a range, a site with a subnet, or a phone again", function()
+            local core = fake_core()
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Subscribers")
+                    app.choose("ACME-2")
+                    expect(select(2, app.find("Type"))):str_match("^Type +phone$")
+                    app.choose("Type")
+                    expect(app.line(1)):str_match("^Type of ACME%-2")
+                    expect(app.chosen()):str_match("^Phone: one address +now$")
+
+                    app.choose("Router: a range of our addresses")
+                    expect(app.line(1)):eq("Range for ACME-2")
+                    expect(app.says("Part of this network's addresses (10.64.0.0/16)")):eq(true)
+                    app.enter("")
+                    expect(app.says("Enter a network, such as 10.64.5.0/28.")):eq(true)
+                    -- The core says what won't do.
+                    app.enter("somewhere")
+                    expect(app.says("Expected a network, such as 10.64.5.0/28")):eq(true)
+                    app.enter("10.64.5.0/28")
+                    expect(core.asked):same {
+                        { op = "set", subscriber = "ACME-2", range = "somewhere" }, { op = "set", subscriber = "ACME-2", range = "10.64.5.0/28" },
+                    }
+                    expect(app.line(1)):str_match("^ACME%-2")
+                    expect(app.chosen()):str_match("^Type +router, 10.64.5.0/28$")
+                    expect(app.says("ACME-2 is a router, with the range 10.64.5.0/28 of this network's addresses behind it.")):eq(true)
+                    app.type("q")
+                    expect(select(2, app.find("ACME-2"))):str_match("^ACME%-2  101 +%-, routes 10.64.5.0/28$")
+
+                    -- Its own network instead: what it had is there to change.
+                    app.choose("ACME-2")
+                    app.choose("Type")
+                    expect(select(2, app.find("Router"))):str_match("now$")
+                    app.choose("Site: a network of its own")
+                    app.enter("192.168.5.0/24")
+                    expect(core.asked[3]):same { op = "set", subscriber = "ACME-2", subnet = "192.168.5.0/24" }
+                    expect(app.chosen()):str_match("^Type +site, 192.168.5.0/24$")
+                    expect(app.says("ACME-2 is a site, with its own network 192.168.5.0/24 behind it.")):eq(true)
+                    app.choose("Type")
+                    app.choose("Site: a network of its own")
+                    expect(app.line(3)):eq("Network: 192.168.5.0/24")
+                    app.key(keys.tab)
+
+                    -- And a phone again.
+                    app.choose("Type")
+                    app.choose("Phone: one address")
+                    expect(core.asked[4]):same { op = "set", subscriber = "ACME-2", subnet = false }
+                    expect(app.chosen()):str_match("^Type +phone$")
+                    expect(app.says("ACME-2 is a phone: it has one address, and nothing behind it.")):eq(true)
+                    -- Which, as it's one already, asks nothing of the core.
+                    app.choose("Type")
+                    app.choose("Phone: one address")
+                    expect(#core.asked):eq(4)
+                end)
+            end)
+
+            -- From the shell too.
+            core = fake_core()
+            configured(true, function()
+                expect(capture("cellcore", "set", "ACME-2", "range", "10.64.5.0/28").output)
+                    :str_match("^ACME%-2 is a router, with the range 10%.64%.5%.0/28 of this network's addresses behind it%.\n")
+                expect(capture("cellcore", "set", "101", "subnet", "192.168.5.0/24").output)
+                    :str_match("^ACME%-2 is a site, with its own network 192%.168%.5%.0/24 behind it%.\n")
+                expect(capture("cellcore", "set", "ACME-2", "subnet", "none").output)
+                    :eq("ACME-2 is a phone: it has one address, and nothing behind it.\n")
+                expect(core.asked):same {
+                    { op = "set", subscriber = "ACME-2", range = "10.64.5.0/28" }, { op = "set", subscriber = "101", subnet = "192.168.5.0/24" },
+                    { op = "set", subscriber = "ACME-2", subnet = false },
+                }
             end)
         end)
 

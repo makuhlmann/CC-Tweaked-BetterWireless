@@ -546,17 +546,24 @@ function Manager:remove(subscriber)
     return self:request({ op = "remove", subscriber = subscriber })
 end
 
---- Change a subscriber: bar them (their phone is cut off, and refused), or say whether they may roam.
+--- Change a subscriber: bar them (their phone is cut off, and refused), say whether they may roam, or give them a
+-- network of their own behind their phone, which the core routes to it.
 --
 -- @tparam string subscriber Their ID or number.
--- @tparam { barred? = boolean, roaming? = boolean } changes What to change.
--- @treturn[1] table The subscriber's `id` and `number`, and whether they're `barred` and may use `roaming`.
+-- @tparam { barred? = boolean, roaming? = boolean, range? = string|boolean, subnet? = string|boolean } changes What to
+-- change. `range` is part of the network's own addresses (such as `"10.64.5.0/28"`), and `subnet` a network which
+-- isn't the network's own (such as `"192.168.5.0/24"`): `false` takes it away. A subscriber has one or the other.
+-- @treturn[1] table The subscriber's `id` and `number`, whether they're `barred` and may use `roaming`, and their
+-- `range` or `subnet`, if they have one.
 -- @treturn[2] nil If it couldn't be done.
 -- @treturn[2] string Why not.
 function Manager:set(subscriber, changes)
     expect(1, subscriber, "string")
     expect(2, changes, "table")
-    return self:request({ op = "set", subscriber = subscriber, barred = changes.barred, roaming = changes.roaming })
+    return self:request({
+        op = "set", subscriber = subscriber, barred = changes.barred, roaming = changes.roaming,
+        range = changes.range, subnet = changes.subnet,
+    })
 end
 
 --- Allow a computer in: a cell, another network's core (to carry this network's phones, or to exchange messages with

@@ -1071,6 +1071,8 @@ function requests.status(self)
             address = session and session.address, cell = attached and session.cell or nil,
             roaming = attached and session.roaming or nil, barred = subscriber.barred or nil,
             may_roam = subscriber.roaming ~= false,
+            range = type(subscriber.range) == "string" and subscriber.range or nil,
+            subnet = type(subscriber.subnet) == "string" and subscriber.subnet or nil,
         }
     end
     table.sort(result.subscribers, function(a, b) return tostring(a.id) < tostring(b.id) end)
@@ -1414,10 +1416,34 @@ function requests.remove(self, request, by)
     return { removed = removed, codes = codes }
 end
 
---- Change a subscriber, found by ID or number: whether they're barred, and whether they may roam.
+--- Change a subscriber, found by ID or number: whether they're barred, whether they may roam, and whether they have a
+-- network of their own behind their phone: a `range` of this network's addresses, or a `subnet` which isn't its own.
 function requests.set(self, request, by)
     local who = request.subscriber
     if type(who) ~= "string" then return { error = "Expected a subscriber's ID or number" } end
+    for _, kind in ipairs { "range", "subnet" } do
+        if request[kind] ~= nil and request[kind] ~= false and type(request[kind]) ~= "string" then
+            return { error = ("Expected %s to be a network, such as 10.64.5.0/28, or false"):format(kind) }
+        end
+    end
+    if request.range and request.subnet then return { error = "A subscriber has a range or a subnet, not both" } end
+    -- Their network is checked before anything changes: it may not be one they can have.
+    local kind = request.range and "range" or request.subnet and "subnet" or nil
+    local unset = not kind and (request.range == false or request.subnet == false)
+    if kind or unset then
+        local count, sim = 0, nil
+        for key, subscriber in pairs(self.subscribers) do
+            if subscriber.id == who or subscriber.number == who then count, sim = count + 1, key end
+        end
+        if count == 0 then return { error = "There's no subscriber " .. who } end
+        if count > 1 then return { error = ("More than one subscriber is called %s"):format(who) } end
+        -- Taking away one kind leaves the other, if that's what they have.
+        local subscriber = self.subscribers[sim]
+        if kind or (request.range == false and subscriber.range) or (request.subnet == false and subscriber.subnet) then
+            local ok, err = self.core:set_network(sim, kind, kind and request[kind])
+            if not ok then return { error = err } end
+        end
+    end
     if request.barred ~= nil and type(request.barred) ~= "boolean" then return { error = "Expected barred to be true or false" } end
     if request.roaming ~= nil and type(request.roaming) ~= "boolean" then return { error = "Expected roaming to be true or false" } end
 
@@ -1447,8 +1473,13 @@ function requests.set(self, request, by)
     local changes = {}
     if request.barred ~= nil then changes[#changes + 1] = request.barred and "barred" or "no longer barred" end
     if request.roaming ~= nil then changes[#changes + 1] = request.roaming and "may roam" or "may not roam" end
+    if kind then changes[#changes + 1] = ("has the %s %s"):format(kind, tostring(found[kind])) end
+    if unset then changes[#changes + 1] = "has no network of their own" end
     if #changes > 0 then self:log(("%s: %s%s"):format(who, table.concat(changes, ", "), self:by(by))) end
-    return { id = found.id, number = found.number, barred = found.barred == true, roaming = found.roaming ~= false }
+    return {
+        id = found.id, number = found.number, barred = found.barred == true, roaming = found.roaming ~= false,
+        range = found.range, subnet = found.subnet,
+    }
 end
 
 --- Stop the core, until it's started again on its own computer.
