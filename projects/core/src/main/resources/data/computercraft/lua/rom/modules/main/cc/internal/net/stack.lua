@@ -142,6 +142,8 @@ local function new(options)
         -- Interfaces by modem and name, and by modem and the channels they listen on.
         by_modem = {},
         listening = {},
+        -- The IDs interfaces send as, other than the computer's own, and how many interfaces use each.
+        own_ids = {},
         protocols = {},
         error_handlers = {},
         address_lost = {},
@@ -186,11 +188,12 @@ uplink and listen on the downlink.
 @tparam string kind `"wired"`, `"wireless"` or `"ender"`.
 @tparam string|{
     band = string, listen = { number... }, broadcast? = number, reply = number,
-    to = function(id:number):number|nil, unicast? = number,
+    to = function(id:number):number|nil, unicast? = number, id? = number,
 } plan `"low"` or `"high"` for one of the stack's own bands (wired modems always use the high band's). Or a plan: the
 band's name, for people to read; the channels to listen on; the channel broadcasts go on, if any; the channel to ask
-for replies on; a function which gives the channel to send to a computer on (or `nil` if it can't be reached); and,
-if the interface has one, its own unicast channel, to show.
+for replies on; a function which gives the channel to send to a computer on (or `nil` if it can't be reached);
+if the interface has one, its own unicast channel, to show; and an ID of the interface's own, if its frames aren't
+from and to the computer's (a computer's further cells each have one).
 @treturn table The interface. The stack opens its channels on the modem, through the `open` option it was made with.
 ]]
 function Stack:add_interface(name, modem, kind, plan)
@@ -205,7 +208,7 @@ function Stack:add_interface(name, modem, kind, plan)
     end
 
     local interface = {
-        name = name, modem = modem, kind = kind, band = plan.band,
+        name = name, modem = modem, kind = kind, band = plan.band, id = plan.id,
         unicast = plan.unicast, broadcast = plan.broadcast, reply = plan.reply, to = plan.to, listen = {},
         neighbours = {}, waiting = {}, neighbour_count = 0, waiting_count = 0,
         stats = { frames_in = 0, frames_out = 0, dropped = 0 },
@@ -213,8 +216,17 @@ function Stack:add_interface(name, modem, kind, plan)
     self.interfaces[name] = interface
     self.by_modem[modem] = self.by_modem[modem] or {}
     self.by_modem[modem][name] = interface
+    if interface.id then self.own_ids[interface.id] = (self.own_ids[interface.id] or 0) + 1 end
     self:set_listening(name, plan.listen)
     return interface
+end
+
+-- An interface has gone: its own ID, if it had one, is no longer ours.
+local function release_id(self, interface)
+    local id = interface.id
+    if not id then return end
+    local count = (self.own_ids[id] or 1) - 1
+    self.own_ids[id] = count > 0 and count or nil
 end
 
 --[[- Change the channels an interface listens on, opening and closing them on its modem as needed.
@@ -300,6 +312,7 @@ function Stack:remove_interface(name)
     if not interface then return end
     if interface.modem then self:set_listening(name, {}) end
     self.interfaces[name] = nil
+    release_id(self, interface)
     if interface.modem and self.by_modem[interface.modem] then self.by_modem[interface.modem][name] = nil end
     if interface.address then self:lose_address(interface.address) end
 end
@@ -381,6 +394,7 @@ function Stack:remove_modem(modem)
     local removed = {}
     for _, interface in pairs(self.by_modem[modem] or {}) do
         self.interfaces[interface.name] = nil
+        release_id(self, interface)
         removed[#removed + 1] = interface.name
         if interface.address then self:lose_address(interface.address) end
     end
@@ -441,17 +455,18 @@ function Stack:transmit(interface, id, kind, body, forwarded)
         interface.stats.dropped = interface.stats.dropped + 1
         return
     end
-    local frame = { net = VERSION, src = self.id, dst = id, type = kind, body = body, fwd = forwarded or nil }
+    local src = interface.id or self.id
+    local frame = { net = VERSION, src = src, dst = id, type = kind, body = body, fwd = forwarded or nil }
     if self:capturing() then self.wake("net_frame", "out", interface.name, frame) end
 
     -- On an encrypted link, everything but who it's from and to is sealed, except frames which protect themselves.
     if interface.link and not self.unsealed[kind] then
-        local sealed = link.seal(interface.link, self.id, id, kind, body, forwarded)
+        local sealed = link.seal(interface.link, src, id, kind, body, forwarded)
         if not sealed then
             interface.stats.dropped = interface.stats.dropped + 1
             return
         end
-        frame = { net = VERSION, src = self.id, dst = id, type = "sealed", body = sealed }
+        frame = { net = VERSION, src = src, dst = id, type = "sealed", body = sealed }
     end
 
     interface.stats.frames_out = interface.stats.frames_out + 1
@@ -505,9 +520,10 @@ function Stack:receive(modem, channel, frame, signal, distance)
     if not interface then return end
 
     -- Senders are computers' IDs: whole numbers. Anything else (NaN, say) would trip up whatever keeps track of them.
+    -- Frames are for the interface's own ID, if it has one, and never from ourselves, under any of our IDs.
     local src, dst = frame.src, frame.dst
-    if type(src) ~= "number" or src % 1 ~= 0 or src < 0 or src > 2 ^ 53 or src == self.id
-        or (dst ~= self.id and dst ~= BROADCAST_ID) then
+    if type(src) ~= "number" or src % 1 ~= 0 or src < 0 or src > 2 ^ 53 or src == self.id or self.own_ids[src]
+        or (dst ~= (interface.id or self.id) and dst ~= BROADCAST_ID) then
         return
     end
 
@@ -1170,7 +1186,7 @@ function Stack:interface_info()
         table.sort(listen)
         result[#result + 1] = {
             name = interface.name, modem = interface.modem, kind = interface.kind, band = interface.band,
-            id = self.id, unicast = interface.unicast, broadcast = interface.broadcast, listen = listen,
+            id = interface.id or self.id, unicast = interface.unicast, broadcast = interface.broadcast, listen = listen,
             address = interface.address and address.format(interface.address),
             prefix = interface.prefix, duplicate = interface.duplicate, neighbours = neighbours,
             frames_in = interface.stats.frames_in, frames_out = interface.stats.frames_out, dropped = interface.stats.dropped,

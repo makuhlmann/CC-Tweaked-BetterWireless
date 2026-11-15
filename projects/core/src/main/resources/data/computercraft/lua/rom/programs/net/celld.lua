@@ -10,6 +10,7 @@ local args = { ... }
 local name = arg[0] or fs.getName(shell.getRunningProgram())
 
 local bands = require "cc.internal.net.bands"
+local common = require "cc.internal.net.cell.common"
 
 local function usage()
     print("Usages:")
@@ -17,7 +18,7 @@ local function usage()
     print(name .. " add <core>")
     print(name .. " remove <core>")
     print(name .. " set area <number>")
-    print(name .. " set band <band>")
+    print(name .. " set band <band>...")
     print(name .. " set interval <seconds>")
     print(name .. " set pos <x> <y> <z>")
     print(name .. " set power <dBm>")
@@ -34,7 +35,7 @@ end
 -- Each setting, with what it takes after its name (for "set"), in the order they're shown.
 local SETTINGS = {
     { name = "area", takes = "<number>" },
-    { name = "band", takes = "<band>" },
+    { name = "band", takes = "<band>...", most = common.MAX_CARRIERS },
     { name = "interval", takes = "<seconds>" },
     { name = "pos", takes = "<x> <y> <z>", count = 3 },
     { name = "power", takes = "<dBm>" },
@@ -49,15 +50,27 @@ local function setting_names()
     return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
 end
 
--- A band, as a person might write it: "b3", "B3", "3", or its frequency, "1800" or "1800MHz".
+-- A band, as a person might write it: "b3", "B3", "3", or its frequency, "1800" or "1800MHz". Or one of a band's
+-- carriers: the band, and which 5MHz of it, as in "b3/2".
 local function parse_band(text)
-    local wanted = text:lower():gsub("mhz$", "")
+    local wanted, index = text:lower():match("^([^/]+)/(%d+)$")
+    wanted = (wanted or text:lower()):gsub("mhz$", "")
     for _, band in ipairs(bands.cellular()) do
-        if wanted == band.name or "b" .. wanted == band.name or wanted == band.label then return band.name end
+        if wanted == band.name or "b" .. wanted == band.name or wanted == band.label then
+            if not index then return band.name end
+            local carrier = bands.parse_carrier(band.name .. "/" .. index)
+            return carrier and bands.carrier_name(carrier)
+        end
     end
 end
 
+-- A band (or a carrier), or several, for people to read.
 local function band_label(band_name)
+    if type(band_name) == "table" then
+        local labels = {}
+        for i, each in ipairs(band_name) do labels[i] = band_label(each) end
+        return table.concat(labels, ", ")
+    end
     local band = bands.get(band_name)
     return band and band.label and ("%s (%sMHz)"):format(band_name, band.label) or band_name
 end
@@ -77,6 +90,9 @@ local function show_link(info, link, added)
         printError(("%s can't be reached: %s"):format(link.core, tostring(link.error)))
         if link.retry then print(("Trying again in %d seconds."):format(link.retry)) end
         if link.core == added then print(("If that's not the right core, '%s remove %s' stops trying."):format(name, link.core)) end
+    end
+    if link.state == "serving" and link.unplaced and link.unplaced[1] then
+        print(("%s has no carrier for %s: the cell isn't on it."):format(link.network, table.concat(link.unplaced, ", ")))
     end
     if link.newer then
         print(("%s speaks a newer version of the network (%d). If they don't work together, update this cell's ROM."):format(
@@ -114,7 +130,10 @@ local function show(info)
         print("Cores: " .. table.concat(info.cores, ", "))
     else
         print(("Cell #%d, area %d."):format(info.id, info.area or 0))
-        if info.carrier then print(("On %s, reached on channel %d."):format(info.carrier, info.ul)) end
+        -- A cell on each carrier the computer is on: one, unless it was set to be on several bands.
+        for _, cell in ipairs(info.cells or { info }) do
+            if cell.carrier then print(("On %s, reached on channel %d."):format(cell.carrier, cell.ul)) end
+        end
         for _, link in ipairs(info.links or {}) do show_link(info, link) end
     end
     show_settings(info)
@@ -163,13 +182,21 @@ end
 local function read_value(key, words)
     local text = words[1]
     if key == "band" then
-        local band = parse_band(text)
-        if not band then
-            local names = {}
-            for _, each in ipairs(bands.cellular()) do names[#names + 1] = band_label(each.name) end
-            error(("There's no cellular band called %s. They're %s."):format(text, table.concat(names, ", ")), 0)
+        -- One band, or several bands and carriers: a cell on each.
+        local list = {}
+        for i, word in ipairs(words) do
+            local band = parse_band(word)
+            if not band and word:find("/", 1, true) then
+                error(("There's no carrier called %s. A band's carriers are numbered from 1, as in b20/1."):format(word), 0)
+            elseif not band then
+                local names = {}
+                for _, each in ipairs(bands.cellular()) do names[#names + 1] = band_label(each.name) end
+                error(("There's no cellular band called %s. They're %s."):format(word, table.concat(names, ", ")), 0)
+            end
+            list[i] = band
         end
-        return band
+        if #list == 1 and not list[1]:find("/", 1, true) then return list[1] end
+        return list
     elseif key == "service" then
         if text == "sms" then return "sms" end
         if text == "full" then return false end
@@ -194,7 +221,11 @@ local function say_changed(info, key, value, restarted)
     if key == "area" then
         print(("The cell is in area %d now."):format(value or 0))
     elseif key == "band" then
-        if value and info.state ~= "stopped" and not restarted then
+        if type(value) == "table" and info.state ~= "stopped" and not restarted then
+            print(("The computer has its cells on %s already, and they stay there."):format(band_label(value)))
+        elseif type(value) == "table" then
+            print(("The computer runs a cell on each of %s: carriers of its core's."):format(band_label(value)))
+        elseif value and info.state ~= "stopped" and not restarted then
             print(("The cell is on band %s already, and stays there."):format(band_label(value)))
         elseif value then
             print(("The cell goes on a carrier of its core's in band %s."):format(band_label(value)))
@@ -294,7 +325,8 @@ elseif command == "set" or command == "unset" then
     if command == "unset" then
         if #args ~= 2 then return usage() end
     else
-        if #args ~= 2 + (setting.count or 1) then
+        local given = #args - 2
+        if given < (setting.count or 1) or given > (setting.most or setting.count or 1) then
             error(("Usage: %s set %s %s"):format(name, key, setting.takes), 0)
         end
         value = read_value(key, { table.unpack(args, 3) })

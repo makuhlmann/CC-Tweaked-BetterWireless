@@ -584,6 +584,39 @@ describe("The net library", function()
                 end)
             end)
 
+            it("take a list of bands and carriers, for a cell on each", function()
+                fresh(function()
+                    net.cell.configureCell({ cores = { "core.acme" } })
+                    expect({ net.cell.configureCell({ band = { "B20", "b3/2", "b3" } }) }):same { true, false }
+                    expect(net.cell.cellInfo().band):same { "b20", "b3/2", "b3" }
+                    -- A list of one band is that band, as it always was; a carrier by name stays a list.
+                    net.cell.configureCell({ band = { "B3" } })
+                    expect(net.cell.cellInfo().band):eq("b3")
+                    net.cell.configureCell({ band = "B3/1" })
+                    expect(net.cell.cellInfo().band):same { "b3/1" }
+
+                    local before = contents()
+                    local nine = {}
+                    for i = 1, 9 do nine[i] = "b3" end
+                    for _, case in ipairs {
+                        { { band = {} }, "A cell's band is a band, or a list of bands and carriers" },
+                        { { band = { "b3", "b33" } }, "There's no cellular band called b33: they're b31, b28, b20, b8, b3, b1 and b7" },
+                        { { band = { "b3/1", "B3/1" } }, "b3/1 is there twice: a computer has one cell on a carrier" },
+                        { { band = "b3/99" }, "There's no carrier called b3/99: a band's carriers are numbered from 1, as in b20/1" },
+                        { { band = { "b3", 5 } }, "Band 2 isn't a band's name" },
+                        { { band = nine }, "A computer runs at most 8 cells" },
+                    } do
+                        expect({ net.cell.configureCell(case[1]) }):describe(case[2]):same { nil, case[2] }
+                        expect(contents()):describe(case[2]):eq(before)
+                    end
+                    expect.error(net.cell.configureCell, { band = 5 }):eq("bad field 'band' (string or false expected, got number)")
+                    expect.error(net.cell.startCell, "core.acme", { band = 5 }):eq("bad field 'band' (string expected, got number)")
+
+                    net.cell.configureCell({ band = false })
+                    expect(net.cell.cellInfo().band):eq(nil)
+                end)
+            end)
+
             it("are read from older versions' files, keeping what makes sense", function()
                 fresh(function()
                     write(CELL, { core = "core.old", area = 3, band = "b33", pos = "here", interval = 2, enabled = false })

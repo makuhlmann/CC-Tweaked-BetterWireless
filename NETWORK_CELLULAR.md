@@ -202,10 +202,42 @@ the design above:
   network's name). A cell is on one carrier, which its first core picks when it connects, in the band it asks for
   (`celld set band b3`), whichever of the network's carriers there has fewest cells; with no band asked for, whichever
   of all the network's carriers has fewest cells. A cell which also serves another network keeps its carrier, telling
-  that core which it is, and that core takes it as it is. A cell is one carrier, and can't serve several bands: its
-  identity on the air is its computer's ID, which phones remember cells by (and hand over between), and its computer
-  has one cell interface, with one beacon channel and one uplink channel. A site with several bands has a cell (a
-  computer) for each, as an LTE site has a cell for each carrier.
+  that core which it is, and that core takes it as it is. A cell is one carrier: a site with several bands has a
+  cell for each, as an LTE site has a cell for each carrier, which one computer can run (below).
+  - **Sites with several bands** (version 5 of the protocols). One computer may run a cell on each of several
+    carriers: `celld set band b20 b3` for a cell in band 20, which reaches far, and one in band 3, with room for many
+    phones. A band may come several times, for a cell on each of several of its carriers, and a carrier may be named
+    (`celld set band b20 b3/1 b3/2`); a computer has at most 8 cells, and one on a carrier.
+    - **Each is a cell of its own.** The computer's first cell (on what it named first) has the computer's ID, as
+      every cell always did. Each further one has an ID made from the computer's ID and its carrier's beacon channel
+      (beacon × 2³¹ + computer, so above every computer's ID; `cellcore` and `cell` show it as `12 b3/1`), which
+      its frames are from and to, its system information says, its certificate names and its key with a phone is
+      made from. So nothing changed on the air, and a phone which knows nothing of this takes each as a cell like any
+      other. The network stack lets an interface have an ID of its own for this: the cells share the computer's
+      modem, each with an interface (`cell.tower`, `cell.tower.b3/1`) listening on its own uplink channel, and the
+      tunnels' port, where each cell's tunnel has a key of its own.
+    - **Power** is the modem's, so one for all of a computer's cells (`celld set power`). Lower bands still reach
+      further at the same power, which is what makes one band the coverage and the other the capacity.
+    - **The core** is told what the computer wants when it connects (`bands`, besides the one `band` a cell always
+      said), and puts a cell on each: the carrier named, or whichever of the band's has fewest cells and none of this
+      computer's. What the network has no carrier for is left out, and said (`celld` shows it); a computer with
+      nothing left is refused. The one connection carries every cell's control messages: those about a cell other
+      than the computer's first say which (`at`). To the core's own bookkeeping each is a cell (a certificate, a
+      tunnel key, phones' sessions and handovers by its ID); only what's about the computer goes by the computer's ID
+      (the relays in a cell's path, and whether a phone would be using a cell behind itself).
+    - **Sharing.** The first core a computer reaches places its cells, and it tells the others where they are, as a
+      shared cell always did: every network it serves is on each of its cells. If a later core has a carrier for
+      something the first had none for, the computer starts that cell too, and connects again at once to the cores
+      which hadn't heard of it. Each cell's system information names, for each network, the carriers of the
+      computer's other cells which serve it, besides the network's own: a shared computer's cells may be on carriers
+      which aren't that network's, and its phones should listen for them without waiting for their next listen on
+      every carrier.
+    - **Older versions.** An older core gives a computer one cell (in the first band it named), and an older cell
+      asks for one: each is as it was. Phones need nothing new.
+    - **Handover** between a site's bands is a handover like any other, through the core, between two cells which
+      happen to share a computer: the phone's rule for bands (below) decides when.
+    - **Positions.** A computer's cells all say where the computer is, and a phone working out where it is takes
+      cells at one place as one place, heard more often: they neither help nor mislead.
   - **Channels.** A cell sends its system information on its carrier's beacon channel (the middle of the block) and
     listens on an uplink channel of its own, which the core picks and its system information names (a carrier has
     50: with more cells on one, some share, and hear each other's phones). Each phone attached
@@ -223,7 +255,7 @@ the design above:
     (higher bands have more room for phones, lower ones reach further), and otherwise the strongest. Attached, it
     moves up a band once the higher band's cell is 3 dB above that, and down only once its own cell is 3 dB below it
     and another is 3 dB stronger, so it doesn't go back and forth at the edge. A site with several bands has a cell
-    (a computer) for each.
+    for each, on one computer or several.
   - **System information** names, for each network, the carriers its cells use, so a phone listens for all of them
     as soon as it hears one cell (as LTE's SIB5 does), and says how often it's sent. Cells send it every 2 seconds
     unless the network's core says otherwise (`cellcore beacon 3`, 0.5 to 10 seconds) or the cell does

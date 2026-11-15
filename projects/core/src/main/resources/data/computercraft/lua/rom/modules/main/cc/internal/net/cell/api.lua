@@ -72,6 +72,9 @@ local MAX_WAITING = 20
 local phone_instance
 -- The radio side of this computer's cell, if it is one, which its service starts once a core welcomes it.
 local tower_instance
+-- Each cell this computer runs, by its ID: the first (`tower_instance`) has the computer's, and there's one more for
+-- each further carrier the computer has a cell on.
+local tower_instances = {}
 
 -- Messages received and sent, oldest first. Each has a number, `n`, which stays the same as others come and go.
 local function read_messages()
@@ -152,7 +155,7 @@ end
 
 local function restore_interfaces()
     restore_interface(phone_instance)
-    restore_interface(tower_instance)
+    for _, tower in pairs(tower_instances) do restore_interface(tower) end
 end
 
 local function new_phone(operator, partners, equivalent)
@@ -316,13 +319,56 @@ local function cell_cores(config)
     return cores[1] and cores or nil
 end
 
+-- The cellular bands, by name, for saying which there are.
+local function band_names()
+    local names = {}
+    for _, band in ipairs(bands.cellular()) do names[#names + 1] = band.name end
+    return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
+end
+
+--[[ Where a cell's computer should have its cells, as its "band" setting says: one band's name (`"b3"`), as it always
+was, for one cell on any of its core's carriers there; or a list of bands and carriers (`{ "b20", "b3/2" }`) for a cell
+on each. A list of one band is that band. Gives nil, and what's wrong, for anything else. ]]
+local function read_band(value)
+    local list = type(value) == "string" and { value } or value
+    if type(list) ~= "table" or list[1] == nil then
+        return nil, "A cell's band is a band, or a list of bands and carriers"
+    end
+    if #list > common.MAX_CARRIERS then return nil, ("A computer runs at most %d cells"):format(common.MAX_CARRIERS) end
+    local result, seen = {}, {}
+    for i = 1, #list do
+        local want = list[i]
+        if type(want) ~= "string" then return nil, ("Band %d isn't a band's name"):format(i) end
+        want = want:lower()
+        local carrier = common.want_carrier(want)
+        if carrier then
+            want = bands.carrier_name(carrier)
+            if seen[want] then return nil, ("%s is there twice: a computer has one cell on a carrier"):format(want) end
+            seen[want] = true
+        elseif want:find("/", 1, true) then
+            return nil, ("There's no carrier called %s: a band's carriers are numbered from 1, as in b20/1"):format(want)
+        elseif not common.is_wants({ want }) then
+            return nil, ("There's no cellular band called %s: they're %s"):format(want, band_names())
+        end
+        result[i] = want
+    end
+    if #result == 1 and not seen[result[1]] then return result[1] end
+    return result
+end
+
+-- Whether two "band" settings ask for the same.
+local function same_band(a, b)
+    if type(a) == "table" then a = table.concat(a, " ") end
+    if type(b) == "table" then b = table.concat(b, " ") end
+    return a == b
+end
+
 -- A cell's settings, besides its cores, as its file keeps them: what doesn't make sense is left out (as an older
 -- version, or someone editing the file, might have it).
 local function cell_settings(config)
-    local band = type(config.band) == "string" and bands.get(config.band)
     return {
         area = common.is_id(config.area) and config.area or 0,
-        band = band and band.downlink and config.band or nil,
+        band = config.band ~= nil and read_band(config.band) or nil,
         interval = common.is_interval(config.interval) and config.interval or nil,
         pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil,
         power = type(config.power) == "number" and config.power == config.power and math.abs(config.power) ~= math.huge
@@ -356,9 +402,14 @@ local function start_cell_service(config)
         start_tower = function(welcome, control)
             local modem, kind = radio_modem()
             if not modem then error("A cell needs a wireless modem", 0) end
-            if not tower_instance or tower_instance.stopped then
-                tower_instance = require("cc.internal.net.cell.tower").new {
-                    stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area,
+            -- Each of the computer's cells has a tower of its own, on the one modem.
+            local tower = tower_instances[welcome.id]
+            if not tower or tower.stopped then
+                for id, other in pairs(tower_instances) do
+                    if other.stopped then tower_instances[id] = nil end
+                end
+                tower = require("cc.internal.net.cell.tower").new {
+                    stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area, id = welcome.id,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
                     fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
                     service = welcome.service,
@@ -372,10 +423,12 @@ local function start_cell_service(config)
                         return not (interface and interface.name == "cell")
                     end,
                 }
-                tower_instance.apply_power = apply_power
+                tower.apply_power = apply_power
                 apply_power(modem)
+                tower_instances[welcome.id] = tower
+                if welcome.id == os.getComputerID() then tower_instance = tower end
             end
-            return tower_instance:add_network(welcome.network, {
+            return tower:add_network(welcome.network, {
                 certificate = welcome.certificate, core = address.parse(welcome.core), tunnel_key = welcome.tunnel_key,
                 control = control, carriers = welcome.carriers,
             })
@@ -878,22 +931,13 @@ end
 -- A cell's settings, besides its cores, in the order they're checked.
 local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service" }
 
--- The cellular bands, by name, for saying which there are.
-local function band_names()
-    local names = {}
-    for _, band in ipairs(bands.cellular()) do names[#names + 1] = band.name end
-    return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
-end
-
 -- What's wrong with a value for one of a cell's settings, if it won't do.
 local function check_setting(key, value)
     if key == "area" then
         if not common.is_id(value) then return "A cell's area is a whole number, 0 or more" end
     elseif key == "band" then
-        local band = type(value) == "string" and bands.get(value)
-        if not band or not band.downlink then
-            return ("There's no cellular band called %s: they're %s"):format(tostring(value), band_names())
-        end
+        local band, err = read_band(value)
+        if not band then return err end
     elseif key == "interval" then
         if not common.is_interval(value) then
             return ("A cell sends its system information every %g to %g seconds"):format(common.MIN_INTERVAL, common.MAX_INTERVAL)
@@ -957,10 +1001,10 @@ function api.startCell(core, settings)
     local config = { area = 0 }
     for _, key in ipairs(CELL_SETTINGS) do
         local value = given[key]
-        if key == "band" and type(value) == "string" then value = value:lower() end
         if value ~= nil then
             local err = check_setting(key, value)
             if err then return nil, err end
+            if key == "band" then value = read_band(value) end
             config[key] = key == "pos" and { value[1], value[2], value[3] } or value
         end
     end
@@ -983,8 +1027,8 @@ function api.startCell(core, settings)
         local old = running_cell
         local function place(p) return p and table.concat(p, ",") or "" end
         local again = table.concat(old.cores, " ") ~= table.concat(cores, " ") or old.area ~= config.area
-            or old.band ~= config.band or old.interval ~= config.interval or place(old.pos) ~= place(config.pos)
-            or old.power ~= config.power or old.service ~= config.service
+            or not same_band(old.band, config.band) or old.interval ~= config.interval
+            or place(old.pos) ~= place(config.pos) or old.power ~= config.power or old.service ~= config.service
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end
@@ -1017,12 +1061,12 @@ function api.configureCell(changes)
     end
     for _, key in ipairs(CELL_SETTINGS) do
         local value = changes[key]
-        if key == "band" and type(value) == "string" then value = value:lower() end
         if value == false then
             new[key] = key == "area" and 0 or nil
         elseif value ~= nil then
             local err = check_setting(key, value)
             if err then return nil, err end
+            if key == "band" then value = read_band(value) end
             new[key] = key == "pos" and { value[1], value[2], value[3] } or value
         end
     end
@@ -1033,15 +1077,23 @@ function api.configureCell(changes)
         end
     end
     -- A band the networks the cell serves have no carrier in would take it off the air: their cores would refuse it.
-    if service and changes.band and new.band ~= old.band then
-        local have = service:bands()
-        if have and not have[new.band] then
+    -- So would a carrier none of them uses; and a band wanted more often than any of them has carriers in it is a cell
+    -- too many.
+    local wants = type(new.band) == "string" and { new.band } or new.band
+    if service and changes.band and not same_band(new.band, old.band) then
+        local want, have = service:unplaceable(wants), service:bands()
+        if want and have then
             local names = {}
             for band in pairs(have) do names[#names + 1] = band end
             table.sort(names)
-            return nil, ("No network this cell serves has a carrier in band %s, only in %s"):format(
-                new.band, table.concat(names, ", ")
-            )
+            if common.want_carrier(want) then
+                return nil, ("No network this cell serves uses the carrier %s"):format(want)
+            elseif not have[want] then
+                return nil, ("No network this cell serves has a carrier in band %s, only in %s"):format(
+                    want, table.concat(names, ", ")
+                )
+            end
+            return nil, ("No network this cell serves has that many carriers in band %s"):format(want)
         end
     end
 
@@ -1056,9 +1108,18 @@ function api.configureCell(changes)
         background.cell, running_cell = nil, nil
         return true, false
     end
-    -- The area, and a band other than the one it's on, are said to each core when the cell connects: so connect again.
-    local _, on_band = bands.carrier_of(service:radio() or -1)
-    if new.area ~= old.area or (new.band ~= old.band and new.band ~= nil and new.band ~= on_band) then
+    -- The area, and bands other than those it's on, are said to each core when the cell connects: so connect again.
+    -- (Not if its cells are just where it's now told to have them: each on a carrier it's told, and no others.)
+    local moves = false
+    if wants and not same_band(new.band, old.band) then
+        local on = {}
+        for i, cell in ipairs(service:radio()) do on[i] = cell.carrier end
+        local answered, answers = common.match_wants(wants, on)
+        for i = 1, math.max(#wants, #on) do
+            if (wants[i] and not answered[i]) or (on[i] and not answers[on[i]]) then moves = true end
+        end
+    end
+    if new.area ~= old.area or moves then
         service:stop()
         background.cell = nil
         local start = {}

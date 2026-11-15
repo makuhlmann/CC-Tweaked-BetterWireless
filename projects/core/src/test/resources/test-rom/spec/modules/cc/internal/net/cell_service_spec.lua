@@ -6,6 +6,7 @@ describe("Cellular services", function()
     local helpers = require "support.net_helpers"
     local noise = require "cc.internal.net.noise"
     local certificate = require "cc.internal.net.certificate"
+    local bands = require "cc.internal.net.bands"
     local common = require "cc.internal.net.cell.common"
     local cell_core = require "cc.internal.net.cell.core"
     local core_service = require "cc.internal.net.cell.core_service"
@@ -237,6 +238,118 @@ describe("Cellular services", function()
             end, })
             -- Its ID is remembered with its key.
             expect(env.service.allowed[cell_key].id):eq(11)
+        end)
+
+        it("gives a computer a cell on each band it asks for, and says which each message is about", function()
+            local b20, b3, b3_2 = bands.parse_carrier("b20/1"), bands.parse_carrier("b3/1"), bands.parse_carrier("b3/2")
+            local env = setup { config = { network = "ACME", prefix = "10.64.0.0/16", spectrum = { b20, b3, b3_2 } } }
+            local cell_key = new_key()
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            env.service.allowed[cell_key] = { label = "tower", role = "cell" }
+            local high = common.carrier_cell(11, b3)
+            run(env.net, { env.service }, { function()
+                local cell = env.connect(cell_key, "10.0.0.11")
+                local welcome = hello(cell, "cell", 11, { signing = hex(tower_public), band = "b20", bands = { "b20", "b3", "b7" } })
+                -- A cell on band 20, with the computer's ID, and one on band 3, with its own. There's no band 7 here.
+                expect(#welcome.cells):eq(2)
+                local first, second = welcome.cells[1], welcome.cells[2]
+                expect({ first.id, first.carrier, second.id, second.carrier }):same { 11, b20, high, b3 }
+                expect({ bands.carrier_of(first.ul), (bands.carrier_of(second.ul)) }):same { b20, b3 }
+                expect(welcome.unplaced):same { "b7" }
+                -- The first cell's is also said as it always was, for a computer which knows of one cell.
+                expect({ welcome.carrier, welcome.ul, welcome.certificate, welcome.tunnel_key })
+                    :same { b20, first.ul, first.certificate, first.tunnel_key }
+                -- Each has a certificate of its own, for its own ID, and a tunnel of its own.
+                for _, each in ipairs(welcome.cells) do
+                    expect(certificate.verify(crypto, certificate.decode(each.certificate), {
+                        name = common.cell_name("ACME", each.id), key = tower_public, now = env.now(),
+                        trusted = { [env.signing] = true },
+                    })):eq(true)
+                end
+                expect(first.tunnel_key ~= second.tunnel_key):eq(true)
+                expect(env.service.core.towers[11] ~= nil and env.service.core.towers[high] ~= nil):eq(true)
+
+                -- What the core says about the computer's further cell says so; about its first, nothing more.
+                expect(cell:receive(5)):same { op = "path", path = {} }
+                expect(cell:receive(5)):same { op = "path", path = {}, at = high }
+                env.service.core:send(high, { op = "release", teid = 5 })
+                expect(cell:receive(5)):same { op = "release", teid = 5, at = high }
+                env.service.core:send(11, { op = "release", teid = 6 })
+                expect(cell:receive(5)):same { op = "release", teid = 6 }
+
+                -- The administrator sees the computer, and each carrier it's on; and what every cell is told, each is.
+                local admin = env.admin()
+                expect(ask(admin, { op = "status" }).cells):matches { {
+                    id = 11, carrier = "b20/1", ul = first.ul,
+                    carriers = { { id = 11, carrier = "b20/1", ul = first.ul }, { id = high, carrier = "b3/1", ul = second.ul } },
+                }, }
+                expect(ask(admin, { op = "beacon", interval = 4 })):same { interval = 4 }
+                expect(cell:receive(5)):same { op = "interval", interval = 4 }
+                expect(cell:receive(5)):same { op = "interval", interval = 4, at = high }
+                admin:close()
+
+                -- What the computer says goes to the core as from the cell it's about: one of its own.
+                local got = {}
+                env.service.core.control = function(_, id, message) got[#got + 1] = { id, message.op } end
+                for _, message in ipairs {
+                    { op = "one", at = high }, { op = "two" }, { op = "three", at = 12 },
+                    { op = "four", at = common.carrier_cell(11, b3_2) }, { op = "five", at = "11" }, { op = "six", at = 11 },
+                } do
+                    assert(cell:send(message))
+                end
+                wait_until(function() return #got == 3 end)
+                expect(got):same { { high, "one" }, { 11, "two" }, { 11, "six" } }
+
+                cell:close()
+                wait_until(function() return env.service.cells[11] == nil end)
+                expect(env.service.core.towers[11] == nil and env.service.core.towers[high] == nil):eq(true)
+            end, })
+        end)
+
+        it("keeps the carriers a computer's cells are on, and adds what else it asks for", function()
+            local b20, b20_2 = bands.parse_carrier("b20/1"), bands.parse_carrier("b20/2")
+            local b3, b7 = bands.parse_carrier("b3/1"), bands.parse_carrier("b7/1")
+            local env = setup { config = { network = "ACME", prefix = "10.64.0.0/16", spectrum = { b20, b3 } } }
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            local function ul(carrier, offset) return bands.carrier(carrier).uplink[1] + (offset or 0) end
+            -- What each computer is given: each cell's ID, carrier and uplink channel.
+            local function given(id, extra)
+                local key = new_key()
+                env.service.allowed[key] = { label = "tower", role = "cell" }
+                extra.signing = hex(tower_public)
+                local reply = hello(env.connect(key, "10.0.0." .. id), "cell", id, extra)
+                if reply.error then return reply.error end
+                local cells = {}
+                for i, cell in ipairs(reply.cells) do cells[i] = { cell.id, cell.carrier, cell.ul } end
+                return cells, reply.unplaced
+            end
+            run(env.net, { env.service }, { function()
+                -- A computer on another network's carriers already (it's shared) keeps them, whatever ours are: on band 20
+                -- and band 7, which it wanted, so there's nothing to add.
+                expect({ given(11, { cells = { { carrier = b20_2, ul = ul(b20_2, 3) }, { carrier = b7, ul = ul(b7) } }, bands = { "b20", "b7" } }) })
+                    :same { { { 11, b20_2, ul(b20_2, 3) }, { common.carrier_cell(11, b7), b7, ul(b7) } } }
+                -- One which has a cell on band 20, and wants band 3 too, gets a cell there; but not a band we don't have.
+                expect({ given(12, { carrier = b20_2, ul = ul(b20_2), band = "b20", bands = { "b20", "b3", "b1" } }) })
+                    :same { { { 12, b20_2, ul(b20_2) }, { common.carrier_cell(12, b3), b3, ul(b3) } }, { "b1" } }
+                -- A cell which only names a band keeps the carrier it has, as it always did: it knows of no more.
+                expect({ given(13, { carrier = b7, ul = ul(b7, 1), band = "b3" }) }):same { { { 13, b7, ul(b7, 1) } } }
+                -- One with no carrier yet, which wants a carrier by name, gets that one; and its own channel there.
+                expect({ given(14, { band = "b3", bands = { "b3/1" } }) }):same { { { 14, b3, ul(b3, 1) } } }
+                expect({ given(15, {}) }):same { { { 15, b20, ul(b20) } } }
+
+                -- What makes no sense is refused.
+                expect(given(16, { bands = { "b3/2" } })):eq("ACME doesn't use the carrier b3/2")
+                expect(given(16, { bands = { "b1", "b3/2" } })):eq("ACME has no carrier in band b1")
+                expect(given(16, { band = "b33" })):eq("There's no cellular band called b33")
+                expect(given(16, { band = "b3/1" })):eq("There's no cellular band called b3/1")
+                expect(given(16, { bands = { "b33" } })):eq("There are no cellular bands like those the cell asks for")
+                expect(given(16, { bands = {} })):eq("There are no cellular bands like those the cell asks for")
+                expect(given(16, { bands = "b3" })):eq("There are no cellular bands like those the cell asks for")
+                expect(given(16, { cells = { { carrier = b20, ul = ul(b3) } } })):eq("The cell's carriers can't be used")
+                expect(given(16, { cells = { { carrier = b20, ul = ul(b20) }, { carrier = b20, ul = ul(b20, 1) } } }))
+                    :eq("The cell's carriers can't be used")
+                expect(given(16, { cells = { "b20" } })):eq("The cell's carriers can't be used")
+            end, })
         end)
 
         it("refuses computers it has denied, and drops their connections", function()
@@ -928,7 +1041,7 @@ describe("Cellular services", function()
     end)
 
     describe("a cell", function()
-        local function cell_setup(cores)
+        local function cell_setup(cores, band)
             local net = network()
             local key, core_key = new_key(), new_key()
             local _, signing = crypto.generateKeyPair("ed25519")
@@ -938,7 +1051,7 @@ describe("Cellular services", function()
             local env = { net = net, connections = {}, towers = {}, key = key, radio = radio, tries = 0 }
             env.service = cell_service.new {
                 core = not cores and "core.acme" or nil, cores = cores,
-                area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing),
+                area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing), band = band,
                 connect = function(core)
                     env.tries = env.tries + 1
                     if env.unreachable then return nil, "No route to host" end
@@ -994,8 +1107,9 @@ describe("Cellular services", function()
                 expect(env.service:info().network):eq("ACME")
                 local tower = env.towers[1]
                 expect(tower.welcome):same {
-                    network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32), core = "10.0.0.1", area = 3,
-                    carrier = 7935, ul = 8320, interval = 1, fixed_interval = false, core_interval = 1, carriers = { 7935 },
+                    id = 11, network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32), core = "10.0.0.1",
+                    area = 3, carrier = 7935, ul = 8320, interval = 1, fixed_interval = false, core_interval = 1,
+                    carriers = { 7935 },
                 }
 
                 -- Control messages go both ways.
@@ -1195,6 +1309,119 @@ describe("Cellular services", function()
                 expect(env.radio.configured[2]):same {}
             end, }, 300)
             expect(env.service.error):eq(nil)
+        end)
+
+        it("runs a cell on each carrier its core gives it, and says which each message is about", function()
+            local env = cell_setup(nil, { "b20", "b3/2", "b7" })
+            local b3 = bands.parse_carrier("b3/2")
+            local high = common.carrier_cell(11, b3)
+            run(env.net, { env.service }, { function()
+                local core = env.connections[1]
+                -- It asks for one band, as a cell always did, and says all it wants for a core which knows of more.
+                expect(core:receive(5)):same {
+                    role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 3, band = "b20",
+                    bands = { "b20", "b3/2", "b7" },
+                }
+                core:send(welcome {
+                    network = "ACME", certificate = "first", tunnel_key = ("k"):rep(32), unplaced = { "b7" },
+                    cells = {
+                        { id = 11, carrier = 7935, ul = 8320, certificate = "first", tunnel_key = ("k"):rep(32) },
+                        {
+                            id = high, carrier = b3, ul = bands.carrier(b3).uplink[1], certificate = "second",
+                            tunnel_key = ("l"):rep(32),
+                        },
+                    },
+                })
+                wait_until(function() return env.towers[2] end)
+                local low, upper = env.towers[1].welcome, env.towers[2].welcome
+                expect({ low.id, low.carrier, low.certificate, low.tunnel_key }):same { 11, 7935, "first", ("k"):rep(32) }
+                expect({ upper.id, upper.carrier, upper.ul, upper.certificate, upper.tunnel_key })
+                    :same { high, b3, bands.carrier(b3).uplink[1], "second", ("l"):rep(32) }
+                expect({ upper.network, upper.area, upper.interval, upper.carriers }):same { "ACME", 3, 1, { 7935 } }
+                local info = env.service:info()
+                expect({ info.state, #info.cells, info.cells[1].id, info.cells[2].id }):same { "serving", 2, 11, high }
+                expect(info.links[1].unplaced):same { "b7" }
+
+                -- The core's messages go to the cell they're about: the first, unless they say.
+                core:send({ op = "context", phone = 70, at = high })
+                core:send({ op = "context", phone = 71 })
+                core:send({ op = "context", phone = 72, at = 12 })
+                core:send({ op = "context", phone = 73, at = 11 })
+                wait_until(function() return env.towers[1].messages[2] and env.towers[2].messages[1] end)
+                expect(env.towers[2].messages):same { { op = "context", phone = 70, at = high } }
+                expect(env.towers[1].messages):same { { op = "context", phone = 71 }, { op = "context", phone = 73, at = 11 } }
+                -- And each cell's messages say which they're from, but the first's.
+                env.towers[2].send({ op = "attach", phone = 70 })
+                expect(core:receive(5)):same { op = "attach", phone = 70, at = high }
+                env.towers[1].send({ op = "attach", phone = 71 })
+                expect(core:receive(5)):same { op = "attach", phone = 71 }
+
+                -- Its settings reach each cell, and losing the core stops both.
+                env.service:configure { area = 3, band = { "b20", "b3/2", "b7" }, interval = 4 }
+                expect(env.radio.configured):same { { interval = 4 } }
+                core:abort()
+                wait_until(function() return env.towers[1].stopped and env.towers[2].stopped end)
+                expect(env.service:info().cells):eq(nil)
+            end, }, 300)
+            expect(env.service.error):eq(nil)
+        end)
+
+        it("runs one cell with a core which knows of no more, and only cells it asked for", function()
+            local b3, b3_2, b7 = bands.parse_carrier("b3/1"), bands.parse_carrier("b3/2"), bands.parse_carrier("b7/1")
+            local function cell(id, carrier, certificate)
+                return {
+                    id = id, carrier = carrier, ul = bands.carrier(carrier).uplink[1], certificate = certificate,
+                    tunnel_key = ("k"):rep(32),
+                }
+            end
+            -- What a core answers, and the cells the computer then runs (by their certificates), or why it won't.
+            local function served(band, answer)
+                local env = cell_setup(nil, band)
+                local result
+                run(env.net, { env.service }, { function()
+                    local core = env.connections[1]
+                    core:receive(5)
+                    core:send(welcome(answer))
+                    wait_until(function() return env.service:info().state ~= "connecting" end)
+                    local info = env.service:info()
+                    if info.state ~= "serving" then
+                        result = info.error
+                        return
+                    end
+                    result = {}
+                    for i, tower in ipairs(env.towers) do result[i] = tower.welcome.certificate end
+                end, }, 300)
+                env.service:stop()
+                return result
+            end
+            local first = { network = "ACME", certificate = "first", tunnel_key = ("k"):rep(32) }
+            local function with(cells)
+                return { network = "ACME", certificate = "first", tunnel_key = ("k"):rep(32), cells = cells }
+            end
+            local high = common.carrier_cell(11, b3)
+
+            -- An older core gives it one cell, whatever it wants.
+            expect(served({ "b20", "b3" }, first)):same { "first" }
+            -- A newer one gives it both: but not a cell it never asked for, nor two for one band.
+            expect(served({ "b20", "b3" }, with { cell(11, 7935, "first"), cell(high, b3, "second") })):same { "first", "second" }
+            expect(served({ "b20", "b3" }, with {
+                cell(11, 7935, "first"), cell(common.carrier_cell(11, b7), b7, "unasked"), cell(high, b3, "second"),
+                cell(common.carrier_cell(11, b3_2), b3_2, "too many"),
+            })):same { "first", "second" }
+            expect(served("b20", with { cell(11, 7935, "first"), cell(high, b3, "second") })):same { "first" }
+            expect(served(nil, with { cell(11, 7935, "first"), cell(high, b3, "second") })):same { "first" }
+            -- Its first cell goes where the core says, as ever.
+            expect(served({ "b20", "b3" }, with { cell(11, b7, "first"), cell(high, b3, "second") })):same { "first", "second" }
+
+            -- Cells whose IDs aren't theirs, two on one carrier, or none at all, can't be used.
+            local unusable = "The core's answer can't be used"
+            expect(served({ "b20", "b3" }, with { cell(12, 7935, "first") })):eq(unusable)
+            expect(served({ "b20", "b3" }, with { cell(11, 7935, "first"), cell(high + 1, b3, "second") })):eq(unusable)
+            expect(served({ "b20", "b3" }, with { cell(11, 7935, "first"), cell(12, b3, "second") })):eq(unusable)
+            expect(served({ "b3", "b3" }, with { cell(11, b3, "first"), cell(high, b3, "second") })):eq(unusable)
+            expect(served({ "b20", "b3" }, with {})):eq(unusable)
+            expect(served({ "b20", "b3" }, with "two")):eq(unusable)
+            expect(served({ "b20", "b3" }, with { cell(11, 7935, "first"), { id = high, carrier = b3 } })):eq(unusable)
         end)
 
         it("knows which bands the networks it serves have carriers in", function()

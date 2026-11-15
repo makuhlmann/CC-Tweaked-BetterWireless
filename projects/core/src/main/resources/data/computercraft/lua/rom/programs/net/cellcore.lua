@@ -40,6 +40,7 @@ if not crypto or not enclave then
 end
 
 local files = require "cc.internal.net.files"
+local common = require "cc.internal.net.cell.common"
 local read_table, write_table = files.read_table, files.write_table
 
 -- Commands which only work on the core's own computer.
@@ -216,7 +217,10 @@ function commands.cells()
         print("Connected:")
         for _, cell in ipairs(status.cells) do
             print(("  #%d from %s, area %s, since %s"):format(cell.id, cell.address, tostring(cell.area or 0), since(cell.since)))
-            if cell.carrier then print(("    on %s, reached on channel %d"):format(cell.carrier, cell.ul)) end
+            -- A cell on each carrier its computer is on.
+            for _, each in ipairs(cell.carriers or { cell }) do
+                if each.carrier then print(("    on %s, reached on channel %d"):format(each.carrier, each.ul)) end
+            end
             -- A relay: its backhaul goes through other cells.
             if cell.path and #cell.path > 0 then
                 local through = {}
@@ -359,7 +363,9 @@ function commands.subscribers()
         if subscriber.barred then
             where = "barred"
         elseif subscriber.cell then
-            where = ("cell #%d%s, %s"):format(subscriber.cell, subscriber.roaming and " of " .. subscriber.roaming or "", subscriber.address)
+            where = ("cell #%s%s, %s"):format(
+                common.cell_label(subscriber.cell), subscriber.roaming and " of " .. subscriber.roaming or "", subscriber.address
+            )
         end
         if subscriber.may_roam == false then where = where .. " (no roaming)" end
         rows[#rows + 1] = { tostring(subscriber.id), tostring(subscriber.number), where }

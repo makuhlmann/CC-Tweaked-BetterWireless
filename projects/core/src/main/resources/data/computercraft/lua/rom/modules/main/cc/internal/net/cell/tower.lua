@@ -24,6 +24,12 @@ operator gave the cell. A phone says which of them it chose; the cell takes it t
 packets through that core's tunnel. A network whose core is lost is no longer named, and its phones move on, while the
 cell carries on serving the others.
 
+One computer may run several cells, each on a carrier of its own: a cell site with several bands, say, a low one which
+reaches far and a high one with room for many phones. They share the computer's modem, each with an interface of its
+own, and the tunnels' port. The computer's first cell has the computer's ID; each further one has an ID of its own
+(see `cc.internal.net.cell.common`'s `carrier_cell`), which its frames are from and to. So to phones each is a cell like
+any other, and they're handed over between two of a site's cells as between any two.
+
 @local
 ]]
 
@@ -42,7 +48,7 @@ local MAX_ASKED = 256
 
 local is_id = common.is_id
 
---- The name of the interface cells use, on their modem.
+--- The name of the interface cells use, on their modem. A computer's further cells add their carrier's name.
 local INTERFACE = "cell.tower"
 
 local Tower = {}
@@ -55,7 +61,7 @@ Link.__index = Link
 --[[- Start a cell.
 
 @tparam {
-    stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number,
+    stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number, id? = number,
     interval? = number, fixed_interval? = boolean, core_interval? = number, area? = number,
     pos? = { number, number, number },
     service? = string, sign = function(data:string):string,
@@ -63,7 +69,8 @@ Link.__index = Link
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
     carriers? = { number... },
 } options The stack; the `crypto` API; the modem phones are on, and what kind it is (`"wireless"` or `"ender"`); the
-carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; how often to send system
+carrier the cell is on (its beacon channel) and the cell's own uplink channel on it; the cell's ID, if it isn't the
+computer's (it's one of the computer's further cells); how often to send system
 information, in seconds, whether that was set for this cell, so its core can't change it, and how often its core said
 (to go back to if it's no longer set for this cell); this cell's tracking
 area; where it is (its computer's block position), which it says in its system information so phones can work out
@@ -83,7 +90,7 @@ local function new(options)
     end
     local self = setmetatable({
         stack = stack, crypto = options.crypto, interface = INTERFACE, area = options.area or 0,
-        sign = options.sign, epoch = options.epoch, id = stack.id,
+        sign = options.sign, epoch = options.epoch, id = common.is_id(options.id) and options.id or stack.id,
         carrier = options.carrier, ul = options.ul, band = carrier.band, dl_range = carrier.downlink,
         interval = common.is_interval(options.interval) and options.interval or common.DEFAULT_INTERVAL,
         fixed_interval = options.fixed_interval == true,
@@ -95,13 +102,27 @@ local function new(options)
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
     }, Tower)
     self.core_interval = self.core_interval or self.interval
+    if self.id ~= stack.id then self.interface = INTERFACE .. "." .. bands.carrier_name(self.carrier) end
 
     self:set_modem(options.modem, options.kind)
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, _, dst)
         if interface.name == self.interface and dst == self.id then self:radio(src, body) end
     end, true)
-    -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
-    self.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data) self:downlink(data) end, common.TUNNEL_LIMITS))
+    -- A computer's cells share the tunnels' port: each tunnel has a key of its own, which says whose a packet is.
+    -- (The stack keeps them: `{ socket, towers = { tower... } }`.)
+    local site = stack.cell_site
+    if not site then
+        site = { towers = {} }
+        -- Tunnels carry phones' packets whole, so need more room than programs' datagrams.
+        site.socket = assert(stack:udp_open(common.CELL_TUNNEL_PORT, function(data)
+            for _, tower in ipairs(site.towers) do
+                if tower:downlink(data) then return end
+            end
+        end, common.TUNNEL_LIMITS))
+        stack.cell_site = site
+    end
+    site.towers[#site.towers + 1] = self
+    self.site, self.socket = site, site.socket
     if options.network then self:add_network(options.network, options) end
     -- Cells which start together don't send together, which would bunch up the work of delivering their system
     -- information.
@@ -116,10 +137,12 @@ end
 ]]
 function Tower:set_modem(modem, kind)
     local stack = self.stack
-    if stack.interfaces[INTERFACE] then stack:remove_interface(INTERFACE) end
-    local interface = stack:add_interface(INTERFACE, modem, kind, {
+    if stack.interfaces[self.interface] then stack:remove_interface(self.interface) end
+    local interface = stack:add_interface(self.interface, modem, kind, {
         band = self.band, listen = { self.ul }, broadcast = self.carrier, reply = self.ul,
         to = function(phone) return self:channel_to(phone) end,
+        -- A computer's further cells send as themselves, not as the computer.
+        id = self.id ~= stack.id and self.id or nil,
     })
     -- Cells don't take part in the network stack's own business on this interface.
     interface.no_rip = true
@@ -258,7 +281,9 @@ function Tower:beacon()
         local link = self.links[name]
         -- A relay too many relays from the core can't carry the biggest packets, so doesn't serve.
         if #link.path <= common.MAX_PATH and self.can_serve(link.core) and #networks < common.MAX_SIB_NETWORKS then
-            networks[#networks + 1] = { network = name, certificate = link.certificate, path = link.path, carriers = link.carriers }
+            networks[#networks + 1] = {
+                network = name, certificate = link.certificate, path = link.path, carriers = self:carriers_of(link),
+            }
         end
     end
     if not networks[1] then return end
@@ -268,6 +293,25 @@ function Tower:beacon()
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
         ul = self.ul, interval = self.interval, pos = self.pos, service = self.service, sign = self.sign,
     })
+end
+
+-- The carriers to name for a network: its own, as its core said, and those this computer's other cells serve it on, if
+-- there's room. (A computer which several networks share may have a cell on a carrier which isn't the network's own:
+-- its phones here should listen for that cell too, without waiting until they next listen on every carrier.)
+function Tower:carriers_of(link)
+    local carriers = link.carriers
+    for _, other in ipairs(self.site.towers) do
+        if other ~= self and other.links[link.network] then
+            local named = false
+            for _, carrier in ipairs(carriers) do named = named or carrier == other.carrier end
+            if not named and #carriers < common.MAX_CARRIERS then
+                -- A list of our own: the network's is its core's to change.
+                if carriers == link.carriers then carriers = { table.unpack(carriers) } end
+                carriers[#carriers + 1] = other.carrier
+            end
+        end
+    end
+    return carriers
 end
 
 function Tower:to_phone(phone, message)
@@ -449,7 +493,7 @@ function Tower:control(message, link)
     end
 end
 
--- A packet for a phone, down a tunnel from a gateway.
+-- A packet for a phone, down a tunnel from a gateway. Returns whether it came down one of this cell's tunnels.
 function Tower:downlink(data)
     -- Only a core has its tunnel's key, and the sealer refuses replays, so where it came from doesn't matter. (It
     -- isn't always the address we reached the core at: a relay's tunnel comes from the core's gateway address.) Each
@@ -458,12 +502,13 @@ function Tower:downlink(data)
         local inner = link.tunnel:open(data)
         if inner ~= nil then
             local context = type(inner) == "table" and link.by_teid[inner.teid]
-            if not context or not context.active or type(inner.packet) ~= "string" or self.service == "sms" then return end
+            if not context or not context.active or type(inner.packet) ~= "string" or self.service == "sms" then return true end
             local sealed = context.sealer:seal({ p = inner.packet })
             if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
-            return
+            return true
         end
     end
+    return false
 end
 
 --- Stop the cell, for every network it serves.
@@ -471,9 +516,17 @@ function Tower:stop()
     if self.stopped then return end
     self.stopped = true
     self.stack:cancel(self.beacon_timer)
-    self.stack:udp_close(self.socket)
+    -- The tunnels' socket closes with the computer's last cell.
+    local site = self.site
+    for i = #site.towers, 1, -1 do
+        if site.towers[i] == self then table.remove(site.towers, i) end
+    end
+    if not site.towers[1] then
+        self.stack:udp_close(site.socket)
+        if self.stack.cell_site == site then self.stack.cell_site = nil end
+    end
     self.stack:off_frame(common.FRAME, self.frame_handler)
-    if self.stack.interfaces[INTERFACE] then self.stack:remove_interface(INTERFACE) end
+    if self.stack.interfaces[self.interface] then self.stack:remove_interface(self.interface) end
     self.links, self.phones, self.downlinks, self.asked = {}, {}, {}, recent.new(MAX_ASKED)
 end
 

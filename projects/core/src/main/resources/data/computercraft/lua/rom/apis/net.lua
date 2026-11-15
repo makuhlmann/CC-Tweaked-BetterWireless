@@ -1785,9 +1785,10 @@ cell = {
     `net.cell.configureCell`. Given cores, they and the settings replace everything it had.
 
     @tparam[opt] string|{ string... } core The core's name or address, or those of several networks' cores.
-    @tparam[opt] number|{ area? = number, band? = string, interval? = number, pos? = { number, number, number },
-    power? = number, service? = string } settings The cell's tracking area; or that, the cellular band it should be on
-    (such as `"b20"`), how often it sends system information, in seconds, where it is (its computer's block position,
+    @tparam[opt] number|{ area? = number, band? = string|{ string... }, interval? = number,
+    pos? = { number, number, number }, power? = number, service? = string } settings The cell's tracking area; or that,
+    the cellular band it should be on (such as `"b20"`; or a list of bands and carriers, such as `{ "b20", "b3/2" }`, for
+    a cell on each: a cell site with several bands, which is a cell of its own on each to phones), how often it sends system information, in seconds, where it is (its computer's block position,
     which it says in its system information, so phones can work out where they are), the power its modem sends with, in
     dBm, and `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
     carries everything will do, and have no route for packets while they do.
@@ -1803,7 +1804,8 @@ cell = {
                 area = "number", band = "string", interval = "number", pos = "table", power = "number", service = "string",
             } do
                 local value = settings[key]
-                if value ~= nil and type(value) ~= kind then
+                -- Several bands (or carriers) come as a list.
+                if value ~= nil and type(value) ~= kind and not (key == "band" and type(value) == "table") then
                     error(("bad field '%s' (%s expected, got %s)"):format(key, kind, type(value)), 2)
                 end
             end
@@ -1817,13 +1819,13 @@ cell = {
     While the cell runs, most changes are made at once, and its phones keep their service: a core added is connected
     to, and one removed (with its network) no longer served, while the other networks carry on; and where the cell
     says it is, whether it only carries messages, how often it sends system information and its power change on the
-    air. The area, and a band other than the one it's on, are said to its cores only as it connects: so for them it
-    starts again, and its phones lose service for a moment. It won't go to a band none of the networks it serves has
-    a carrier in. A cell left with no cores stops.
+    air. The area, and bands (or carriers) other than those it's on, are said to its cores only as it connects: so for
+    them it starts again, and its phones lose service for a moment. It won't go to a band none of the networks it serves
+    has a carrier in. A cell left with no cores stops.
 
     The cell doesn't start for this: that's `net.cell.startCell`.
 
-    @tparam { cores? = { string... }, area? = number|boolean, band? = string|boolean, interval? = number|boolean,
+    @tparam { cores? = { string... }, area? = number|boolean, band? = string|{ string... }|boolean, interval? = number|boolean,
     pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean } changes What to
     change, as `net.cell.startCell` takes it, and `cores`, every core it should connect to. `false` puts a setting back
     as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, the modem's own power,
@@ -1854,7 +1856,8 @@ cell = {
             area = "number", band = "string", interval = "number", pos = "table", power = "number", service = "string",
         } do
             local value = changes[key]
-            if value == true or value ~= nil and value ~= false and type(value) ~= kind then
+            if value == true or value ~= nil and value ~= false and type(value) ~= kind
+                and not (key == "band" and type(value) == "table") then
                 error(("bad field '%s' (%s or false expected, got %s)"):format(key, kind, type(value)), 2)
             end
         end
@@ -1875,8 +1878,11 @@ cell = {
     (`enabled`: false once it was stopped); its settings, if they were set: `area` (0 if not), `band`, `interval`, where it
     says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm) and `service` (`"sms"` if it only
     carries messages); while it's on the air, how often it sends system information now (`current_interval`, in
-    seconds), and the `carrier` it's on and its `ul` channel there; and, while it runs, `links`: the same (`core`,
-    `state`, `error`, `retry` and `network`) for each core. Then the cell's own state is the best of its cores'.
+    seconds), the `carrier` it's on and its `ul` channel there, and `cells`, the same (with its `id`) for each cell the
+    computer runs, when it's set to have cells on several bands or carriers (the first is the one `carrier` and `ul` are
+    of, and has the computer's ID); and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and
+    `network`) for each core, with `unplaced`, what the cell is set to be on which that core's network has no carrier
+    for. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()
         return cellular().cellInfo()

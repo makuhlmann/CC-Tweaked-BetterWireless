@@ -220,7 +220,8 @@ A relay is a computer which is both a phone of this network and a cell: its cell
 address is the phone's. Its backhaul goes through the cell its phone uses, which may be a relay too.
 
 @tparam number id The cell's ID.
-@treturn { number... } The IDs of the cells its backhaul goes through, which are also the relays' computers.
+@treturn { number... } The IDs of the computers its backhaul goes through: the relays, whose cells its phone and theirs
+use. (A computer may run several cells, on a carrier each: the path names the computer, whichever of them it is.)
 ]]
 function Core:path_of(id)
     local path, seen = {}, { [id] = true }
@@ -231,16 +232,17 @@ function Core:path_of(id)
         local upstream = session and session.teid and session.cell
         if not upstream or seen[upstream] then break end
         seen[upstream] = true
-        path[#path + 1] = upstream
+        local site = common.site_of(upstream)
+        path[#path + 1] = site
         tower = self.towers[upstream]
     end
     return path
 end
 
--- Whether a phone using a cell would make a loop: the phone's computer is the cell, or a relay its backhaul goes
--- through. (A relay's phone and cell share its computer's ID.)
+-- Whether a phone using a cell would make a loop: the phone's computer is the cell's, or a relay its backhaul goes
+-- through. (A relay's phone and its first cell share its computer's ID, which the IDs of its other cells give too.)
 function Core:would_loop(phone, tower_id)
-    if phone == tower_id then return true end
+    if phone == common.site_of(tower_id) then return true end
     for _, relay in ipairs(self:path_of(tower_id)) do
         if relay == phone then return true end
     end
@@ -255,7 +257,8 @@ end
 ]]
 function Core:refuse(phone, tower_id)
     if self:would_loop(phone, tower_id) then return "That cell is behind this one" end
-    -- A relay (whose cell we know) can't go through a cell which is as far from us as a cell may be.
+    -- A relay (whose cell we know: a computer's first cell has its ID) can't go through a cell which is as far from
+    -- us as a cell may be.
     if self.towers[phone] and #self:path_of(tower_id) >= common.MAX_PATH then return "Too many relays" end
 end
 

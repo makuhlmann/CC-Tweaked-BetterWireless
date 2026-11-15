@@ -26,6 +26,17 @@ if not crypto or not enclave then
     return
 end
 
+-- A cell's ID, for people to read: its computer's, and its carrier if it's one of a computer's further cells (a cell
+-- site with several bands has a cell on each). And just its computer's, where there's little room.
+local function cell_label(id)
+    if type(id) ~= "number" then return tostring(id) end
+    return require("cc.internal.net.cell.common").cell_label(id)
+end
+local function site_label(id)
+    if type(id) ~= "number" then return tostring(id) end
+    return ("%d"):format((require("cc.internal.net.cell.common").site_of(id)))
+end
+
 local STATES = {
     none = "No SIM: activate one with 'cell activate', or listen for cells with 'cell on'",
     off = "Cell service is turned off",
@@ -78,12 +89,13 @@ local function monitor()
     local function describe(event)
         local kind = event.kind
         if kind == "attached" and event.roaming then
-            return ("Roaming #%s %s"):format(event.cell, event.roaming), c(colours.lime)
-        elseif kind == "attached" then return ("Attached #%s"):format(event.cell), c(colours.lime)
-        elseif kind == "home" then return ("Home from #%s"):format(event.from), c(colours.lightBlue)
-        elseif kind == "service" then return ("Full service from #%s"):format(event.from), c(colours.lightBlue)
-        elseif kind == "handover" then return ("Moved #%s > #%s"):format(event.from, event.to), c(colours.lightBlue)
-        elseif kind == "lost" then return ("Lost #%s"):format(event.cell), c(colours.orange)
+            return ("Roaming #%s %s"):format(cell_label(event.cell), event.roaming), c(colours.lime)
+        elseif kind == "attached" then return ("Attached #%s"):format(cell_label(event.cell)), c(colours.lime)
+        elseif kind == "home" then return ("Home from #%s"):format(cell_label(event.from)), c(colours.lightBlue)
+        elseif kind == "service" then return ("Full service from #%s"):format(cell_label(event.from)), c(colours.lightBlue)
+        elseif kind == "handover" then
+            return ("Moved #%s > #%s"):format(cell_label(event.from), cell_label(event.to)), c(colours.lightBlue)
+        elseif kind == "lost" then return ("Lost #%s"):format(cell_label(event.cell)), c(colours.orange)
         elseif kind == "rejected" then return "Rejected: " .. tostring(event.reason), c(colours.red)
         elseif kind == "activated" then return "Activated on " .. tostring(event.network), c(colours.lime)
         elseif kind == "activation_failed" then return "Not activated: " .. tostring(event.reason), c(colours.red)
@@ -154,9 +166,9 @@ local function monitor()
         row("No.", info.subscriber and ("%s (%s)"):format(info.subscriber.number, info.subscriber.id) or "-")
         row("IP", info.address or "-")
         if serving then
-            row("Cell", ("#%d, %d dBm"):format(serving.id, round(serving.signal)))
+            row("Cell", ("#%s, %d dBm"):format(cell_label(serving.id), round(serving.signal)))
         elseif shown then
-            row("Cell", ("#%d %s, %d dBm"):format(shown.id, tostring(shown.network), round(shown.signal)))
+            row("Cell", ("#%s %s, %d dBm"):format(cell_label(shown.id), tostring(shown.network), round(shown.signal)))
         else
             row("Cell", "-")
         end
@@ -187,7 +199,8 @@ local function monitor()
             end
             if not cell.fresh then fg = colours.grey end
             -- Its band and signal on the right; after its network, SMS if it only carries messages.
-            local id, tail = fit("#" .. cell.id, 5), (" %-3s %4d"):format(tostring(cell.band or "-"), round(cell.signal))
+            -- (Its computer's ID: a cell site with several bands has a cell on each, and the band is alongside.)
+            local id, tail = fit("#" .. site_label(cell.id), 5), (" %-3s %4d"):format(tostring(cell.band or "-"), round(cell.signal))
             local name_width = math.max(1, w - 7 - #tail)
             local name = tostring(cell.network)
             if cell.service == "sms" then name = fit(name, math.max(1, name_width - 4)):gsub(" +$", "") .. " SMS" end
@@ -299,7 +312,9 @@ elseif command == nil then
     -- Without a SIM, the strongest cell around.
     local strongest = not info.network and info.strongest
     if strongest then
-        print(("Strongest: #%s %s, %d dBm"):format(strongest.id, tostring(strongest.network), math.floor(strongest.signal + 0.5)))
+        print(("Strongest: #%s %s, %d dBm"):format(
+            cell_label(strongest.id), tostring(strongest.network), math.floor(strongest.signal + 0.5)
+        ))
     end
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
     if info.messages_only then print("Messages only: this cell carries no packets") end
@@ -307,11 +322,13 @@ elseif command == nil then
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end
     if info.address then print("Address:  " .. info.address) end
-    if info.cell and info.state == "attached" then print("Cell:     #" .. info.cell) end
+    if info.cell and info.state == "attached" then print("Cell:     #" .. cell_label(info.cell)) end
     if info.rejected then printError(info.rejected) end
     if info.activation_error then printError(info.activation_error) end
     for _, cell in ipairs(info.cells or {}) do
-        print(("  Cell #%-5d %4d dBm%s"):format(cell.id, math.floor(cell.signal + 0.5), cell.id == info.cell and " (in use)" or ""))
+        print(("  Cell #%-5s %4d dBm%s"):format(
+            cell_label(cell.id), math.floor(cell.signal + 0.5), cell.id == info.cell and " (in use)" or ""
+        ))
     end
     if info.state == "inactive" and #(info.networks or {}) > 0 then
         print("Networks in range: " .. table.concat(info.networks, ", "))

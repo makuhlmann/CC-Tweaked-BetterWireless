@@ -179,13 +179,14 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam table cell_positions Where each cell is: a number, along the line, or `{ x, y, z }`, in space.
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
-    core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number, bands? = { string... },
-    services? = { string... },
+    core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number,
+    bands? = table, services? = { string... },
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
-cells send system information; the band each cell asks to be on, by its index; and each cell's service, by its index
-(`"sms"` for one which only carries messages).
+cells send system information; the band each cell asks to be on, by its index (or a list of bands and carriers, for a
+computer with a cell on each: `towers[i].towers` has each cell's tower, by the cell's ID, and `towers[i].tower` the
+first's); and each cell's service, by its index (`"sms"` for one which only carries messages).
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -328,19 +329,27 @@ local function operator(cell_positions, options)
     end
     start_core()
 
-    -- A cell's tower, as the net API makes it: one for the cell, which serves the network of each core it joins.
+    -- A cell's tower, as the net API makes it: one for each cell the computer runs (one, unless it's on several
+    -- carriers), which serves the network of each core it joins.
     local function start_tower(entry)
         return function(welcome, control)
-            if not entry.tower or entry.tower.stopped then
-                entry.tower = cell_tower.new {
+            entry.towers = entry.towers or {}
+            local tower = entry.towers[welcome.id]
+            if not tower or tower.stopped then
+                for id, other in pairs(entry.towers) do
+                    if other.stopped then entry.towers[id] = nil end
+                end
+                tower = cell_tower.new {
                     stack = entry.stack, crypto = crypto, modem = "air", kind = "wireless", area = welcome.area,
-                    sign = entry.sign, epoch = now, can_serve = entry.can_serve,
+                    id = welcome.id, sign = entry.sign, epoch = now, can_serve = entry.can_serve,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
                     fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
                     service = welcome.service,
                 }
+                entry.towers[welcome.id] = tower
+                if welcome.id == entry.stack.id then entry.tower = tower end
             end
-            return entry.tower:add_network(welcome.network, {
+            return tower:add_network(welcome.network, {
                 certificate = welcome.certificate, core = ip(welcome.core), tunnel_key = welcome.tunnel_key,
                 control = control, carriers = welcome.carriers,
             })
@@ -373,7 +382,7 @@ local function operator(cell_positions, options)
         for _, link in pairs(entry.shared) do link:stop() end
         entry.shared = {}
         entry.service:stop()
-        if entry.tower then entry.tower:stop() end
+        for _, tower in pairs(entry.towers or {}) do tower:stop() end
         entry.service = start_cell(entry, entry.driver, { core_address })
     end
 
@@ -451,6 +460,19 @@ local function operator(cell_positions, options)
         end
         entry.shared[other.name] = link
         return link
+    end
+
+    --[[- Have one of this operator's cells serve another operator's network too, as `celld add` does: the cell's one
+    service connects to the other's core as well, and tells it which carriers its cells are on.
+
+    @tparam number i Which of this operator's cells.
+    @tparam table other The other operator.
+    ]]
+    function setup.add_core(i, other)
+        local entry = towers[i]
+        other.allow_cell(entry.driver.identity, entry.id)
+        entry.service:add_core(other.core_address)
+        entry.driver.poke()
     end
 
     --[[- Exchange messages with another operator's phones. The two cores agree, as `cellcore network` has them do, and
@@ -553,13 +575,14 @@ local function operator(cell_positions, options)
     end
 
     --[[ A relay: a computer only on the air, which is a phone of the network and a cell. Once its phone is attached,
-    its cell connects to the core over TCP, through its phone, and its tunnel goes the same way. ]]
-    local function add_relay(id, position)
+    its cell connects to the core over TCP, through its phone, and its tunnel goes the same way. `band` is the band its
+    cell asks to be on, or a list of bands and carriers for a cell on each. ]]
+    local function add_relay(id, position, band)
         local phone, stack = add_phone(id, position)
         local cell_private, cell_public = crypto.generateKeyPair("ed25519")
         local key = new_key()
         local relay = {
-            id = id, stack = stack, phone = phone, cells = {}, public = cell_public, shared = {},
+            id = id, stack = stack, phone = phone, cells = {}, public = cell_public, shared = {}, band = band,
             sign = function(data) return crypto.sign(cell_private, data) end,
             -- As the net API's: only serve while the phone, our way to the core, has service.
             can_serve = function()

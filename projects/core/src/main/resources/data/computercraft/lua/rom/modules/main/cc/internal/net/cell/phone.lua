@@ -570,7 +570,8 @@ function Phone:best(now, fits, others)
     if not others or (found and found.tier ~= FAILED and found.order < OTHER) then return found end
     local chosen = self.selection
     for id, cell in pairs(self.heard) do
-        if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and id ~= self.stack.id then
+        -- (Never one of this computer's own cells: a computer may run several, whose IDs give the computer's.)
+        if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and common.site_of(id) ~= self.stack.id then
             for name, entry in pairs(cell.networks) do
                 if name ~= own and not self.partners[name] and (chosen == nil or name == chosen)
                     and (chosen ~= nil or not self.forbidden:get(name))

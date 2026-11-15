@@ -45,6 +45,14 @@ describe("The celld program", function()
                 "There's no cellular band called b33. They're b31 (450MHz), b28 (700MHz), b20 (800MHz), b8 (900MHz), "
                     .. "b3 (1800MHz), b1 (2100MHz), b7 (2600MHz).\n",
             },
+            {
+                { "set", "band", "b20", "b3x" },
+                "There's no cellular band called b3x. They're b31 (450MHz), b28 (700MHz), b20 (800MHz), b8 (900MHz), "
+                    .. "b3 (1800MHz), b1 (2100MHz), b7 (2600MHz).\n",
+            },
+            { { "set", "band", "b20", "b3/99" }, "There's no carrier called b3/99. A band's carriers are numbered from 1, as in b20/1.\n" },
+            { { "set", "band" }, "Usage: celld set band <band>...\n" },
+            { { "set", "band", "b3", "b3", "b3", "b3", "b3", "b3", "b3", "b3", "b3" }, "Usage: celld set band <band>...\n" },
             { { "set", "power", "lots" }, "Expected a number, not lots.\n" },
             { { "set", "pos", "1", "2" }, "Usage: celld set pos <x> <y> <z>\n" },
             { { "set", "pos", "1", "2", "z" }, "A cell's position is three whole numbers: its computer's x, y and z.\n" },
@@ -124,6 +132,21 @@ describe("The celld program", function()
         expect(run("set", "pos", "1", "-2", "3").output):eq("The cell says it's at 1, -2, 3.\n")
     end)
 
+    it("takes several bands and carriers, for a cell on each", function()
+        local calls = setup(serving({ "core.acme" }, { "ACME" }))
+        expect(run("set", "band", "b20", "1800", "B3/2", "3")):matches {
+            ok = true, error = "",
+            output = "The computer has its cells on b20 (800MHz), b3 (1800MHz), b3/2, b3 (1800MHz) already, and they stay there.\n",
+        }
+        -- One carrier, by name, is a list too: only a band alone is as it always was.
+        expect(run("set", "band", "1800mhz/2")):matches { ok = true, error = "" }
+        expect(run("set", "band", "800")):matches { ok = true, error = "" }
+        expect(calls):same {
+            { "configure", { band = { "b20", "b3", "b3/2", "b3" } } }, { "configure", { band = { "b3/2" } } },
+            { "configure", { band = "b20" } },
+        }
+    end)
+
     it("says why net.cell wouldn't change something", function()
         setup(serving({ "core.acme" }, { "ACME" }), "No network this cell serves has a carrier in band b7, only in b20")
         expect(run("set", "band", "b7")):matches {
@@ -151,6 +174,31 @@ describe("The celld program", function()
             "",
         }, "\n"),
         }
+
+        -- A computer with a cell on each of several carriers, one of whose networks has no carrier for all it wants.
+        info = serving({ "core.acme", "core.beta" }, { "ACME", "BETA" })
+        info.band = { "b20", "b3/2", "b7" }
+        info.cells = {
+            { id = 11, carrier = "b20/1", ul = 8320 }, { id = 18125 * 2 ^ 31 + 11, carrier = "b3/2", ul = 17150 },
+        }
+        info.links[2].unplaced = { "b7" }
+        setup(info)
+        expect(run().output):eq(table.concat({
+            "Cell #11, area 3.",
+            "On b20/1, reached on channel 8320.",
+            "On b3/2, reached on channel 17150.",
+            "core.acme: serving ACME.",
+            "core.beta: serving BETA.",
+            "BETA has no carrier for b7: the cell isn't on it.",
+            "Settings ('celld set <setting> <value>'):",
+            "  area      3",
+            "  band      b20 (800MHz), b3/2, b7 (2600MHz)",
+            "  interval  as its core says",
+            "  pos       not said",
+            "  power     the modem's own",
+            "  service   full",
+            "",
+        }, "\n"))
 
         setup({ state = "stopped", id = 11, enabled = false, cores = { "core.acme", "core.beta" }, area = 0, interval = 4 })
         expect(run("status").output):eq(table.concat({

@@ -67,11 +67,13 @@ cores send each other, and what a core tells a phone when it attaches each carry
 Version 2 is the first which says so (version 1 had system information for one network only). Version 3 has one
 connection between two networks' cores, for all they do for each other. Version 4 puts cells on carriers (5MHz of a
 cellular band): system information says which channel to reach the cell on, how often it's sent, and which carriers
-the cell's network uses. Whoever is newer knows
+the cell's network uses. Version 5 lets one computer run cells on several carriers (a site with several bands, say):
+each is a cell of its own to phones, with an ID of its own (see [`carrier_cell`]), so nothing changes on the air, and
+the computer and its core say which of its cells each control message is about. Whoever is newer knows
 whether it can still talk to the other, so a computer which hears a newer version only notes it: a phone says the
 network is newer than it is while it can't find a cell it can use, and a core logs it.
 ]]
-local VERSION = 4
+local VERSION = 5
 
 --- Whether another computer says it speaks a newer version than we do.
 --
@@ -95,6 +97,48 @@ local REPLAY_WINDOW = 64
 -- @treturn boolean Whether it's an ID.
 local function is_id(value)
     return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 2 ^ 53
+end
+
+-- Computers' IDs are below this. The IDs of a computer's further cells are above it.
+local SITE_IDS = 2 ^ 31
+
+--[[- The ID of a cell a computer runs besides its first, on another carrier.
+
+A computer's first cell has the computer's ID, as every cell did before one computer could run several. Each further
+one's ID is made from the computer's ID and the cell's carrier, and is bigger than any computer's ID: so it's the same
+whenever the cell is on that carrier, no two cells share one, and anyone can tell which computer (which cell site) a
+cell is at. To phones it's a cell like any other: its ID is who its frames are from and to, what its certificate
+names, and what its key with a phone is made from.
+
+@tparam number site The computer's ID.
+@tparam number carrier The carrier's beacon channel.
+@treturn number The cell's ID.
+]]
+local function carrier_cell(site, carrier)
+    return carrier * SITE_IDS + site
+end
+
+--[[- Which computer a cell is at: its cell site.
+
+@tparam number cell The cell's ID.
+@treturn number The computer's ID.
+@treturn number|nil The cell's carrier (its beacon channel), if it isn't the computer's first cell, which doesn't say.
+]]
+local function site_of(cell)
+    local site = cell % SITE_IDS
+    if site == cell then return site, nil end
+    return site, (cell - site) / SITE_IDS
+end
+
+--[[- A cell's ID, for people to read: its computer's ID, and its carrier if it isn't the computer's first cell.
+
+@tparam number cell The cell's ID.
+@treturn string The ID, such as `"12"` or `"12 b3/1"`.
+]]
+local function cell_label(cell)
+    local site, carrier = site_of(cell)
+    if not carrier then return ("%d"):format(site) end
+    return ("%d %s"):format(site, bands.carrier_name(carrier) or ("?" .. carrier))
 end
 
 --- Whether a value could be a number prefix: up to 8 digits, which a network's numbers start with for other networks.
@@ -161,6 +205,60 @@ local function is_carriers(list)
         end
     end
     return true
+end
+
+--[[- The carrier something a cell site wants names, if it names one.
+
+What a site wants is a list of bands and carriers, by name: a band (`"b20"`) for any of its network's carriers there,
+or a carrier (`"b3/2"`) for that one. A band may come several times, for a cell on each of several of its carriers.
+
+@tparam string want The band's or carrier's name.
+@treturn number|nil The carrier's beacon channel, or `nil` if it's a band (or nothing at all).
+]]
+local function want_carrier(want)
+    if type(want) ~= "string" or not want:find("/", 1, true) then return nil end
+    return bands.parse_carrier(want)
+end
+
+--- Whether a value is what a cell site may want: a list of 1 to [`MAX_CARRIERS`] cellular bands and carriers, by name.
+--
+-- @param list The list, which may be anything.
+-- @treturn boolean Whether it is.
+local function is_wants(list)
+    if type(list) ~= "table" or #list < 1 or #list > MAX_CARRIERS then return false end
+    for k, v in pairs(list) do
+        if type(k) ~= "number" or k < 1 or k > #list or k % 1 ~= 0 or type(v) ~= "string" then return false end
+        local band = bands.get(v)
+        if not (band and band.downlink) and not want_carrier(v) then return false end
+    end
+    return true
+end
+
+--[[- Match what a cell site wants with carriers, one for one: first each carrier it names, then a carrier in each band
+it names.
+
+@tparam { string... } wants What it wants, as [`is_wants`] takes it.
+@tparam { number... } carriers The carriers there are, by their beacon channels, in order of preference.
+@treturn { [number] = number } The carrier which answers each want, by the want's place in the list. Wants there's no
+carrier for have none.
+@treturn { [number] = boolean } Which carriers answer a want.
+]]
+local function match_wants(wants, carriers)
+    local by_want, used = {}, {}
+    for pass = 1, 2 do
+        for i, want in ipairs(wants) do
+            local named = want_carrier(want)
+            if not by_want[i] and (pass == 1) == (named ~= nil) then
+                for _, carrier in ipairs(carriers) do
+                    local _, band = bands.carrier_of(carrier)
+                    if not by_want[i] and not used[carrier] and (carrier == named or (not named and band == want)) then
+                        by_want[i], used[carrier] = carrier, true
+                    end
+                end
+            end
+        end
+    end
+    return by_want, used
 end
 
 --- Whether a value could be a cell's position: three whole numbers, as `celld` takes it.
@@ -467,6 +565,9 @@ return {
     MAX_SIB_NETWORKS = MAX_SIB_NETWORKS,
     TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
+    carrier_cell = carrier_cell,
+    site_of = site_of,
+    cell_label = cell_label,
     is_id = is_id,
     is_network = is_network,
     is_number_prefix = is_number_prefix,
@@ -474,6 +575,9 @@ return {
     is_interval = is_interval,
     is_uplink = is_uplink,
     is_carriers = is_carriers,
+    is_wants = is_wants,
+    want_carrier = want_carrier,
+    match_wants = match_wants,
     is_position = is_position,
     make_code = make_code,
     parse_code = parse_code,
