@@ -12,8 +12,9 @@ local name = arg[0] or fs.getName(shell.getRunningProgram())
 
 local function usage()
     print("Usages:")
+    print(name)
     print(name .. " setup <network> <prefix> [numbers]")
-    print(name .. " [status]")
+    print(name .. " status")
     print(name .. " start|stop|restart")
     print(name .. " log")
     print(name .. " add <id> <number> [file]")
@@ -31,7 +32,7 @@ local function usage()
     print(name .. " numbers <prefix>")
     print(name .. " spectrum [carrier...]")
     print(name .. " beacon [seconds]")
-    print(name .. " remote <core> <command...>")
+    print(name .. " remote <core> [command...]")
 end
 
 if not crypto or not enclave then
@@ -39,36 +40,18 @@ if not crypto or not enclave then
     return
 end
 
-local files = require "cc.internal.net.files"
-local common = require "cc.internal.net.cell.common"
-local read_table, write_table = files.read_table, files.write_table
+local core_menu = require "cc.internal.net.cell.core_menu"
+
+-- With nothing asked of it, it shows the core's menu: everything below, to look through and change.
+if #args == 0 then return core_menu.run { name = name } end
 
 -- Commands which only work on the core's own computer.
-local command = args[1] or "status"
+local command = args[1]
 if command == "setup" then
     if #args ~= 3 and #args ~= 4 then return usage() end
     local network, prefix, numbers = args[2], args[3], args[4]
-    if not network:match("^[%w%-]+$") or #network > 32 then
-        printError("Network names are letters, digits and dashes, up to 32 of them.")
-        return
-    end
-    local addr, length = require("cc.net.address").parse(prefix)
-    if not addr or not length or length > 30 then
-        printError("Expected the network for phones' addresses, such as 10.64.0.0/16.")
-        return
-    end
-    if numbers and (#numbers > 8 or not numbers:match("^%d+$")) then
-        printError("Number prefixes are 1 to 8 digits, such as 555.")
-        return
-    end
-    local config = read_table(CONFIG)
-    config.network, config.prefix, config.enabled = network, prefix, nil
-    if numbers then config.number_prefix = numbers end
-    -- Start again with the new settings.
-    net.cell.stopCore()
-    write_table(CONFIG, config)
-    local ok, err = net.cell.startCore()
-    if not ok then
+    local config, err = core_menu.setup(network, prefix, numbers)
+    if not config then
         printError(err)
         return
     end
@@ -101,7 +84,9 @@ if command == "remote" then
     target, remote = args[2], true
     table.remove(args, 1)
     table.remove(args, 1)
-    command = args[1] or "status"
+    -- Another computer's core has a menu too.
+    if #args == 0 then return core_menu.run { name = name, target = target, remote = true } end
+    command = args[1]
     if command == "setup" or command == "start" then
         printError(("'%s' only works on the core itself."):format(command))
         return
@@ -161,47 +146,13 @@ local function find(entries, who)
     return found
 end
 
--- What each kind of computer does, as "wants to ..." and "allowed to ...".
-local WANTS = { cell = "be a cell", admin = "manage the network" }
-
--- What another network's core offers, in words.
-local function offers(asks)
-    local parts = {}
-    if asks and asks.carry then parts[#parts + 1] = "carry this network's phones" end
-    if asks and asks.messages then parts[#parts + 1] = "exchange messages with this network's phones" end
-    return #parts > 0 and table.concat(parts, " and ") or "make an agreement with this network"
-end
-
-local function describe(entry)
-    local role = ({ admin = "manager", network = "core of " .. tostring(entry.network or "?") })[entry.role] or entry.role
-    return ("#%s %s, %s"):format(tostring(entry.id or "?"), role, entry.fingerprint)
-end
-
-local function since(epoch)
-    return os.date("%H:%M", math.floor(epoch / 1000))
-end
+local wants, offers, describe, since = core_menu.wants, core_menu.offers, core_menu.describe, core_menu.since
 
 local commands = {}
 
 function commands.status()
     local status = request({ op = "status" })
-    print(("Core of %s, phones in %s%s"):format(
-        status.network, status.prefix, status.number_prefix and ", numbers +" .. status.number_prefix or ""
-    ))
-    local cells = {}
-    for _, cell in ipairs(status.cells) do cells[#cells + 1] = "#" .. cell.id end
-    print(#cells > 0 and "Cells: " .. table.concat(cells, ", ") or "No cells connected.")
-    local attached = 0
-    for _, subscriber in ipairs(status.subscribers) do
-        if subscriber.cell then attached = attached + 1 end
-    end
-    print(("Phones: %d attached, of %d subscribers"):format(attached, #status.subscribers))
-    if status.messages > 0 then print(("Messages waiting: %d"):format(status.messages)) end
-    if status.codes > 0 then print(("Activation codes not used yet: %d"):format(status.codes)) end
-    local away, visiting = 0, 0
-    for _, network in ipairs(status.networks or {}) do away, visiting = away + network.phones, visiting + network.visitors end
-    if away > 0 then print(("Roaming on other networks: %d"):format(away)) end
-    if visiting > 0 then print(("Other networks' phones here: %d"):format(visiting)) end
+    for _, line in ipairs(core_menu.status_lines(status)) do print(line) end
     if #status.waiting > 0 then
         print("Waiting to be allowed:")
         for _, entry in ipairs(status.waiting) do print("  " .. describe(entry)) end
@@ -278,7 +229,7 @@ function commands.allow(who, label)
         if not (digits:match("^%x+$") and #digits >= 8) then
             print(("#%s%s wants to %s. Its fingerprint is"):format(
                 tostring(target.id or "?"), target.network and ", the core of " .. target.network .. "," or "",
-                target.role == "network" and offers(target.asks) or WANTS[target.role] or "be a cell"
+                target.role == "network" and offers(target.asks) or wants(target.role)
             ))
             print("  " .. target.fingerprint)
             write("Does it show the same one? [y/N] ")
@@ -296,7 +247,7 @@ function commands.allow(who, label)
         if reply.messages then print("Its phones and this network's can send each other messages.") end
         print(("'cellcore network %s' shows the agreement, and changes it."):format(reply.network))
     else
-        print(("Allowed #%s to %s, as %s."):format(tostring(reply.id or "?"), WANTS[reply.role] or "be a cell", reply.label))
+        print(("Allowed #%s to %s, as %s."):format(tostring(reply.id or "?"), wants(reply.role), reply.label))
     end
 end
 
@@ -359,16 +310,7 @@ function commands.subscribers()
     end
     local rows = { { "ID", "Number", "Phone" } }
     for _, subscriber in ipairs(status.subscribers) do
-        local where = "-"
-        if subscriber.barred then
-            where = "barred"
-        elseif subscriber.cell then
-            where = ("cell #%s%s, %s"):format(
-                common.cell_label(subscriber.cell), subscriber.roaming and " of " .. subscriber.roaming or "", subscriber.address
-            )
-        end
-        if subscriber.may_roam == false then where = where .. " (no roaming)" end
-        rows[#rows + 1] = { tostring(subscriber.id), tostring(subscriber.number), where }
+        rows[#rows + 1] = { tostring(subscriber.id), tostring(subscriber.number), core_menu.where_is(subscriber) }
     end
     textutils.tabulate(table.unpack(rows))
 end
@@ -403,41 +345,9 @@ function commands.restart()
     print("Starting the core afresh. Cells join again by themselves, and phones attach again, with new addresses.")
 end
 
--- How the connection to another network's core is going, in words.
-local STATES = {
-    connecting = "connecting", waiting = "waiting to be allowed by its core", connected = "connected",
-    lost = "can't reach its core", refused = "refused",
-}
-
-local function how(network)
-    if network.connected then return "connected" end
-    if not network.state then return network.key and "waiting for its core to connect" or "not met yet" end
-    local text = STATES[network.state] or tostring(network.state)
-    if network.error then text = text .. ": " .. network.error end
-    return text
-end
-
 -- Show an agreement: who the other network's core is, what the two do for each other, and how it's going.
 local function show(network, status)
-    local where = network.core and (" at " .. network.core) or ""
-    print(("%s, core #%s%s: %s"):format(network.network, tostring(network.id or "?"), where, how(network)))
-    if network.carry then
-        print(("  Carries its phones%s"):format(network.carrying and (" (%d here)"):format(network.visitors) or ""))
-    end
-    if network.roam then
-        print(("  This network's phones %s its cells%s"):format(
-            network.roam == "home" and "treat as home" or "roam on", network.carried and (" (%d there)"):format(network.phones) or ""
-        ))
-    end
-    if network.messages then
-        local text = "  Messages between the networks' phones"
-        if network.prefix then text = text .. (", its numbers starting %s"):format(network.prefix) end
-        if (network.waiting or 0) > 0 then text = text .. (", %d waiting"):format(network.waiting) end
-        print(text)
-        if not status.number_prefix then print("  (This network needs a number prefix first: 'cellcore numbers')") end
-    end
-    if not network.carry and not network.roam and not network.messages then print("  Nothing agreed") end
-    if network.fingerprint then print("  Its fingerprint: " .. network.fingerprint) end
+    for _, line in ipairs(core_menu.network_lines(network, status)) do print(line) end
 end
 
 function commands.networks()

@@ -498,6 +498,15 @@ the design above:
     home core only takes messages, handovers and packets for a phone from the cell (or visited core) it's at. A
     subscriber whose entry has `roaming = false` is refused when roaming.
   - **Messages** to and from a roaming phone go through the visited core to the home core, which keeps them as ever.
+- **Menus.** `celld` and `cellcore`, run with nothing asked of them, open a menu (`celld status` and `cellcore
+  status` say what they used to): how the cell or the network is doing, kept up to date, and everything the commands
+  can change, to look through and change where it's shown. A cell's has its status, cores and settings; a core's its
+  status, the computers waiting and allowed, cells, subscribers, agreements with other networks, carriers and the
+  like, and its log, and offers to set a core up where there's none (`cellcore remote <core>` opens another
+  computer's). They ask `net.cell` and the core for exactly what the commands do, so what's refused is said and
+  changes nothing, and they ask before anything which costs phones their service. The phone's menus (`cell gui`) and
+  these are made of the same lists, questions and lines to type in (`cc.internal.net.cell.menu`); while a menu waits
+  for a core's answer, what's typed is kept for afterwards.
 - **Shared cells** (like LTE's multi-operator core networks): one cell may serve several networks, whose operators
   plan a site together where neither would build alone. `celld add core.acme` and `celld add core.beta` connect the
   cell to each core,

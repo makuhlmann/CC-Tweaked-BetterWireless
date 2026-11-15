@@ -4,7 +4,8 @@ Cells (and computers which manage the core from elsewhere) wait until they're al
 
 ex:
 "cellcore setup ACME 10.64.0.0/16 555" sets up the network ACME, giving phones addresses in 10.64.0.0/16, and starts it. Its number prefix is 555 (it may be left out, and set later with "cellcore numbers"): other networks' phones reach ACME's at 555 followed by their number, once the networks exchange messages.
-"cellcore" shows how the core is doing, and who is waiting to be allowed.
+"cellcore" opens the core's menu: how the network is doing, the computers waiting to be allowed and those which were, its cells, subscribers and agreements with other networks, its carriers, and its log, each of which can be changed where it's shown, with the keyboard or the mouse. On a computer which isn't a core yet, it offers to set one up. Everything in it can also be done with the commands below.
+"cellcore status" says how the core is doing, and who is waiting to be allowed.
 "cellcore stop" stops the core, and "cellcore start" starts it again. "cellcore restart" starts it afresh: cells and phones lose it for a moment, and phones get new addresses.
 "cellcore log" shows what the core has done lately, and keeps showing new lines until Ctrl+T is pressed.
 "cellcore add ACME-0042 0042" makes an activation code for a subscriber with the number 0042, for a day.
@@ -24,4 +25,4 @@ ex:
 Phones send to the phones of a network they exchange messages with by number, with that network's number prefix in front: "666" and "0042" make "6660042". Both networks need number prefixes, and different ones. Messages go over the secure connection between the cores, which say whether they took each one. While BETA's core can't be reached, messages for it wait here, and go when it's back. A number with no prefix this network knows can't be reached.
 "cellcore network BETA forget" drops the agreement with BETA. BETA's core ends it from its side with "cellcore deny".
 "cellcore roaming" and "cellcore peers" list the networks this one roams with, and exchanges messages with. "cellcore carry", "uncarry", "partner", "peer" and "unpeer", as older versions had them, still work, and change the agreements.
-"cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time. Everything but "setup" and "start" works this way, over a secure connection. Programs can manage a core too, with net.cell.manage.
+"cellcore remote 10.64.0.1 add ACME-0043 0043" does the same on the core at 10.64.0.1, from another computer (even a phone, through the network itself). That computer waits to be allowed the first time. Everything but "setup" and "start" works this way, over a secure connection, and "cellcore remote 10.64.0.1" alone opens that core's menu. Programs can manage a core too, with net.cell.manage.

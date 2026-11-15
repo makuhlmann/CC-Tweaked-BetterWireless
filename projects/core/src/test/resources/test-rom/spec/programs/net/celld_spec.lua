@@ -158,7 +158,7 @@ describe("The celld program", function()
         local info = serving({ "core.acme" }, { "ACME" })
         info.band, info.current_interval, info.pos, info.power, info.service = "b3", 2, { 1, 2, -3 }, 30, "sms"
         setup(info)
-        expect(run()):matches {
+        expect(run("status")):matches {
             ok = true,
             output = table.concat({
             "Cell #11, area 3.",
@@ -183,7 +183,7 @@ describe("The celld program", function()
         }
         info.links[2].unplaced = { "b7" }
         setup(info)
-        expect(run().output):eq(table.concat({
+        expect(run("status").output):eq(table.concat({
             "Cell #11, area 3.",
             "On b20/1, reached on channel 8320.",
             "On b3/2, reached on channel 17150.",
@@ -215,7 +215,7 @@ describe("The celld program", function()
         }, "\n"))
 
         setup({ state = "stopped", id = 11, enabled = true })
-        expect(run().output):str_match("^This computer isn't running a cell. Start one with 'celld add <core>'.\n")
+        expect(run("status").output):str_match("^This computer isn't running a cell. Start one with 'celld add <core>'.\n")
     end)
 
     it("starts, stops and starts the cell again", function()

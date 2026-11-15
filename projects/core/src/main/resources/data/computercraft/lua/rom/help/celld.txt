@@ -7,7 +7,8 @@ The first time, the core must allow the cell: celld shows the command to run on 
 A cell can be a relay, with no link of its own to the core: activate the computer as a phone of the network first (with "cell activate"), then run "celld add 10.64.0.1" (the core's gateway address, or any of the core's addresses), and the cell reaches the core through its own phone. A relay's phone never uses a cell behind it, and the relay only serves phones while its own phone has service.
 
 ex:
-"celld" shows how the cell is doing, and its settings.
+"celld" opens the cell's menu: how the cell is doing, its cores and its settings, each of which can be changed where it's shown, with the keyboard or the mouse. Everything in it can also be done with the commands below.
+"celld status" says how the cell is doing, and its settings.
 "celld add core.acme" runs a cell of the network whose core is core.acme. Any name or address will do, whatever it's called.
 "celld add core.beta" makes it one cell for two networks, whose operators share it (as for a cell site in a quiet area, which neither would build alone). It connects to both cores, each of which must allow it, and serves each network's phones, and phones roaming on either. Each network sees the cell as one of its own. If one core is lost, the cell carries on serving the other network. Adding a core doesn't disturb the networks it serves already.
 "celld remove core.beta" stops serving that core's network (or give the network's name), and carries on serving the others. A cell with no cores left stops.

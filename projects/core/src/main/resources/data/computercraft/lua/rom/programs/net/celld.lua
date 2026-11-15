@@ -9,12 +9,12 @@
 local args = { ... }
 local name = arg[0] or fs.getName(shell.getRunningProgram())
 
-local bands = require "cc.internal.net.bands"
-local common = require "cc.internal.net.cell.common"
+local cell_menu = require "cc.internal.net.cell.cell_menu"
 
 local function usage()
     print("Usages:")
-    print(name .. " [status]")
+    print(name)
+    print(name .. " status")
     print(name .. " add <core>")
     print(name .. " remove <core>")
     print(name .. " set area <number>")
@@ -33,14 +33,7 @@ if not crypto or not enclave then
 end
 
 -- Each setting, with what it takes after its name (for "set"), in the order they're shown.
-local SETTINGS = {
-    { name = "area", takes = "<number>" },
-    { name = "band", takes = "<band>...", most = common.MAX_CARRIERS },
-    { name = "interval", takes = "<seconds>" },
-    { name = "pos", takes = "<x> <y> <z>", count = 3 },
-    { name = "power", takes = "<dBm>" },
-    { name = "service", takes = "sms|full" },
-}
+local SETTINGS = cell_menu.SETTINGS
 local SETTING = {}
 for _, setting in ipairs(SETTINGS) do SETTING[setting.name] = setting end
 
@@ -50,69 +43,16 @@ local function setting_names()
     return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
 end
 
--- A band, as a person might write it: "b3", "B3", "3", or its frequency, "1800" or "1800MHz". Or one of a band's
--- carriers: the band, and which 5MHz of it, as in "b3/2".
-local function parse_band(text)
-    local wanted, index = text:lower():match("^([^/]+)/(%d+)$")
-    wanted = (wanted or text:lower()):gsub("mhz$", "")
-    for _, band in ipairs(bands.cellular()) do
-        if wanted == band.name or "b" .. wanted == band.name or wanted == band.label then
-            if not index then return band.name end
-            local carrier = bands.parse_carrier(band.name .. "/" .. index)
-            return carrier and bands.carrier_name(carrier)
-        end
-    end
-end
-
--- A band (or a carrier), or several, for people to read.
-local function band_label(band_name)
-    if type(band_name) == "table" then
-        local labels = {}
-        for i, each in ipairs(band_name) do labels[i] = band_label(each) end
-        return table.concat(labels, ", ")
-    end
-    local band = bands.get(band_name)
-    return band and band.label and ("%s (%sMHz)"):format(band_name, band.label) or band_name
-end
-
 -- Say what the cell is doing with one of its cores. `added` is the core just added, which may have been mistyped.
 local function show_link(info, link, added)
-    if link.state == "connecting" then
-        print(("%s: connecting..."):format(link.core))
-    elseif link.state == "waiting" then
-        print(("%s: waiting to be allowed. On that core, run 'cellcore allow %d', and check it shows this fingerprint:"):format(link.core, info.id))
-        print("  " .. tostring(info.fingerprint))
-    elseif link.state == "serving" then
-        print(("%s: serving %s."):format(link.core, link.network))
-    elseif link.state == "refused" then
-        printError(("%s refused this cell: %s"):format(link.core, tostring(link.error)))
-    elseif link.state == "lost" then
-        printError(("%s can't be reached: %s"):format(link.core, tostring(link.error)))
-        if link.retry then print(("Trying again in %d seconds."):format(link.retry)) end
-        if link.core == added then print(("If that's not the right core, '%s remove %s' stops trying."):format(name, link.core)) end
-    end
-    if link.state == "serving" and link.unplaced and link.unplaced[1] then
-        print(("%s has no carrier for %s: the cell isn't on it."):format(link.network, table.concat(link.unplaced, ", ")))
-    end
-    if link.newer then
-        print(("%s speaks a newer version of the network (%d). If they don't work together, update this cell's ROM."):format(
-            link.core, link.newer
-        ))
+    for _, line in ipairs(cell_menu.link_lines(info, link, name, added)) do
+        if line.bad then printError(line.text) else print(line.text) end
     end
 end
 
 -- Show the cell's settings, set or not.
 local function show_settings(info)
-    local shown = {
-        area = tostring(info.area or 0),
-        band = info.band and band_label(info.band) or "any (its core picks)",
-        interval = info.interval and ("%g seconds"):format(info.interval)
-            or info.current_interval and ("as its core says (%g seconds)"):format(info.current_interval)
-            or "as its core says",
-        pos = info.pos and ("%d %d %d"):format(info.pos[1], info.pos[2], info.pos[3]) or "not said",
-        power = info.power and ("%g dBm"):format(info.power) or "the modem's own",
-        service = info.service == "sms" and "messages only" or "full",
-    }
+    local shown = cell_menu.setting_values(info)
     print(("Settings ('%s set <setting> <value>'):"):format(name))
     for _, setting in ipairs(SETTINGS) do print(("  %-9s %s"):format(setting.name, shown[setting.name])) end
 end
@@ -130,10 +70,7 @@ local function show(info)
         print("Cores: " .. table.concat(info.cores, ", "))
     else
         print(("Cell #%d, area %d."):format(info.id, info.area or 0))
-        -- A cell on each carrier the computer is on: one, unless it was set to be on several bands.
-        for _, cell in ipairs(info.cells or { info }) do
-            if cell.carrier then print(("On %s, reached on channel %d."):format(cell.carrier, cell.ul)) end
-        end
+        for _, line in ipairs(cell_menu.carrier_lines(info)) do print(line) end
         for _, link in ipairs(info.links or {}) do show_link(info, link) end
     end
     show_settings(info)
@@ -178,94 +115,23 @@ local function watch(only)
     end
 end
 
--- A setting's value, from what was typed after its name. `false` means "full" for the service: not only messages.
-local function read_value(key, words)
-    local text = words[1]
-    if key == "band" then
-        -- One band, or several bands and carriers: a cell on each.
-        local list = {}
-        for i, word in ipairs(words) do
-            local band = parse_band(word)
-            if not band and word:find("/", 1, true) then
-                error(("There's no carrier called %s. A band's carriers are numbered from 1, as in b20/1."):format(word), 0)
-            elseif not band then
-                local names = {}
-                for _, each in ipairs(bands.cellular()) do names[#names + 1] = band_label(each.name) end
-                error(("There's no cellular band called %s. They're %s."):format(word, table.concat(names, ", ")), 0)
-            end
-            list[i] = band
-        end
-        if #list == 1 and not list[1]:find("/", 1, true) then return list[1] end
-        return list
-    elseif key == "service" then
-        if text == "sms" then return "sms" end
-        if text == "full" then return false end
-        error("A cell's service is sms (it only carries messages) or full.", 0)
-    elseif key == "pos" then
-        local x, y, z = tonumber(words[1]), tonumber(words[2]), tonumber(words[3])
-        if not x or not y or not z then error("A cell's position is three whole numbers: its computer's x, y and z.", 0) end
-        return { x, y, z }
-    end
-    local number = tonumber(text)
-    if not number then error(("Expected a number, not %s."):format(text), 0) end
-    return number
-end
+local read_value = cell_menu.read_value
 
 local function check(ok, err)
     if not ok then error(err, 0) end
     return ok, err
 end
 
--- What changing each setting did, for a cell which runs. `restarted` if it started again for it.
+-- Say what changing a setting did, for a cell which runs. `restarted` if it started again for it.
 local function say_changed(info, key, value, restarted)
-    if key == "area" then
-        print(("The cell is in area %d now."):format(value or 0))
-    elseif key == "band" then
-        if type(value) == "table" and info.state ~= "stopped" and not restarted then
-            print(("The computer has its cells on %s already, and they stay there."):format(band_label(value)))
-        elseif type(value) == "table" then
-            print(("The computer runs a cell on each of %s: carriers of its core's."):format(band_label(value)))
-        elseif value and info.state ~= "stopped" and not restarted then
-            print(("The cell is on band %s already, and stays there."):format(band_label(value)))
-        elseif value then
-            print(("The cell goes on a carrier of its core's in band %s."):format(band_label(value)))
-        else
-            print("The cell may go on any of its core's carriers, when it next connects. It stays where it is until then.")
-        end
-    elseif key == "interval" then
-        if value then
-            print(("The cell sends its system information every %g seconds, whatever its core says."):format(value))
-        else
-            print("The cell sends its system information as often as its core says.")
-        end
-    elseif key == "pos" then
-        if value then
-            print(("The cell says it's at %d, %d, %d."):format(value[1], value[2], value[3]))
-        else
-            print("The cell no longer says where it is.")
-        end
-    elseif key == "power" then
-        if value then print(("The cell sends with %g dBm."):format(value)) else print("The cell sends with its modem's own power.") end
-    elseif key == "service" then
-        if value then
-            print("The cell only carries messages now. Its phones move to a cell which carries everything, if there's one.")
-        else
-            print("The cell carries everything.")
-        end
-    end
-    if restarted then
-        print("It started again for that: its phones lose service for a moment, and attach again.")
-        watch()
-    elseif info.state == "stopped" then
-        if not info.cores then
-            print(("It's kept for when the cell starts. Add a core with '%s add <core>'."):format(name))
-        else
-            print(("It's kept for when the cell starts again ('%s start')."):format(name))
-        end
-    end
+    for _, line in ipairs(cell_menu.changed_lines(info, key, value, restarted, name)) do print(line) end
+    if restarted then watch() end
 end
 
-local command = args[1] or "status"
+-- With nothing asked of it, it shows the cell's menu: everything below, to look through and change.
+if #args == 0 then return cell_menu.run(name) end
+
+local command = args[1]
 
 if command == "status" then
     if #args > 1 then return usage() end
