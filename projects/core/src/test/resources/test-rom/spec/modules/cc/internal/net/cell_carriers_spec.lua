@@ -168,19 +168,48 @@ describe("Cellular carriers", function()
         local events = #phone.events
 
         -- Further away, band 20's is stronger still, but band 3's is good enough to stay on.
-        acme.positions[1] = -60
+        acme.positions[1] = -20
         net.advance(10)
         expect(phone.cell):eq(12)
 
-        -- Further, band 3's is too weak: it moves down.
-        acme.positions[1] = -78
+        -- Further, band 3's is no longer strong: it moves down, handed over while band 3's cell is still well within
+        -- reach, rather than losing it.
+        acme.positions[1] = -44
         wait_until(net, function() return phone.cell == 11 end, 20, "Moving down a band")
         expect(#phone.events):eq(events + 1)
         expect(phone.events[#phone.events].kind):eq("handover")
+        expect(phone.cells[12].signal >= -85):eq(true)
 
         -- Back again, band 3's is strong enough once more: it moves up.
         acme.positions[1] = 5
         wait_until(net, function() return phone.cell == 12 end, 20, "Moving up a band")
+        expect(net.ping(stack, ip("10.0.0.60"))):matches { done = true }
+        expect(net.errors):same {}
+    end)
+
+    it("uses a nearby cell on a low band rather than a far one on a high band", function()
+        math.randomseed(8)
+        -- Cell 11 on band 8 (900MHz) at 0, cell 12 on band 1 (2100MHz) at 70.
+        local acme = operator({ 0, 70 }, { carriers = { "b8/1", "b1/1" }, bands = { "b8", "b1" } })
+        local net = acme.net
+        -- Beside band 8's cell, band 1's can be heard, with bars to spare: but it isn't strong, and behind the next
+        -- wall it would be gone. The phone uses the cell beside it, whichever it heard first.
+        local phone, stack = acme.add_phone(1, 6)
+        wait_until(net, function() return phone.state == "attached" and phone.cells[11] and phone.cells[12] end, 15, "Hearing both")
+        net.advance(10)
+        expect(phone.cell):eq(11)
+        expect({ phone.cells[12].signal > -90, phone.cells[12].signal < -70 }):same { true, true }
+
+        -- Nearer the other, it stays until band 1's is strong, and is then handed up.
+        acme.positions[1] = 28
+        net.advance(10)
+        expect(phone.cell):eq(11)
+        acme.positions[1] = 44
+        wait_until(net, function() return phone.cell == 12 end, 20, "Moving up a band")
+        -- And handed down again in good time, on the way back.
+        acme.positions[1] = 20
+        wait_until(net, function() return phone.cell == 11 end, 20, "Moving down a band")
+        expect(phone.events[#phone.events]):matches { kind = "handover", from = 12, to = 11 }
         expect(net.ping(stack, ip("10.0.0.60"))):matches { done = true }
         expect(net.errors):same {}
     end)

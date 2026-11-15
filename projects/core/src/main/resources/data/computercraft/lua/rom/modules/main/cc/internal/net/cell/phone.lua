@@ -149,7 +149,10 @@ end
 
 -- Where cells on several bands will do, a phone uses the highest band whose cell is at least this strong, in dBm, as
 -- phones do in LTE: higher bands have more room for phones, lower ones reach further. Below it, the strongest wins.
-local BAND_THRESHOLD = -95
+-- It's well above what's too weak to use (`NO_SERVICE`): a higher band fades fast behind a wall, and a phone which
+-- stayed on one until it was nearly gone would lose its cell there, where it should have been handed down a band in
+-- good time. So a higher band is only for where it has full bars.
+local BAND_THRESHOLD = -70
 
 --- How a cell's band ranks: its downlink's frequency, so higher bands rank higher.
 --

@@ -270,10 +270,13 @@ the design above:
     cell's network, and partners' while roaming) were heard naming in the last five minutes, and its own downlink
     channel; and on every carrier for five seconds each minute, to find other networks and new carriers. Two networks
     on the same carrier hear each other's cells, so neighbouring networks should be given different ones.
-  - **Bands.** Where cells on several bands will do, a phone uses the highest band whose cell is at least −95 dBm
+  - **Bands.** Where cells on several bands will do, a phone uses the highest band whose cell is at least −70 dBm
     (higher bands have more room for phones, lower ones reach further), and otherwise the strongest. Attached, it
     moves up a band once the higher band's cell is 3 dB above that, and down only once its own cell is 3 dB below it
-    and another is 3 dB stronger, so it doesn't go back and forth at the edge. A site with several bands has a cell
+    and another is 3 dB stronger, so it doesn't go back and forth at the edge. That's where the status bar shows
+    full bars, 30 dB above what's too weak to use: a higher band fades fast behind a wall, and a phone which stayed
+    on a far cell there until it was nearly gone (as it did, down to −95 dBm) lost it walking past a building,
+    where it's now handed down a band in good time, and prefers the cell beside it to begin with. A site with several bands has a cell
     for each, on one computer or several.
   - **System information** names, for each network, the carriers its cells use, so a phone listens for all of them
     as soon as it hears one cell (as LTE's SIB5 does), and says how often it's sent. Cells send it every 2 seconds

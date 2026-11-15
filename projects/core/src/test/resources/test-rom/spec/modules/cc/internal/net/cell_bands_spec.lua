@@ -246,7 +246,7 @@ describe("Cell sites with several bands", function()
         local site = acme.towers[1]
         local high = common.carrier_cell(11, B3_1)
 
-        local phone, stack = acme.add_phone(1, 10)
+        local phone, stack = acme.add_phone(1, 4)
         wait_until(net, function() return phone.state == "attached" and phone.cell == high end, 15, "Using band 3")
         wait_until(net, function() return session(acme, phone).cell == high end, 10, "The core hearing of it")
         local address, events = phone.address, #phone.events
@@ -266,7 +266,7 @@ describe("Cell sites with several bands", function()
         expect(phone.here.dl >= block[1] and phone.here.dl <= block[2]):eq(true)
 
         -- Back near it, band 3 is strong enough again: up it goes.
-        acme.positions[1] = 10
+        acme.positions[1] = 4
         wait_until(net, function() return phone.cell == high end, 20, "Moving up a band")
         wait_until(net, function() return session(acme, phone).cell == high end, 10, "The core moving its tunnel back")
         expect(phone.address):eq(address)
@@ -376,8 +376,8 @@ describe("Cell sites with several bands", function()
             :same { "serving", "ACME", "serving", "BETA" }
 
         -- A phone of each network, on band 3 near the computer, and handed down to band 20 further away.
-        local ours, ours_stack = acme.add_phone(1, 10)
-        local theirs, theirs_stack = beta.add_phone(2, 12)
+        local ours, ours_stack = acme.add_phone(1, 4)
+        local theirs, theirs_stack = beta.add_phone(2, 6)
         wait_until(net, function()
             return ours.state == "attached" and ours.cell == high and theirs.state == "attached" and theirs.cell == high
         end, 20, "Using band 3")
@@ -469,7 +469,7 @@ describe("Cell sites with several bands", function()
         expect(net.ping(stack, ip("10.0.0.60")).error):eq(nil)
 
         -- A relay behind that one names the computer in its path, not which of its cells it came through.
-        local second = acme.add_relay(31, 110)
+        local second = acme.add_relay(31, 64)
         wait_until(net, function() return second.phone.cell == high end, 60, "The second relay's phone on band 3")
         wait_until(net, function() return second.tower ~= nil and #second.tower.links.ACME.path == 2 end, 60, "The second relay")
         expect(acme.core:path_of(31)):same { 30, 11 }
