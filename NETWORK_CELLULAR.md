@@ -216,6 +216,14 @@ the design above:
       other. The network stack lets an interface have an ID of its own for this: the cells share the computer's
       modem, each with an interface (`cell.tower`, `cell.tower.b3/1`) listening on its own uplink channel, and the
       tunnels' port, where each cell's tunnel has a key of its own.
+    - **Standing by.** A cell which gets its first core (`celld add`) doesn't go on the air by itself: where it
+      sends, and how far that reaches, is for whoever sets it up to decide. It connects to the core, which must
+      allow it, and says it's standing by; the core gives it no carrier, tells it which carriers the network has, and
+      lists it for the administrator as let in but choosing its bands. `celld` shows the carriers; `celld set band
+      ...` (or `celld confirm`, for the bands as set, or any) confirms them, and the cell connects again and is
+      placed. Nothing was on the air until then, so no phone found it. Cells set up earlier, or started by a program
+      (`net.cell.startCell` with a core), never stand by; an older core places a standing-by cell at once, which
+      still sends nothing until it's confirmed.
     - **Power** is the modem's, so one for all of a computer's cells (`celld set power`). Lower bands still reach
       further at the same power, which is what makes one band the coverage and the other the capacity.
     - **The core** is told what the computer wants when it connects (`bands`, besides the one `band` a cell always

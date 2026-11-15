@@ -306,6 +306,48 @@ describe("Cellular services", function()
             end, })
         end)
 
+        it("lets a cell stand by, without a carrier, until its bands are chosen", function()
+            local b20, b3 = bands.parse_carrier("b20/1"), bands.parse_carrier("b3/1")
+            local env = setup { config = { network = "ACME", prefix = "10.64.0.0/16", spectrum = { b20, b3 }, beacon_interval = 3 } }
+            local cell_key = new_key()
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            env.service.allowed[cell_key] = { label = "tower", role = "cell" }
+            run(env.net, { env.service }, { function()
+                local cell = env.connect(cell_key, "10.0.0.11")
+                expect(hello(cell, "cell", 11, { signing = hex(tower_public), standby = true, band = "b7" })):same {
+                    v = common.VERSION, network = "ACME", standby = true, interval = 3, carriers = { b20, b3 },
+                }
+                -- It's there for the administrator to see, but it's no cell: it has no carrier, tunnel or certificate.
+                local admin = env.admin()
+                local status = ask(admin, { op = "status" })
+                expect(status.cells):same {}
+                expect(status.standby):matches { { id = 11, key = cell_key, address = "10.0.0.11" } }
+                expect(env.service.core.towers[11]):eq(nil)
+                expect(env.service.allowed[cell_key].id):eq(11)
+                -- It hears of the network's carriers as they change.
+                expect(ask(admin, { op = "spectrum", carriers = { "b3/1" } }).carriers):same { "b3/1" }
+                expect(cell:receive(5)):same { op = "carriers", carriers = { b3 } }
+
+                -- It connects again once its bands are chosen, and is a cell.
+                local again = env.connect(cell_key, "10.0.0.11")
+                local welcome = hello(again, "cell", 11, { signing = hex(tower_public), band = "b3" })
+                expect({ welcome.carrier, welcome.standby }):same { b3 }
+                wait_until(function() return cell.is_gone() end)
+                status = ask(admin, { op = "status" })
+                expect({ #status.cells, #status.standby }):same { 1, 0 }
+
+                -- Refused, one which stands by is cut off like any other.
+                local other_key = new_key()
+                env.service.allowed[other_key] = { label = "tower", role = "cell" }
+                local other = env.connect(other_key, "10.0.0.12")
+                expect(hello(other, "cell", 12, { signing = hex(tower_public), standby = true }).standby):eq(true)
+                expect(ask(admin, { op = "deny", key = other_key })):same { id = 12 }
+                wait_until(function() return other.is_gone() end)
+                expect(#ask(admin, { op = "status" }).standby):eq(0)
+                admin:close()
+            end, })
+        end)
+
         it("keeps the carriers a computer's cells are on, and adds what else it asks for", function()
             local b20, b20_2 = bands.parse_carrier("b20/1"), bands.parse_carrier("b20/2")
             local b3, b7 = bands.parse_carrier("b3/1"), bands.parse_carrier("b7/1")
@@ -1041,7 +1083,7 @@ describe("Cellular services", function()
     end)
 
     describe("a cell", function()
-        local function cell_setup(cores, band)
+        local function cell_setup(cores, band, standby)
             local net = network()
             local key, core_key = new_key(), new_key()
             local _, signing = crypto.generateKeyPair("ed25519")
@@ -1052,6 +1094,7 @@ describe("Cellular services", function()
             env.service = cell_service.new {
                 core = not cores and "core.acme" or nil, cores = cores,
                 area = 3, id = 11, identity = key, fingerprint = fingerprint, signing = hex(signing), band = band,
+                standby = standby,
                 connect = function(core)
                     env.tries = env.tries + 1
                     if env.unreachable then return nil, "No route to host" end
@@ -1422,6 +1465,67 @@ describe("Cellular services", function()
             expect(served({ "b20", "b3" }, with {})):eq(unusable)
             expect(served({ "b20", "b3" }, with "two")):eq(unusable)
             expect(served({ "b20", "b3" }, with { cell(11, 7935, "first"), { id = high, carrier = b3 } })):eq(unusable)
+        end)
+
+        it("stands by until its bands are confirmed, and then asks to be placed", function()
+            local env = cell_setup(nil, nil, true)
+            run(env.net, { env.service }, { function()
+                local core = env.connections[1]
+                expect(core:receive(5)):same {
+                    role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 3, standby = true,
+                }
+                -- The core lets it in, and says what its network has.
+                core:send({ v = common.VERSION, network = "ACME", standby = true, interval = 1, carriers = { 7935, 18075 } })
+                wait_until(function() return env.service:info().state == "standby" end)
+                expect(env.service:info().links):same {
+                    { core = "core.acme", state = "standby", network = "ACME", carriers = { "b20/1", "b3/1" } },
+                }
+                expect(env.service:bands()):same { b20 = true, b3 = true }
+                expect(env.towers):same {}
+                -- The network's carriers may change while it waits.
+                core:send({ op = "carriers", carriers = { 7935 } })
+                wait_until(function() return #env.service:info().links[1].carriers == 1 end)
+                expect(core.is_gone() ~= true):eq(true)
+
+                -- Confirmed, it connects again at once, with what it wants, and is served.
+                env.service:configure { area = 3, band = "b20" }
+                env.service:go_on_air()
+                -- From that moment it's no longer standing by, to whoever looks.
+                expect(env.service:info().state):eq("connecting")
+                wait_until(function() return env.connections[2] end)
+                expect(core.is_gone()):eq(true)
+                expect(env.connections[2]:receive(5)):same {
+                    role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 3, band = "b20",
+                }
+                env.connections[2]:send(welcome { network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
+                wait_until(function() return env.service:info().state == "serving" end)
+                expect(#env.towers):eq(1)
+                -- Told again, nothing happens.
+                env.service:go_on_air()
+                expect(env.connections[2].is_gone() ~= true):eq(true)
+            end, }, 300)
+            expect(env.service.error):eq(nil)
+
+            -- An older core puts it on a carrier at once: it still runs no cell. And one which says nothing it can
+            -- use is refused.
+            env = cell_setup(nil, nil, true)
+            run(env.net, { env.service }, { function()
+                local core = env.connections[1]
+                core:receive(5)
+                core:send(welcome { network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
+                wait_until(function() return env.service:info().state == "standby" end)
+                expect(env.towers):same {}
+                expect(env.service:info().links[1].carriers):same { "b20/1" }
+            end, }, 300)
+            env = cell_setup(nil, nil, true)
+            run(env.net, { env.service }, { function()
+                local core = env.connections[1]
+                core:receive(5)
+                core:send({ v = common.VERSION, network = "not a name", standby = true, carriers = { 7935 } })
+                wait_until(function() return env.service:info().state == "refused" end)
+                expect(env.service:info().error):eq("The core's answer can't be used")
+            end, }, 300)
+            env.service:stop()
         end)
 
         it("knows which bands the networks it serves have carriers in", function()

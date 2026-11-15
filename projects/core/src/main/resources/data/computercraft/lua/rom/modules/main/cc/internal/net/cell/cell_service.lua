@@ -15,6 +15,10 @@ cores which bands or carriers it wants, and the first core it reaches puts a cel
 each core, whose messages say which cell they're about, and every network the computer serves is on every one of its
 cells that network's core knows of.
 
+A computer which was only just set up as a cell stands by first: it connects to its cores, which allow it and say which
+carriers their networks have, but it runs no cell, and sends nothing on the air, until whoever sets it up has said
+which bands it should use. Then it connects again, and its cores put its cells on them.
+
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use the `celld` program instead.
 
@@ -40,7 +44,7 @@ local MAX_DELAY = 60
 local MAX_CERTIFICATE = 1024
 
 -- Which state of a core's to show for the cell as a whole: the best one.
-local STATE_ORDER = { serving = 1, waiting = 2, connecting = 3, lost = 4, refused = 5 }
+local STATE_ORDER = { serving = 1, standby = 2, waiting = 3, connecting = 4, lost = 5, refused = 6 }
 
 local Service = {}
 Service.__index = Service
@@ -49,6 +53,13 @@ Service.__index = Service
 local function wanted(band)
     if type(band) == "string" then band = { band } end
     return common.is_wants(band) and band or nil
+end
+
+-- Carriers' names, for people to read.
+local function carrier_names(carriers)
+    local names = {}
+    for i, carrier in ipairs(carriers) do names[i] = bands.carrier_name(carrier) end
+    return names
 end
 
 -- Stop serving a core's network on each of the computer's cells.
@@ -62,14 +73,15 @@ end
 
 @tparam {
     core? = string, cores? = { string... }, area? = number, band? = string|{ string... }, interval? = number,
-    pos? = { number, number, number }, service? = string, id = number,
+    pos? = { number, number, number }, service? = string, standby? = boolean, id = number,
     identity = string, fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
     start_tower = function(welcome:table, control:function):table,
     sleep = function(seconds:number), wake = function(),
 } options The core's name or address, or the names or addresses of several (for a cell which serves several
 networks); the cell's tracking area; the cellular band it should be on, if it matters, or a list of bands and carriers
 (`"b20"`, `"b3/2"`) for a cell on each; how often it sends system
-information, if not as its core says; where it says it is, and `"sms"` if it only carries messages; this computer's ID
+information, if not as its core says; where it says it is, and `"sms"` if it only carries messages; whether it stands
+by, off the air, until its bands are confirmed (and `go_on_air` is called); this computer's ID
 and its key (as hexadecimal digits), and a way to get a key's fingerprint; the cell's own Ed25519 key, as hexadecimal
 digits, which each core certifies; a way to connect securely to a core's control port; a way to have the cell serve a
 network, given what its core said (the cell's `id`, `network`, `certificate`, `tunnel_key`, `core`, `area`, the `carrier`
@@ -266,6 +278,8 @@ function Service:serve(link, connection)
     local hello = {
         role = "cell", v = common.VERSION, id = options.id, signing = options.signing, area = options.area or 0,
         band = wants and wants[1]:match("^[^/]+"), carrier = running[1] and running[1].carrier, ul = running[1] and running[1].ul,
+        -- Standing by: the core needn't find it a carrier yet.
+        standby = options.standby and true or nil,
     }
     if wants and (wants[2] or common.want_carrier(wants[1])) then hello.bands = wants end
     if running[2] then
@@ -285,6 +299,7 @@ function Service:serve(link, connection)
     if type(reply) ~= "table" then return err or "The core didn't answer" end
     -- A core newer than we are: shown in the cell's status, in case they don't work together.
     link.newer = common.is_newer(reply.v) and reply.v or nil
+    if options.standby then return self:stand_by(link, connection, reply) end
     -- What the core says is broadcast, and used as a key. A cell may serve other networks too, which a core that
     -- says something unfit mustn't spoil.
     local given = common.is_network(reply.network) and common.is_interval(reply.interval)
@@ -383,6 +398,46 @@ function Service:serve(link, connection)
     return reason
 end
 
+-- Stand by with a core which has let us in: know its network and the carriers it has, for whoever sets the cell up to
+-- choose from, but run no cell. The connection is kept, so the core's administrator sees the cell is there.
+function Service:stand_by(link, connection, reply)
+    -- (A core which knows nothing of standing by has put the cell on a carrier: it isn't used.)
+    if not common.is_network(reply.network) or not common.is_carriers(reply.carriers) then
+        link.state, link.error = "refused", "The core's answer can't be used"
+        return
+    end
+    link.network, link.carriers, link.served, link.state = reply.network, reply.carriers, true, "standby"
+    local reason
+    while true do
+        local message, err = connection:receive()
+        if message == nil then
+            reason = err or "The core closed the connection"
+            break
+        end
+        if type(message) == "table" and message.op == "carriers" and common.is_carriers(message.carriers)
+            and message.carriers[1] then
+            link.carriers = message.carriers
+        end
+    end
+    link.carriers = nil
+    return reason
+end
+
+--[[- Stop standing by: the bands the cell should use have been confirmed. It connects to each of its cores again, which
+put its cells on carriers, and it goes on the air.
+]]
+function Service:go_on_air()
+    if not self.options.standby then return end
+    self.options.standby = false
+    for _, link in ipairs(self.links) do
+        if link.connection then
+            -- It's connecting again from now, to whoever asks: not standing by until that's seen to.
+            link.again, link.state = true, "connecting"
+            link.connection:abort()
+        end
+    end
+end
+
 --[[- Change the cell's settings. What it says about itself (where it is, whether it only carries messages, and how
 often it sends system information) changes on the air at once, and its phones keep their service. The band and area are
 only said to a core when the cell connects to it.
@@ -415,7 +470,7 @@ end
 function Service:bands()
     local result
     for _, link in ipairs(self.links) do
-        if link.cells and link.carriers then
+        if (link.cells or link.state == "standby") and link.carriers then
             result = result or {}
             for _, carrier in ipairs(link.carriers) do
                 local _, band = bands.carrier_of(carrier)
@@ -436,7 +491,7 @@ there's no telling).
 function Service:unplaceable(wants)
     local serving, placed = false, {}
     for _, link in ipairs(self.links) do
-        if link.cells and link.carriers then
+        if (link.cells or link.state == "standby") and link.carriers then
             serving = true
             for i in pairs(common.match_wants(wants, link.carriers)) do placed[i] = true end
         end
@@ -455,6 +510,8 @@ reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; 
 `network` it serves; its `area`; its `id` and `fingerprint`, for allowing it on the core; and `links`, the same for each
 core (`core`, `state`, `error`, `retry` and `network`), for a cell which serves several networks. The cell's own
 `state` (and `core`, `network`, `error` and `retry`) is the best of its cores': serving if it serves any network.
+A core's state is `"standby"` once it has let in a cell which stands by, whose `carriers` are then those its network
+has, by name.
 While it serves one, `carrier` and `ul` say where its first cell is, and `cells` where each is (`id`, `carrier` and
 `ul`); a core's `unplaced` lists what the cell wants which that core's network has no carrier for.
 ]]
@@ -465,6 +522,7 @@ function Service:info()
         links[i] = {
             core = link.core, state = link.state, error = link.error, retry = link.retry, network = link.network,
             newer = link.newer, unplaced = link.cells and link.unplaced or nil,
+            carriers = link.state == "standby" and link.carriers and carrier_names(link.carriers) or nil,
         }
         if not best or STATE_ORDER[link.state] < STATE_ORDER[best.state] then best = link end
     end

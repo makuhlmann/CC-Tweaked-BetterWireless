@@ -132,6 +132,13 @@ local function link_lines(info, link, name, added)
     elseif link.state == "waiting" then
         say(("%s: waiting to be allowed. On that core, run 'cellcore allow %d', and check it shows this fingerprint:"):format(link.core, info.id))
         say("  " .. tostring(info.fingerprint))
+    elseif link.state == "standby" then
+        say(("%s: allowed by %s, whose carriers are %s."):format(
+            link.core, tostring(link.network), table.concat(link.carriers or {}, ", ")
+        ))
+        say(("The cell isn't on the air yet. Say which bands it should use with '%s set band <band>...', or '%s confirm' for %s."):format(
+            name, name, info.band and "those it's set to" or "any, as its core picks"
+        ))
     elseif link.state == "serving" then
         say(("%s: serving %s."):format(link.core, link.network))
     elseif link.state == "refused" then
@@ -177,6 +184,9 @@ end
 local function changed_lines(info, key, value, restarted, name)
     local lines = {}
     local function say(text) lines[#lines + 1] = text end
+    -- A cell which stands by isn't on any band yet: saying which it should use puts it on the air.
+    local standby = info.state == "standby" or info.confirmed == false
+    if standby and key == "band" then restarted = true end
     if key == "area" then
         say(("The cell is in area %d now."):format(value or 0))
     elseif key == "band" then
@@ -212,7 +222,9 @@ local function changed_lines(info, key, value, restarted, name)
             say("The cell carries everything.")
         end
     end
-    if restarted then
+    if standby and key == "band" and info.state ~= "stopped" then
+        say("Its bands are confirmed: it goes on the air.")
+    elseif restarted then
         say("It started again for that: its phones lose service for a moment, and attach again.")
     elseif info.state == "stopped" then
         if not info.cores then
@@ -234,6 +246,7 @@ local c = menu.c
 local function state_of(state, network)
     if state == "serving" then return network and "serving " .. network or "serving", c(colours.lime, colours.white) end
     if state == "waiting" then return "waiting to be allowed", c(colours.yellow, colours.lightGrey) end
+    if state == "standby" then return "not on the air yet", c(colours.yellow, colours.lightGrey) end
     if state == "connecting" then return "connecting", c(colours.yellow, colours.lightGrey) end
     if state == "lost" then return "can't reach its core", c(colours.red, colours.lightGrey) end
     if state == "refused" then return "refused", c(colours.red, colours.lightGrey) end
@@ -292,7 +305,7 @@ local function run(name)
     -- Returns what's wrong, if it couldn't be done.
     local function apply(key, value)
         local info = net.cell.cellInfo()
-        if info.state ~= "stopped" and (key == "area" or key == "band") then
+        if info.state ~= "stopped" and info.state ~= "standby" and (key == "area" or key == "band") then
             local sure = menu.confirm_screen("Change the " .. key,
                 ("The cell tells its cores its %s as it connects: if this moves it, it starts again, and its phones lose "
                     .. "service for a moment."):format(key), "Change")
@@ -301,9 +314,11 @@ local function run(name)
                 return nil
             end
         end
+        -- How the cell was before, for saying what the change did.
+        local before = { state = info.state, confirmed = info.confirmed, cores = info.cores }
         local ok, restarted = net.cell.configureCell({ [key] = value })
         if not ok then return tostring(restarted) end
-        say(changed_lines(info, key, value or nil, restarted, name))
+        say(changed_lines(before, key, value or nil, restarted, name))
         return nil
     end
 
@@ -499,6 +514,46 @@ local function run(name)
         }
     end
 
+    -- A cell which stands by: what its networks have, and its bands to confirm (as they're set, or any), or to choose.
+    local function confirm_screen()
+        menu.list_screen {
+            title = function() return "Go on the air" end,
+            items = function()
+                local info = net.cell.cellInfo()
+                local lines = {}
+                for _, link in ipairs(info.links or {}) do
+                    if link.state == "standby" then
+                        lines[#lines + 1] = ("%s has the carriers %s."):format(tostring(link.network), table.concat(link.carriers or {}, ", "))
+                    end
+                end
+                if not lines[1] then lines[1] = "Its cores haven't said which carriers their networks have yet." end
+                local items = text_items({}, lines)
+                items[#items + 1] = {
+                    text = info.band and "Use " .. band_label(info.band) or "Use any band: its core picks", id = "confirm",
+                }
+                items[#items + 1] = { text = "Choose its bands...", id = "choose" }
+                return items
+            end,
+            choose = function(item)
+                if item.id == "confirm" then
+                    local ok, err = net.cell.configureCell({ confirmed = true })
+                    if ok then say("Its bands are confirmed: it goes on the air.") else say(tostring(err), true) end
+                    return "back"
+                elseif item.id == "choose" then
+                    edit_setting("band")
+                    if net.cell.cellInfo().confirmed ~= false then return "back" end
+                end
+                return nil
+            end,
+            note = function()
+                return "A new cell sends nothing until its bands are confirmed: lower bands reach further, higher ones "
+                    .. "carry more phones, and it may have a cell on each of several."
+            end,
+            hint = { "Enter: choose", "Q: back" },
+            refresh = REFRESH,
+        }
+    end
+
     local function start()
         local ok, err = net.cell.startCell()
         if ok then say("Started the cell: it connects to its cores in the background.") else say(tostring(err), true) end
@@ -521,6 +576,9 @@ local function run(name)
                 },
                 { text = "Settings", id = "settings", open = settings_screen },
             }
+            if running and (info.state == "standby" or info.confirmed == false) then
+                items[#items + 1] = { text = "Go on the air...", id = "confirm", open = confirm_screen }
+            end
             if running then
                 items[#items + 1] = {
                     text = "Restart the cell", id = "restart",
@@ -562,6 +620,10 @@ local function run(name)
                         info.id, tostring(info.fingerprint)
                     ), c(colours.yellow, colours.lightGrey)
                 end
+            end
+            if info.state == "standby" then
+                return "Allowed by its core, but not on the air yet: choose Go on the air to confirm its bands.",
+                    c(colours.yellow, colours.lightGrey)
             end
         end,
         hint = { "Enter: open", "Q: quit" },

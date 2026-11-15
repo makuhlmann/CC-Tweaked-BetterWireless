@@ -499,9 +499,18 @@ local function run(options)
                         tail = { { table.concat(carriers, " "), colours.lightGrey } }, id = cell.id,
                     }
                 end
+                -- Those which were let in, but aren't on the air until whoever sets them up has chosen their bands.
+                for _, cell in ipairs(status and status.standby or {}) do
+                    items[#items + 1] = {
+                        text = ("#%d %s"):format(cell.id, tostring(cell.address)), fg = colours.lightGrey,
+                        tail = { { "choosing its bands", c(colours.yellow, colours.lightGrey) } }, id = "s" .. cell.id,
+                    }
+                end
                 return items
             end,
-            choose = function(item) cell_screen(item.id) end,
+            choose = function(item)
+                if type(item.id) == "number" then cell_screen(item.id) end
+            end,
             empty = "No cells connected.",
             note = function()
                 if said then return note() end

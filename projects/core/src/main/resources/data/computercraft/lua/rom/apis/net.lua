@@ -1860,11 +1860,16 @@ cell = {
 
     The cell doesn't start for this: that's `net.cell.startCell`.
 
+    A cell which gets its first core here stands by at first: it connects to the core, which must allow it, and learns
+    which carriers the network has, but sends nothing on the air until its bands are confirmed. Saying which bands it
+    should use (or that any will do, with `false`) confirms them, and so does `confirmed`.
+
     @tparam { cores? = { string... }, area? = number|boolean, band? = string|{ string... }|boolean, interval? = number|boolean,
-    pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean } changes What to
+    pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean,
+    confirmed? = boolean } changes What to
     change, as `net.cell.startCell` takes it, and `cores`, every core it should connect to. `false` puts a setting back
     as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, the modem's own power,
-    and carrying everything.
+    and carrying everything. `confirmed = true` confirms the cell's bands as they're set.
     @treturn[1] true If it changed.
     @treturn[1] boolean Whether the cell started again for it.
     @treturn[2] nil If it couldn't.
@@ -1906,7 +1911,8 @@ cell = {
 
     --[[- Get the state of this computer's cell.
 
-    @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"serving"`,
+    @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"standby"` (let
+    in, but off the air until its bands are confirmed: `confirmed` is then false), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
     why; the `core`; the `network` it serves; its `id` and `fingerprint`, which the core's administrator checks before
     allowing it; every core it connects to (`cores`, or `nil` if it has none); whether it starts with the computer

@@ -453,6 +453,63 @@ describe("The menus of celld and cellcore", function()
             end)
         end)
 
+        it("puts a cell which stands by on the air, once its bands are confirmed or chosen", function()
+            local function standing_by()
+                local cell = fake_cell({
+                    state = "standby", id = 11, area = 0, cores = { "core.acme" }, enabled = true, confirmed = false,
+                    network = "ACME", fingerprint = "aaaa",
+                    links = { { core = "core.acme", state = "standby", network = "ACME", carriers = { "b20/1", "b3/1" } } },
+                })
+                -- As net.cell does: its bands said, or confirmed, it goes on the air.
+                local configure = net.cell.configureCell
+                stub(net.cell, "configureCell", function(changes)
+                    local ok, restarted = configure(changes)
+                    if ok and (changes.band ~= nil or changes.confirmed) then
+                        cell.info.confirmed, cell.info.state, cell.info.links[1].state = true, "serving", "serving"
+                    end
+                    return ok, restarted
+                end)
+                return cell
+            end
+
+            local cell = standing_by()
+            run({ "celld" }, {}, function(app)
+                expect(app.line(1)):str_match("^Cell #11 +not on the air yet$")
+                expect(app.says("Allowed by its core, but not on the air yet: choose Go on the air to confirm its bands.")):eq(true)
+                app.choose("Status")
+                expect(app.says("core.acme: allowed by ACME, whose carriers are b20/1, b3/1.")):eq(true)
+                app.type("q")
+                app.choose("Go on the air")
+                expect(app.says("ACME has the carriers b20/1, b3/1.")):eq(true)
+                app.choose("Use any band: its core picks")
+                expect(cell.calls):same { { "configure", { confirmed = true } } }
+                expect(app.line(1)):str_match("^Cell #11 +serving ACME$")
+                expect(app.says("Its bands are confirmed: it goes on the air.")):eq(true)
+                expect(app.find("Go on the air...")):eq(nil)
+            end)
+
+            -- Or its bands are chosen there: nobody is asked whether to start it again, as it wasn't on the air.
+            cell = standing_by()
+            run({ "celld" }, {}, function(app)
+                app.choose("Go on the air")
+                app.choose("Choose its bands")
+                expect(app.line(1)):eq("Set the band")
+                app.enter("b20 b3")
+                expect(cell.calls):same { { "configure", { band = { "b20", "b3" } } } }
+                expect(app.line(1)):str_match("^Cell #11 +serving ACME$")
+                expect(app.says("Its bands are confirmed: it goes on the air.")):eq(true)
+            end)
+
+            -- With bands set already, those are what's confirmed.
+            cell = standing_by()
+            cell.info.band = "b3"
+            run({ "celld" }, {}, function(app)
+                app.choose("Go on the air")
+                app.choose("Use b3 (1800MHz)")
+                expect(cell.calls):same { { "configure", { confirmed = true } } }
+            end)
+        end)
+
         it("still says how the cell is doing when asked for its status", function()
             fake_cell()
             expect(capture("celld", "status").output):str_match("^Cell #11, area 3%.\n")

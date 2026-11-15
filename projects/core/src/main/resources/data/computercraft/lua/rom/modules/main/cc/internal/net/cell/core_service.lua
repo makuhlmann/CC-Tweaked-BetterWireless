@@ -140,7 +140,7 @@ local function new(options)
             subscribers = fs.combine(options.dir, "subscribers"), codes = fs.combine(options.dir, "codes"),
             cells = fs.combine(options.dir, "cells"), config = fs.combine(options.dir, "config"),
         },
-        waiting = {}, cells = {}, admins = {}, lines = {}, line_count = 0,
+        waiting = {}, cells = {}, standby = {}, admins = {}, lines = {}, line_count = 0,
         -- Other networks: the connection to each one's core, either way; and our tries to connect to those we know
         -- where to find, by network.
         links = {}, dialing = {},
@@ -571,9 +571,39 @@ function Service:place_cells(id, hello)
     return cells, unplaced
 end
 
+-- A computer which was let in as a cell, but stands by: whoever sets it up hasn't said which bands it should use yet.
+-- It's told the network's carriers, to choose from, and shown to the administrator, but has no cell.
+function Service:serve_standby(connection, key, id)
+    local old = self.standby[id]
+    if old then old.connection:abort() end
+    local send, stop_sending = self.tasks:sender(connection, self.options.wake)
+    local entry = { id = id, key = key, address = connection:getPeer(), since = self.options.epoch(), connection = connection, send = send }
+    if not connection:send({
+        v = common.VERSION, network = self.config.network, standby = true, interval = self:beacon_interval(),
+        carriers = self:spectrum(),
+    }) then
+        stop_sending()
+        return connection:abort()
+    end
+    self.standby[id] = entry
+    local known = self.allowed[key]
+    if known and known.id ~= id then
+        known.id = id
+        self:save_allowed()
+    end
+    self:log(("Cell #%d is standing by, from %s, until its bands are chosen"):format(id, entry.address))
+    while connection:receive() ~= nil do end
+    stop_sending()
+    connection:abort()
+    if self.standby[id] == entry then self.standby[id] = nil end
+end
+
 function Service:serve_cell(connection, key, hello, id)
     local signing = from_hex(hello.signing)
     if not signing or #signing ~= 32 or not id then return connection:abort() end
+    if hello.standby == true then return self:serve_standby(connection, key, id) end
+    -- It's no longer standing by, if it was.
+    if self.standby[id] then self.standby[id].connection:abort() end
     local cells, unplaced = self:place_cells(id, hello)
     if not cells then return refuse(connection, unplaced) end
 
@@ -654,10 +684,15 @@ function Service:serve_cell(connection, key, hello, id)
     end
 end
 
---- Send a control message to every cell connected now: each computer's every cell.
+--- Send a control message to every cell connected now: each computer's every cell, and those which stand by.
 --
 -- @tparam table message The message. Each cell gets a copy.
 function Service:tell_cells(message)
+    for _, entry in pairs(self.standby) do
+        local copy = {}
+        for k, v in pairs(message) do copy[k] = v end
+        entry.send(copy)
+    end
     for _, entry in pairs(self.cells) do
         for _, cell in ipairs(entry.cells) do
             local copy = {}
@@ -982,6 +1017,12 @@ function requests.status(self)
         }
     end
     table.sort(result.cells, by_id)
+    -- Computers let in as cells which stand by, off the air, until their bands are chosen.
+    result.standby = {}
+    for id, entry in pairs(self.standby) do
+        result.standby[#result.standby + 1] = { id = id, key = entry.key, address = entry.address, since = entry.since }
+    end
+    table.sort(result.standby, by_id)
     for key, entry in pairs(self.allowed) do
         result.allowed[#result.allowed + 1] = {
             key = key, fingerprint = fingerprint(key), label = entry.label, role = entry.role, id = entry.id,
@@ -1111,6 +1152,9 @@ function requests.deny(self, request, by)
         waiting.connection:abort()
     end
     for _, cell in pairs(self.cells) do
+        if cell.key == key then cell.connection:abort() end
+    end
+    for _, cell in pairs(self.standby) do
         if cell.key == key then cell.connection:abort() end
     end
     for connection, admin in pairs(self.admins) do
@@ -1456,7 +1500,8 @@ function Service:stop()
     for _, entry in pairs(self.dialing) do
         if entry.connection then entry.connection:abort() end
     end
-    self.waiting, self.cells, self.admins, self.links, self.dialing = {}, {}, {}, {}, {}
+    for _, cell in pairs(self.standby) do cell.connection:abort() end
+    self.waiting, self.cells, self.standby, self.admins, self.links, self.dialing = {}, {}, {}, {}, {}, {}
 end
 
 return {

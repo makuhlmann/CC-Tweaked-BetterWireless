@@ -24,6 +24,7 @@ local function usage()
     print(name .. " set power <dBm>")
     print(name .. " set service sms|full")
     print(name .. " unset <setting>")
+    print(name .. " confirm")
     print(name .. " start|stop|restart")
 end
 
@@ -84,7 +85,7 @@ local function watch(only)
         while true do
             local info = net.cell.cellInfo()
             if info.state == "stopped" then return end
-            local settled, serving, any = true, true, false
+            local settled, serving, any, standing_by = true, true, false, false
             for _, link in ipairs(info.links or {}) do
                 if not only or link.core == only then
                     any = true
@@ -95,11 +96,14 @@ local function watch(only)
                     end
                     if link.state == "connecting" or link.state == "waiting" then settled = false end
                     if link.state ~= "serving" then serving = false end
+                    if link.state == "standby" then standing_by = true end
                 end
             end
             if not any then return end
             if settled then
-                if serving then
+                if standing_by then
+                    print("It waits in the background, and starts with this computer.")
+                elseif serving then
                     print(("It runs in the background, and starts with this computer. '%s' shows how it's doing."):format(name))
                 else
                     print(("It keeps trying in the background. '%s' shows how it's doing."):format(name))
@@ -125,7 +129,8 @@ end
 -- Say what changing a setting did, for a cell which runs. `restarted` if it started again for it.
 local function say_changed(info, key, value, restarted)
     for _, line in ipairs(cell_menu.changed_lines(info, key, value, restarted, name)) do print(line) end
-    if restarted then watch() end
+    -- It started again, or went on the air for the first time.
+    if restarted or (key == "band" and info.state == "standby") then watch() end
 end
 
 -- With nothing asked of it, it shows the cell's menu: everything below, to look through and change.
@@ -200,6 +205,21 @@ elseif command == "set" or command == "unset" then
     local info = net.cell.cellInfo()
     local _, restarted = check(net.cell.configureCell({ [key] = value }))
     say_changed(info, key, value or nil, restarted)
+
+elseif command == "confirm" then
+    -- A new cell stands by, off the air, until its bands are confirmed: as they're set, or any.
+    if #args > 1 then return usage() end
+    local info = net.cell.cellInfo()
+    if not info.cores then error(("The cell has no cores to connect to. Add one with '%s add <core>'."):format(name), 0) end
+    if info.confirmed ~= false then
+        print("The cell's bands are confirmed already.")
+        return
+    end
+    check(net.cell.configureCell({ confirmed = true }))
+    print(("The cell goes on the air, on %s."):format(
+        info.band and cell_menu.band_label(info.band) or "any band, as its core picks"
+    ))
+    if info.state ~= "stopped" then watch() end
 
 elseif command == "start" then
     if #args > 1 then return usage() end

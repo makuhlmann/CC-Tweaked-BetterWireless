@@ -389,6 +389,8 @@ local function cell_settings(config)
         power = type(config.power) == "number" and config.power == config.power and math.abs(config.power) ~= math.huge
             and config.power or nil,
         service = config.service == "sms" and "sms" or nil,
+        -- A cell which was only just set up stands by until its bands are confirmed. Older ones never asked.
+        confirmed = config.confirmed ~= false,
     }
 end
 
@@ -411,7 +413,7 @@ local function start_cell_service(config)
     running_cell = config
     background.cell = require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, band = config.band, interval = config.interval, pos = config.pos,
-        service = config.service,
+        service = config.service, standby = config.confirmed == false,
         id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
@@ -1125,6 +1127,13 @@ function api.configureCell(changes)
             new[key] = key == "pos" and { value[1], value[2], value[3] } or value
         end
     end
+    -- Whether the cell's bands are confirmed, so it may go on the air: once they're said (to be some, or any), or it's
+    -- told so. A cell which gets its first core, with no band said yet, stands by until then.
+    local confirmed = old.confirmed ~= false
+    if not cell_cores(config) and not (service and running_cell.cores[1]) and cores[1] and new.band == nil then
+        confirmed = false
+    end
+    if changes.band ~= nil or changes.confirmed == true then confirmed = true end
     if changes.power then
         local least, most = power_limits()
         if least and (new.power < least or new.power > most) then
@@ -1155,6 +1164,7 @@ function api.configureCell(changes)
     config.core = nil
     config.cores = cores[1] and cores or nil
     for _, key in ipairs(CELL_SETTINGS) do config[key] = new[key] end
+    if confirmed then config.confirmed = nil else config.confirmed = false end
     write_table(CELL_CONFIG, config)
     if not service then return true, false end
 
@@ -1179,10 +1189,11 @@ function api.configureCell(changes)
         background.cell = nil
         local start = {}
         for _, key in ipairs(CELL_SETTINGS) do start[key] = new[key] end
-        start.cores = cores
+        start.cores, start.confirmed = cores, confirmed
         local ok, err = start_cell_service(start)
         if not ok then return nil, err end
-        return true, true
+        -- A cell which stood by had no phones to lose.
+        return true, old.confirmed ~= false
     end
 
     -- Everything else changes at once, without disturbing the networks the cell serves (but those it stops serving).
@@ -1195,6 +1206,9 @@ function api.configureCell(changes)
     running_cell.cores = cores
     for _, key in ipairs(CELL_SETTINGS) do running_cell[key] = new[key] end
     service:configure(new)
+    -- Its bands are confirmed: it goes on the air.
+    if confirmed and running_cell.confirmed == false then service:go_on_air() end
+    running_cell.confirmed = confirmed
     if new.power ~= old.power and tower_instance and not tower_instance.stopped then
         if new.power then
             apply_power(tower_instance.modem)
@@ -1233,6 +1247,7 @@ function api.cellInfo()
     end
     info.cores, info.enabled = cores, config.enabled ~= false
     for _, key in ipairs(CELL_SETTINGS) do info[key] = saved[key] end
+    info.confirmed = saved.confirmed
     return info
 end
 

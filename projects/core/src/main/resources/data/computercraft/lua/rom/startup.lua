@@ -150,7 +150,7 @@ end)
 local celld_settings = { "area", "band", "interval", "pos", "power", "service" }
 shell.setCompletionFunction("rom/programs/net/celld.lua", function(shell, index, text, previous)
     if index == 1 then
-        return completion.choice(shell, text, previous, { "status", "add ", "remove ", "set ", "unset ", "start", "stop", "restart" })
+        return completion.choice(shell, text, previous, { "status", "add ", "remove ", "set ", "unset ", "confirm", "start", "stop", "restart" })
     elseif index == 2 and previous[2] == "set" then
         return completion.choice(shell, text, previous, celld_settings, true)
     elseif index == 2 and previous[2] == "unset" then

@@ -147,6 +147,46 @@ describe("The celld program", function()
         }
     end)
 
+    it("says a new cell stands by, and puts it on the air once its bands are confirmed", function()
+        local info = {
+            state = "standby", id = 11, area = 0, cores = { "core.acme" }, enabled = true, confirmed = false, core = "core.acme",
+            network = "ACME", links = { { core = "core.acme", state = "standby", network = "ACME", carriers = { "b20/1", "b3/1" } } },
+        }
+        local calls = setup(info)
+        expect(run("status").output):str_match("^Cell #11, area 0%.\n" ..
+            "core%.acme: allowed by ACME, whose carriers are b20/1, b3/1%.\n" ..
+            "The cell isn't on the air yet%. Say which bands it should use with 'celld set band <band>%.%.%.', " ..
+            "or 'celld confirm' for any, as its core picks%.\n")
+        -- Adding its core ends there: there's nothing more to wait for.
+        info.cores = nil
+        expect(run("add", "core.acme").output):str_match("It waits in the background, and starts with this computer%.\n$")
+        info.cores = { "core.acme" }
+
+        info.state, info.links[1].state = "serving", "serving"
+        expect(run("confirm")):matches {
+            ok = true, error = "",
+            output = "The cell goes on the air, on any band, as its core picks.\ncore.acme: serving ACME.\n"
+                .. "It runs in the background, and starts with this computer. 'celld' shows how it's doing.\n",
+        }
+        info.band = { "b20", "b3" }
+        expect(run("confirm").output):str_match("^The cell goes on the air, on b20 %(800MHz%), b3 %(1800MHz%)%.\n")
+        -- Saying its bands does it too.
+        info.state, info.links[1].state = "standby", "standby"
+        expect(run("set", "band", "b3").output):str_match(
+            "^The cell goes on a carrier of its core's in band b3 %(1800MHz%)%.\nIts bands are confirmed: it goes on the air%.\n"
+        )
+        expect(calls):same {
+            { "configure", { cores = { "core.acme" } } },
+            { "configure", { confirmed = true } }, { "configure", { confirmed = true } }, { "configure", { band = "b3" } },
+        }
+
+        -- One whose bands are confirmed has nothing to confirm; nor one with no cores.
+        info.confirmed = true
+        expect(run("confirm")):matches { ok = true, output = "The cell's bands are confirmed already.\n" }
+        setup({ state = "stopped", id = 11, enabled = true })
+        expect(run("confirm")):matches { ok = false, error = "The cell has no cores to connect to. Add one with 'celld add <core>'.\n" }
+    end)
+
     it("says why net.cell wouldn't change something", function()
         setup(serving({ "core.acme" }, { "ACME" }), "No network this cell serves has a carrier in band b7, only in b20")
         expect(run("set", "band", "b7")):matches {

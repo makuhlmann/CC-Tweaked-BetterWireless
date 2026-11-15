@@ -471,6 +471,85 @@ describe("Cell sites with several bands", function()
         expect(net.errors):same {}
     end)
 
+    it("stand by, off the air, until their bands are confirmed", function()
+        math.randomseed(10)
+        local acme = operator({ 0 }, { carriers = { "b20/1", "b3/1" }, standby = { true } })
+        local net = acme.net
+        local site = acme.towers[1]
+        wait_until(net, function() return site.service:info().state == "standby" end, 10, "Standing by")
+        -- The core let it in, and told it what the network has: but it has no cell, and neither has the core.
+        local info = site.service:info()
+        expect(info.links):same { { core = "10.0.0.1", state = "standby", network = "ACME", carriers = { "b20/1", "b3/1" } } }
+        expect({ info.cells, info.carrier, site.tower }):same {}
+        expect(site.service:bands()):same { b20 = true, b3 = true }
+        expect(site.service:unplaceable({ "b3", "b7" })):eq("b7")
+        expect(acme.service.cells[11]):eq(nil)
+        expect(acme.service.standby[11].address):eq("10.0.0.11")
+        expect(acme.core.towers[11]):eq(nil)
+        expect(site.stack.interfaces["cell.tower"]):eq(nil)
+
+        -- Nothing is on the air: a phone beside it hears nothing, however long it listens.
+        local phone, stack = acme.add_phone(1, 5)
+        net.frames.air = 0
+        net.advance(15)
+        expect(phone.state):eq("searching")
+        expect(next(phone.heard)):eq(nil)
+        expect(net.frames.air):eq(0)
+
+        -- Its bands confirmed, it's placed on them, and the phone finds it.
+        acme.confirm_cell(1, { "b20", "b3" })
+        local high = common.carrier_cell(11, B3_1)
+        wait_until(net, function() return phone.state == "attached" and phone.cell == high end, 20, "Using the cell")
+        expect(on(site)):same { ["b20/1"] = 11, ["b3/1"] = high }
+        expect(site.service:info().state):eq("serving")
+        expect(acme.service.standby[11]):eq(nil)
+        expect(#acme.service.cells[11].cells):eq(2)
+        expect(net.ping(stack, ip("10.0.0.60"))):matches { done = true }
+        -- The core's log says both.
+        local standing, connected = false, false
+        for _, line in ipairs(acme.service.lines) do
+            standing = standing or line.text:find("Cell #11 is standing by", 1, true) ~= nil
+            connected = connected or line.text:find("Cell #11 connected", 1, true) ~= nil
+        end
+        expect({ standing, connected }):same { true, true }
+        expect(net.errors):same {}
+    end)
+
+    it("stand by as a relay too, whatever bands its own phone may use", function()
+        math.randomseed(11)
+        local acme = operator({ 0 }, { carriers = { "b20/1", "b3/1" }, bands = { "b20" } })
+        local net = acme.net
+        -- The relay's phone may only use band 20, and is pinned to the cell it should reach the core through.
+        local relay = acme.add_relay(30, 30, nil, { bands = { "b20" }, pinned = 11 })
+        relay.standby = true
+        wait_until(net, function() return relay.service and relay.service:info().state == "standby" end, 60, "Standing by")
+        expect(relay.phone.cell):eq(11)
+        expect(relay.service:info().links[1].carriers):same { "b20/1", "b3/1" }
+        expect(relay.tower):eq(nil)
+
+        -- Its cells go on both bands: what its phone may use says nothing about them.
+        acme.confirm_cell(relay, { "b20", "b3" })
+        local high = common.carrier_cell(30, B3_1)
+        wait_until(net, function() return relay.towers and relay.towers[30] and relay.towers[high] end, 60, "The relay's cells")
+        expect(on(relay)):same { ["b20/1"] = 30, ["b3/1"] = high }
+        wait_until(net, function() return #relay.towers[high].links.ACME.path == 1 end, 10, "The path")
+        expect({ relay.towers[30].links.ACME.path, relay.towers[high].links.ACME.path }):same { { 11 }, { 11 } }
+        -- Its phone stays where it was told, on band 20, and listens on nothing else: not on its own cell's band 3.
+        net.advance(10)
+        expect({ relay.phone.state, relay.phone.cell }):same { "attached", 11 }
+        expect(relay.phone.listening[B3_1]):eq(nil)
+        expect(next(relay.phone.heard, 11) == nil and relay.phone.heard[11] ~= nil):eq(true)
+
+        -- A phone near it uses its band 3 cell, through the relay's band 20 backhaul.
+        local phone, stack = acme.add_phone(1, 60)
+        wait_until(net, function()
+            local known = session(acme, phone)
+            return phone.state == "attached" and phone.cell == high and known and known.cell == high
+        end, 30, "Using the relay's band 3")
+        expect(net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+        expect(net.errors):same {}
+    end)
+
     it("are one place to work out where a phone is from", function()
         math.randomseed(8)
         local here = { 20, 64, 30 }

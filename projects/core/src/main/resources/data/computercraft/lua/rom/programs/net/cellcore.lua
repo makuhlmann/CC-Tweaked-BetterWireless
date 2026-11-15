@@ -180,6 +180,10 @@ function commands.cells()
             end
         end
     end
+    if #(status.standby or {}) > 0 then
+        print("Let in, but not on the air until their bands are chosen (on the cell: 'celld confirm'):")
+        for _, cell in ipairs(status.standby) do print(("  #%d from %s"):format(cell.id, cell.address)) end
+    end
     local groups = { cell = {}, admin = {}, denied = {} }
     for _, entry in ipairs(status.allowed) do
         if groups[entry.role] then table.insert(groups[entry.role], entry) end

@@ -586,6 +586,48 @@ describe("The net library", function()
                 end)
             end)
 
+            it("have a new cell stand by until its bands are confirmed", function()
+                fresh(function()
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                    -- Its first core, with no band said: it stands by.
+                    net.cell.configureCell({ cores = { "core.acme" } })
+                    expect(net.cell.cellInfo().confirmed):eq(false)
+                    expect(textutils.unserialise(contents())):same { cores = { "core.acme" }, area = 0, confirmed = false }
+                    -- Another core, or another setting, changes nothing about that.
+                    net.cell.configureCell({ cores = { "core.acme", "core.beta" }, pos = { 1, 2, 3 } })
+                    expect(net.cell.cellInfo().confirmed):eq(false)
+                    -- Saying which bands it should use confirms them.
+                    net.cell.configureCell({ band = "b3" })
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                    expect(textutils.unserialise(contents()).confirmed):eq(nil)
+                end)
+                -- So does saying that any will do, or just that they're as they should be.
+                for _, changes in ipairs { { band = false }, { confirmed = true } } do
+                    fresh(function()
+                        net.cell.configureCell({ cores = { "core.acme" } })
+                        expect(net.cell.cellInfo().confirmed):eq(false)
+                        net.cell.configureCell(changes)
+                        expect(net.cell.cellInfo().confirmed):eq(true)
+                    end)
+                end
+                -- A cell whose bands were said before its first core never stands by; nor one which was set up before
+                -- cells did.
+                fresh(function()
+                    net.cell.configureCell({ band = { "b20", "b3" } })
+                    net.cell.configureCell({ cores = { "core.acme" } })
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                    net.cell.configureCell({ cores = {} })
+                    net.cell.configureCell({ cores = { "core.acme" } })
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                end)
+                fresh(function()
+                    write(CELL, { cores = { "core.old" }, area = 3 })
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                    net.cell.configureCell({ cores = { "core.old", "core.new" } })
+                    expect(net.cell.cellInfo().confirmed):eq(true)
+                end)
+            end)
+
             it("take a list of bands and carriers, for a cell on each", function()
                 fresh(function()
                     net.cell.configureCell({ cores = { "core.acme" } })
