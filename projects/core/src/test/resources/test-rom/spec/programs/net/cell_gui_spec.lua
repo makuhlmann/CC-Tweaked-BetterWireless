@@ -16,6 +16,7 @@ describe("The cell program's GUI", function()
                 address = "10.64.0.2", heard = {}, events = {},
             },
             messages = {}, networks = {}, sent = {}, read = {}, deleted = {}, chosen = {}, enabled = {}, timers = {},
+            bands = {}, pins = {},
         }
 
         if not crypto then stub(_G, "crypto", {}) end
@@ -63,6 +64,18 @@ describe("The cell program's GUI", function()
             if phone.refuse_network then return nil, phone.refuse_network end
             for _, network in ipairs(phone.networks) do network.selected = network.name == name end
             phone.info.selection = name
+            return true
+        end)
+        stub(net.cell, "setBands", function(list)
+            phone.bands[#phone.bands + 1] = list or "any"
+            if phone.refuse then return nil, phone.refuse end
+            phone.info.bands = list and #list < 7 and list or nil
+            return true
+        end)
+        stub(net.cell, "pinCell", function(cell)
+            phone.pins[#phone.pins + 1] = cell or "none"
+            if phone.refuse then return nil, phone.refuse end
+            phone.info.pinned = cell
             return true
         end)
         stub(net.cell, "setEnabled", function(enabled)
@@ -119,6 +132,11 @@ describe("The cell program's GUI", function()
                 return nil
             end
 
+            -- What's written right across the screen, whichever lines it's broken over.
+            function app.says(text)
+                local _, height = screen.getSize()
+                return table.concat(app.lines(1, height), " "):gsub("%s+", " "):find(text, 1, true) ~= nil
+            end
             function app.event(...)
                 assert(coroutine.resume(co, ...))
                 if coroutine.status(co) == "dead" and result ~= true then
@@ -638,9 +656,9 @@ describe("The cell program's GUI", function()
                     " New message",
                     " Networks",
                     " Cell service: On",
+                    " Advanced settings",
                     " Monitor",
                     " Quit",
-                    "",
                 }
                 expect(app.line(20)):eq("Enter: choose  Q: quit")
                 -- The first is chosen.
@@ -656,7 +674,7 @@ describe("The cell program's GUI", function()
                 expect(app.bg(5)):eq(("0"):rep(26))
                 -- Up from the first goes to the last, and down from there to the first again.
                 app.key(keys.up, keys.up)
-                expect(app.bg(9)):eq(("0"):rep(26))
+                expect(app.bg(10)):eq(("0"):rep(26))
                 app.key(keys.down)
                 expect(app.bg(4)):eq(("0"):rep(26))
 
@@ -707,7 +725,7 @@ describe("The cell program's GUI", function()
                 app.event("mouse_scroll", 1, 3, 6)
                 expect(app.bg(7)):eq(("0"):rep(26))
 
-                app.event("mouse_click", 1, 3, 9)
+                app.event("mouse_click", 1, 3, 10)
                 expect(app.finished()):eq(true)
             end)
         end)
@@ -1321,7 +1339,7 @@ describe("The cell program's GUI", function()
                     " New message",
                     " Networks",
                     " Cell service: Off",
-                    " Monitor",
+                    " Advanced settings",
                 }
                 expect(app.bg(6)):eq(("0"):rep(26))
                 expect(app.lines(17, 20)):same {
@@ -1355,12 +1373,97 @@ describe("The cell program's GUI", function()
         end)
     end)
 
+    describe("advanced settings", function()
+        local function open(app)
+            app.key(keys.down, keys.down, keys.down, keys.down, keys.enter)
+            expect(app.line(2)):eq("Advanced settings")
+        end
+
+        it("say which bands the phone may use, and turn each off and on", function()
+            local phone = fake_phone()
+            run(phone, {}, function(app)
+                open(app)
+                expect(app.line(4)):str_match("^ Bands +any$")
+                expect(app.line(5)):str_match("^ Pinned cell +none$")
+                app.key(keys.enter)
+                expect(app.lines(2, 4)):same { "Bands", "", " * Any band" }
+                for i, band in ipairs { "b31 +450MHz", "b28 +700MHz", "b20 +800MHz", "b8 +900MHz", "b3 +1800MHz", "b1 +2100MHz", "b7 +2600MHz" } do
+                    expect(app.line(4 + i)):str_match("^ %* " .. band .. "$")
+                end
+                -- Turning one off leaves the others.
+                app.key(keys.down, keys.enter)
+                expect(phone.bands):same { { "b28", "b20", "b8", "b3", "b1", "b7" } }
+                expect(app.line(4)):eq("   Any band")
+                expect(app.line(5)):str_match("^   b31 +450MHz$")
+                expect(app.line(6)):str_match("^ %* b28 +700MHz$")
+                expect(app.says("Using only b28, b20, b8, b3, b1, b7.")):eq(true)
+                -- And on again is any band, as is saying so.
+                app.key(keys.enter)
+                expect(phone.bands[2]):same { "b31", "b28", "b20", "b8", "b3", "b1", "b7" }
+                expect(app.line(4)):eq(" * Any band")
+                app.key(keys["end"], keys.enter)
+                app.key(keys.home, keys.enter)
+                expect(phone.bands[4]):eq("any")
+                expect(app.says("Using any band.")):eq(true)
+
+                -- The last band can't be turned off, and what the phone won't do is said.
+                phone.info.bands = { "b3" }
+                app.event("cell_state", "attached")
+                app.key(keys.home, keys.down, keys.down, keys.down, keys.down, keys.down, keys.enter)
+                expect(#phone.bands):eq(4)
+                expect(app.says("The phone needs a band to use.")):eq(true)
+                phone.refuse = "Not now"
+                app.key(keys.down, keys.enter)
+                expect(phone.bands[5]):same { "b3", "b1" }
+                expect(app.says("Not now")):eq(true)
+
+                app.key(keys.backspace)
+                expect(app.line(4)):str_match("^ Bands +b3$")
+            end)
+        end)
+
+        it("pin the phone to a cell it hears, and let it choose again", function()
+            local phone = fake_phone()
+            phone.info.heard = {
+                { id = 12, network = "ACME", signal = -71.6, fresh = true, band = "b20", serving = true },
+                { id = 12, network = "BETA", signal = -71.6, fresh = true, band = "b20" },
+                { id = 18075 * 2 ^ 31 + 12, network = "ACME", signal = -80, fresh = true, band = "b3" },
+                { id = 11, network = "ACME", signal = -95.2, fresh = false },
+            }
+            run(phone, {}, function(app)
+                open(app)
+                app.key(keys.down, keys.enter)
+                expect(app.lines(2, 4)):same { "Pinned cell", "", " * The phone chooses" }
+                expect(app.line(5)):str_match("^   #12 ACME +b20 %-72$")
+                expect(app.line(6)):str_match("^   #12 b3/1 ACME +b3 %-80$")
+                expect(app.line(7)):str_match("^   #11 ACME +%- %-95$")
+                app.key(keys.down, keys.down, keys.enter)
+                expect(phone.pins):same { 18075 * 2 ^ 31 + 12 }
+                expect(app.line(4)):eq("   The phone chooses")
+                expect(app.line(6)):str_match("^ %* #12 b3/1 ACME +b3 %-80$")
+                expect(app.says("Pinned to cell #12 b3/1: no other is used.")):eq(true)
+                app.key(keys.backspace)
+                expect(app.line(5)):str_match("^ Pinned cell +#12 b3/1$")
+
+                -- A cell it's pinned to but can't hear is still there, to see and to let go of.
+                phone.info.pinned, phone.info.heard = 99, {}
+                app.key(keys.enter)
+                expect(app.line(4)):eq("   The phone chooses")
+                expect(app.line(5)):str_match("^ %* #99 +not heard$")
+                app.key(keys.home, keys.enter)
+                expect(phone.pins[2]):eq("none")
+                expect(app.says("The phone chooses its cell.")):eq(true)
+                expect(app.line(5)):eq("")
+            end)
+        end)
+    end)
+
     describe("monitor", function()
         it("is shown beneath the bar, until Q is pressed", function()
             local phone = fake_phone()
             run(phone, {}, function(app)
                 app.key(keys.up, keys.up)
-                expect(app.bg(8)):eq(("0"):rep(26))
+                expect(app.bg(9)):eq(("0"):rep(26))
                 app.key(keys.enter)
                 app.event("cell_state", "attached")
                 expect(app.line(1)):eq(" ACME              [|||.]")
@@ -1371,8 +1474,8 @@ describe("The cell program's GUI", function()
                 app.type("q")
                 expect(app.finished()):eq(false)
                 expect(app.line(2)):eq("Phone             No. 0042")
-                expect(app.line(8)):eq(" Monitor")
-                expect(app.bg(8)):eq(("0"):rep(26))
+                expect(app.line(9)):eq(" Monitor")
+                expect(app.bg(9)):eq(("0"):rep(26))
             end)
         end)
 
@@ -1500,7 +1603,7 @@ describe("The cell program's GUI", function()
 
         it("is completed, with the program to run", function()
             expect(shell.complete("cell g")):same { "ui" }
-            expect(shell.complete("cell b")):same { "ar " }
+            expect(shell.complete("cell b")):same { "ands ", "ar " }
             expect(shell.complete("cell bar of")[1]):eq("f")
             expect(shell.complete("cell bar cellc")):same { "ore " }
             expect(shell.complete("cell bar cell m")):same { "essages", "onitor" }

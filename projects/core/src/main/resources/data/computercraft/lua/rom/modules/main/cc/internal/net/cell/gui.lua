@@ -3,7 +3,8 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 --[[- The phone's menus, which run beneath its status bar: to read and write messages, a conversation with each number,
-to choose a network, to turn cell service off and on, and to open the monitor.
+to choose a network, to say which bands and which cell it may use, to turn cell service off and on, and to open the
+monitor.
 
 Everything here is drawn for a pocket computer's screen, and works on wider ones. Basic computers get greys where
 advanced ones get colours, and everything can be done with the keyboard alone.
@@ -16,6 +17,8 @@ advanced ones get colours, and everything can be done with the keyboard alone.
 
 local expect = require "cc.expect".expect
 local bar = require "cc.internal.net.cell.bar"
+local bands = require "cc.internal.net.bands"
+local common = require "cc.internal.net.cell.common"
 local menu = require "cc.internal.net.cell.menu"
 
 -- What every menu is made of: the phone's, a cell's and a core's.
@@ -461,6 +464,146 @@ local function networks_screen()
 end
 
 --------------------------------------------------------------------------------
+-- Advanced settings
+--------------------------------------------------------------------------------
+
+-- Which bands the phone may use: each band, to turn off and on.
+local function bands_screen()
+    local result, result_fg
+    list_screen {
+        hint = { "Enter: turn on or off", "Q: back" },
+        refresh = NETWORKS_REFRESH,
+        title = function() return "Bands" end,
+        note = function()
+            if result then return result, result_fg end
+            return "The phone uses, and listens on, only the bands which are on."
+        end,
+        items = function()
+            local allowed
+            for _, band in ipairs(net.cell.info().bands or {}) do
+                allowed = allowed or {}
+                allowed[band] = true
+            end
+            local items = { { id = "any", text = (" %s Any band"):format(allowed and " " or "*") } }
+            for _, band in ipairs(bands.cellular()) do
+                items[#items + 1] = {
+                    id = band.name, band = band.name, on = not allowed or allowed[band.name] == true,
+                    text = (" %s %s"):format((not allowed or allowed[band.name]) and "*" or " ", band.name),
+                    tail = { { tostring(band.label) .. "MHz", colours.lightGrey } },
+                }
+            end
+            return items
+        end,
+        choose = function(item)
+            local wanted
+            if item.band then
+                -- The bands which are on, with this one turned the other way.
+                local allowed
+                for _, band in ipairs(net.cell.info().bands or {}) do
+                    allowed = allowed or {}
+                    allowed[band] = true
+                end
+                wanted = {}
+                for _, band in ipairs(bands.cellular()) do
+                    local on = not allowed or allowed[band.name] == true
+                    if band.name == item.band then on = not on end
+                    if on then wanted[#wanted + 1] = band.name end
+                end
+                if not wanted[1] then
+                    result, result_fg = "The phone needs a band to use.", c(colours.red)
+                    return nil
+                end
+            end
+            local ok, err = net.cell.setBands(wanted)
+            bar.touch()
+            if ok then
+                local now = net.cell.info().bands
+                result, result_fg = now and ("Using only %s."):format(table.concat(now, ", ")) or "Using any band.", nil
+            else
+                result, result_fg = tostring(err or "The bands can't be changed"), c(colours.red)
+            end
+            return nil
+        end,
+    }
+end
+
+-- Which cell the phone is pinned to: none, or one of those it hears.
+local function pin_screen()
+    local result, result_fg
+    list_screen {
+        hint = { "Enter: choose", "Q: back" },
+        refresh = NETWORKS_REFRESH,
+        title = function() return "Pinned cell" end,
+        note = function()
+            if result then return result, result_fg end
+            return "Pinned to a cell, the phone uses no other, and has no service where it can't hear it."
+        end,
+        items = function()
+            local info = net.cell.info()
+            local items = { { id = "none", text = (" %s The phone chooses"):format(info.pinned and " " or "*") } }
+            local seen = {}
+            for _, cell in ipairs(info.heard or {}) do
+                if not seen[cell.id] then
+                    seen[cell.id] = true
+                    items[#items + 1] = {
+                        id = cell.id, cell = cell.id,
+                        fg = cell.fresh and colours.white or colours.lightGrey,
+                        text = (" %s #%s %s"):format(cell.id == info.pinned and "*" or " ", common.cell_label(cell.id), tostring(cell.network)),
+                        tail = { { ("%s %d"):format(tostring(cell.band or "-"), math.floor(cell.signal + 0.5)), colours.lightGrey } },
+                    }
+                end
+            end
+            -- The cell it's pinned to, even when it isn't heard.
+            if info.pinned and not seen[info.pinned] then
+                items[#items + 1] = {
+                    id = info.pinned, cell = info.pinned, fg = colours.lightGrey,
+                    text = (" * #%s"):format(common.cell_label(info.pinned)), tail = { { "not heard", c(colours.orange, colours.lightGrey) } },
+                }
+            end
+            return items
+        end,
+        choose = function(item)
+            local ok, err = net.cell.pinCell(item.cell)
+            bar.touch()
+            if ok then
+                result_fg = nil
+                result = item.cell and ("Pinned to cell #%s: no other is used."):format(common.cell_label(item.cell))
+                    or "The phone chooses its cell."
+            else
+                result, result_fg = tostring(err or "That cell can't be pinned"), c(colours.red)
+            end
+            return nil
+        end,
+    }
+end
+
+local function advanced_screen()
+    list_screen {
+        hint = { "Enter: change", "Q: back" },
+        refresh = NETWORKS_REFRESH,
+        title = function() return "Advanced settings" end,
+        note = function()
+            return "The phone chooses its band and its cell by itself. Change these only where it chooses badly: for a "
+                .. "phone which stays where it is, say, such as a relay's."
+        end,
+        items = function()
+            local info = net.cell.info()
+            return {
+                { id = "bands", text = " Bands", tail = { { info.bands and table.concat(info.bands, " ") or "any", colours.lightGrey } } },
+                {
+                    id = "pin", text = " Pinned cell",
+                    tail = { { info.pinned and "#" .. common.cell_label(info.pinned) or "none", colours.lightGrey } },
+                },
+            }
+        end,
+        choose = function(item)
+            if item.id == "bands" then bands_screen() else pin_screen() end
+            return nil
+        end,
+    }
+end
+
+--------------------------------------------------------------------------------
 -- The home menu
 --------------------------------------------------------------------------------
 
@@ -485,6 +628,7 @@ local function home_screen(monitor)
             -- Without a SIM, cell service on means listening for cells.
             local on = info.enabled ~= false and info.state ~= "off" and info.state ~= "none"
             items[#items + 1] = { id = "service", text = " Cell service: " .. (on and "On" or "Off") }
+            if info.network then items[#items + 1] = { id = "advanced", text = " Advanced settings" } end
             items[#items + 1] = { id = "monitor", text = " Monitor" }
             items[#items + 1] = { id = "quit", text = " Quit" }
             return items
@@ -518,6 +662,9 @@ local function home_screen(monitor)
                 local on = info.enabled ~= false and info.state ~= "off" and info.state ~= "none"
                 local ok, err = net.cell.setEnabled(not on)
                 if not ok then problem = tostring(err or "Cell service couldn't be turned on") end
+                bar.touch()
+            elseif item.id == "advanced" then
+                advanced_screen()
                 bar.touch()
             elseif item.id == "monitor" then
                 -- The monitor only prints why it can't listen, which the menu would cover at once.

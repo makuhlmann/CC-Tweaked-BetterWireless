@@ -392,6 +392,8 @@ describe("The net library", function()
         it("validates its arguments", function()
             expect.error(net.cell.setEnabled, "yes"):eq("bad argument #1 (boolean expected, got string)")
             expect.error(net.cell.setNetwork, 5):eq("bad argument #1 (string expected, got number)")
+            expect.error(net.cell.setBands, "b3"):eq("bad argument #1 (table expected, got string)")
+            expect.error(net.cell.pinCell, "12"):eq("bad argument #1 (number expected, got string)")
             expect.error(net.cell.markRead, "all"):eq("bad argument #1 (number expected, got string)")
             expect.error(net.cell.deleteMessage):eq("bad argument #1 (number expected, got nil)")
             expect.error(net.cell.send, "1"):eq("bad argument #2 (string expected, got nil)")
@@ -697,6 +699,41 @@ describe("The net library", function()
             expect(net.cell.networks()[1].selected):eq(true)
             expect(net.cell.setNetwork("auto")):eq(true)
             expect(net.cell.info().selection):eq("auto")
+            clean()
+        end)
+
+        it("keeps the bands a phone may use, and the cell it's pinned to", function()
+            local function read(path)
+                local file = fs.open(path, "r")
+                local value = textutils.unserialise(file.readAll())
+                file.close()
+                return value
+            end
+            expect({ net.cell.info().bands, net.cell.info().pinned }):same {}
+            -- Bands by name, in any case and order: kept lowest first.
+            expect(net.cell.setBands({ "B3", "b20", "b3" })):eq(true)
+            expect(net.cell.info().bands):same { "b20", "b3" }
+            expect({ net.cell.setBands({ "b3", "b33" }) }):same {
+                nil, "There's no cellular band called b33: they're b31, b28, b20, b8, b3, b1 and b7",
+            }
+            expect({ net.cell.setBands({}) }):same { nil, "Name at least one band, or none for every band" }
+            expect(net.cell.info().bands):same { "b20", "b3" }
+            expect(net.cell.pinCell(12)):eq(true)
+            expect({ net.cell.pinCell(1.5) }):same { nil, "A cell's ID is a whole number" }
+            expect(net.cell.info().pinned):eq(12)
+            expect(read("/.net/phone")):same { bands = { "b20", "b3" }, pinned = 12 }
+
+            -- Every band is any band, as is none; and a file which says something else says nothing.
+            expect(net.cell.setBands({ "b31", "b28", "b20", "b8", "b3", "b1", "b7" })):eq(true)
+            expect(net.cell.info().bands):eq(nil)
+            expect(net.cell.setBands({ "b7" })):eq(true)
+            expect(net.cell.setBands(nil)):eq(true)
+            expect(net.cell.pinCell(nil)):eq(true)
+            expect(read("/.net/phone")):same {}
+            write("/.net/phone", { bands = { "low", 5, "B7" }, pinned = "twelve" })
+            expect({ net.cell.info().bands, net.cell.info().pinned }):same { { "b7" } }
+            write("/.net/phone", { bands = "b3", pinned = -1 })
+            expect({ net.cell.info().bands, net.cell.info().pinned }):same {}
             clean()
         end)
 

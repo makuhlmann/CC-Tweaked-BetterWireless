@@ -164,6 +164,17 @@ end
 local Phone = {}
 Phone.__index = Phone
 
+-- The bands a phone may use, by name, from a list of them: or `nil`, for any, if the list isn't one.
+local function band_set(list)
+    if type(list) ~= "table" or list[1] == nil then return nil end
+    local set = {}
+    for _, name in ipairs(list) do
+        local band = type(name) == "string" and bands.get(name)
+        if band and band.downlink then set[name] = true end
+    end
+    return next(set) and set or nil
+end
+
 --[[- Start a phone.
 
 @tparam {
@@ -176,6 +187,7 @@ Phone.__index = Phone
     on_message? = function(from:string, text:string),
     on_sent? = function(id:number, ok:boolean, reason:string|nil),
     on_activated? = function(info:table), relay? = function():boolean,
+    bands? = { string... }, pinned? = number,
 } options The stack; the `crypto` API; the modem cells are heard on, and what kind it is (`"wireless"` or
 `"ender"`); the time, as `os.epoch("utc")` gives; the
 phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; the
@@ -184,8 +196,9 @@ treats as home; the only network it should use, if it has been told to use one; 
 other networks to roam on (or treat as home); what to call
 when its state changes; what to call with each message; what to call when the network has taken a message we sent (or
 refused it, or it couldn't be sent); what to call when it's activated, with the operator's keys and its subscription,
-to save them; and whether this computer is a relay, whose cell's backhaul is this phone (so it avoids cells already as
-many relays from the core as a chain may have).
+to save them; whether this computer is a relay, whose cell's backhaul is this phone (so it avoids cells already as
+many relays from the core as a chain may have); and the only bands it may use, and the only cell, if it was told (as
+`restrict` takes them).
 @treturn table The phone.
 ]]
 local function new(options)
@@ -197,6 +210,7 @@ local function new(options)
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
         partners = options.partners or {}, equivalent = options.equivalent or {}, selection = options.selection,
         relay = options.relay or function() return false end,
+        allowed_bands = band_set(options.bands), pinned = common.is_id(options.pinned) and options.pinned or nil,
         cells = {}, heard = {}, events = {}, certificates = common.new_certificates(),
         forbidden = recent.new(MAX_FORBIDDEN, FORBIDDEN_TIME, stack.clock),
         failed = recent.new(MAX_FAILED, MAX_FAILED_TIME, stack.clock),
@@ -251,6 +265,47 @@ function Phone:listens_for(network)
     return self.partners[network] ~= nil and (self:roaming() or self.state == "attached" and self:messages_only())
 end
 
+-- Whether we may listen (and send) on a carrier: it's in a band we may use.
+function Phone:band_allowed(carrier)
+    if not self.allowed_bands then return true end
+    local _, band = bands.carrier_of(carrier or 0)
+    return band ~= nil and self.allowed_bands[band] == true
+end
+
+-- Whether we may use a cell at all, as we were told: it's on a band we may use, and it's the cell we're pinned to, if
+-- we're pinned to one.
+function Phone:permits(id)
+    if self.pinned ~= nil and id ~= self.pinned then return false end
+    return self.allowed_bands == nil or self:band_allowed(self.uplinks[id])
+end
+
+--[[- Use only some bands, or only one cell: or any again.
+
+A phone chooses its cell by itself, and nearly always should. But its user may know better: that a band is no use
+where it is, or (for a relay, say, whose phone is its cell's way to the core) which cell it should always use. On
+bands it may not use it doesn't listen either. Pinned to a cell, it uses no other: where it can't hear that cell, it
+has no service.
+
+@tparam[opt] { string... } band_list The bands it may use, by name, or `nil` for any.
+@tparam[opt] number pinned The ID of the only cell it may use, or `nil` for any.
+]]
+function Phone:restrict(band_list, pinned)
+    self.allowed_bands = band_set(band_list)
+    self.pinned = common.is_id(pinned) and pinned or nil
+    self:update_listening()
+    if not self.operator then return end
+    -- If we're on a cell we may no longer use, or attaching to one, look again.
+    local state = self.state
+    if (state == "attached" or state == "attaching") and self.cell ~= nil and not self:permits(self.cell) then
+        if state == "attached" then self:event("lost", { cell = self.cell }) end
+        self:enter("searching")
+        self:attach()
+    elseif state == "searching" or state == "rejected" then
+        self:enter("searching")
+        self:attach()
+    end
+end
+
 -- Whether a phone in a state camps: it's attached, or it only listens (it has no SIM). Searching, attaching or
 -- activating, it listens on every carrier.
 local function camps(state) return state == "attached" or state == "inactive" end
@@ -280,14 +335,17 @@ function Phone:update_listening()
         for network, heard in pairs(networks) do
             if now - heard > CARRIER_MEMORY then
                 networks[network] = nil
-            elseif not scanning and self:listens_for(network) then
+            elseif not scanning and self:listens_for(network) and self:band_allowed(carrier) then
                 wanted[carrier] = true
             end
         end
         if next(networks) == nil then self.carriers[carrier] = nil end
     end
     if scanning then
-        for _, channel in ipairs(bands.beacon_channels()) do wanted[channel] = true end
+        -- Every carrier of the bands we may use.
+        for _, channel in ipairs(bands.beacon_channels()) do
+            if self:band_allowed(channel) then wanted[channel] = true end
+        end
     end
     local serving = self.cell and self.uplinks[self.cell]
     if serving then wanted[bands.carrier_of(serving)] = true end
@@ -506,6 +564,8 @@ function Phone:usable(id, cell, network, now)
         and (network == self.operator.network or self.partners[network] ~= nil)
         -- A relay's phone and cell share its computer.
         and id ~= self.stack.id
+        -- And it's a cell we may use, if we were told which we may.
+        and self:permits(id)
 end
 
 -- Whether an attach through a cell got no answer lately: it may not hear us.
@@ -571,7 +631,8 @@ function Phone:best(now, fits, others)
     local chosen = self.selection
     for id, cell in pairs(self.heard) do
         -- (Never one of this computer's own cells: a computer may run several, whose IDs give the computer's.)
-        if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and common.site_of(id) ~= self.stack.id then
+        if now - cell.heard <= silence(cell) and cell.signal >= NO_SERVICE and common.site_of(id) ~= self.stack.id
+            and self:permits(id) then
             for name, entry in pairs(cell.networks) do
                 if name ~= own and not self.partners[name] and (chosen == nil or name == chosen)
                     and (chosen ~= nil or not self.forbidden:get(name))
@@ -771,7 +832,7 @@ function from_cell.attached.handover(self, here, message, signal)
     local target = type(value) == "table" and value.target
     -- Within the network we're on, to a cell which serves it.
     if not common.is_id(target) or not self.cells[target] or target == here.cell
-        or not self.cells[target].networks[here.via] then
+        or not self.cells[target].networks[here.via] or not self:permits(target) then
         return
     end
     self:heard_from_cell(here, signal)
@@ -910,7 +971,7 @@ function Phone:activate(network, code)
     local now, ways, named = self.stack.clock(), {}, false
     for id, heard in pairs(self.heard) do
         for name, entry in pairs(heard.networks) do
-            if now - entry.heard <= silence(heard) then
+            if now - entry.heard <= silence(heard) and self:permits(id) then
                 local cert = certificate.decode(entry.cert)
                 ways[#ways + 1] = {
                     id = id, signal = heard.signal, network = name,
@@ -1342,7 +1403,8 @@ end
 --
 -- @treturn table Its state, cell, address and subscriber; the cells it may use which it hears (`cells`); every cell it
 -- has heard lately, of any network (`heard`); the networks around; what has happened lately (`events`); whether it's
--- roaming; the network it has been told to use (`selection`); the networks it may roam on (`partners`); and which of
+-- roaming; the bands it may use, and the cell it's pinned to, if it was told (`bands`, `pinned`); the network it has
+-- been told to use (`selection`); the networks it may roam on (`partners`); and which of
 -- those it treats as home (`equivalent`).
 function Phone:info()
     local now = self.stack.clock()
@@ -1406,11 +1468,21 @@ function Phone:info()
         for k, v in pairs(event) do events[i][k] = v end
     end
 
+    -- The bands we may use, lowest first, if we were told which.
+    local allowed
+    if self.allowed_bands then
+        allowed = {}
+        for _, band in ipairs(bands.cellular()) do
+            if self.allowed_bands[band.name] then allowed[#allowed + 1] = band.name end
+        end
+    end
+
     return {
         state = self.state, cell = self.cell, address = self.address, subscriber = self.subscriber,
         rejected = self.rejected, activation_error = self.activation_error, cells = cells, networks = networks,
         heard = heard, strongest = strongest, events = events, network = self.operator and self.operator.network,
         roaming = self:roaming(), selection = self.selection, partners = partners, equivalent = equivalent,
+        bands = allowed, pinned = self.pinned,
         messages_only = self.state == "attached" and self:messages_only() or nil,
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
         newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,

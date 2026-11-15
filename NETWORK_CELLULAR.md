@@ -575,6 +575,14 @@ the design above:
     choosing one keeps the phone to it, and "Automatic" lets it choose), cell service off and on, and the monitor.
     Every screen is left with Q or Backspace (the first quits), but for a conversation, where Q is a letter and
     Backspace in an empty line leaves; and a key held down never leaves two at once.
+  - **Advanced settings** (in the menus, and `cell bands`, `cell pin`; `net.cell.setBands`, `net.cell.pinCell`): the
+    bands the phone may use, and one cell to pin it to. A phone chooses its cell by itself, and nearly always should;
+    these are for a phone which stays where it is and chooses badly, above all a relay's, whose phone is its cell's
+    way to the core and should use a cell with a good link of its own rather than the strongest. On bands it may not
+    use, it doesn't listen either (searching, or camped), so it's never offered their cells. Pinned to a cell, it
+    attaches through no other and is never handed over: where it can't hear that cell, it has no service, though
+    others are in reach. Both are kept (`/.net/phone`), and a change which rules out the cell it's on makes it look
+    again at once. They say nothing about the cell a relay itself runs, which goes on the bands `celld` was told.
   - **The same from the shell:** `cell networks`, `cell network <name>|auto`, `cell on` and `cell off`.
   - **What it's built on.** The menus only use `net.cell`: `info` (which also has `enabled`, `signal`,
     `serving_network`, `roaming`, `selection` and `unread`), `messages`, `markRead`, `deleteMessage`, `send`,

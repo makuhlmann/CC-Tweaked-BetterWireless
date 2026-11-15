@@ -1578,6 +1578,8 @@ cell = {
      - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
        the phone treats as its own network (it isn't roaming there);
      - `selection`: `"auto"`, or the only network it has been told to use (see `net.cell.setNetwork`);
+     - `bands` and `pinned`: the only bands it may use, by name, and the ID of the only cell, if it was told (see
+       `net.cell.setBands` and `net.cell.pinCell`);
      - `newer`: whether it heard a cell (or core) lately which speaks a newer version of the network than it does,
        which may be why a phone which is searching finds no cell it can use;
      - `unread`: how many messages haven't been read;
@@ -1768,6 +1770,39 @@ cell = {
     setNetwork = function(name)
         expect(1, name, "string", "nil")
         return cellular().setNetwork(name)
+    end,
+
+    --[[- Say which cellular bands the phone may use, or let it use any.
+
+    Left to itself, a phone uses whichever band's cell suits it best: the highest band which is strong enough, and
+    otherwise the strongest cell. Told which bands it may use, it uses (and listens on) no other, and has no service
+    where its networks have no cell on them.
+
+    @tparam[opt] { string... } bands The bands' names, such as `{ "b20", "b3" }`, or `nil` for any band.
+    @treturn[1] true If the choice was made.
+    @treturn[2] nil If it couldn't be.
+    @treturn[2] string Why not.
+    ]]
+    setBands = function(list)
+        expect(1, list, "table", "nil")
+        return cellular().setBands(list)
+    end,
+
+    --[[- Pin the phone to one cell, or let it choose again.
+
+    A phone chooses its cell by itself, and moves between cells as it's carried around. Pinned to a cell, it uses no
+    other, whatever else it hears: and has no service where it can't hear that cell. This is for a phone which stays
+    where it is and should use a cell the phone wouldn't choose by itself: a relay's, say, whose cell reaches the core
+    through its phone, and should do so through a cell with a good link of its own.
+
+    @tparam[opt] number cell The cell's ID, as `net.cell.info` lists it (`heard`), or `nil` to let the phone choose.
+    @treturn[1] true If the choice was made.
+    @treturn[2] nil If it couldn't be.
+    @treturn[2] string Why not.
+    ]]
+    pinCell = function(cell)
+        expect(1, cell, "number", "nil")
+        return cellular().pinCell(cell)
     end,
 
     --[[- Run a cell of a cellular network on this computer, in the background, from now on (also when the computer

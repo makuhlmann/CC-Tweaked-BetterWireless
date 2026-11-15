@@ -569,16 +569,17 @@ local function operator(cell_positions, options)
             operator = phone_options.activated ~= false and { network = name, key = operator_key.public, signing = signing_public } or nil,
             on_message = phone_options.on_message, on_activated = phone_options.on_activated,
             on_sent = phone_options.on_sent, partners = phone_options.partners, selection = phone_options.selection,
-            on_partners = phone_options.on_partners,
+            on_partners = phone_options.on_partners, bands = phone_options.bands, pinned = phone_options.pinned,
         }
         return phone, stack
     end
 
     --[[ A relay: a computer only on the air, which is a phone of the network and a cell. Once its phone is attached,
     its cell connects to the core over TCP, through its phone, and its tunnel goes the same way. `band` is the band its
-    cell asks to be on, or a list of bands and carriers for a cell on each. ]]
-    local function add_relay(id, position, band)
-        local phone, stack = add_phone(id, position)
+    cell asks to be on, or a list of bands and carriers for a cell on each; `phone_options` are its phone's, as
+    `add_phone` takes them. ]]
+    local function add_relay(id, position, band, phone_options)
+        local phone, stack = add_phone(id, position, nil, phone_options)
         local cell_private, cell_public = crypto.generateKeyPair("ed25519")
         local key = new_key()
         local relay = {

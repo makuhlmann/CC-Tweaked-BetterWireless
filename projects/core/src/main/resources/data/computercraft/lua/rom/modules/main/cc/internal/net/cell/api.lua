@@ -158,6 +158,20 @@ local function restore_interfaces()
     for _, tower in pairs(tower_instances) do restore_interface(tower) end
 end
 
+-- The bands a phone was told it may use, as its file keeps them: those which are cellular bands, lowest first, or nil
+-- for any (as when none of them is one).
+local function phone_bands(list)
+    if type(list) ~= "table" then return nil end
+    local wanted, result = {}, {}
+    for _, name in pairs(list) do
+        if type(name) == "string" then wanted[name:lower()] = true end
+    end
+    for _, band in ipairs(bands.cellular()) do
+        if wanted[band.name] then result[#result + 1] = band.name end
+    end
+    return result[1] and result or nil
+end
+
 local function new_phone(operator, partners, equivalent)
     -- A computer may be a phone and a cell at once: a relay, whose cell reaches the core through its phone.
     local modem, kind = radio_modem()
@@ -168,6 +182,7 @@ local function new_phone(operator, partners, equivalent)
         stack = stack, crypto = crypto, modem = modem, kind = kind, epoch = function() return os.epoch("utc") end,
         sim = sim_key(), operator = operator, partners = partners, equivalent = equivalent,
         selection = type(chosen.network) == "string" and chosen.network or nil,
+        bands = phone_bands(chosen.bands), pinned = common.is_id(chosen.pinned) and chosen.pinned or nil,
         -- The operator says which other networks the phone may use (and which it treats as home): remember them, for
         -- when it starts out of reach of its own.
         on_partners = function(list, equivalent)
@@ -730,6 +745,7 @@ function api.info()
     -- Without a SIM, cell service is only on once it's told to listen for cells.
     info.enabled = chosen.off ~= true and (type(sim.network) == "string" or chosen.listen == true)
     info.selection = type(chosen.network) == "string" and chosen.network or "auto"
+    info.bands, info.pinned = phone_bands(chosen.bands), common.is_id(chosen.pinned) and chosen.pinned or nil
     info.roaming = info.roaming == true
     info.newer = info.newer == true
     info.unread = read_cached("unread", INBOX_FILE, function()
@@ -924,6 +940,45 @@ function api.setNetwork(name)
     chosen.network = name
     write_table(PHONE_FILE, chosen)
     if phone_instance and phone_instance.select then phone_instance:select(name) end
+    os.queueEvent("cell_state", api.info().state)
+    return true
+end
+
+function api.setBands(list)
+    load()
+    local wanted
+    if list ~= nil then
+        wanted = {}
+        for i, name in ipairs(list) do
+            local band = type(name) == "string" and bands.get(name:lower())
+            if not band or not band.downlink then
+                return nil, ("There's no cellular band called %s: they're %s"):format(tostring(name), band_names())
+            end
+            wanted[i] = name:lower()
+        end
+        wanted = phone_bands(wanted)
+        if not wanted then return nil, "Name at least one band, or none for every band" end
+        -- Every band is no choice at all.
+        if #wanted == #bands.cellular() then wanted = nil end
+    end
+    local chosen = read_table(PHONE_FILE)
+    chosen.bands = wanted
+    write_table(PHONE_FILE, chosen)
+    if phone_instance and phone_instance.restrict then phone_instance:restrict(wanted, phone_instance.pinned) end
+    os.queueEvent("cell_state", api.info().state)
+    return true
+end
+
+function api.pinCell(cell)
+    load()
+    if cell ~= nil and not common.is_id(cell) then return nil, "A cell's ID is a whole number" end
+    local chosen = read_table(PHONE_FILE)
+    chosen.pinned = cell
+    write_table(PHONE_FILE, chosen)
+    if phone_instance and phone_instance.restrict then
+        local allowed = phone_instance:info().bands
+        phone_instance:restrict(allowed, cell)
+    end
     os.queueEvent("cell_state", api.info().state)
     return true
 end

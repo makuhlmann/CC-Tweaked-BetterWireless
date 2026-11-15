@@ -194,6 +194,17 @@ describe("The cell program", function()
                 return true
             end)
             stub(net.cell, "send", function() return nil, "No SIM" end)
+            stub(net.cell, "setBands", function(list)
+                phone.calls[#phone.calls + 1] = { "setBands", list or "any" }
+                if list and list[1] == "b33" then return nil, "There's no cellular band called b33" end
+                phone.info.bands = list
+                return true
+            end)
+            stub(net.cell, "pinCell", function(cell)
+                phone.calls[#phone.calls + 1] = { "pinCell", cell or "none" }
+                phone.info.pinned = cell
+                return true
+            end)
             return phone
         end
 
@@ -234,6 +245,36 @@ describe("The cell program", function()
             expect(phone.calls):same {
                 { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" }, { "setNetwork", "NOT-A-NAME!" },
             }
+        end)
+
+        it("says which bands the phone may use, and pins it to a cell", function()
+            local phone = fake_phone()
+            local function run(words) return capture("/rom/programs/net/cell.lua " .. words) end
+            expect(run("bands")):matches { ok = true, output = "The phone uses any band.\n", error = "" }
+            expect(run("bands b20 1800 B3 2100MHz"))
+                :matches { ok = true, output = "The phone only uses the bands b20, b3, b3, b1.\n", error = "" }
+            expect(run("bands b33")):matches { ok = true, output = "", error = "There's no cellular band called b33\n" }
+            expect(run("bands all")):matches { ok = true, output = "The phone uses any band.\n", error = "" }
+
+            expect(run("pin")):matches { ok = true, output = "The phone chooses its cell.\n", error = "" }
+            expect(run("pin 12")):matches {
+                ok = true, output = "The phone only uses cell #12, and has no service where it can't hear it.\n", error = "",
+            }
+            expect(run("pin #12 b3/1")):matches {
+                ok = true, output = "The phone only uses cell #12 b3/1, and has no service where it can't hear it.\n", error = "",
+            }
+            expect(run("pin twelve")):matches { ok = true, output = "", error = "Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.\n" }
+            expect(run("pin 12 b3/99").error):eq("Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.\n")
+            expect(run("pin off")):matches { ok = true, output = "The phone chooses its cell.\n", error = "" }
+            expect(phone.calls):same {
+                { "setBands", { "b20", "b3", "b3", "b1" } }, { "setBands", { "b33" } }, { "setBands", "any" },
+                { "pinCell", 12 }, { "pinCell", 18075 * 2 ^ 31 + 12 }, { "pinCell", "none" },
+            }
+
+            -- What it was told is in what it says about itself.
+            phone.info.bands, phone.info.pinned = { "b20", "b3" }, 12
+            local output = capture("/rom/programs/net/cell.lua").output
+            expect(output):str_match("\nOnly uses the bands b20, b3\nPinned to cell #12\n")
         end)
 
         it("turns cell service off and on", function()

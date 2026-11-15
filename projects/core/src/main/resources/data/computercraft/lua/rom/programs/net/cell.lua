@@ -13,6 +13,8 @@ local function usage()
     print(name .. " messages")
     print(name .. " networks")
     print(name .. " network <name>|auto")
+    print(name .. " bands [all|<band>...]")
+    print(name .. " pin [<cell> [carrier]|off]")
     print(name .. " on|off")
     print(name .. " monitor")
     print(name .. " locate")
@@ -319,6 +321,8 @@ elseif command == nil then
     if info.state == "attached" and info.roaming then print("Roaming:  on " .. tostring(info.serving_network)) end
     if info.messages_only then print("Messages only: this cell carries no packets") end
     if info.selection ~= "auto" then print("Only uses " .. tostring(info.selection)) end
+    if info.bands then print("Only uses the bands " .. table.concat(info.bands, ", ")) end
+    if info.pinned then print("Pinned to cell #" .. cell_label(info.pinned)) end
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end
     if info.address then print("Address:  " .. info.address) end
@@ -436,6 +440,56 @@ elseif command == "network" and #args == 2 then
                 print(("It doesn't know whether %s carries its network's phones, so it tries."):format(args[2]))
             end
         end
+    end
+elseif command == "bands" then
+    -- Which bands the phone may use: shown, or set.
+    if #args > 1 then
+        local wanted
+        if not (#args == 2 and (args[2] == "all" or args[2] == "any")) then
+            wanted = {}
+            for i = 2, #args do
+                -- A band as a person might write it: "b3", "3", or its frequency, "1800" or "1800MHz".
+                local word, found = args[i]:lower():gsub("mhz$", ""), nil
+                for _, band in ipairs(require("cc.internal.net.bands").cellular()) do
+                    if word == band.name or "b" .. word == band.name or word == band.label then found = band.name end
+                end
+                wanted[#wanted + 1] = found or args[i]
+            end
+        end
+        local ok, err = net.cell.setBands(wanted)
+        if not ok then
+            printError(err)
+            return
+        end
+    end
+    local bands = net.cell.info().bands
+    print(bands and ("The phone only uses the bands %s."):format(table.concat(bands, ", ")) or "The phone uses any band.")
+elseif command == "pin" and #args <= 3 then
+    -- Which cell the phone is pinned to: shown, or set.
+    if #args > 1 then
+        local cell
+        if not (#args == 2 and (args[2] == "off" or args[2] == "none")) then
+            -- A cell by its computer's ID: and by its carrier too, if it's one of the computer's further cells.
+            local common = require("cc.internal.net.cell.common")
+            cell = tonumber((args[2]:gsub("^#", "")))
+            local carrier = args[3] and require("cc.internal.net.bands").parse_carrier(args[3])
+            if not cell or (args[3] and not carrier) then
+                printError("Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.")
+                return
+            end
+            if carrier then cell = common.carrier_cell(cell, carrier) end
+        end
+        local ok, err = net.cell.pinCell(cell)
+        if not ok then
+            printError(err)
+            return
+        end
+    end
+    local pinned = net.cell.info().pinned
+    if pinned then
+        print(("The phone only uses cell #%s, and has no service where it can't hear it."):format(cell_label(pinned)))
+    else
+        print("The phone chooses its cell.")
     end
 elseif (command == "on" or command == "off") and #args == 1 then
     local ok, err = net.cell.setEnabled(command == "on")
