@@ -130,12 +130,66 @@ local function put(x, y, text, fg, bg)
     term.write(text)
 end
 
+-- Which screen's lines are on the terminal now (see `present`), and whether one is being drawn into its buffer.
+local owner, presenting = nil, false
+
 --- Clear the screen, for a menu to draw on.
 local function clear()
+    -- Whatever was on the terminal has gone: a screen which only draws what changed draws everything next time.
+    if not presenting then owner = nil end
     term.setBackgroundColour(colours.black)
     term.setTextColour(colours.white)
     term.clear()
     term.setCursorBlink(false)
+end
+
+--[[- Draw a screen, writing only the lines which aren't on the terminal already.
+
+A list which looks at what it shows again every second would otherwise send a whole screen each time: over a remote
+shell that's a lot to send, for a screen which mostly stays as it is.
+
+@tparam table shown What this screen last drew, which this keeps: an empty table to begin with, and the same one each
+time.
+@tparam function draw Draws the whole screen, with `clear` and `put`, and leaves the cursor blinking where text is typed,
+if it is.
+]]
+local function present(shown, draw)
+    local target = term.current()
+    local w, h = target.getSize()
+    if owner ~= shown or shown.w ~= w or shown.h ~= h then
+        for key in pairs(shown) do shown[key] = nil end
+        shown.w, shown.h = w, h
+        shown.buffer = window.create(target, 1, 1, w, h, false)
+    end
+    local buffer = shown.buffer
+    presenting = true
+    local previous = term.redirect(buffer)
+    local ok, err = pcall(draw)
+    term.redirect(previous)
+    presenting = false
+    if not ok then error(err, 0) end
+    owner = shown
+    local wrote = false
+    for y = 1, h do
+        local text, fg, bg = buffer.getLine(y)
+        local line = text .. fg .. bg
+        if shown[y] ~= line then
+            shown[y], wrote = line, true
+            target.setCursorPos(1, y)
+            target.blit(text, fg, bg)
+        end
+    end
+    -- The cursor, where the screen left it: for a line which is typed in.
+    local x, y = buffer.getCursorPos()
+    local cursor = buffer.getCursorBlink() and ("%d %d"):format(x, y) or "off"
+    if wrote or shown.cursor ~= cursor then
+        shown.cursor = cursor
+        if cursor ~= "off" then
+            target.setCursorPos(x, y)
+            target.setTextColour(buffer.getTextColour())
+        end
+        target.setCursorBlink(cursor ~= "off")
+    end
 end
 
 --- Draw a screen's first line: what it is, and something short about it on the right.
@@ -304,14 +358,16 @@ local function list_screen(options)
     -- Do what was chosen, which may show other screens for a while, and then catch up.
     local function act(handler, item)
         local result = handler(item)
+        -- Whatever it showed meanwhile, with these widgets or without, is on the screen now.
+        owner = nil
         reload()
         return result
     end
 
     -- Whether the last key was held down. The character it typed, which comes next, is then ignored too.
-    local dirty, held = true, false
+    local dirty, held, shown = true, false, {}
     while true do
-        if dirty then draw() end
+        if dirty then present(shown, draw) end
         dirty = true
 
         local result
@@ -379,19 +435,25 @@ one; Y says yes, and N, Q or Backspace no.
 @treturn boolean Whether the answer was yes.
 ]]
 local function confirm_screen(title, question, yes, no)
-    local selected, places, held = 1, {}, false
+    -- The screen is only drawn when what's on it changed: every event the computer has comes by here.
+    local selected, places, held, dirty = 1, {}, false, true
     while true do
-        local w, h = term.getSize()
-        clear()
-        draw_title(title)
-        for i, line in ipairs(wrapped(question, w)) do
-            if i + 2 < h then put(1, i + 2, line) end
+        local _, h = term.getSize()
+        if dirty then
+            local w = term.getSize()
+            clear()
+            draw_title(title)
+            for i, line in ipairs(wrapped(question, w)) do
+                if i + 2 < h then put(1, i + 2, line) end
+            end
+            places = draw_buttons(h, { yes, no or "Keep" }, selected)
         end
-        places = draw_buttons(h, { yes, no or "Keep" }, selected)
+        dirty = false
 
         local event, a, b, y = pull()
         if event == "key" then
             held = b
+            local now = selected
             if a == keys.left then
                 selected = 1
             elseif a == keys.right or a == keys.tab then
@@ -401,6 +463,7 @@ local function confirm_screen(title, question, yes, no)
             elseif a == keys.backspace and not b then
                 return false
             end
+            dirty = selected ~= now
         elseif event == "char" and not held then
             local key = a:lower()
             if key == "y" then return true end
@@ -408,6 +471,8 @@ local function confirm_screen(title, question, yes, no)
         elseif event == "mouse_click" and a == 1 and y == h then
             local button = button_at(places, b)
             if button then return button == 1 end
+        elseif event == "term_resize" then
+            dirty = true
         end
     end
 end
@@ -480,8 +545,10 @@ end
 --[[- Ask for a line of text, until it's given or the user goes back.
 
 The screen has a title, what's asked for, the line to type in, and beneath it a note, or what's wrong with what was
-typed. Enter gives the text, and Tab (or Backspace in an empty line) goes back. Keys which are held down don't give it
-or go back.
+typed. Enter gives the text, and Tab goes back. Keys which are held down don't give it or go back.
+
+Only what changed is drawn again: the line as it's typed in, and the rest when what's beneath it changes. A screen which
+was drawn for every event would never be done over a remote shell, where drawing makes events of its own.
 
 `options` has:
  - `title`: the screen's title;
@@ -499,30 +566,40 @@ local function input_screen(options)
     local field, problem = new_field(options.max or 200), nil
     field_insert(field, tostring(options.value or ""))
     local label = options.label and options.label .. " " or ""
+    -- What to draw: everything ("all"), only the line which is typed in ("line"), or nothing ("none").
+    local dirty = "all"
     while true do
         local w, h = term.getSize()
-        clear()
-        draw_title(options.title)
-        put(1, 3, label, colours.lightGrey)
-        local x = draw_field(field, #label + 1, 3)
-        local y = 5
-        for _, line in ipairs(problem and wrapped(problem, w) or {}) do
-            if y < h then put(1, y, line, c(colours.red)) end
-            y = y + 1
+        if dirty == "all" then
+            clear()
+            draw_title(options.title)
+            put(1, 3, label, colours.lightGrey)
+            local y = 5
+            for _, line in ipairs(problem and wrapped(problem, w) or {}) do
+                if y < h then put(1, y, line, c(colours.red)) end
+                y = y + 1
+            end
+            if problem then y = y + 1 end
+            for _, line in ipairs(options.note and wrapped(options.note, w) or {}) do
+                if y < h then put(1, y, line, colours.lightGrey) end
+                y = y + 1
+            end
+            if h >= 6 then put(1, h, fit("Enter: OK  Tab: back", w), colours.grey) end
         end
-        if problem then y = y + 1 end
-        for _, line in ipairs(options.note and wrapped(options.note, w) or {}) do
-            if y < h then put(1, y, line, colours.lightGrey) end
-            y = y + 1
+        if dirty ~= "none" then
+            if dirty == "line" then put(#label + 1, 3, (" "):rep(math.max(0, w - #label))) end
+            local x = draw_field(field, #label + 1, 3)
+            term.setCursorPos(x, 3)
+            term.setTextColour(colours.white)
+            term.setCursorBlink(true)
         end
-        if h >= 6 then put(1, h, fit("Enter: OK  Tab: back", w), colours.grey) end
-        term.setCursorPos(x, 3)
-        term.setTextColour(colours.white)
-        term.setCursorBlink(true)
+        dirty = "none"
 
         local event, a, b = pull()
         if event == "char" or event == "paste" then
             field_insert(field, a)
+            -- What was wrong with the text goes once it's changed.
+            dirty = problem and "all" or "line"
             problem = nil
         elseif event == "key" then
             if is_enter(a) and not b then
@@ -530,12 +607,16 @@ local function input_screen(options)
                 term.setCursorBlink(false)
                 problem = options.check and options.check(text) or nil
                 if not problem then return text end
-            elseif (a == keys.tab or (a == keys.backspace and field.value == "")) and not b then
+                -- The check may have shown screens of its own.
+                dirty = "all"
+            elseif a == keys.tab and not b then
                 term.setCursorBlink(false)
                 return nil
-            else
-                field_key(field, a)
+            elseif field_key(field, a) then
+                dirty = "line"
             end
+        elseif event == "term_resize" then
+            dirty = "all"
         end
     end
 end
@@ -546,15 +627,18 @@ end
 -- @tparam string text What to say.
 -- @tparam[opt] number colour The colour to say it in.
 local function message_screen(title, text, colour)
-    local held = false
+    local held, dirty, places = false, true, {}
     while true do
         local w, h = term.getSize()
-        clear()
-        draw_title(title)
-        for i, line in ipairs(wrapped(text, w)) do
-            if i + 2 < h then put(1, i + 2, line, colour) end
+        if dirty then
+            clear()
+            draw_title(title)
+            for i, line in ipairs(wrapped(text, w)) do
+                if i + 2 < h then put(1, i + 2, line, colour) end
+            end
+            places = draw_buttons(h, { "OK" }, 1)
         end
-        local places = draw_buttons(h, { "OK" }, 1)
+        dirty = false
 
         local event, a, b, y = pull()
         if event == "key" then
@@ -562,8 +646,10 @@ local function message_screen(title, text, colour)
             if (is_enter(a) or a == keys.backspace) and not b then return end
         elseif event == "char" and not held then
             if a:lower() == "q" then return end
-        elseif event == "mouse_click" and a == 1 and y == h and button_at(places, b) then
-            return
+        elseif event == "mouse_click" and a == 1 and y == h then
+            if button_at(places, b) then return end
+        elseif event == "term_resize" then
+            dirty = true
         end
     end
 end
@@ -609,6 +695,7 @@ return {
     c = c,
     put = put,
     clear = clear,
+    present = present,
     draw_title = draw_title,
     draw_buttons = draw_buttons,
     button_at = button_at,

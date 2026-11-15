@@ -5,6 +5,8 @@
 -- This computer is the core and a cell of another network, VISIT, which carries the phones of HOME.
 net.setAddress(peripheral.getName(peripheral.find("modem", function(_, modem) return not modem.isWireless() end)), "10.0.0.3/24")
 if not shell.run("cellcore", "setup", "VISIT", "10.65.0.0/16") then error("Couldn't set the core up", 0) end
+-- A new network has no carriers: its cells stay off the air until some are chosen.
+if not shell.run("cellcore", "spectrum", "b20/6") then error("Couldn't choose the carriers", 0) end
 if not shell.run("celld", "add", "127.0.0.1") then error("Couldn't start the cell", 0) end
 -- A new cell stands by until its bands are confirmed.
 if not shell.run("celld", "confirm") then error("Couldn't confirm the cell's bands", 0) end

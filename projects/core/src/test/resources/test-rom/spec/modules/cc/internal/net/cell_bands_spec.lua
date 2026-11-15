@@ -319,13 +319,18 @@ describe("Cell sites with several bands", function()
         expect(acme.towers[3].service:unplaceable({ "b3", "b3/2", "b20/3" })):eq("b20/3")
         expect(acme.towers[3].service:unplaceable({ "b3", "b3", "b20", "b20/1" })):eq(nil)
 
-        -- A computer with nothing the network has a carrier for is refused, as ever.
+        -- A computer with nothing the network has a carrier for waits, off the air, until there's one for it.
         local nothing = operator({ 0 }, {
             name = "BETA", core_id = 51, core_host = 2, cell_base = 20, prefix = "10.65.0.0/16", join = acme,
             carriers = { "b20/3" }, bands = { { "b7", "b3/1" } },
         })
-        wait_until(net, function() return nothing.towers[1].service:info().state == "refused" end, 10, "Refusing the cell")
-        expect(nothing.towers[1].service:info().error):eq("BETA has no carrier in band b7")
+        local waiting = nothing.towers[1]
+        wait_until(net, function() return waiting.service:info().state == "unplaced" end, 10, "Waiting for a carrier")
+        expect(waiting.service:info().links):same {
+            { core = "10.0.0.2", state = "unplaced", network = "BETA", carriers = { "b20/3" }, unplaced = { "b7", "b3/1" } },
+        }
+        expect(nothing.service.standby[21].unplaced):same { "b7", "b3/1" }
+        expect(next(waiting.towers or {})):eq(nil)
         expect(net.errors):same {}
     end)
 

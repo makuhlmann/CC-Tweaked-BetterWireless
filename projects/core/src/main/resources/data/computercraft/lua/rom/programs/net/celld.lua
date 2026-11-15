@@ -96,7 +96,7 @@ local function watch(only)
                     end
                     if link.state == "connecting" or link.state == "waiting" then settled = false end
                     if link.state ~= "serving" then serving = false end
-                    if link.state == "standby" then standing_by = true end
+                    if link.state == "standby" or link.state == "unplaced" then standing_by = true end
                 end
             end
             if not any then return end

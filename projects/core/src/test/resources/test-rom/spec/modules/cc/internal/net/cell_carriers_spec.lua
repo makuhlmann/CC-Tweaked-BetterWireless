@@ -136,14 +136,21 @@ describe("Cellular carriers", function()
         expect(phone.listening[bands.parse_carrier("b20/1")]):eq(nil)
     end)
 
-    it("puts cells in the band they ask for, and refuses one the network has no carrier in", function()
+    it("puts cells in the band they ask for, and has one the network has no carrier for wait", function()
         math.randomseed(5)
         local acme = operator({ 0, 50 }, { carriers = { "b20/1", "b3/1" }, bands = { "b3", "b7" } })
         local net = acme.net
-        wait_until(net, function() return acme.towers[2].service:info().state == "refused" end, 10, "Refusing the cell")
-        expect(acme.towers[2].service:info().error):eq("ACME has no carrier in band b7")
+        local waiting = acme.towers[2]
+        wait_until(net, function() return waiting.service:info().state == "unplaced" end, 10, "Waiting for a carrier")
+        expect(waiting.service:info().links[1].unplaced):same { "b7" }
+        expect(acme.service:no_carrier(acme.service.standby[12].unplaced)):eq("ACME has no carrier in band b7")
         expect(bands.carrier_name(acme.towers[1].tower.carrier)):eq("b3/1")
-        expect(acme.towers[2].tower):eq(nil)
+        expect(waiting.tower):eq(nil)
+        -- It takes one as soon as there is one.
+        acme.set_carriers({ "b20/1", "b3/1", "b7/2" })
+        wait_until(net, function() return waiting.tower ~= nil end, 10, "Taking the carrier")
+        expect(bands.carrier_name(waiting.tower.carrier)):eq("b7/2")
+        expect(acme.towers[1].tower.stopped):eq(nil)
     end)
 
     it("prefers a higher band where it's strong enough, and a lower one where it isn't", function()

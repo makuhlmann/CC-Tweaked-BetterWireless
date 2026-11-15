@@ -22,7 +22,7 @@ local common = require "cc.internal.net.cell.common"
 local menu = require "cc.internal.net.cell.menu"
 
 -- What every menu is made of: the phone's, a cell's and a core's.
-local fit, wrapped, c, put, clear = menu.fit, menu.wrapped, menu.c, menu.put, menu.clear
+local fit, wrapped, c, put, clear, present = menu.fit, menu.wrapped, menu.c, menu.put, menu.clear, menu.present
 local draw_title, is_enter = menu.draw_title, menu.is_enter
 local list_screen, confirm_screen = menu.list_screen, menu.confirm_screen
 local new_field, field_insert, field_key, draw_field = menu.new_field, menu.field_insert, menu.field_key, menu.draw_field
@@ -61,44 +61,48 @@ local function status_of(message)
 end
 
 -- Ask for the number to write to. Enter goes on to the conversation with it, and Backspace in an empty number goes
--- back. Returns the number, or nothing.
+-- back. Returns the number, or nothing. The screen is only drawn when what's on it changed.
 local function number_screen()
-    local field, problem, held = new_field(MAX_NUMBER), nil, false
+    local field, problem, dirty = new_field(MAX_NUMBER), nil, true
     while true do
         local w, h = term.getSize()
-        clear()
-        draw_title("New message")
-        put(1, 3, "To:")
-        local x = draw_field(field, 5, 3)
-        for i, line in ipairs(problem and wrapped(problem, w) or {}) do
-            if i + 4 < h then put(1, i + 4, line, c(colours.red)) end
+        if dirty then
+            clear()
+            draw_title("New message")
+            put(1, 3, "To:")
+            local x = draw_field(field, 5, 3)
+            for i, line in ipairs(problem and wrapped(problem, w) or {}) do
+                if i + 4 < h then put(1, i + 4, line, c(colours.red)) end
+            end
+            if h >= 6 then put(1, h, fit("Enter: OK  Backspace: back", w), colours.grey) end
+            term.setCursorPos(x, 3)
+            term.setTextColour(colours.white)
+            term.setCursorBlink(true)
         end
-        if h >= 6 then put(1, h, fit("Enter: OK  Backspace: back", w), colours.grey) end
-        term.setCursorPos(x, 3)
-        term.setTextColour(colours.white)
-        term.setCursorBlink(true)
+        dirty = false
 
         local event, a, b = os.pullEvent()
         if event == "char" or event == "paste" then
             field_insert(field, a)
-            problem = nil
+            problem, dirty = nil, true
         elseif event == "key" then
-            held = b
             if is_enter(a) and not b then
                 local number = field.value:gsub("^%s+", ""):gsub("%s+$", "")
                 if number ~= "" then
                     term.setCursorBlink(false)
                     return number
                 end
-                problem = "Enter a number first."
+                problem, dirty = "Enter a number first.", true
             elseif a == keys.backspace and field.value == "" then
-                if not held then
+                if not b then
                     term.setCursorBlink(false)
                     return nil
                 end
             else
-                field_key(field, a)
+                dirty = field_key(field, a)
             end
+        elseif event == "term_resize" then
+            dirty = true
         end
     end
 end
@@ -255,9 +259,10 @@ local function conversation_screen(number)
     end
 
     load()
-    local rows = 1
+    -- Only the lines which changed are written: every event the computer has comes by here.
+    local rows, frame = 1, {}
     while true do
-        rows = draw()
+        present(frame, function() rows = draw() end)
         local event, a, b, y = os.pullEvent()
         if event == "key" then
             held = b
@@ -476,7 +481,6 @@ local function bands_screen()
         title = function() return "Bands" end,
         note = function()
             if result then return result, result_fg end
-            return "The phone uses, and listens on, only the bands which are on."
         end,
         items = function()
             local allowed
@@ -536,7 +540,7 @@ local function pin_screen()
         title = function() return "Pinned cell" end,
         note = function()
             if result then return result, result_fg end
-            return "Pinned to a cell, the phone uses no other, and has no service where it can't hear it."
+            return "A pinned phone has no service out of its cell's reach."
         end,
         items = function()
             local info = net.cell.info()
@@ -567,7 +571,7 @@ local function pin_screen()
             bar.touch()
             if ok then
                 result_fg = nil
-                result = item.cell and ("Pinned to cell #%s: no other is used."):format(common.cell_label(item.cell))
+                result = item.cell and ("Pinned to cell #%s."):format(common.cell_label(item.cell))
                     or "The phone chooses its cell."
             else
                 result, result_fg = tostring(err or "That cell can't be pinned"), c(colours.red)
@@ -582,10 +586,6 @@ local function advanced_screen()
         hint = { "Enter: change", "Q: back" },
         refresh = NETWORKS_REFRESH,
         title = function() return "Advanced settings" end,
-        note = function()
-            return "The phone chooses its band and its cell by itself. Change these only where it chooses badly: for a "
-                .. "phone which stays where it is, say, such as a relay's."
-        end,
         items = function()
             local info = net.cell.info()
             return {

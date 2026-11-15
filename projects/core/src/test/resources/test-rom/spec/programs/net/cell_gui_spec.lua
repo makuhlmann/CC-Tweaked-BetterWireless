@@ -1441,7 +1441,7 @@ describe("The cell program's GUI", function()
                 expect(phone.pins):same { 18075 * 2 ^ 31 + 12 }
                 expect(app.line(4)):eq("   The phone chooses")
                 expect(app.line(6)):str_match("^ %* #12 b3/1 ACME +b3 %-80$")
-                expect(app.says("Pinned to cell #12 b3/1: no other is used.")):eq(true)
+                expect(app.says("Pinned to cell #12 b3/1.")):eq(true)
                 app.key(keys.backspace)
                 expect(app.line(5)):str_match("^ Pinned cell +#12 b3/1$")
 

@@ -389,6 +389,8 @@ local function cell_settings(config)
         power = type(config.power) == "number" and config.power == config.power and math.abs(config.power) ~= math.huge
             and config.power or nil,
         service = config.service == "sms" and "sms" or nil,
+        -- Whether the cell may be on carriers its networks don't offer.
+        override = config.override == true or nil,
         -- A cell which was only just set up stands by until its bands are confirmed. Older ones never asked.
         confirmed = config.confirmed ~= false,
     }
@@ -413,7 +415,7 @@ local function start_cell_service(config)
     running_cell = config
     background.cell = require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, band = config.band, interval = config.interval, pos = config.pos,
-        service = config.service, standby = config.confirmed == false,
+        service = config.service, standby = config.confirmed == false, override = config.override == true,
         id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
@@ -644,11 +646,12 @@ function Manager:numbers(prefix)
 end
 
 --- See or set the carriers this network's cells use: 5MHz blocks of cellular bands, by name, such as `"b20/1"` (a band
--- on its own means its first). Cells connected now are told at once; a cell moves to another carrier when it next
--- connects.
+-- on its own means its first). A network has none until some are set, and its cells stay off the air. Cells connected
+-- now are told at once: one on a carrier which is no longer the network's leaves it, and one which waited for a
+-- carrier takes it.
 --
--- @tparam[opt] { string... } carriers The carriers, 1 to 8 of them.
--- @treturn[1] table The `carriers`, by name, and whether they were `picked` as none were set.
+-- @tparam[opt] { string... } carriers The carriers, up to 8 of them: none, for none.
+-- @treturn[1] table The `carriers`, by name.
 -- @treturn[2] nil If they couldn't be set.
 -- @treturn[2] string Why not.
 function Manager:spectrum(carriers)
@@ -993,7 +996,7 @@ function api.pinCell(cell)
 end
 
 -- A cell's settings, besides its cores, in the order they're checked.
-local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service" }
+local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service", "override" }
 
 -- What's wrong with a value for one of a cell's settings, if it won't do.
 local function check_setting(key, value)
@@ -1014,6 +1017,8 @@ local function check_setting(key, value)
         end
     elseif key == "service" then
         if value ~= "sms" then return "A cell's service is \"sms\" (messages only), or everything" end
+    elseif key == "override" then
+        if value ~= true then return "A cell overrides its networks' carriers (true), or it doesn't" end
     end
 end
 
@@ -1065,7 +1070,8 @@ function api.startCell(core, settings)
     local config = { area = 0 }
     for _, key in ipairs(CELL_SETTINGS) do
         local value = given[key]
-        if value ~= nil then
+        -- (No override is the same as not saying.)
+        if value ~= nil and not (key == "override" and value == false) then
             local err = check_setting(key, value)
             if err then return nil, err end
             if key == "band" then value = read_band(value) end
@@ -1093,6 +1099,7 @@ function api.startCell(core, settings)
         local again = table.concat(old.cores, " ") ~= table.concat(cores, " ") or old.area ~= config.area
             or not same_band(old.band, config.band) or old.interval ~= config.interval
             or place(old.pos) ~= place(config.pos) or old.power ~= config.power or old.service ~= config.service
+            or old.override ~= config.override
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end
@@ -1150,14 +1157,17 @@ function api.configureCell(changes)
     -- A band the networks the cell serves have no carrier in would take it off the air: their cores would refuse it.
     -- So would a carrier none of them uses; and a band wanted more often than any of them has carriers in it is a cell
     -- too many.
+    -- (A cell which may override what its networks offer is put where it says.)
     local wants = type(new.band) == "string" and { new.band } or new.band
-    if service and changes.band and not same_band(new.band, old.band) then
+    if service and changes.band and not same_band(new.band, old.band) and not new.override then
         local want, have = service:unplaceable(wants), service:bands()
         if want and have then
             local names = {}
             for band in pairs(have) do names[#names + 1] = band end
             table.sort(names)
-            if common.want_carrier(want) then
+            if not names[1] then
+                return nil, "The networks this cell serves have no carriers yet"
+            elseif common.want_carrier(want) then
                 return nil, ("No network this cell serves uses the carrier %s"):format(want)
             elseif not have[want] then
                 return nil, ("No network this cell serves has a carrier in band %s, only in %s"):format(
@@ -1213,6 +1223,7 @@ function api.configureCell(changes)
     running_cell.cores = cores
     for _, key in ipairs(CELL_SETTINGS) do running_cell[key] = new[key] end
     service:configure(new)
+    service:set_override(new.override == true)
     -- Its bands are confirmed: it goes on the air.
     if confirmed and running_cell.confirmed == false then service:go_on_air() end
     running_cell.confirmed = confirmed
@@ -1254,7 +1265,7 @@ function api.cellInfo()
     end
     info.cores, info.enabled = cores, config.enabled ~= false
     for _, key in ipairs(CELL_SETTINGS) do info[key] = saved[key] end
-    info.confirmed = saved.confirmed
+    info.confirmed, info.override = saved.confirmed, saved.override == true
     return info
 end
 

@@ -4,7 +4,11 @@ The cell keeps its cores and settings. Each command changes one thing, and check
 
 The first time, the core must allow the cell: celld shows the command to run on the core, and the fingerprint to check there.
 
-A new cell doesn't go on the air by itself. Once its core has allowed it, it stands by, and celld shows which carriers the network has: say which bands the cell should use with "celld set band", or run "celld confirm" for any of them (the menu has "Go on the air" for both). Only then does it send anything. A cell set up before this was so carries on as it was.
+A new cell doesn't go on the air by itself. Once its core has allowed it, it stands by, and celld shows which carriers the network has: tick the bands and carriers the cell should use in the menu (under Settings, or "Go on the air"), or say them with "celld set band"; "celld confirm" takes any of them. Only then does it send anything. A cell set up before this was so carries on as it was.
+
+A cell is only on the air where its networks have carriers. A new network has none until its administrator chooses some, and a network may have none in the band a cell asks for: the cell then waits, off the air, and takes a carrier as soon as its core says there's one. A cell on a carrier which none of its networks has any longer leaves it. The menu only offers the bands and carriers the cell's cores do, each with the networks which have it. A cell which serves several networks is on the carriers of whichever has one for what it asks, and serves all of them there.
+
+"celld set override on" lets the cell use carriers its cores don't offer: its cores then put it on those it names, theirs or not. This may violate network assignment agreements, so the menu asks before it's turned on.
 
 A cell can be a relay, with no link of its own to the core: activate the computer as a phone of the network first (with "cell activate"), then run "celld add 10.64.0.1" (the core's gateway address, or any of the core's addresses), and the cell reaches the core through its own phone. A relay's phone never uses a cell behind it, and the relay only serves phones while its own phone has service.
 
@@ -21,7 +25,8 @@ ex:
 "celld set pos 120 70 -340" makes the cell say where it is (its computer's position, as F3 shows the block), so phones can work out where they are from how far away each cell is ("cell locate"). Cells far apart, and at different heights, give phones the best positions.
 "celld set power 30" makes the cell send with 30 dBm (placed computers may go up to 50), to reach further. Phones send with their own, weaker, power, so a cell much stronger than its phones hears them less far than they hear it.
 "celld set service sms" makes the cell only carry messages, as a satellite does: up high, strong, and heard far away, it's for when there's nothing else (off-grid, or in an emergency). Phones use their own network's full cells first, and partners', and only then such a cell (or another network's, only once nothing else will do), and go back as soon as they can, unless told to use its network. On it, they send and receive messages, but have no route for packets. "celld set service full" makes it carry everything again.
+"celld set override on" lets the cell be put on carriers its cores' networks don't have, such as "celld set band b7/3" where no network has band 7. "off" takes it off them again.
 "celld confirm" puts a new cell on the air, on the bands it's set to, or any if none were set.
-"celld unset pos" puts a setting back as it is when it's not set: area 0, any band, as often as the core says, not saying where it is, the modem's own power, and carrying everything.
+"celld unset pos" puts a setting back as it is when it's not set: area 0, any band, as often as the core says, not saying where it is, the modem's own power, carrying everything, and no override.
 "celld stop" stops the cell, and it doesn't start with the computer. "celld start" starts it again.
 "celld restart" starts the cell again at once, connecting to each core afresh. Its phones lose service for a moment. So does changing its area, or its bands to others, as the cell says them to its cores when it connects.

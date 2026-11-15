@@ -481,7 +481,7 @@ function Tower:control(message, link)
     elseif op == "path" and common.is_path(message.path) then
         -- The relays our backhaul to this network's core goes through, which phones on them mustn't use us.
         link.path = message.path
-    elseif op == "carriers" and common.is_carriers(message.carriers) and message.carriers[1] then
+    elseif op == "carriers" and common.is_carriers(message.carriers) then
         -- The network's administrator changed its carriers.
         link.carriers = message.carriers
     elseif op == "interval" and common.is_interval(message.interval) then

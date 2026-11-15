@@ -198,8 +198,8 @@ the design above:
 
 - **Carriers** (version 4 of the protocols). Cells and phones use LTE's paired bands (NETWORK_STACK.md, Channels): a
   network's cells are on its carriers, 5 MHz blocks of a band, named like `b20/1` (band 20's first, 791–796 MHz down
-  and 832–837 MHz up), up to 8 of them (`cellcore spectrum b20/1 b3/2`; with none set, one of band 20's picked by the
-  network's name). A cell is on one carrier, which its first core picks when it connects, in the band it asks for
+  and 832–837 MHz up), up to 8 of them (`cellcore spectrum b20/1 b3/2`, or ticked in the core's menu). A new network has none, and
+  its cells are off the air until its administrator chooses some. A cell is on one carrier, which its first core picks when it connects, in the band it asks for
   (`celld set band b3`), whichever of the network's carriers there has fewest cells; with no band asked for, whichever
   of all the network's carriers has fewest cells. A cell which also serves another network keeps its carrier, telling
   that core which it is, and that core takes it as it is. A cell is one carrier: a site with several bands has a
@@ -224,12 +224,23 @@ the design above:
       placed. Nothing was on the air until then, so no phone found it. Cells set up earlier, or started by a program
       (`net.cell.startCell` with a core), never stand by; an older core places a standing-by cell at once, which
       still sends nothing until it's confirmed.
+    - **Following the network's carriers.** The core tells its cells, and those which wait, whenever its carriers
+      change. A cell which waited connects again once there's a carrier for something it wants, and so does one with
+      something left out. A cell on a carrier which none of the cores it's connected to has any more stops all the
+      computer's cells and connects to each core again, to be placed afresh (its phones find it again where it now
+      is). A network left with no carriers has every cell off the air, waiting.
+    - **Override.** `celld set override on` (or the menu, which first warns that it may violate network assignment
+      agreements) lets a cell be on carriers its cores don't offer: it says so as it connects, and a core puts what
+      it wants and the network has no carrier for on the carrier it names, or whichever of the band's has fewest
+      cells. The core's log and its cells list say which carriers aren't the network's. Turned off again, the cell
+      leaves them.
     - **Power** is the modem's, so one for all of a computer's cells (`celld set power`). Lower bands still reach
       further at the same power, which is what makes one band the coverage and the other the capacity.
     - **The core** is told what the computer wants when it connects (`bands`, besides the one `band` a cell always
       said), and puts a cell on each: the carrier named, or whichever of the band's has fewest cells and none of this
-      computer's. What the network has no carrier for is left out, and said (`celld` shows it); a computer with
-      nothing left is refused. The one connection carries every cell's control messages: those about a cell other
+      computer's. What the network has no carrier for is left out, and said (`celld` shows it). A computer with
+      nothing left isn't refused: it waits, as one which stands by does, and is listed as off the air with why. The
+      one connection carries every cell's control messages: those about a cell other
       than the computer's first say which (`at`). To the core's own bookkeeping each is a cell (a certificate, a
       tunnel key, phones' sessions and handovers by its ID); only what's about the computer goes by the computer's ID
       (the relays in a cell's path, and whether a phone would be using a cell behind itself).
@@ -530,6 +541,14 @@ the design above:
   changes nothing, and they ask before anything which costs phones their service. The phone's menus (`cell gui`) and
   these are made of the same lists, questions and lines to type in (`cc.internal.net.cell.menu`); while a menu waits
   for a core's answer, what's typed is kept for afterwards.
+  - **Carriers are ticked, not typed** (`cc.internal.net.cell.carrier_menu`): the bands, and in each its carriers with
+    their frequencies. A core's lists every band, with how many cells are on each carrier, and each tick is the
+    network's at once. A cell's lists what its cores offer, each carrier with the networks which have it (one it's
+    set to which is no longer offered is there to untick), a band as a whole for whichever carrier its core picks,
+    and the override; what was ticked is the cell's when the screen is left, after asking if that may restart it.
+  - **Drawing.** A screen is only drawn when what's on it changed, and a list writes only the lines which differ
+    from what's there. Over a remote shell every event of the computer reaches the menu, drawing included: a screen
+    which drew itself for each made more of them than it could keep up with, and keys arrived late.
 - **Shared cells** (like LTE's multi-operator core networks): one cell may serve several networks, whose operators
   plan a site together where neither would build alone. `celld add core.acme` and `celld add core.beta` connect the
   cell to each core,

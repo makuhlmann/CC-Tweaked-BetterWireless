@@ -180,14 +180,15 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number,
-    bands? = table, services? = { string... }, standby? = { boolean... },
+    bands? = table, services? = { string... }, standby? = { boolean... }, override? = { boolean... },
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
 cells send system information; the band each cell asks to be on, by its index (or a list of bands and carriers, for a
 computer with a cell on each: `towers[i].towers` has each cell's tower, by the cell's ID, and `towers[i].tower` the
 first's); each cell's service, by its index (`"sms"` for one which only carries messages); and whether each cell stands
-by, off the air, until `setup.confirm_cell` confirms its bands, by its index.
+by, off the air, until `setup.confirm_cell` confirms its bands, by its index; and whether each may be on carriers its
+networks don't have.
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -282,6 +283,7 @@ local function operator(cell_positions, options)
             index = i, id = id, stack = stack, address = stack.interfaces.backhaul.address, public = cell_public,
             band = options.bands and options.bands[i], pos = type(position) == "table" and position or nil,
             standby = options.standby and options.standby[i] or nil,
+            override = options.override and options.override[i] or nil,
             service_kind = options.services and options.services[i],
             sign = function(data) return crypto.sign(cell_private, data) end, shared = {},
             driver = new_driver(net, stack, ("%s's cell #%d"):format(name, id), key, addr),
@@ -362,7 +364,7 @@ local function operator(cell_positions, options)
         local service = cell_service.new {
             cores = cores, area = 1, id = entry.id, identity = driver.identity, fingerprint = fingerprint,
             band = entry.band, pos = entry.pos, service = entry.service_kind, standby = entry.standby,
-            signing = hex(entry.public), start_tower = start_tower(entry), sleep = driver.sleep, wake = driver.poke,
+            override = entry.override, signing = hex(entry.public), start_tower = start_tower(entry), sleep = driver.sleep, wake = driver.poke,
             connect = connect_to or function(text) return dial(driver, text) end,
         }
         driver.service = service
@@ -388,6 +390,14 @@ local function operator(cell_positions, options)
         entry.service:configure { area = 1, band = entry.band, pos = entry.pos, service = entry.service_kind }
         entry.service:go_on_air()
         entry.driver.poke()
+    end
+
+    --[[- Choose this network's carriers, as `cellcore spectrum` (or its menu) does: its cells hear of them at once.
+
+    @tparam { string... } names The carriers, by name: none, for none.
+    ]]
+    function setup.set_carriers(names)
+        assert(setup.service:set_spectrum(names))
     end
 
     --- Restart a cell, without it going quiet for long: it forgets its phones, and joins its core again. A cell
@@ -651,8 +661,9 @@ local function operator(cell_positions, options)
 
     -- This network's first carrier (its beacon channel), and an uplink channel on it for made-up cells, away from those
     -- real cells get.
+    -- (A network with no carriers has neither.)
     setup.carrier = spectrum[1]
-    setup.uplink = bands.carrier(spectrum[1]).uplink[2]
+    setup.uplink = spectrum[1] and bands.carrier(spectrum[1]).uplink[2]
 
     --[[- Let a computer send as a cell of this network's first carrier would: system information on its beacon channel,
     and anything else to a phone there too.

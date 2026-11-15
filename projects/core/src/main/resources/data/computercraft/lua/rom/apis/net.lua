@@ -1814,19 +1814,23 @@ cell = {
     their network (or of one they roam on), and it takes them to that network's core.
 
     The cell is on a carrier (5MHz of a cellular band), which its first core picks: in the band it asks for, if it
-    does. It sends its system information as often as its core says, unless it's told otherwise.
+    does. It sends its system information as often as its core says, unless it's told otherwise. A core's network may
+    have no carrier for it (a new network has none, until its administrator chooses some): the cell then waits, off the
+    air, until it has. With `override`, the cell may be put on carriers its cores' networks don't have.
 
     Given no core, it starts as it's set up: with the cores and settings it had, and every change made since with
     `net.cell.configureCell`. Given cores, they and the settings replace everything it had.
 
     @tparam[opt] string|{ string... } core The core's name or address, or those of several networks' cores.
     @tparam[opt] number|{ area? = number, band? = string|{ string... }, interval? = number,
-    pos? = { number, number, number }, power? = number, service? = string } settings The cell's tracking area; or that,
+    pos? = { number, number, number }, power? = number, service? = string, override? = boolean } settings The cell's
+    tracking area; or that,
     the cellular band it should be on (such as `"b20"`; or a list of bands and carriers, such as `{ "b20", "b3/2" }`, for
     a cell on each: a cell site with several bands, which is a cell of its own on each to phones), how often it sends system information, in seconds, where it is (its computer's block position,
     which it says in its system information, so phones can work out where they are), the power its modem sends with, in
-    dBm, and `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
-    carries everything will do, and have no route for packets while they do.
+    dBm, `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
+    carries everything will do, and have no route for packets while they do; and whether it may be on carriers its
+    networks don't offer (`override`).
     @treturn[1] true If it started.
     @treturn[2] nil If it couldn't.
     @treturn[2] string Why not.
@@ -1837,6 +1841,7 @@ cell = {
         if type(settings) == "table" then
             for key, kind in pairs {
                 area = "number", band = "string", interval = "number", pos = "table", power = "number", service = "string",
+                override = "boolean",
             } do
                 local value = settings[key]
                 -- Several bands (or carriers) come as a list.
@@ -1856,7 +1861,8 @@ cell = {
     says it is, whether it only carries messages, how often it sends system information and its power change on the
     air. The area, and bands (or carriers) other than those it's on, are said to its cores only as it connects: so for
     them it starts again, and its phones lose service for a moment. It won't go to a band none of the networks it serves
-    has a carrier in. A cell left with no cores stops.
+    has a carrier in, unless it may override what they offer (`override`): its cores then put it on the carriers it
+    names, theirs or not. A cell left with no cores stops.
 
     The cell doesn't start for this: that's `net.cell.startCell`.
 
@@ -1866,10 +1872,11 @@ cell = {
 
     @tparam { cores? = { string... }, area? = number|boolean, band? = string|{ string... }|boolean, interval? = number|boolean,
     pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean,
-    confirmed? = boolean } changes What to
+    override? = boolean, confirmed? = boolean } changes What to
     change, as `net.cell.startCell` takes it, and `cores`, every core it should connect to. `false` puts a setting back
     as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, the modem's own power,
-    and carrying everything. `confirmed = true` confirms the cell's bands as they're set.
+    and carrying everything. `confirmed = true` confirms the cell's bands as they're set, and `override` says whether
+    it may be on carriers its networks don't offer.
     @treturn[1] true If it changed.
     @treturn[1] boolean Whether the cell started again for it.
     @treturn[2] nil If it couldn't.
@@ -1901,6 +1908,9 @@ cell = {
                 error(("bad field '%s' (%s or false expected, got %s)"):format(key, kind, type(value)), 2)
             end
         end
+        if changes.override ~= nil and type(changes.override) ~= "boolean" then
+            error(("bad field 'override' (boolean expected, got %s)"):format(type(changes.override)), 2)
+        end
         return cellular().configureCell(changes)
     end,
 
@@ -1912,18 +1922,19 @@ cell = {
     --[[- Get the state of this computer's cell.
 
     @treturn table Its `state`: `"stopped"`, `"connecting"`, `"waiting"` (for the core to allow it), `"standby"` (let
-    in, but off the air until its bands are confirmed: `confirmed` is then false), `"serving"`,
+    in, but off the air until its bands are confirmed: `confirmed` is then false), `"unplaced"` (its cores' networks
+    have no carrier for what it's set to be on, and it waits, off the air, until one has), `"serving"`,
     `"lost"` (it couldn't reach the core, or lost it, and tries again in `retry` seconds) or `"refused"`; `error`, saying
     why; the `core`; the `network` it serves; its `id` and `fingerprint`, which the core's administrator checks before
     allowing it; every core it connects to (`cores`, or `nil` if it has none); whether it starts with the computer
     (`enabled`: false once it was stopped); its settings, if they were set: `area` (0 if not), `band`, `interval`, where it
-    says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm) and `service` (`"sms"` if it only
-    carries messages); while it's on the air, how often it sends system information now (`current_interval`, in
+    says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm), `service` (`"sms"` if it only
+    carries messages) and `override` (whether it may be on carriers its networks don't offer); while it's on the air, how often it sends system information now (`current_interval`, in
     seconds), the `carrier` it's on and its `ul` channel there, and `cells`, the same (with its `id`) for each cell the
     computer runs, when it's set to have cells on several bands or carriers (the first is the one `carrier` and `ul` are
     of, and has the computer's ID); and, while it runs, `links`: the same (`core`, `state`, `error`, `retry` and
-    `network`) for each core, with `unplaced`, what the cell is set to be on which that core's network has no carrier
-    for. Then the cell's own state is the best of its cores'.
+    `network`) for each core, with `carriers`, those its network has, by name, and `unplaced`, what the cell is set to
+    be on which that core's network has no carrier for. Then the cell's own state is the best of its cores'.
     ]]
     cellInfo = function()
         return cellular().cellInfo()

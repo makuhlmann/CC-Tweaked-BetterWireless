@@ -19,6 +19,7 @@ core's own computer and (with `cellcore remote`) on another, and what the core r
 local files = require "cc.internal.net.files"
 local common = require "cc.internal.net.cell.common"
 local menu = require "cc.internal.net.cell.menu"
+local carrier_menu = require "cc.internal.net.cell.carrier_menu"
 
 local CONFIG = "/.cell/config"
 
@@ -132,9 +133,16 @@ local function status_lines(status)
     say(("Core of %s, phones in %s%s"):format(
         status.network, status.prefix, status.number_prefix and ", numbers +" .. status.number_prefix or ""
     ))
+    local carriers = status.spectrum or {}
+    say(carriers[1] and "Carriers: " .. table.concat(carriers, ", ") or "No carriers: cells stay off the air.")
     local cells = {}
     for _, cell in ipairs(status.cells) do cells[#cells + 1] = "#" .. cell.id end
     say(#cells > 0 and "Cells: " .. table.concat(cells, ", ") or "No cells connected.")
+    local waiting = {}
+    for _, cell in ipairs(status.standby or {}) do
+        if cell.unplaced then waiting[#waiting + 1] = "#" .. cell.id end
+    end
+    if waiting[1] then say("Cells with no carrier: " .. table.concat(waiting, ", ")) end
     local attached = 0
     for _, subscriber in ipairs(status.subscribers) do
         if subscriber.cell then attached = attached + 1 end
@@ -273,9 +281,9 @@ local function run(options)
             menu.clear()
             menu.draw_title("Waiting to be allowed")
             local w, h = term.getSize()
-            local text = ("The core hasn't allowed this computer to manage it yet. On the core, allow computer #%d "
-                .. "(in its menu, or with 'cellcore allow %d'), and check it shows this fingerprint:\n\n%s\n\n"
-                .. "Waiting... Hold Ctrl+T to give up."):format(os.getComputerID(), os.getComputerID(), fingerprint)
+            local text = ("On the core, allow computer #%d:\n\n%s\n\nWaiting... Hold Ctrl+T to give up."):format(
+                os.getComputerID(), fingerprint
+            )
             for i, line in ipairs(menu.wrapped(text, w)) do
                 if i + 2 <= h then menu.put(1, i + 2, line) end
             end
@@ -337,17 +345,14 @@ local function run(options)
 
     local function allowed_text(reply)
         if reply.role == "network" then
-            local text = ("Allowed the core of %s (#%s)."):format(tostring(reply.network), tostring(reply.id or "?"))
-            if reply.roam then text = text .. " This network's phones are told they may use its cells when they next attach." end
-            if reply.messages then text = text .. " Its phones and this network's can send each other messages." end
-            return text
+            return ("Allowed the core of %s (#%s)."):format(tostring(reply.network), tostring(reply.id or "?"))
         end
         return ("Allowed #%s to %s, as %s."):format(tostring(reply.id or "?"), wants(reply.role), tostring(reply.label))
     end
 
     local function refused_text(reply)
         local text = ("Refused #%s."):format(tostring(reply.id or "?"))
-        if reply.network then text = text .. (" The agreement with %s does nothing from now on."):format(reply.network) end
+        if reply.network then text = text .. (" The agreement with %s is off."):format(reply.network) end
         return text
     end
 
@@ -366,7 +371,7 @@ local function run(options)
                         tostring(entry.id or "?"), entry.network and ", the core of " .. entry.network .. "," or "",
                         entry.role == "network" and offers(entry.asks) or wants(entry.role)
                     ),
-                    "Check that it shows this fingerprint:",
+                    "Fingerprint:",
                     "  " .. tostring(entry.fingerprint),
                 })
                 items[#items + 1] = { text = "Allow it", id = "allow" }
@@ -380,7 +385,6 @@ local function run(options)
                 elseif item.id == "label" then
                     local label = menu.input_screen {
                         title = "Allow a computer", label = "Label:", max = 40,
-                        note = "What to call the computer in the core's lists: where it is, say.",
                     }
                     if not label then return nil end
                     ask({ op = "allow", key = key, label = label ~= "" and label or nil }, allowed_text)
@@ -423,8 +427,7 @@ local function run(options)
                 if item.id == "allow" then
                     ask({ op = "allow", key = key }, allowed_text)
                 elseif item.id == "deny" then
-                    if not menu.confirm_screen("Refuse a computer",
-                        "It's cut off now, and refused when it connects again, until it's allowed again.", "Refuse") then
+                    if not menu.confirm_screen("Refuse a computer", "Cuts it off, until it's allowed again.", "Refuse") then
                         return nil
                     end
                     ask({ op = "deny", key = key }, refused_text)
@@ -464,12 +467,8 @@ local function run(options)
             choose = function(item)
                 if item.waiting then waiting_screen(item.waiting) else computer_screen(item.allowed) end
             end,
-            empty = "No computer is waiting, and none was allowed.",
-            note = function()
-                if said then return note() end
-                return "A cell waits here once 'celld add <this core>' runs on it; a computer to manage the core from, once "
-                    .. "'cellcore remote <this core>' does."
-            end,
+            empty = "None waiting, none allowed.",
+            note = note,
             hint = { "Enter: open", "Q: back" },
             refresh = REFRESH,
         }
@@ -483,7 +482,9 @@ local function run(options)
         local lines = { ("#%d from %s, area %s, since %s"):format(cell.id, cell.address, tostring(cell.area or 0), since(cell.since)) }
         -- A cell on each carrier its computer is on.
         for _, each in ipairs(cell.carriers or { cell }) do
-            if each.carrier then lines[#lines + 1] = ("  on %s, reached on channel %d"):format(each.carrier, each.ul) end
+            if each.carrier then
+                lines[#lines + 1] = ("  on %s, channel %d%s"):format(each.carrier, each.ul, each.outside and ", not this network's" or "")
+            end
         end
         -- A relay: its backhaul goes through other cells.
         if cell.path and #cell.path > 0 then
@@ -515,8 +516,7 @@ local function run(options)
             choose = function(item)
                 if item.id ~= "deny" then return nil end
                 if not menu.confirm_screen("Refuse cell #" .. id,
-                    "It's cut off now, and its phones lose service. It's refused when it connects again, until it's allowed again.",
-                    "Refuse") then
+                    "Cuts it off, until it's allowed again: its phones lose service.", "Refuse") then
                     return nil
                 end
                 ask({ op = "deny", key = item.key }, refused_text)
@@ -540,23 +540,29 @@ local function run(options)
                         tail = { { table.concat(carriers, " "), colours.lightGrey } }, id = cell.id,
                     }
                 end
-                -- Those which were let in, but aren't on the air until whoever sets them up has chosen their bands.
+                -- Those which were let in, but aren't on the air: until whoever sets them up has chosen their bands, or
+                -- until the network has a carrier for what they want.
                 for _, cell in ipairs(status and status.standby or {}) do
                     items[#items + 1] = {
                         text = ("#%d %s"):format(cell.id, tostring(cell.address)), fg = colours.lightGrey,
-                        tail = { { "choosing its bands", c(colours.yellow, colours.lightGrey) } }, id = "s" .. cell.id,
+                        tail = { {
+                            cell.unplaced and "no carrier" or "choosing its bands",
+                            c(cell.unplaced and colours.orange or colours.yellow, colours.lightGrey),
+                        }, },
+                        id = "s" .. cell.id, reason = cell.reason,
                     }
                 end
                 return items
             end,
             choose = function(item)
-                if type(item.id) == "number" then cell_screen(item.id) end
+                if type(item.id) == "number" then
+                    cell_screen(item.id)
+                elseif item.reason then
+                    say(("#%s is off the air: %s."):format(item.id:sub(2), item.reason))
+                end
             end,
             empty = "No cells connected.",
-            note = function()
-                if said then return note() end
-                return "A cell joins with 'celld add <this core>' on its computer, and waits under Computers to be allowed."
-            end,
+            note = note,
             hint = { "Enter: open", "Q: back" },
             refresh = REFRESH,
         }
@@ -569,14 +575,13 @@ local function run(options)
     local function add_subscriber()
         local id = menu.input_screen {
             title = "Add a subscriber", label = "ID:", max = 40,
-            note = "What to call the subscriber, such as " .. (status and status.network or "ACME") .. "-0042.",
+            note = "Such as " .. (status and status.network or "ACME") .. "-0042.",
             check = function(text) return text == "" and "Enter an ID for the subscriber." or nil end,
         }
         if not id then return end
         local code
         local number = menu.input_screen {
             title = "Add a subscriber", label = "Number:", max = 20,
-            note = "The phone number of " .. id .. ".",
             check = function(text)
                 if text == "" then return "Enter a number." end
                 local reply, err = request({ op = "add", id = id, number = text })
@@ -587,7 +592,7 @@ local function run(options)
         }
         if not number then return end
         refresh(true)
-        menu.message_screen("Activation code", ("For %s (number %s), for a day:\n\n%s\n\nOn the phone, run 'cell activate %s <code>'."):format(
+        menu.message_screen("Activation code", ("%s, number %s. Good for a day:\n\n%s\n\ncell activate %s <code>"):format(
             id, number, tostring(code), status and status.network or "<network>"
         ))
     end
@@ -601,7 +606,7 @@ local function run(options)
                     if text == "" then return "Enter a network, such as 10.64.5.0/28." end
                     local reply, err = request({ op = "set", subscriber = id, [kind] = text })
                     if not reply then return tostring(err) end
-                    say(table.concat(routed_lines(reply), " "))
+                    say(routed_lines(reply)[1])
                     return nil
                 end,
             }
@@ -620,25 +625,18 @@ local function run(options)
                 if item.id == "phone" then
                     if subscriber.range or subscriber.subnet then
                         ask({ op = "set", subscriber = id, [subscriber.range and "range" or "subnet"] = false }, function(reply)
-                            return table.concat(routed_lines(reply), " ")
+                            return routed_lines(reply)[1]
                         end)
                     end
                 elseif item.id == "range" then
                     network_for("range", "Range for " .. tostring(id),
-                        ("Part of this network's addresses (%s), such as a /28 of them, which the core sends to the "
-                            .. "subscriber's phone: for a small site, whose router hands them out behind it."):format(
-                            status and status.prefix or "its prefix"
-                        ))
+                        ("Within %s, such as a /28: routed to the phone."):format(status and status.prefix or "the network"))
                 else
                     network_for("subnet", "Network of " .. tostring(id),
-                        "A network which isn't this network's own, such as 192.168.5.0/24, which the core sends to the "
-                            .. "subscriber's phone: for a site with addresses of its own, bridged to the rest through here.")
+                        ("Outside %s, such as 192.168.5.0/24: routed to the phone."):format(status and status.prefix or "the network"))
                 end
                 refresh(true)
                 return "back"
-            end,
-            note = function()
-                return "Changing this cuts the subscriber's phone off for a moment: it attaches again, and hears what it is."
             end,
             hint = { "Enter: choose", "Q: back" },
         }
@@ -683,7 +681,7 @@ local function run(options)
                     type_screen(id, find() or {})
                 elseif item.id == "barred" then
                     ask({ op = "set", subscriber = id, barred = item.value }, function(reply)
-                        return reply.barred and ("%s is barred: their phone is cut off, and refused."):format(tostring(reply.id))
+                        return reply.barred and ("%s is barred."):format(tostring(reply.id))
                             or ("%s is no longer barred."):format(tostring(reply.id))
                     end)
                 elseif item.id == "roaming" then
@@ -746,8 +744,7 @@ local function run(options)
             ask(changes, function(reply)
                 if reply.forgotten then return ("Forgot the agreement with %s."):format(name) end
                 if reply.key then return "Changed the agreement." end
-                return ("Changed. Its core must allow this one, unless it's this core which waits for it: there, allow "
-                    .. "computer #%s, and check it shows the fingerprint %s"):format(
+                return ("Changed. On its core, allow computer #%s: %s"):format(
                     tostring(reply.our_id or "?"), tostring(reply.our_fingerprint)
                 )
             end)
@@ -760,7 +757,7 @@ local function run(options)
                 if network.id or network.core or network.carry or network.roam or network.messages then
                     text_items(items, network_lines(network, status or {}))
                 else
-                    text_items(items, { "No agreement yet: turn on what the two networks do for each other, and say where its core is, or have its core connect to this one." }, colours.lightGrey)
+                    text_items(items, { "No agreement yet." }, colours.lightGrey)
                 end
                 local function switch(text, id, value, change_to)
                     items[#items + 1] = { text = text, tail = { { on_off(value), colours.lightGrey } }, id = id, changes = change_to }
@@ -782,8 +779,7 @@ local function run(options)
                     local network = find() or {}
                     menu.input_screen {
                         title = "Core of " .. name, label = "Core:", max = 255, value = network.core or "",
-                        note = "The name or address this core connects to the other network's core at. Empty: this core "
-                            .. "waits for the other to connect.",
+                        note = "Its name or address. Empty: wait for it to connect.",
                         check = function(text)
                             local reply, err = request({ op = "network", network = name, core = text ~= "" and text or false })
                             if not reply then return tostring(err) end
@@ -793,9 +789,7 @@ local function run(options)
                     }
                     refresh(true)
                 elseif item.id == "forget" then
-                    if not menu.confirm_screen("Forget " .. name,
-                        "The two networks do nothing for each other any more: its phones here, and this network's there, lose service.",
-                        "Forget") then
+                    if not menu.confirm_screen("Forget " .. name, "Ends roaming and messages between the two networks.", "Forget") then
                         return nil
                     end
                     change({ forget = true })
@@ -829,8 +823,6 @@ local function run(options)
                 if item.network then return network_screen(item.network) end
                 local name = menu.input_screen {
                     title = "Add a network", label = "Network:", max = 32,
-                    note = "The other network's name. An agreement says what the two networks do for each other: carry "
-                        .. "each other's phones, and exchange messages.",
                     check = function(text)
                         if not common.is_network(text) then return "Network names are letters, digits and dashes, up to 32 of them." end
                         if status and text == status.network then return "That's this network." end
@@ -849,14 +841,58 @@ local function run(options)
     -- The network's own settings, and its log
     ----------------------------------------------------------------------------
 
+    -- The network's carriers: every band's, to tick and untick. Each change is the core's at once.
+    local function carriers_screen()
+        local function spectrum() return status and status.spectrum or {} end
+        carrier_menu.pick {
+            title = "Carriers",
+            right = function() return ("%d of %d"):format(#spectrum(), common.MAX_CARRIERS) end,
+            look = refresh,
+            chosen = spectrum,
+            toggle = function(name, on)
+                local list = {}
+                for _, each in ipairs(spectrum()) do
+                    if each ~= name then list[#list + 1] = each end
+                end
+                if on then list[#list + 1] = name end
+                local reply, err = request({ op = "spectrum", carriers = carrier_menu.sorted(list) })
+                if not reply then return tostring(err) end
+                refresh(true)
+                return nil
+            end,
+            -- How many cells are on each.
+            tail = function(name)
+                local count = 0
+                for _, cell in ipairs(status and status.cells or {}) do
+                    for _, each in ipairs(cell.carriers or { cell }) do
+                        if each.carrier == name then count = count + 1 end
+                    end
+                end
+                if count > 0 then return count == 1 and "1 cell" or count .. " cells", c(colours.lime, colours.white) end
+            end,
+            note = function()
+                if not status then return "Cannot reach the core: " .. tostring(problem), c(colours.red, colours.lightGrey) end
+                if not spectrum()[1] then return "No carriers: cells stay off the air.", c(colours.yellow, colours.lightGrey) end
+            end,
+            limit = common.MAX_CARRIERS,
+            refresh = REFRESH,
+        }
+    end
+
     local function radio_screen()
         menu.list_screen {
             title = title_of("Network settings"),
             items = function()
                 if not refresh() then return {} end
-                local picked = status.spectrum_picked and " (picked)" or ""
+                local carriers = status.spectrum or {}
                 return {
-                    { text = "Carriers", tail = { { table.concat(status.spectrum or {}, " ") .. picked, colours.lightGrey } }, id = "spectrum" },
+                    {
+                        text = "Carriers", id = "spectrum",
+                        tail = { {
+                            carriers[1] and table.concat(carriers, " ") or "none",
+                            carriers[1] and colours.lightGrey or c(colours.yellow, colours.lightGrey),
+                        }, },
+                    },
                     {
                         text = "System information", id = "beacon",
                         tail = { { ("every %s seconds"):format(tostring(status.interval)), colours.lightGrey } },
@@ -867,42 +903,28 @@ local function run(options)
             choose = function(item)
                 if not status then return nil end
                 if item.id == "spectrum" then
-                    menu.input_screen {
-                        title = "Carriers", label = "Carriers:",
-                        value = status.spectrum_picked and "" or table.concat(status.spectrum or {}, " "),
-                        note = "The carriers this network's cells use: up to 8, such as b20/1 b3/2. Cells hear of them at "
-                            .. "once, and move when they next connect. Empty: one of band 20's, picked from the network's name.",
-                        check = function(text)
-                            local carriers = {}
-                            for word in text:gmatch("%S+") do carriers[#carriers + 1] = word end
-                            local reply, err = request({ op = "spectrum", carriers = carriers })
-                            if not reply then return tostring(err) end
-                            say("Carriers: " .. table.concat(reply.carriers, ", ") .. ". Cells move to them when they next connect.")
-                            return nil
-                        end,
-                    }
+                    carriers_screen()
                 elseif item.id == "beacon" then
                     menu.input_screen {
                         title = "System information", label = "Seconds:", value = tostring(status.interval or ""),
-                        note = ("How often this network's cells send system information: every %g to %g seconds. Phones find "
-                            .. "cells sooner with less, and the air is quieter with more."):format(common.MIN_INTERVAL, common.MAX_INTERVAL),
+                        note = ("%g to %g seconds."):format(common.MIN_INTERVAL, common.MAX_INTERVAL),
                         check = function(text)
                             local interval = tonumber(text)
                             if not interval then return "Expected a number of seconds." end
                             local reply, err = request({ op = "beacon", interval = interval })
                             if not reply then return tostring(err) end
-                            say(("Cells send system information every %s seconds."):format(tostring(reply.interval)))
+                            say(("System information: every %s seconds."):format(tostring(reply.interval)))
                             return nil
                         end,
                     }
                 elseif item.id == "numbers" then
                     menu.input_screen {
                         title = "Number prefix", label = "Prefix:", value = status.number_prefix or "", max = 8,
-                        note = "The digits other networks' phones put before this network's numbers to reach its phones, such as 555.",
+                        note = "Up to 8 digits, such as 555.",
                         check = function(text)
                             local reply, err = request({ op = "numbers", prefix = text })
                             if not reply then return tostring(err) end
-                            say(("Other networks' phones reach this network's at %s<number>."):format(text))
+                            say(("Number prefix: %s."):format(text))
                             return nil
                         end,
                     }
@@ -965,7 +987,7 @@ local function run(options)
     local function setup_screens()
         local network = menu.input_screen {
             title = "Set up a network", label = "Name:", max = 32,
-            note = "This computer isn't a network's core yet. What is the network called? Letters, digits and dashes.",
+            note = "The network's name: letters, digits and dashes.",
             check = function(text)
                 if not text:match("^[%w%-]+$") then return "Network names are letters, digits and dashes, up to 32 of them." end
                 return nil
@@ -975,7 +997,7 @@ local function run(options)
         local done = false
         local prefix = menu.input_screen {
             title = "Set up " .. network, label = "Addresses:", value = "10.64.0.0/16", max = 18,
-            note = "The network its phones' addresses are in. Every other computer needs a route to it, through this one.",
+            note = "The network phones get addresses in.",
             check = function(text)
                 local config, err = setup(network, text)
                 if not config then return tostring(err) end
@@ -984,11 +1006,14 @@ local function run(options)
             end,
         }
         if not prefix or not done then return false end
-        say(("%s is set up and running, giving phones addresses in %s. Cells join with 'celld add <this computer's address>', and wait here to be allowed."):format(network, prefix))
+        say(("%s is running, with phones in %s."):format(network, prefix))
         return true
     end
 
     -- Without a core to manage: say why, and offer what may help.
+    -- Whether to go to the carriers first, once there's a core: a network which was only just set up has none.
+    local choose_carriers = false
+
     local function no_core_screen()
         local configured = remote or fs.exists(CONFIG)
         return menu.list_screen {
@@ -1007,10 +1032,11 @@ local function run(options)
             choose = function(item)
                 if item.id == "setup" then
                     if not setup_screens() then return nil end
+                    choose_carriers = true
                 elseif item.id == "remote" then
                     local core = menu.input_screen {
                         title = "Manage a core", label = "Core:", max = 255,
-                        note = "The name or address of the core. It must allow this computer, the first time.",
+                        note = "Its name or address.",
                         check = function(text) return text == "" and "Enter the core's name or address." or nil end,
                     }
                     if not core then return nil end
@@ -1072,14 +1098,16 @@ local function run(options)
                         id = "subscribers", open = subscribers_screen,
                     },
                     { text = "Other networks", tail = grey(tostring(#(status.networks or {}))), id = "networks", open = networks_screen },
-                    { text = "Network settings", id = "radio", open = radio_screen },
+                    {
+                        text = "Network settings", id = "radio", open = radio_screen,
+                        tail = not (status.spectrum or {})[1] and { { "no carriers", c(colours.yellow, colours.lightGrey) } } or nil,
+                    },
                     { text = "Log", id = "log", open = log_screen },
                     {
                         text = "Restart the core", id = "restart",
                         open = function()
                             if not menu.confirm_screen("Restart the core",
-                                "The core starts afresh. Cells join again by themselves, and phones attach again, with new addresses.",
-                                "Restart") then
+                                "Cells and phones connect again, with new addresses.", "Restart") then
                                 return
                             end
                             ask({ op = "restart" }, "Starting the core afresh.")
@@ -1088,9 +1116,7 @@ local function run(options)
                     {
                         text = "Stop the core", id = "stop",
                         open = function()
-                            if not menu.confirm_screen("Stop the core",
-                                "Every phone loses service. The core starts again on its own computer: from this menu, or with 'cellcore start'.",
-                                "Stop") then
+                            if not menu.confirm_screen("Stop the core", "Every phone loses service.", "Stop") then
                                 return
                             end
                             local reply, err = request({ op = "stop" })
@@ -1124,6 +1150,10 @@ local function run(options)
         end
         while true do
             local left
+            if manager and status and choose_carriers then
+                choose_carriers = false
+                carriers_screen()
+            end
             if manager and status then left = home_screen() else left = no_core_screen() end
             if left == "quit" then break end
             -- Lost the core, or found one: look again.

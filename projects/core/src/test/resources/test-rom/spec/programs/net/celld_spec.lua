@@ -39,7 +39,7 @@ describe("The celld program", function()
         local calls = setup(serving({ "core.acme" }, { "ACME" }))
         for _, case in ipairs {
             { { "core.acme" }, "There's no command called core.acme. To serve a core's network, use 'celld add <core>'.\n" },
-            { { "set", "pwer", "30" }, "There's no setting called pwer. They're area, band, interval, pos, power and service.\n" },
+            { { "set", "pwer", "30" }, "There's no setting called pwer. They're area, band, interval, pos, power, service and override.\n" },
             {
                 { "set", "band", "b33" },
                 "There's no cellular band called b33. They're b31 (450MHz), b28 (700MHz), b20 (800MHz), b8 (900MHz), "
@@ -58,7 +58,7 @@ describe("The celld program", function()
             { { "set", "pos", "1", "2", "z" }, "A cell's position is three whole numbers: its computer's x, y and z.\n" },
             { { "set", "area", "3", "4" }, "Usage: celld set area <number>\n" },
             { { "set", "service", "everything" }, "A cell's service is sms (it only carries messages) or full.\n" },
-            { { "unset", "colour" }, "There's no setting called colour. They're area, band, interval, pos, power and service.\n" },
+            { { "unset", "colour" }, "There's no setting called colour. They're area, band, interval, pos, power, service and override.\n" },
             { { "remove", "core.acmr" }, "This cell doesn't connect to core.acmr. Its cores are core.acme.\n" },
             { { "add", "CORE.ACME" }, "This cell connects to core.acme already.\n" },
         } do
@@ -130,6 +130,31 @@ describe("The celld program", function()
             { "configure", { service = false } }, { "configure", { band = false } }, { "configure", { pos = false } },
         }
         expect(run("set", "pos", "1", "-2", "3").output):eq("The cell says it's at 1, -2, 3.\n")
+    end)
+
+    it("lets a cell use carriers its cores don't offer, saying what that may do", function()
+        local calls = setup(serving({ "core.acme" }, { "ACME" }))
+        expect(run("set", "override", "on").output)
+            :eq("The cell may use carriers its cores don't offer. This may violate network assignment agreements.\n")
+        expect(run("set", "override", "off").output):eq("The cell only uses carriers its cores offer.\n")
+        expect(run("unset", "override")):matches { ok = true }
+        expect(calls):same { { "configure", { override = true } }, { "configure", { override = false } }, { "configure", { override = false } } }
+        expect(run("set", "override", "maybe")):matches {
+            ok = false, error = "A cell's override is on (it may use carriers its cores don't offer) or off.\n",
+        }
+        expect(#calls):eq(3)
+    end)
+
+    it("says when a network has no carrier for the cell, which waits off the air", function()
+        local info = serving({ "core.acme", "core.beta" }, { "ACME", "BETA" })
+        info.state, info.carrier, info.ul, info.override = "unplaced", nil, nil, true
+        info.links[1] = { core = "core.acme", state = "unplaced", network = "ACME", carriers = {} }
+        info.links[2] = { core = "core.beta", state = "unplaced", network = "BETA", carriers = { "b20/2" }, unplaced = { "b7", "b3/1" } }
+        setup(info)
+        local output = run("status").output
+        expect(output):str_match("\ncore%.acme: ACME has no carriers yet%. The cell is off the air until it has%.\n")
+        expect(output):str_match("\ncore%.beta: BETA has no carrier for b7, b3/1%. The cell is off the air until it has%.\n")
+        expect(output):str_match("\n  override  on\n")
     end)
 
     it("takes several bands and carriers, for a cell on each", function()
@@ -211,6 +236,7 @@ describe("The celld program", function()
             "  pos       1 2 -3",
             "  power     30 dBm",
             "  service   messages only",
+            "  override  off",
             "",
         }, "\n"),
         }
@@ -237,6 +263,7 @@ describe("The celld program", function()
             "  pos       not said",
             "  power     the modem's own",
             "  service   full",
+            "  override  off",
             "",
         }, "\n"))
 
@@ -251,6 +278,7 @@ describe("The celld program", function()
             "  pos       not said",
             "  power     the modem's own",
             "  service   full",
+            "  override  off",
             "",
         }, "\n"))
 

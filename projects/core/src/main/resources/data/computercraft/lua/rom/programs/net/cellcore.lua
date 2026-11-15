@@ -31,7 +31,7 @@ local function usage()
     print(name .. " network <network> core <core>|none")
     print(name .. " network <network> forget")
     print(name .. " numbers <prefix>")
-    print(name .. " spectrum [carrier...]")
+    print(name .. " spectrum [<carrier>...|none]")
     print(name .. " beacon [seconds]")
     print(name .. " remote <core> [command...]")
 end
@@ -60,6 +60,7 @@ if command == "setup" then
     if config.number_prefix then
         print(("Other networks' phones reach its phones at %s<number>, once they exchange messages."):format(config.number_prefix))
     end
+    print(("It has no carriers yet, and its cells stay off the air until it has: choose them in the menu ('%s'), or with '%s spectrum <carrier>...'."):format(name, name))
     print("Cells join with 'celld add <this computer's address>', and wait for you to allow them here.")
     return
 elseif command == "start" then
@@ -477,13 +478,18 @@ function commands.numbers(prefix)
     print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
 end
 
--- See or set the carriers this network's cells use.
+-- See or set the carriers this network's cells use: "none" for none.
 function commands.spectrum(...)
     local carriers = { ... }
-    local reply = request({ op = "spectrum", carriers = #carriers > 0 and carriers or nil })
-    print("Carriers: " .. table.concat(reply.carriers, ", "))
-    if reply.picked then print("(Picked from this network's name, as none were set.)") end
-    if #carriers > 0 then print("Cells move to them when they next connect.") end
+    if #carriers == 1 and carriers[1]:lower() == "none" then carriers = { n = 0 } end
+    local set = carriers.n == 0 or #carriers > 0
+    local reply = request({ op = "spectrum", carriers = set and { table.unpack(carriers) } or nil })
+    if reply.carriers[1] then
+        print("Carriers: " .. table.concat(reply.carriers, ", "))
+    else
+        print("No carriers: cells stay off the air until some are chosen.")
+    end
+    if set then print("Cells hear of it at once.") end
 end
 
 -- See or set how often this network's cells send system information.

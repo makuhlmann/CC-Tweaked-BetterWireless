@@ -217,6 +217,83 @@ describe("The menus of celld and cellcore", function()
         if not ok then error(err, 0) end
     end)
 
+    it("draw only what changed, and nothing for events which change nothing", function()
+        local menu = require "cc.internal.net.cell.menu"
+        local screen = window.create(term.current(), 1, 1, 30, 10, false)
+        -- Count what's written to the screen: over a remote shell, each time is something to send.
+        local writes = 0
+        local counting = setmetatable({}, { __index = screen })
+        for _, method in ipairs { "write", "blit", "clear", "clearLine", "scroll" } do
+            counting[method] = function(...)
+                writes = writes + 1
+                return screen[method](...)
+            end
+        end
+        local timer = 0
+        stub(os, "startTimer", function()
+            timer = timer + 1
+            return timer
+        end)
+        stub(os, "cancelTimer", function() end)
+        -- What happens on a computer all the time, and is no screen's business.
+        local noise = {
+            { "timer", 999 }, { "modem_message", "top", 1, 2, "x", 3 }, { "key_up", keys.a }, { "rshd_output" },
+            { "key", keys.leftShift, false }, { "cell_bar" },
+        }
+        local old = term.redirect(counting)
+        local ok, err = pcall(function()
+            local co = coroutine.create(function() return menu.input_screen { title = "Name", label = "Name:", note = "A note." } end)
+            assert(coroutine.resume(co))
+            expect(writes > 0):eq(true)
+            writes = 0
+            for _, event in ipairs(noise) do assert(coroutine.resume(co, table.unpack(event))) end
+            expect(writes):eq(0)
+            -- A character is the line, not the screen.
+            assert(coroutine.resume(co, "char", "a"))
+            expect(screen.getLine(3)):str_match("^Name: a +$")
+            expect(writes <= 2):describe(writes .. " writes for a character"):eq(true)
+            writes = 0
+            assert(coroutine.resume(co, "key", keys.backspace, false))
+            expect(screen.getLine(3)):str_match("^Name: +$")
+            expect(writes <= 2):eq(true)
+            -- Backspace in an empty line does nothing at all: it doesn't leave, however often it's pressed.
+            writes = 0
+            for _ = 1, 5 do assert(coroutine.resume(co, "key", keys.backspace, false)) end
+            expect({ writes, coroutine.status(co) }):same { 0, "suspended" }
+            expect({ coroutine.resume(co, "key", keys.tab, false) }):same { true }
+
+            -- A list which looks again and finds the same writes nothing; one line changed is one line written.
+            local items = { { text = "One", id = 1 }, { text = "Two", id = 2 }, { text = "Three", id = 3 } }
+            co = coroutine.create(function()
+                return menu.list_screen {
+                    title = function() return "List" end, items = function() return items end, choose = function() end,
+                    refresh = 1,
+                }
+            end)
+            assert(coroutine.resume(co))
+            writes = 0
+            assert(coroutine.resume(co, "timer", timer))
+            for _, event in ipairs(noise) do assert(coroutine.resume(co, table.unpack(event))) end
+            expect(writes):eq(0)
+            items[3] = { text = "Four", id = 3 }
+            assert(coroutine.resume(co, "timer", timer))
+            expect(writes):eq(1)
+            expect(screen.getLine(5)):str_match("^Four +$")
+            -- Moving along the list is the two lines it moves between.
+            writes = 0
+            assert(coroutine.resume(co, "key", keys.down, false))
+            expect(writes):eq(2)
+            -- Once something else drew on the screen, all of it is drawn again.
+            menu.clear()
+            writes = 0
+            assert(coroutine.resume(co, "timer", timer))
+            expect(writes >= 4):eq(true)
+            expect(screen.getLine(1)):str_match("^List")
+        end)
+        term.redirect(old)
+        if not ok then error(err, 0) end
+    end)
+
     describe("celld", function()
         --[[ A cell behind net.cell, as `celld` would have set it up: it serves ACME through core.acme. What's asked of
         net.cell is kept in `calls`, and done to the cell, unless `refuse` says why not. ]]
@@ -228,7 +305,7 @@ describe("The menus of celld and cellcore", function()
                 info = info or {
                     state = "serving", id = 11, area = 3, cores = { "core.acme" }, enabled = true, core = "core.acme",
                     network = "ACME", carrier = "b20/1", ul = 8320, fingerprint = "aaaa bbbb cccc dddd eeee",
-                    links = { { core = "core.acme", state = "serving", network = "ACME" } },
+                    links = { { core = "core.acme", state = "serving", network = "ACME", carriers = { "b20/1", "b3/1", "b3/2" } } },
                 },
             }
             stub(net.cell, "cellInfo", function() return cell.info end)
@@ -278,20 +355,33 @@ describe("The menus of celld and cellcore", function()
             cell.info.cells = { { id = 11, carrier = "b20/1", ul = 8320 }, { id = 2 ^ 40, carrier = "b3/2", ul = 17150 } }
             run({ "celld" }, {}, function(app)
                 app.choose("Status")
-                expect(app.says("Cell #11, area 3.")):eq(true)
-                expect(app.says("On b20/1, reached on channel 8320.")):eq(true)
-                expect(app.says("On b3/2, reached on channel 17150.")):eq(true)
-                expect(app.says("core.acme: serving ACME.")):eq(true)
+                expect(app.says("Cell #11, area 3")):eq(true)
+                expect(app.says("b20/1, channel 8320")):eq(true)
+                expect(app.says("b3/2, channel 17150")):eq(true)
+                expect(app.says("core.acme: serving ACME")):eq(true)
 
                 cell.info.state = "lost"
                 cell.info.links[1] = { core = "core.acme", state = "lost", error = "No route to host", retry = 8 }
                 app.tick()
-                expect(app.says("core.acme can't be reached: No route to host")):eq(true)
-                expect(app.says("Trying again in 8 seconds.")):eq(true)
+                expect(app.says("core.acme: No route to host")):eq(true)
+                expect(app.says("again in 8 s")):eq(true)
 
                 -- Back to where it came from, which says so too.
                 app.type("q")
                 expect(app.line(1)):str_match("^Cell #11 +can't reach its core$")
+
+                -- A network with no carrier for it has it wait, off the air: which is said, with what it does have.
+                cell.info.state, cell.info.cells, cell.info.carrier = "unplaced", nil, nil
+                cell.info.links[1] = { core = "core.acme", state = "unplaced", network = "ACME", carriers = {} }
+                app.tick()
+                expect(app.line(1)):str_match("^Cell #11 +no carrier$")
+                expect(app.says("Off the air: ACME has no carriers yet.")):eq(true)
+                cell.info.links[1] = { core = "core.acme", state = "unplaced", network = "ACME", carriers = { "b20/1" }, unplaced = { "b7", "b3/2" } }
+                app.tick()
+                expect(app.says("Off the air: ACME has no carrier for b7, b3/2.")):eq(true)
+                app.choose("Status")
+                expect(app.says("core.acme: ACME has no carrier for b7, b3/2")):eq(true)
+                expect(app.says("offers b20/1")):eq(true)
             end)
         end)
 
@@ -299,8 +389,7 @@ describe("The menus of celld and cellcore", function()
             local cell = fake_cell()
             cell.info.state, cell.info.links[1] = "waiting", { core = "core.acme", state = "waiting" }
             run({ "celld" }, {}, function(app)
-                expect(app.says("Waiting to be allowed: on the core, run 'cellcore allow 11', and check it shows aaaa bbbb cccc dddd eeee"))
-                    :eq(true)
+                expect(app.says("Waiting to be allowed as #11: aaaa bbbb cccc dddd eeee")):eq(true)
             end)
         end)
 
@@ -310,13 +399,14 @@ describe("The menus of celld and cellcore", function()
                 app.choose("Settings")
                 expect(app.find("interval")):ne(nil)
                 expect(select(2, app.find("band"))):str_match("^band +any %(its core picks%)$")
+                expect(select(2, app.find("override"))):str_match("^override +off$")
 
                 app.choose("interval")
                 expect(app.line(1)):eq("Set the interval")
                 app.enter("4")
                 expect(cell.calls):same { { "configure", { interval = 4 } } }
                 expect(select(2, app.find("interval"))):str_match("^interval +4 seconds$")
-                expect(app.says("The cell sends its system information every 4 seconds, whatever its core says.")):eq(true)
+                expect(app.says("interval: 4 seconds.")):eq(true)
 
                 -- What it has is there to change, and an empty line puts it back as it is when it's not set.
                 app.choose("interval")
@@ -365,50 +455,195 @@ describe("The menus of celld and cellcore", function()
                 expect(app.says("Expected <x> <y> <z>.")):eq(true)
                 app.enter("1 2 z")
                 expect(app.says("A cell's position is three whole numbers")):eq(true)
+                -- Backspace only ever takes a character away: in an empty line it doesn't leave the screen.
+                app.key(keys.home)
+                for _ = 1, 3 do app.key(keys.backspace) end
+                app.event("key", keys["end"], false)
+                for _ = 1, 8 do app.key(keys.backspace) end
+                expect(app.line(3)):eq("pos:")
+                expect(app.line(1)):eq("Set the pos")
                 app.key(keys.tab)
-                app.choose("band")
-                app.enter("b33")
-                expect(app.says("There's no cellular band called b33.")):eq(true)
-                app.key(keys.tab)
+                expect(app.line(1)):str_match("^Settings")
                 expect(cell.calls):same { { "configure", { power = 90 } } }
             end)
         end)
 
-        it("asks before a change which may start the cell again", function()
+        it("has its bands ticked from those its cores offer, and asks before a change which may start it again", function()
             local cell = fake_cell()
             cell.restarts = true
+            cell.info.cells = { { id = 11, carrier = "b20/1", ul = 8320 } }
             run({ "celld" }, {}, function(app)
                 app.choose("Settings")
                 app.choose("band")
-                app.enter("b20 1800 b3/2")
-                expect(app.line(1)):eq("Change the band")
+                expect(app.line(1)):str_match("^Bands +any$")
+                expect(app.chosen()):str_match("^%[x%] Any band +its core picks$")
+                -- Only the bands its core's network has a carrier in.
+                expect(select(2, app.find("b20 "))):str_match("^b20  800 MHz +%-$")
+                expect(select(2, app.find("b3 "))):str_match("^b3   1800 MHz +%-$")
+                for _, band in ipairs { "b31", "b28", "b8 ", "b1 ", "b7 " } do expect(app.find(band)):describe(band):eq(nil) end
+
+                app.choose("b20 ")
+                expect(app.line(1)):str_match("^b20, 800 MHz")
+                expect(app.find("b20/2")):eq(nil)
+                app.choose("b20/1")
+                -- Each carrier's frequencies, and the networks which have it.
+                expect(app.chosen()):str_match("^%[x%] b20/1 +791%-796 MHz +ACME$")
+                app.type("q")
+                app.choose("b3 ")
+                app.choose("Any carrier")
+                expect(app.chosen()):str_match("^%[x%] Any carrier +its core picks$")
+                app.choose("b3/2")
+                -- Space ticks and unticks too.
+                app.type(" ")
+                expect(app.chosen()):str_match("^%[ %] b3/2 +1810%-1815 MHz +ACME$")
+                app.type(" ")
+                expect(app.line(1)):str_match("^b3, 1800 MHz +any /2$")
+                app.key(keys.backspace)
+                expect(app.line(1)):str_match("^Bands +3 chosen$")
+                expect(app.chosen()):str_match("^b3   1800 MHz +any /2$")
+                expect(app.find("[ ] Any band")):ne(nil)
+
+                -- Nothing is the cell's until the screen is left: and then not without asking.
                 expect(#cell.calls):eq(0)
-                -- Not sure after all.
+                app.type("q")
+                expect(app.line(1)):eq("Change the band")
                 app.type("n")
                 expect(#cell.calls):eq(0)
                 expect(app.says("Nothing was changed.")):eq(true)
 
                 app.choose("band")
-                app.enter("b20 1800 b3/2")
+                app.choose("b20 ")
+                app.choose("b20/1")
+                app.type("q")
+                app.choose("b3 ")
+                app.choose("b3/2")
+                app.type("q")
+                app.type("q")
                 app.type("y")
-                expect(cell.calls):same { { "configure", { band = { "b20", "b3", "b3/2" } } } }
-                expect(app.says("It started again for that")):eq(true)
-                expect(select(2, app.find("band"))):str_match("^band +b20 %(800MHz%), b3 %(1800MHz%), b3/2$")
+                expect(cell.calls):same { { "configure", { band = { "b20/1", "b3/2" } } } }
+                expect(app.says("The cell started again.")):eq(true)
+                expect(select(2, app.find("band"))):str_match("^band +b20/1, b3/2$")
+
+                -- Left as it was, nothing is asked. And any band again.
+                app.choose("band")
+                expect(app.line(1)):str_match("^Bands +2 chosen$")
+                app.type("q")
+                expect(app.line(1)):str_match("^Settings")
+                expect(#cell.calls):eq(1)
+                app.choose("band")
+                app.choose("Any band")
+                expect(app.line(1)):str_match("^Bands +any$")
+                app.type("q")
+                app.type("y")
+                expect(cell.calls[2]):same { "configure", { band = false } }
+                -- One band alone is that band.
+                app.choose("band")
+                app.choose("b3 ")
+                app.choose("Any carrier")
+                app.type("q")
+                app.type("q")
+                app.type("y")
+                expect(cell.calls[3]):same { "configure", { band = "b3" } }
 
                 app.choose("area")
                 app.enter("5")
                 app.key(keys.enter)
-                expect(cell.calls[2]):same { "configure", { area = 5 } }
+                expect(cell.calls[4]):same { "configure", { area = 5 } }
+            end)
+        end)
+
+        it("offers what each of its networks has, and anything at all once that's overridden", function()
+            local cell = fake_cell()
+            cell.info.links = {
+                { core = "core.acme", state = "serving", network = "ACME", carriers = { "b20/1" } },
+                { core = "core.beta", state = "serving", network = "BETA", carriers = { "b20/1", "b3/2" } },
+                { core = "core.gamma", state = "lost", error = "No route to host" },
+            }
+            -- It was set to a carrier none of them has (any more).
+            cell.info.band = { "b20/1", "b7/3" }
+            cell.info.cells = { { id = 11, carrier = "b20/1", ul = 8320 } }
+            run({ "celld" }, {}, function(app)
+                app.choose("Settings")
+                app.choose("band")
+                expect(app.line(1)):str_match("^Bands +2 chosen$")
+                expect(select(2, app.find("b20 "))):str_match("^b20  800 MHz +/1$")
+                expect(select(2, app.find("b3 "))):str_match("^b3   1800 MHz +%-$")
+                expect(select(2, app.find("b7 "))):str_match("^b7   2600 MHz +/3$")
+                expect(app.find("b1 ")):eq(nil)
+                expect(select(2, app.find("Override"))):str_match("^Override +off$")
+
+                app.choose("b20 ")
+                expect(select(2, app.find("b20/1"))):str_match("^%[x%] b20/1 +791%-796 MHz +ACME, BETA$")
+                app.type("q")
+                app.choose("b3 ")
+                expect(app.find("b3/1")):eq(nil)
+                expect(select(2, app.find("b3/2"))):str_match("^%[ %] b3/2 +1810%-1815 MHz +BETA$")
+                app.type("q")
+                -- What's no longer offered is only there to be unticked.
+                app.choose("b7 ")
+                expect(app.find("Any carrier")):eq(nil)
+                expect(app.chosen()):str_match("^%[x%] b7/3 +2630%-2635 MHz +not offered$")
+                app.key(keys.enter)
+                expect(app.says("None of its carriers is offered.")):eq(true)
+                app.type("q")
+                expect(app.find("b7 ")):eq(nil)
+
+                -- The override says what it may do first, and is the cell's at once.
+                app.choose("Override")
+                expect(app.line(1)):eq("Band override")
+                expect(app.says("This may violate network assignment agreements.")):eq(true)
+                app.type("n")
+                expect(#cell.calls):eq(0)
+                expect(app.line(1)):str_match("^Bands")
+                app.choose("Override")
+                app.type("y")
+                expect(cell.calls):same { { "configure", { override = true } } }
+                expect(select(2, app.find("Override"))):str_match("^Override +on$")
+                expect(app.says("Override: carriers its cores don't offer may be chosen.")):eq(true)
+                -- Then every band is there, and every carrier.
+                for _, band in ipairs { "b31", "b28", "b20", "b8 ", "b3 ", "b1 ", "b7 " } do expect(app.find(band)):describe(band):ne(nil) end
+                app.choose("b1 ")
+                app.choose("b1/2")
+                expect(app.chosen()):str_match("^%[x%] b1/2 +2115%-2120 MHz +not offered$")
+                app.type("q")
+                app.type("q")
+                app.type("y")
+                expect(cell.calls[2]):same { "configure", { band = { "b20/1", "b1/2" } } }
+                expect(select(2, app.find("override"))):str_match("^override +on$")
+
+                -- Off again needs no asking.
+                app.choose("override")
+                expect(cell.calls[3]):same { "configure", { override = false } }
+                expect(select(2, app.find("override"))):str_match("^override +off$")
+                -- And on, from the settings: with the same warning.
+                app.choose("override")
+                expect(app.says("This may violate network assignment agreements.")):eq(true)
+                app.type("y")
+                expect(cell.calls[4]):same { "configure", { override = true } }
             end)
 
-            -- A cell which isn't running has nothing to start again.
+            -- A cell whose cores offer nothing (it isn't running, or their networks have no carriers yet) says so.
             cell = fake_cell({ state = "stopped", id = 11, enabled = false, cores = { "core.acme" }, area = 0 })
             run({ "celld" }, {}, function(app)
                 app.choose("Settings")
                 app.choose("band")
-                app.enter("3")
-                expect(cell.calls):same { { "configure", { band = "b3" } } }
-                expect(app.says("It's kept for when the cell starts again")):eq(true)
+                expect(app.says("Its cores offer no carriers yet.")):eq(true)
+                expect(app.find("b20")):eq(nil)
+                -- No more may be chosen than a computer can run cells.
+                cell.info.override = true
+                app.tick()
+                app.choose("b3 ")
+                for i = 1, 8 do app.choose("b3/" .. i) end
+                expect(app.line(1)):str_match("^b3, 1800 MHz +/1 /2 /3 /4 /5 /6 /7 /8$")
+                app.choose("b3/9")
+                expect(app.says("At most 8 may be chosen.")):eq(true)
+                expect(app.chosen()):str_match("^%[ %] b3/9")
+                app.key(keys.up, keys.enter)
+                app.type("q")
+                app.type("q")
+                -- A cell which isn't running has nothing to start again, so nothing is asked.
+                expect(cell.calls):same { { "configure", { band = { "b3/1", "b3/2", "b3/3", "b3/4", "b3/5", "b3/6", "b3/7" } } } }
+                expect(app.line(1)):str_match("^Settings")
             end)
         end)
 
@@ -429,9 +664,9 @@ describe("The menus of celld and cellcore", function()
                 -- A core shows how it's doing, and can be removed: but not without asking.
                 app.choose("core.acme")
                 expect(app.line(1)):eq("core.acme")
-                expect(app.says("core.acme: connecting...")):eq(true)
+                expect(app.says("core.acme: connecting")):eq(true)
                 app.choose("Remove this core")
-                expect(app.says("It carries on serving the others.")):eq(true)
+                expect(app.says("Its network's phones here lose service.")):eq(true)
                 app.type("n")
                 expect(#cell.calls):eq(1)
                 app.choose("Remove this core")
@@ -446,14 +681,14 @@ describe("The menus of celld and cellcore", function()
                 expect(app.says("The cell has no other cores: it stops")):eq(true)
                 app.type("y")
                 expect(cell.calls[3]):same { "configure", { cores = {} } }
-                expect(app.says("The cell has no cores left, so it stopped.")):eq(true)
+                expect(app.says("Removed core.beta. The cell stopped.")):eq(true)
             end)
         end)
 
         it("starts a cell with its first core, and starts, stops and restarts it", function()
             local cell = fake_cell({ state = "stopped", id = 11, enabled = true })
             run({ "celld" }, {}, function(app)
-                expect(app.says("This computer isn't running a cell. Add a core to start one.")):eq(true)
+                expect(app.says("No cell: add a core to start one.")):eq(true)
                 expect(app.find("Start the cell")):eq(nil)
                 app.choose("Cores")
                 app.choose("Add a core")
@@ -485,7 +720,7 @@ describe("The menus of celld and cellcore", function()
                 app.choose("Add a core")
                 app.enter("core.beta")
                 expect(cell.calls):same { { "configure", { cores = { "core.acme", "core.beta" } } } }
-                expect(app.says("Added core.beta. The cell is stopped: start it to connect.")):eq(true)
+                expect(app.says("Added core.beta. The cell is stopped.")):eq(true)
             end)
         end)
 
@@ -511,16 +746,17 @@ describe("The menus of celld and cellcore", function()
             local cell = standing_by()
             run({ "celld" }, {}, function(app)
                 expect(app.line(1)):str_match("^Cell #11 +not on the air yet$")
-                expect(app.says("Allowed by its core, but not on the air yet: choose Go on the air to confirm its bands.")):eq(true)
+                expect(app.says("Not on the air: confirm its bands under Go on the air.")):eq(true)
                 app.choose("Status")
-                expect(app.says("core.acme: allowed by ACME, whose carriers are b20/1, b3/1.")):eq(true)
+                expect(app.says("core.acme: ACME, standing by")):eq(true)
+                expect(app.says("offers b20/1, b3/1")):eq(true)
                 app.type("q")
                 app.choose("Go on the air")
-                expect(app.says("ACME has the carriers b20/1, b3/1.")):eq(true)
-                app.choose("Use any band: its core picks")
+                expect(app.says("ACME: b20/1, b3/1")):eq(true)
+                app.choose("Use any band")
                 expect(cell.calls):same { { "configure", { confirmed = true } } }
                 expect(app.line(1)):str_match("^Cell #11 +serving ACME$")
-                expect(app.says("Its bands are confirmed: it goes on the air.")):eq(true)
+                expect(app.says("Bands confirmed: on the air.")):eq(true)
                 expect(app.find("Go on the air...")):eq(nil)
             end)
 
@@ -529,11 +765,22 @@ describe("The menus of celld and cellcore", function()
             run({ "celld" }, {}, function(app)
                 app.choose("Go on the air")
                 app.choose("Choose its bands")
-                expect(app.line(1)):eq("Set the band")
-                app.enter("b20 b3")
-                expect(cell.calls):same { { "configure", { band = { "b20", "b3" } } } }
+                expect(app.line(1)):str_match("^Bands +any$")
+                -- Left as they were, it stands by still.
+                app.type("q")
+                expect(app.line(1)):eq("Go on the air")
+                expect(#cell.calls):eq(0)
+                app.choose("Choose its bands")
+                app.choose("b20 ")
+                app.choose("Any carrier")
+                app.type("q")
+                app.choose("b3 ")
+                app.choose("b3/1")
+                app.type("q")
+                app.type("q")
+                expect(cell.calls):same { { "configure", { band = { "b20", "b3/1" } } } }
                 expect(app.line(1)):str_match("^Cell #11 +serving ACME$")
-                expect(app.says("Its bands are confirmed: it goes on the air.")):eq(true)
+                expect(app.says("On the air.")):eq(true)
             end)
 
             -- With bands set already, those are what's confirmed.
@@ -565,10 +812,10 @@ describe("The menus of celld and cellcore", function()
                 asked = {}, connects = 0, started = 0,
                 status = {
                     network = "ACME", prefix = "10.64.0.0/16", messages = 0, codes = 0, interval = 2,
-                    spectrum = { "b20/1" }, spectrum_picked = true,
+                    spectrum = { "b20/1" },
                     cells = { {
                         id = 11, key = K11, address = "10.0.0.11", area = 1, since = 0, path = {}, carrier = "b20/1", ul = 8320,
-                        carriers = { { id = 11, carrier = "b20/1", ul = 8320 }, { id = 2 ^ 40, carrier = "b3/1", ul = 17100 } },
+                        carriers = { { id = 11, carrier = "b20/1", ul = 8320 }, { id = 2 ^ 40, carrier = "b3/1", ul = 17100, outside = true } },
                     }, },
                     allowed = {
                         { key = K11, fingerprint = "1111 1111 1111 1111 1111", label = "cell #11", role = "cell", id = 11 },
@@ -686,11 +933,8 @@ describe("The menus of celld and cellcore", function()
                 for _, carrier in ipairs(message.carriers or {}) do
                     if not carrier:match("^b%d+/%d$") then return nil, "There's no carrier called " .. carrier end
                 end
-                if message.carriers then
-                    status.spectrum_picked = message.carriers[1] == nil
-                    status.spectrum = message.carriers[1] and message.carriers or { "b20/1" }
-                end
-                return { carriers = status.spectrum, picked = status.spectrum_picked }
+                if message.carriers then status.spectrum = message.carriers end
+                return { carriers = status.spectrum }
             end
             function answers.beacon(message)
                 if message.interval < 0.5 or message.interval > 10 then return nil, "Cells send system information every 0.5 to 10 seconds" end
@@ -780,7 +1024,7 @@ describe("The menus of celld and cellcore", function()
 
                     app.choose("#12")
                     expect(app.says("#12 wants to be a cell.")):eq(true)
-                    expect(app.says("Check that it shows this fingerprint: 1212 1212 1212 1212 1212")):eq(true)
+                    expect(app.says("Fingerprint: 1212 1212 1212 1212 1212")):eq(true)
                     app.choose("Allow it, with a label")
                     app.enter("north tower")
                     expect(core.asked):same { { op = "allow", key = K12, label = "north tower" } }
@@ -836,8 +1080,8 @@ describe("The menus of celld and cellcore", function()
                     app.choose("#11")
                     expect(app.line(1)):str_match("^Cell #11 +ACME$")
                     expect(app.says("#11 from 10.0.0.11, area 1, since")):eq(true)
-                    expect(app.says("on b20/1, reached on channel 8320")):eq(true)
-                    expect(app.says("on b3/1, reached on channel 17100")):eq(true)
+                    expect(app.says("on b20/1, channel 8320")):eq(true)
+                    expect(app.says("on b3/1, channel 17100, not this network's")):eq(true)
                     expect(app.says("phones attached: 1")):eq(true)
                     app.choose("Refuse this cell")
                     app.type("y")
@@ -865,8 +1109,8 @@ describe("The menus of celld and cellcore", function()
                     app.enter("102")
                     expect(core.asked):same { { op = "add", id = "ACME-3", number = "100" }, { op = "add", id = "ACME-3", number = "102" } }
                     expect(app.line(1)):eq("Activation code")
-                    expect(app.says("For ACME-3 (number 102), for a day: 7Q2M-K4XD-9PRB-T6WN-HJ3C")):eq(true)
-                    expect(app.says("On the phone, run 'cell activate ACME <code>'.")):eq(true)
+                    expect(app.says("ACME-3, number 102. Good for a day: 7Q2M-K4XD-9PRB-T6WN-HJ3C")):eq(true)
+                    expect(app.says("cell activate ACME <code>")):eq(true)
                     app.key(keys.enter)
                     expect(app.line(1)):str_match("^Subscribers")
 
@@ -875,7 +1119,7 @@ describe("The menus of celld and cellcore", function()
                     app.choose("Barred")
                     expect(core.asked[3]):same { op = "set", subscriber = "ACME-2", barred = true }
                     expect(app.chosen()):str_match("^Barred +yes$")
-                    expect(app.says("ACME-2 is barred: their phone is cut off, and refused.")):eq(true)
+                    expect(app.says("ACME-2 is barred.")):eq(true)
                     app.choose("Barred")
                     expect(core.asked[4]):same { op = "set", subscriber = "ACME-2", barred = false }
                     app.choose("May use other networks")
@@ -906,7 +1150,7 @@ describe("The menus of celld and cellcore", function()
 
                     app.choose("Router: a range of our addresses")
                     expect(app.line(1)):eq("Range for ACME-2")
-                    expect(app.says("Part of this network's addresses (10.64.0.0/16)")):eq(true)
+                    expect(app.says("Within 10.64.0.0/16, such as a /28: routed to the phone.")):eq(true)
                     app.enter("")
                     expect(app.says("Enter a network, such as 10.64.5.0/28.")):eq(true)
                     -- The core says what won't do.
@@ -982,8 +1226,7 @@ describe("The menus of celld and cellcore", function()
                     app.choose("Carry its phones")
                     expect(core.asked):same { { op = "network", network = "BETA", carry = true } }
                     expect(app.chosen()):str_match("^Carry its phones +on$")
-                    expect(app.says("Its core must allow this one")):eq(true)
-                    expect(app.says("allow computer #50, and check it shows the fingerprint 5050 5050 5050 5050 5050")):eq(true)
+                    expect(app.says("Changed. On its core, allow computer #50: 5050 5050 5050 5050 5050")):eq(true)
                     expect(app.says("Carries its phones")):eq(true)
 
                     -- As home only once its phones may use the other's cells at all.
@@ -1024,29 +1267,88 @@ describe("The menus of celld and cellcore", function()
             end)
         end)
 
-        it("changes the network's carriers, how often its cells are heard, and its number prefix", function()
+        it("has the network's carriers ticked, band by band", function()
             local core = fake_core()
             configured(true, function()
                 run({ "cellcore" }, {}, function(app)
                     app.choose("Network settings")
-                    expect(app.chosen()):str_match("^Carriers +b20/1 %(picked%)$")
+                    expect(app.chosen()):str_match("^Carriers +b20/1$")
+                    app.choose("Carriers")
+                    expect(app.line(1)):str_match("^Carriers +1 of 8$")
+                    -- Every cellular band is there, with what's chosen of it.
+                    local rows = {
+                        "^b31  450 MHz +%-$", "^b28  700 MHz +%-$", "^b20  800 MHz +/1$", "^b8   900 MHz +%-$",
+                        "^b3   1800 MHz +%-$", "^b1   2100 MHz +%-$", "^b7   2600 MHz +%-$",
+                    }
+                    for i, pattern in ipairs(rows) do expect(app.line(i + 2)):str_match(pattern) end
+
+                    -- A band's carriers, each with its frequencies: ticked, they're the network's at once.
+                    app.choose("b3 ")
+                    expect(app.line(1)):str_match("^b3, 1800 MHz$")
+                    -- (A cell which another network shares is on this one, though it isn't this network's.)
+                    expect(app.chosen()):str_match("^%[ %] b3/1 +1805%-1810 MHz +1 cell$")
+                    expect(app.find("Any carrier")):eq(nil)
+                    expect(app.find("b3/15")):ne(nil)
+                    app.choose("b3/2")
+                    expect(core.asked):same { { op = "spectrum", carriers = { "b20/1", "b3/2" } } }
+                    expect(app.chosen()):str_match("^%[x%] b3/2 +1810%-1815 MHz$")
+                    expect(app.line(1)):str_match("^b3, 1800 MHz +/2$")
+                    -- Space does as Enter does.
+                    app.type(" ")
+                    expect(core.asked[2]):same { op = "spectrum", carriers = { "b20/1" } }
+                    expect(app.chosen()):str_match("^%[ %] b3/2")
+                    app.type(" ")
+                    -- What the core won't do is said, and changes nothing.
+                    core.fail = "Lost the core"
+                    app.choose("b3/4")
+                    expect(app.says("Lost the core")):eq(true)
+                    expect(app.chosen()):str_match("^%[ %] b3/4")
+                    core.fail = nil
+                    app.type("q")
+                    expect(app.line(1)):str_match("^Carriers +2 of 8$")
+                    expect(app.chosen()):str_match("^b3   1800 MHz +/2$")
+
+                    -- How many cells are on each carrier is said: here, the one which is to go.
+                    app.choose("b20 ")
+                    expect(app.chosen()):str_match("^%[x%] b20/1 +791%-796 MHz +1 cell$")
+                    app.key(keys.enter)
+                    expect(core.asked[5]):same { op = "spectrum", carriers = { "b3/2" } }
+                    app.type("q")
+                    app.type("q")
+                    expect(app.chosen()):str_match("^Carriers +b3/2$")
+                end)
+            end)
+
+            -- A network with none says what that means, wherever its carriers are shown.
+            core = fake_core()
+            core.status.spectrum = {}
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    expect(select(2, app.find("Network settings"))):str_match("^Network settings +no carriers$")
+                    app.choose("Network settings")
+                    expect(app.chosen()):str_match("^Carriers +none$")
+                    app.choose("Carriers")
+                    expect(app.line(1)):str_match("^Carriers +0 of 8$")
+                    expect(app.says("No carriers: cells stay off the air.")):eq(true)
+                    -- And no more than eight.
+                    app.choose("b7 ")
+                    for i = 1, 8 do app.choose("b7/" .. i) end
+                    expect(#core.asked):eq(8)
+                    expect(core.status.spectrum):same { "b7/1", "b7/2", "b7/3", "b7/4", "b7/5", "b7/6", "b7/7", "b7/8" }
+                    app.choose("b7/9")
+                    expect(app.says("At most 8 may be chosen.")):eq(true)
+                    expect(#core.asked):eq(8)
+                end)
+            end)
+        end)
+
+        it("changes how often the network's cells are heard, and its number prefix", function()
+            local core = fake_core()
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Network settings")
                     expect(select(2, app.find("System information"))):str_match("^System information +every 2 seconds$")
                     expect(select(2, app.find("Number prefix"))):str_match("^Number prefix +none$")
-
-                    app.choose("Carriers")
-                    -- Those which were picked for it aren't its choice to keep.
-                    expect(app.line(3)):eq("Carriers:")
-                    app.enter("b20/1 b3")
-                    expect(app.says("There's no carrier called b3")):eq(true)
-                    app.enter("b20/1 b3/2")
-                    expect(core.asked[2]):same { op = "spectrum", carriers = { "b20/1", "b3/2" } }
-                    expect(app.chosen()):str_match("^Carriers +b20/1 b3/2$")
-                    expect(app.says("Carriers: b20/1, b3/2. Cells move to them when they next connect.")):eq(true)
-                    app.choose("Carriers")
-                    expect(app.line(3)):eq("Carriers: b20/1 b3/2")
-                    app.enter("")
-                    expect(core.asked[3]):same { op = "spectrum", carriers = {} }
-                    expect(app.chosen()):str_match("^Carriers +b20/1 %(picked%)$")
 
                     app.choose("System information")
                     app.enter("often")
@@ -1054,16 +1356,34 @@ describe("The menus of celld and cellcore", function()
                     app.enter("30")
                     expect(app.says("Cells send system information every 0.5 to 10 seconds")):eq(true)
                     app.enter("4")
-                    expect(core.asked[5]):same { op = "beacon", interval = 4 }
+                    expect(core.asked[2]):same { op = "beacon", interval = 4 }
                     expect(app.chosen()):str_match("^System information +every 4 seconds$")
 
                     app.choose("Number prefix")
                     app.enter("five")
                     expect(app.says("Number prefixes are 1 to 8 digits")):eq(true)
                     app.enter("555")
-                    expect(core.asked[7]):same { op = "numbers", prefix = "555" }
+                    expect(core.asked[4]):same { op = "numbers", prefix = "555" }
                     expect(app.chosen()):str_match("^Number prefix +555$")
-                    expect(app.says("Other networks' phones reach this network's at 555<number>.")):eq(true)
+                    expect(app.says("Number prefix: 555.")):eq(true)
+                end)
+            end)
+        end)
+
+        it("shows the cells which are off the air, and why", function()
+            local core = fake_core()
+            core.status.standby = {
+                { id = 14, key = K12, address = "10.0.0.14", since = 0 },
+                { id = 15, key = K13, address = "10.0.0.15", since = 0, unplaced = { "b7" }, reason = "ACME has no carrier in band b7" },
+            }
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Cells")
+                    expect(select(2, app.find("#14"))):str_match("^#14 10.0.0.14 +choosing its bands$")
+                    expect(select(2, app.find("#15"))):str_match("^#15 10.0.0.15 +no carrier$")
+                    app.choose("#15")
+                    expect(app.says("#15 is off the air: ACME has no carrier in band b7.")):eq(true)
+                    expect(core.asked):same {}
                 end)
             end)
         end)
@@ -1093,7 +1413,7 @@ describe("The menus of celld and cellcore", function()
             configured(true, function()
                 run({ "cellcore" }, {}, function(app)
                     app.choose("Restart the core")
-                    expect(app.says("phones attach again, with new addresses")):eq(true)
+                    expect(app.says("Cells and phones connect again, with new addresses.")):eq(true)
                     app.type("y")
                     expect(core.asked):same { { op = "restart" } }
                     expect(app.says("Starting the core afresh.")):eq(true)
@@ -1196,8 +1516,11 @@ describe("The menus of celld and cellcore", function()
                     app.enter("10.70.0.0/16")
                     expect(textutils.unserialise(fs.open(CONFIG, "r").readAll())):same { network = "ACME", prefix = "10.70.0.0/16" }
                     expect(core.started):eq(1)
+                    -- A new network has no carriers: they're what's shown first.
+                    expect(app.line(1)):str_match("^Carriers +1 of 8$")
+                    app.type("q")
                     expect(app.line(1)):str_match("^Core of ACME")
-                    expect(app.says("ACME is set up and running, giving phones addresses in 10.70.0.0/16.")):eq(true)
+                    expect(app.says("ACME is running, with phones in 10.70.0.0/16.")):eq(true)
                 end)
             end)
 
@@ -1272,9 +1595,21 @@ describe("The menus of celld and cellcore", function()
         end)
 
         it("still says how the network is doing when asked for its status", function()
-            fake_core()
+            local core = fake_core()
             configured(true, function()
-                expect(capture("cellcore", "status").output):str_match("^Core of ACME, phones in 10.64.0.0/16\nCells: #11\n")
+                expect(capture("cellcore", "status").output)
+                    :str_match("^Core of ACME, phones in 10.64.0.0/16\nCarriers: b20/1\nCells: #11\n")
+                -- And its carriers, as it's asked for them or told them: none, too.
+                expect(capture("cellcore", "spectrum").output):eq("Carriers: b20/1\n")
+                expect(capture("cellcore", "spectrum", "b20/2", "b3/1").output):eq("Carriers: b20/2, b3/1\nCells hear of it at once.\n")
+                expect(capture("cellcore", "spectrum", "none").output)
+                    :eq("No carriers: cells stay off the air until some are chosen.\nCells hear of it at once.\n")
+                expect(core.asked):same {
+                    { op = "spectrum" }, { op = "spectrum", carriers = { "b20/2", "b3/1" } }, { op = "spectrum", carriers = {} },
+                }
+                core.status.standby = { { id = 15, key = K13, address = "10.0.0.15", since = 0, unplaced = { "b7" }, reason = "ACME has no carriers yet" } }
+                expect(capture("cellcore", "status").output)
+                    :str_match("^Core of ACME, phones in 10.64.0.0/16\nNo carriers: cells stay off the air%.\nCells: #11\nCells with no carrier: #15\n")
             end)
         end)
     end)

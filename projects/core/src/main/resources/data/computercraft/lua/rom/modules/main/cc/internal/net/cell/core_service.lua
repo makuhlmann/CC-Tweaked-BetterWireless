@@ -67,21 +67,6 @@ local ROLES = {
 
 local is_number_prefix = common.is_number_prefix
 
--- The band a network's cells use when its administrator hasn't said: band 20 (800MHz), which reaches far.
-local DEFAULT_BAND = "b20"
-
---- The carrier a network uses when its administrator hasn't said: one of band 20's, picked by its name, so neighbouring
--- networks are unlikely to share one.
---
--- @tparam string network The network's name.
--- @treturn number The carrier's beacon channel.
-local function default_carrier(network)
-    local raster = bands.raster(DEFAULT_BAND)
-    local hash = 0
-    for i = 1, #network do hash = (hash * 31 + network:byte(i)) % 0x1000000 end
-    return raster[hash % #raster + 1]
-end
-
 -- What another network's core offers, in words: "to carry this network's phones and exchange messages".
 local function offers(asks)
     local parts = {}
@@ -416,19 +401,17 @@ function Service:wait(connection, key, role, id, hello)
     end
 end
 
---[[- The carriers this network's cells use, by their beacon channels: those its administrator set (`cellcore spectrum`),
-or one picked from its name.
+--[[- The carriers this network's cells use, by their beacon channels: those its administrator chose (`cellcore
+spectrum`, or the menu). A network has none until some are chosen, and its cells stay off the air until then.
 
 @treturn { number... } The carriers.
-@treturn boolean Whether they were picked, as none were set.
 ]]
 function Service:spectrum()
     local list = {}
     for _, carrier in ipairs(type(self.config.spectrum) == "table" and self.config.spectrum or {}) do
         if common.is_id(carrier) and bands.carrier(carrier) and #list < common.MAX_CARRIERS then list[#list + 1] = carrier end
     end
-    if list[1] then return list, false end
-    return { default_carrier(self.config.network) }, true
+    return list
 end
 
 --- How often this network's cells send system information, in seconds.
@@ -492,11 +475,17 @@ gets one of this network's carriers: the one it names, or whichever of the band'
 computer's yet. A cell's uplink channel is the first on its carrier which no other cell connected now uses. What
 there's no carrier for is left out, and said.
 
+A computer whose administrator overrode what its networks offer (`override` in its hello) may have cells on carriers
+which aren't this network's: what it wants that this network has no carrier for goes on the carrier it names, or on
+whichever of the band's has fewest cells.
+
 @tparam number id The computer's ID.
-@tparam table hello What it said: the `bands` (or `band`) it wants, and the `cells` (or `carrier` and `ul`) it has.
-@treturn[1] { { id = number, carrier = number, ul = number }... } Its cells: the first has the computer's ID.
+@tparam table hello What it said: the `bands` (or `band`) it wants, the `cells` (or `carrier` and `ul`) it has, and
+whether it may `override` this network's carriers.
+@treturn[1] { { id = number, carrier = number, ul = number }... } Its cells: the first has the computer's ID. None, if
+there's no carrier for anything it wants: it waits until there is one.
 @treturn[1] { string... } What it wanted which we've no carrier for.
-@treturn[2] nil If there's no carrier for any of it.
+@treturn[2] nil If what it asks for makes no sense.
 @treturn[2] string Why not.
 ]]
 function Service:place_cells(id, hello)
@@ -535,16 +524,20 @@ function Service:place_cells(id, hello)
         on[i] = cell.carrier
     end
 
-    -- Our carriers this computer has no cell on yet, those with fewest cells first: so each want gets the emptiest.
-    local free = {}
-    for i, carrier in ipairs(self:spectrum()) do
-        if not taken[carrier] then free[#free + 1] = { carrier = carrier, count = count[carrier] or 0, order = i } end
+    -- Carriers this computer has no cell on yet, those with fewest cells first: so each want gets the emptiest.
+    local function free_of(carriers)
+        local free = {}
+        for i, carrier in ipairs(carriers) do
+            if not taken[carrier] then free[#free + 1] = { carrier = carrier, count = count[carrier] or 0, order = i } end
+        end
+        table.sort(free, function(a, b)
+            if a.count ~= b.count then return a.count < b.count end
+            return a.order < b.order
+        end)
+        for i, entry in ipairs(free) do free[i] = entry.carrier end
+        return free
     end
-    table.sort(free, function(a, b)
-        if a.count ~= b.count then return a.count < b.count end
-        return a.order < b.order
-    end)
-    for i, entry in ipairs(free) do free[i] = entry.carrier end
+    local free = free_of(self:spectrum())
 
     local unplaced = {}
     if wants then
@@ -558,31 +551,49 @@ function Service:place_cells(id, hello)
         for i, want in ipairs(rest) do
             if placed[i] then add(placed[i]) else unplaced[#unplaced + 1] = want end
         end
-    elseif not cells[1] then
+        -- And what's left on any carrier at all, for a computer which may override ours.
+        if hello.override == true and unplaced[1] then
+            rest, unplaced = unplaced, {}
+            placed = common.match_wants(rest, free_of(bands.beacon_channels()))
+            for i, want in ipairs(rest) do
+                if placed[i] then add(placed[i]) else unplaced[#unplaced + 1] = want end
+            end
+        end
+    elseif not cells[1] and free[1] then
         -- A computer which doesn't say gets one cell, on any carrier.
         add(free[1])
-    end
-
-    if not cells[1] then
-        local want = unplaced[1]
-        if common.want_carrier(want) then return nil, ("%s doesn't use the carrier %s"):format(self.config.network, want) end
-        return nil, ("%s has no carrier in band %s"):format(self.config.network, tostring(want))
     end
     return cells, unplaced
 end
 
--- A computer which was let in as a cell, but stands by: whoever sets it up hasn't said which bands it should use yet.
--- It's told the network's carriers, to choose from, and shown to the administrator, but has no cell.
-function Service:serve_standby(connection, key, id)
+--- Why a computer has no cell: what it wants that this network has no carrier for, in words.
+--
+-- @tparam { string... } unplaced What it wants, as [`Service:place_cells`] left it out.
+-- @treturn string Why.
+function Service:no_carrier(unplaced)
+    local want = unplaced[1]
+    if not self:spectrum()[1] then return ("%s has no carriers yet"):format(self.config.network) end
+    if common.want_carrier(want) then return ("%s doesn't use the carrier %s"):format(self.config.network, want) end
+    if want then return ("%s has no carrier in band %s"):format(self.config.network, tostring(want)) end
+    return ("%s has no carrier for it"):format(self.config.network)
+end
+
+-- A computer which was let in as a cell, but has none: it stands by, as whoever sets it up hasn't said which bands it
+-- should use yet; or this network has no carrier for what it wants (`unplaced`). It's told the network's carriers, to
+-- choose from (and when they change, so it can try again), and shown to the administrator.
+function Service:serve_standby(connection, key, id, unplaced)
     local old = self.standby[id]
     if old then old.connection:abort() end
     -- A computer which stands by runs no cell: one it ran before, on another connection, has gone.
     if self.cells[id] then self.cells[id].connection:abort() end
     local send, stop_sending = self.tasks:sender(connection, self.options.wake)
-    local entry = { id = id, key = key, address = connection:getPeer(), since = self.options.epoch(), connection = connection, send = send }
+    local entry = {
+        id = id, key = key, address = connection:getPeer(), since = self.options.epoch(), connection = connection,
+        send = send, unplaced = unplaced,
+    }
     if not connection:send({
         v = common.VERSION, network = self.config.network, standby = true, interval = self:beacon_interval(),
-        carriers = self:spectrum(),
+        carriers = self:spectrum(), unplaced = unplaced and unplaced[1] and unplaced or nil,
     }) then
         stop_sending()
         return connection:abort()
@@ -593,7 +604,11 @@ function Service:serve_standby(connection, key, id)
         known.id = id
         self:save_allowed()
     end
-    self:log(("Cell #%d is standing by, from %s, until its bands are chosen"):format(id, entry.address))
+    if unplaced then
+        self:log(("Cell #%d is off the air, from %s: %s"):format(id, entry.address, self:no_carrier(unplaced)))
+    else
+        self:log(("Cell #%d is standing by, from %s, until its bands are chosen"):format(id, entry.address))
+    end
     while connection:receive() ~= nil do end
     stop_sending()
     connection:abort()
@@ -604,10 +619,12 @@ function Service:serve_cell(connection, key, hello, id)
     local signing = from_hex(hello.signing)
     if not signing or #signing ~= 32 or not id then return connection:abort() end
     if hello.standby == true then return self:serve_standby(connection, key, id) end
-    -- It's no longer standing by, if it was.
-    if self.standby[id] then self.standby[id].connection:abort() end
     local cells, unplaced = self:place_cells(id, hello)
     if not cells then return refuse(connection, unplaced) end
+    -- Nothing it wants has a carrier here: it waits, off the air, until one does.
+    if not cells[1] then return self:serve_standby(connection, key, id, unplaced) end
+    -- It's no longer standing by, if it was.
+    if self.standby[id] then self.standby[id].connection:abort() end
 
     -- A cell which connects again (it restarted, or lost its connection) replaces its old connection.
     local old = self.cells[id]
@@ -660,9 +677,16 @@ function Service:serve_cell(connection, key, hello, id)
         known.id = id
         self:save_allowed()
     end
-    local names = {}
-    for i, cell in ipairs(cells) do names[i] = bands.carrier_name(cell.carrier) end
-    self:log(("Cell #%d connected, from %s, on %s"):format(id, peer, table.concat(names, " and ")))
+    local names, ours_too, outside = {}, {}, {}
+    for _, carrier in ipairs(self:spectrum()) do ours_too[carrier] = true end
+    for i, cell in ipairs(cells) do
+        names[i] = bands.carrier_name(cell.carrier)
+        if not ours_too[cell.carrier] then outside[#outside + 1] = names[i] end
+    end
+    self:log(("Cell #%d connected, from %s, on %s%s"):format(
+        id, peer, table.concat(names, " and "),
+        outside[1] and (" (not this network's: %s)"):format(table.concat(outside, ", ")) or ""
+    ))
 
     local ours = {}
     for _, cell in ipairs(cells) do ours[cell.id] = true end
@@ -1003,14 +1027,18 @@ function requests.status(self)
         cells = {}, allowed = {}, waiting = {}, subscribers = {}, networks = {},
         number_prefix = self.config.number_prefix, interval = self:beacon_interval(),
     }
-    local spectrum, picked = self:spectrum()
-    result.spectrum, result.spectrum_picked = {}, picked
-    for i, carrier in ipairs(spectrum) do result.spectrum[i] = bands.carrier_name(carrier) end
+    local spectrum, ours = self:spectrum(), {}
+    result.spectrum = {}
+    for i, carrier in ipairs(spectrum) do result.spectrum[i], ours[carrier] = bands.carrier_name(carrier), true end
     for id, cell in pairs(self.cells) do
-        -- Each carrier the computer has a cell on, its first cell's first.
+        -- Each carrier the computer has a cell on, its first cell's first: and whether it's one of ours (a cell which
+        -- serves another network too, or whose administrator overrode ours, may be on another).
         local carriers = {}
         for i, each in ipairs(cell.cells) do
-            carriers[i] = { id = each.id, carrier = bands.carrier_name(each.carrier), ul = each.ul }
+            carriers[i] = {
+                id = each.id, carrier = bands.carrier_name(each.carrier), ul = each.ul,
+                outside = not ours[each.carrier] or nil,
+            }
         end
         result.cells[#result.cells + 1] = {
             id = id, key = cell.key, address = cell.address, area = cell.area, since = cell.since,
@@ -1019,10 +1047,14 @@ function requests.status(self)
         }
     end
     table.sort(result.cells, by_id)
-    -- Computers let in as cells which stand by, off the air, until their bands are chosen.
+    -- Computers let in as cells which are off the air: they stand by until their bands are chosen, or we've no carrier
+    -- for what they want (`unplaced`, and `reason`).
     result.standby = {}
     for id, entry in pairs(self.standby) do
-        result.standby[#result.standby + 1] = { id = id, key = entry.key, address = entry.address, since = entry.since }
+        result.standby[#result.standby + 1] = {
+            id = id, key = entry.key, address = entry.address, since = entry.since,
+            unplaced = entry.unplaced, reason = entry.unplaced and self:no_carrier(entry.unplaced) or nil,
+        }
     end
     table.sort(result.standby, by_id)
     for key, entry in pairs(self.allowed) do
@@ -1330,35 +1362,51 @@ function Service:set_config(field, value)
     self.config[field] = value
 end
 
---[[- See or set the carriers this network's cells use (its spectrum), by name, such as `"b20/1"`. Cells connected now
-hear of them at once, and name them in their system information; a cell only moves to another carrier when it
-connects again.
+--[[- Set the carriers this network's cells use (its spectrum): none, for a network whose cells should all be off the
+air. Cells connected now hear of them at once: one on a carrier which is no longer the network's leaves it, and one
+which waited for a carrier takes it.
+
+@tparam { string... } names The carriers, by name, such as `"b20/1"`.
+@tparam[opt] string by The key of whoever asked, for the log.
+@treturn[1] true If they were set.
+@treturn[2] nil If they weren't.
+@treturn[2] string Why not.
 ]]
+function Service:set_spectrum(names, by)
+    if type(names) ~= "table" or #names > common.MAX_CARRIERS then
+        return nil, ("A network has up to %d carriers"):format(common.MAX_CARRIERS)
+    end
+    local list, seen = {}, {}
+    for _, name in ipairs(names) do
+        local carrier = bands.parse_carrier(name)
+        if not carrier then return nil, ("There's no carrier called %s"):format(tostring(name)) end
+        if not seen[carrier] then
+            seen[carrier] = true
+            list[#list + 1] = carrier
+        end
+    end
+    self:set_config("spectrum", list[1] and list or nil)
+    self:tell_cells({ op = "carriers", carriers = self:spectrum() })
+    local who = by and self:by(by) or ""
+    if list[1] then
+        local shown = {}
+        for i, carrier in ipairs(list) do shown[i] = bands.carrier_name(carrier) end
+        self:log(("This network's carriers are now %s%s"):format(table.concat(shown, ", "), who))
+    else
+        self:log(("This network has no carriers now%s"):format(who))
+    end
+    return true
+end
+
+--- See or set the carriers this network's cells use, by name: see [`Service:set_spectrum`].
 function requests.spectrum(self, request, by)
     if request.carriers ~= nil then
-        if type(request.carriers) ~= "table" or #request.carriers > common.MAX_CARRIERS then
-            return { error = ("A network has 1 to %d carriers"):format(common.MAX_CARRIERS) }
-        end
-        local list, seen = {}, {}
-        for _, name in ipairs(request.carriers) do
-            local carrier = bands.parse_carrier(name)
-            if not carrier then return { error = ("There's no carrier called %s"):format(tostring(name)) } end
-            if not seen[carrier] then
-                seen[carrier] = true
-                list[#list + 1] = carrier
-            end
-        end
-        self:set_config("spectrum", list[1] and list or nil)
-        local spectrum = self:spectrum()
-        self:tell_cells({ op = "carriers", carriers = spectrum })
-        local names = {}
-        for i, carrier in ipairs(spectrum) do names[i] = bands.carrier_name(carrier) end
-        self:log(("This network's carriers are now %s%s"):format(table.concat(names, ", "), self:by(by)))
+        local ok, err = self:set_spectrum(request.carriers, by)
+        if not ok then return { error = err } end
     end
-    local spectrum, picked = self:spectrum()
     local names = {}
-    for i, carrier in ipairs(spectrum) do names[i] = bands.carrier_name(carrier) end
-    return { carriers = names, picked = picked }
+    for i, carrier in ipairs(self:spectrum()) do names[i] = bands.carrier_name(carrier) end
+    return { carriers = names }
 end
 
 --- See or set how often this network's cells send system information, in seconds. Cells connected now hear of it at

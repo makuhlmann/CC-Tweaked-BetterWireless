@@ -88,6 +88,18 @@ describe("Cellular services", function()
         fs.delete(dir)
         write_table(fs.combine(dir, "config"), { network = name, prefix = other.prefix or "10.64.0.0/16", number_prefix = other.numbers })
         for file, value in pairs(files or {}) do write_table(fs.combine(dir, file), value) end
+        -- A network has no carriers until its administrator chooses some: one of band 20's, by its name, unless the
+        -- test says which (or `no_spectrum`, for none).
+        if not other.no_spectrum then
+            local config = read_table(fs.combine(dir, "config"))
+            if config.spectrum == nil then
+                local hash = 0
+                for i = 1, #name do hash = (hash * 31 + name:byte(i)) % 0x1000000 end
+                local raster = bands.raster("b20")
+                config.spectrum = { raster[hash % #raster + 1] }
+                write_table(fs.combine(dir, "config"), config)
+            end
+        end
 
         local net = other.net or network()
         local stack = net.stack(id)
@@ -361,6 +373,8 @@ describe("Cellular services", function()
                 extra.signing = hex(tower_public)
                 local reply = hello(env.connect(key, "10.0.0." .. id), "cell", id, extra)
                 if reply.error then return reply.error end
+                -- Nothing it wants has a carrier here: it waits, with no cell.
+                if reply.standby then return "waits", reply.unplaced, reply.carriers end
                 local cells = {}
                 for i, cell in ipairs(reply.cells) do cells[i] = { cell.id, cell.carrier, cell.ul } end
                 return cells, reply.unplaced
@@ -379,9 +393,24 @@ describe("Cellular services", function()
                 expect({ given(14, { band = "b3", bands = { "b3/1" } }) }):same { { { 14, b3, ul(b3, 1) } } }
                 expect({ given(15, {}) }):same { { { 15, b20, ul(b20) } } }
 
+                -- A computer we've no carrier for at all isn't refused: it waits, off the air, and is told what we
+                -- have, until there's one for it.
+                expect({ given(16, { bands = { "b3/2" } }) }):same { "waits", { "b3/2" }, { b20, b3 } }
+                expect(env.service.standby[16].unplaced):same { "b3/2" }
+                expect(env.service:no_carrier({ "b3/2" })):eq("ACME doesn't use the carrier b3/2")
+                expect({ given(16, { bands = { "b1", "b3/2" } }) }):same { "waits", { "b1", "b3/2" }, { b20, b3 } }
+                expect(env.service:no_carrier({ "b1", "b3/2" })):eq("ACME has no carrier in band b1")
+                expect(env.service.cells[16]):eq(nil)
+                -- Unless its administrator overrode what we offer: then it's put where it says, band 1's first carrier
+                -- for the band, which the log says isn't ours.
+                local b1, b3_2 = bands.parse_carrier("b1/1"), bands.parse_carrier("b3/2")
+                expect({ given(17, { bands = { "b1", "b3/2", "b20" }, override = true }) }):same {
+                    { { 17, b20, ul(b20, 1) }, { common.carrier_cell(17, b1), b1, ul(b1) }, { common.carrier_cell(17, b3_2), b3_2, ul(b3_2) } },
+                }
+                local last = env.service.lines[#env.service.lines].text
+                expect(last):eq("Cell #17 connected, from 10.0.0.17, on b20/1 and b1/1 and b3/2 (not this network's: b1/1, b3/2)")
+
                 -- What makes no sense is refused.
-                expect(given(16, { bands = { "b3/2" } })):eq("ACME doesn't use the carrier b3/2")
-                expect(given(16, { bands = { "b1", "b3/2" } })):eq("ACME has no carrier in band b1")
                 expect(given(16, { band = "b33" })):eq("There's no cellular band called b33")
                 expect(given(16, { band = "b3/1" })):eq("There's no cellular band called b3/1")
                 expect(given(16, { bands = { "b33" } })):eq("There are no cellular bands like those the cell asks for")
@@ -1321,8 +1350,8 @@ describe("Cellular services", function()
                 beta:send(welcome { network = "BETA", certificate = "b", tunnel_key = ("b"):rep(32) })
                 wait_until(function() return env.service:info().links[1].state == "serving" and env.service:info().links[2].state == "serving" end)
                 expect(env.service:info().links):same {
-                    { core = "core.acme", state = "serving", network = "ACME" },
-                    { core = "core.beta", state = "serving", network = "BETA" },
+                    { core = "core.acme", state = "serving", network = "ACME", carriers = { "b20/1" } },
+                    { core = "core.beta", state = "serving", network = "BETA", carriers = { "b20/1" } },
                 }
                 expect({ env.towers[1].welcome.network, env.towers[2].welcome.network }):same { "ACME", "BETA" }
 
@@ -1438,7 +1467,7 @@ describe("Cellular services", function()
                 expect(env.service:remove_core("core.acme")):eq(true)
                 expect(env.service:remove_core("core.acme")):eq(false)
                 expect({ env.towers[1].stopped, env.towers[2].stopped }):same { true, nil }
-                expect(env.service:info().links):same { { core = "core.beta", state = "serving", network = "BETA" } }
+                expect(env.service:info().links):same { { core = "core.beta", state = "serving", network = "BETA", carriers = { "b20/1" } } }
                 expect({ env.service:info().state, env.service:info().network }):same { "serving", "BETA" }
 
                 -- A core it can't reach, removed while it waits to try again, isn't tried again.

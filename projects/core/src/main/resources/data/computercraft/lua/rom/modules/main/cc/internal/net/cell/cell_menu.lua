@@ -18,6 +18,7 @@ do is said, and changes nothing.
 local bands = require "cc.internal.net.bands"
 local common = require "cc.internal.net.cell.common"
 local menu = require "cc.internal.net.cell.menu"
+local carrier_menu = require "cc.internal.net.cell.carrier_menu"
 
 -- How often what's shown is read again, in seconds.
 local REFRESH = 1
@@ -30,7 +31,11 @@ local SETTINGS = {
     { name = "pos", takes = "<x> <y> <z>", count = 3 },
     { name = "power", takes = "<dBm>" },
     { name = "service", takes = "sms|full" },
+    { name = "override", takes = "on|off" },
 }
+
+--- What overriding the carriers a cell's cores offer may do, for whoever turns it on to read first.
+local OVERRIDE_WARNING = "The cell may then use carriers its cores don't offer. This may violate network assignment agreements."
 
 -- A band, as a person might write it: "b3", "B3", "3", or its frequency, "1800" or "1800MHz". Or one of a band's
 -- carriers: the band, and which 5MHz of it, as in "b3/2".
@@ -89,6 +94,10 @@ local function read_value(key, words)
         if text == "sms" then return "sms" end
         if text == "full" then return false end
         error("A cell's service is sms (it only carries messages) or full.", 0)
+    elseif key == "override" then
+        if text == "on" then return true end
+        if text == "off" then return false end
+        error("A cell's override is on (it may use carriers its cores don't offer) or off.", 0)
     elseif key == "pos" then
         local x, y, z = tonumber(words[1]), tonumber(words[2]), tonumber(words[3])
         if not x or not y or not z then error("A cell's position is three whole numbers: its computer's x, y and z.", 0) end
@@ -107,6 +116,7 @@ local function setting_values(info)
     return {
         area = tostring(info.area or 0),
         band = info.band and band_label(info.band) or "any (its core picks)",
+        override = info.override and "on" or "off",
         interval = info.interval and ("%g seconds"):format(info.interval)
             or info.current_interval and ("as its core says (%g seconds)"):format(info.current_interval)
             or "as its core says",
@@ -114,6 +124,14 @@ local function setting_values(info)
         power = info.power and ("%g dBm"):format(info.power) or "the modem's own",
         service = info.service == "sms" and "messages only" or "full",
     }
+end
+
+-- Why a core's network has the cell off the air: what it has no carrier for.
+local function no_carrier(link)
+    local network = tostring(link.network)
+    if not (link.carriers or {})[1] then return network .. " has no carriers yet" end
+    if link.unplaced and link.unplaced[1] then return ("%s has no carrier for %s"):format(network, table.concat(link.unplaced, ", ")) end
+    return network .. " has no carrier for it"
 end
 
 --[[- What the cell is doing with one of its cores, in words.
@@ -139,6 +157,8 @@ local function link_lines(info, link, name, added)
         say(("The cell isn't on the air yet. Say which bands it should use with '%s set band <band>...', or '%s confirm' for %s."):format(
             name, name, info.band and "those it's set to" or "any, as its core picks"
         ))
+    elseif link.state == "unplaced" then
+        say(("%s: %s. The cell is off the air until it has."):format(link.core, no_carrier(link)))
     elseif link.state == "serving" then
         say(("%s: serving %s."):format(link.core, link.network))
     elseif link.state == "refused" then
@@ -221,6 +241,12 @@ local function changed_lines(info, key, value, restarted, name)
         else
             say("The cell carries everything.")
         end
+    elseif key == "override" then
+        if value then
+            say("The cell may use carriers its cores don't offer. This may violate network assignment agreements.")
+        else
+            say("The cell only uses carriers its cores offer.")
+        end
     end
     if standby and key == "band" and info.state ~= "stopped" then
         say("Its bands are confirmed: it goes on the air.")
@@ -247,6 +273,7 @@ local function state_of(state, network)
     if state == "serving" then return network and "serving " .. network or "serving", c(colours.lime, colours.white) end
     if state == "waiting" then return "waiting to be allowed", c(colours.yellow, colours.lightGrey) end
     if state == "standby" then return "not on the air yet", c(colours.yellow, colours.lightGrey) end
+    if state == "unplaced" then return "no carrier", c(colours.orange, colours.lightGrey) end
     if state == "connecting" then return "connecting", c(colours.yellow, colours.lightGrey) end
     if state == "lost" then return "can't reach its core", c(colours.red, colours.lightGrey) end
     if state == "refused" then return "refused", c(colours.red, colours.lightGrey) end
@@ -265,25 +292,65 @@ local function text_items(items, lines)
     return items
 end
 
--- What each setting is for, and what leaving it empty does, for the screen it's typed on.
+-- What the cell is doing with one of its cores, in as few words as say it: for the menu, whose reader knows the rest.
+local function link_brief(info, link)
+    local lines = {}
+    local function say(text, bad, fg) lines[#lines + 1] = { text = text, bad = bad, fg = fg } end
+    local core, state = tostring(link.core), link.state
+    if state == "connecting" then
+        say(core .. ": connecting")
+    elseif state == "waiting" then
+        say(core .. ": waiting to be allowed")
+        say(("  #%d %s"):format(info.id, tostring(info.fingerprint)))
+    elseif state == "standby" then
+        say(("%s: %s, standing by"):format(core, tostring(link.network)))
+    elseif state == "unplaced" then
+        say(("%s: %s"):format(core, no_carrier(link)), false, c(colours.orange, colours.lightGrey))
+    elseif state == "serving" then
+        say(("%s: serving %s"):format(core, tostring(link.network)))
+    elseif state == "refused" then
+        say(("%s refused: %s"):format(core, tostring(link.error)), true)
+    elseif state == "lost" then
+        say(("%s: %s"):format(core, tostring(link.error)), true)
+        if link.retry then say(("  again in %d s"):format(link.retry)) end
+    end
+    if link.carriers and (state == "standby" or state == "unplaced") and link.carriers[1] then
+        say("  offers " .. table.concat(link.carriers, ", "))
+    end
+    if state == "serving" and link.unplaced and link.unplaced[1] then
+        say(("  no carrier for %s"):format(table.concat(link.unplaced, ", ")), false, c(colours.orange, colours.lightGrey))
+    end
+    if link.newer then say(("  newer version (%d)"):format(link.newer)) end
+    return lines
+end
+
+-- What each setting takes, for the screen it's typed on. Empty unsets it.
 local NOTES = {
-    area = "The cell's tracking area: a whole number. Empty puts it back to 0.",
-    band = "A band (b20, 3 or 1800), or several bands and carriers for a cell on each (b20 b3/2). Lower bands reach "
-        .. "further, higher ones carry more phones. Empty: any band, as its core picks.",
-    interval = "How often the cell sends its system information, in seconds (0.5 to 10). Empty: as often as its core says.",
-    pos = "Where the cell says it is, so phones can work out where they are: its computer's x, y and z. Empty: it "
-        .. "doesn't say.",
-    power = "The power the cell sends with, in dBm: more reaches further. Empty: the modem's own.",
+    area = "A whole number. Empty: 0.",
+    interval = "0.5 to 10 seconds. Empty: as its core says.",
+    pos = "x y z. Empty: not said.",
+    power = "dBm. Empty: the modem's own.",
 }
 
 -- What's in a setting's line to begin with: its value as it would be typed.
 local function typed_value(info, key)
     local value = info[key]
     if value == nil then return "" end
-    if key == "band" then return type(value) == "table" and table.concat(value, " ") or value end
     if key == "pos" then return ("%d %d %d"):format(value[1], value[2], value[3]) end
     if key == "area" and value == 0 then return "" end
     return ("%g"):format(value)
+end
+
+-- The carriers a cell's cores offer, by name: each with the networks which have it.
+local function offered_of(info)
+    local offered = {}
+    for _, link in ipairs(info.links or {}) do
+        for _, name in ipairs(link.carriers or {}) do
+            offered[name] = offered[name] or {}
+            table.insert(offered[name], tostring(link.network))
+        end
+    end
+    return offered
 end
 
 --[[- Show the cell's menu, until the user leaves it.
@@ -305,31 +372,120 @@ local function run(name)
     -- Returns what's wrong, if it couldn't be done.
     local function apply(key, value)
         local info = net.cell.cellInfo()
-        if info.state ~= "stopped" and info.state ~= "standby" and (key == "area" or key == "band") then
+        -- (A cell which is off the air has no phones to lose.)
+        if info.state ~= "stopped" and info.state ~= "standby" and info.state ~= "unplaced" and (key == "area" or key == "band") then
             local sure = menu.confirm_screen("Change the " .. key,
-                ("The cell tells its cores its %s as it connects: if this moves it, it starts again, and its phones lose "
-                    .. "service for a moment."):format(key), "Change")
+                "The cell may start again: its phones lose service for a moment.", "Change")
             if not sure then
                 say("Nothing was changed.")
                 return nil
             end
         end
-        -- How the cell was before, for saying what the change did.
-        local before = { state = info.state, confirmed = info.confirmed, cores = info.cores }
+        local standby = info.state == "standby" or info.confirmed == false
         local ok, restarted = net.cell.configureCell({ [key] = value })
         if not ok then return tostring(restarted) end
-        say(changed_lines(before, key, value or nil, restarted, name))
+        local text = ("%s: %s."):format(key, setting_values(net.cell.cellInfo())[key])
+        if standby and key == "band" and info.state ~= "stopped" then
+            text = text .. " On the air."
+        elseif restarted then
+            text = text .. " The cell started again."
+        end
+        say(text)
         return nil
     end
 
+    -- Let the cell use carriers its cores don't offer, once whoever asks has read what that may do: or no longer.
+    local function toggle_override()
+        local info = net.cell.cellInfo()
+        if not info.override and not menu.confirm_screen("Band override", OVERRIDE_WARNING, "Override", "Cancel") then
+            return
+        end
+        local problem = apply("override", not info.override)
+        if problem then say(problem, true) end
+    end
+
+    -- The cell's bands: those its cores offer (or all of them, with the override), and their carriers, to tick. What
+    -- was ticked is the cell's once the screen is left.
+    local function bands_screen()
+        local info = net.cell.cellInfo()
+        local draft = type(info.band) == "table" and { table.unpack(info.band) } or { info.band }
+        local before = table.concat(carrier_menu.sorted(draft), " ")
+        local on_air = {}
+        carrier_menu.pick {
+            title = "Bands",
+            right = function() return draft[1] and #draft .. " chosen" or "any" end,
+            look = function()
+                on_air = {}
+                for _, cell in ipairs(net.cell.cellInfo().cells or {}) do on_air[tostring(cell.carrier)] = true end
+            end,
+            chosen = function() return draft end,
+            toggle = function(want, on)
+                for i = #draft, 1, -1 do
+                    if draft[i] == want then table.remove(draft, i) end
+                end
+                if on then draft[#draft + 1] = want end
+            end,
+            offered = function()
+                local now = net.cell.cellInfo()
+                if now.override then return nil end
+                return offered_of(now)
+            end,
+            any = true,
+            first = function()
+                return { {
+                    text = (draft[1] and "[ ] " or "[x] ") .. "Any band", id = "\0any",
+                    tail = { { "its core picks", colours.lightGrey } },
+                    open = function() draft = {} end,
+                }, }
+            end,
+            last = function()
+                local override = net.cell.cellInfo().override
+                return { {
+                    text = "Override", id = "\0override", open = toggle_override,
+                    tail = { { override and "on" or "off", override and c(colours.orange, colours.white) or colours.lightGrey } },
+                }, }
+            end,
+            -- The networks which have each carrier: in green while the computer has a cell on it.
+            tail = function(carrier)
+                local networks = offered_of(net.cell.cellInfo())[carrier]
+                local text = networks and table.concat(networks, ", ") or "not offered"
+                if on_air[carrier] then return text, c(colours.lime, colours.white) end
+                return text, networks and colours.lightGrey or c(colours.orange, colours.lightGrey)
+            end,
+            note = function()
+                -- (Why the override couldn't be changed, if it couldn't.)
+                if said and said_bad then return note() end
+                local now = net.cell.cellInfo()
+                if now.override then return "Override: carriers its cores don't offer may be chosen.", c(colours.orange, colours.lightGrey) end
+                if next(offered_of(now)) == nil then
+                    return "Its cores offer no carriers yet.", c(colours.yellow, colours.lightGrey)
+                end
+            end,
+            limit = common.MAX_CARRIERS,
+            refresh = REFRESH,
+        }
+        local after = carrier_menu.sorted(draft)
+        if table.concat(after, " ") == before then return end
+        local value = after
+        if not after[1] then
+            value = false
+        elseif not after[2] and not after[1]:find("/", 1, true) then
+            value = after[1]
+        end
+        local problem = apply("band", value)
+        if problem then say(problem, true) end
+    end
+
     local function edit_setting(key)
+        if key == "band" then return bands_screen() end
+        if key == "override" then return toggle_override() end
         if key == "service" then
             menu.list_screen {
                 title = function() return "Service" end,
                 items = function()
                     local sms = net.cell.cellInfo().service == "sms"
                     return {
-                        { text = "Full: carries everything", tail = not sms and { { "now", colours.lightGrey } } or nil, value = false },
+                        { text = "Full", tail = not sms and { { "now", colours.lightGrey } } or nil, value = false },
                         { text = "Messages only", tail = sms and { { "now", colours.lightGrey } } or nil, value = "sms" },
                     }
                 end,
@@ -337,10 +493,6 @@ local function run(name)
                     local problem = apply("service", item.value)
                     if problem then say(problem, true) end
                     return "back"
-                end,
-                note = function()
-                    return "A cell which only carries messages is for when there's nothing else, as a satellite is: "
-                        .. "phones use it last, and have no route for packets on it."
                 end,
                 hint = { "Enter: choose", "Q: back" },
             }
@@ -374,7 +526,8 @@ local function run(name)
                 local info = net.cell.cellInfo()
                 local shown, items = setting_values(info), {}
                 for i, setting in ipairs(SETTINGS) do
-                    items[i] = { text = setting.name, tail = { { shown[setting.name], colours.lightGrey } }, id = setting.name }
+                    local colour = setting.name == "override" and info.override and c(colours.orange, colours.white) or colours.lightGrey
+                    items[i] = { text = setting.name, tail = { { shown[setting.name], colour } }, id = setting.name }
                 end
                 return items
             end,
@@ -398,8 +551,7 @@ local function run(name)
     local function add_core()
         menu.input_screen {
             title = "Add a core", label = "Core:", max = 255,
-            note = "The name or address of a network's core, which the cell reaches over any route: a cable, a radio "
-                .. "link, or this computer's own phone. The core must allow the cell, the first time.",
+            note = "A core's name or address.",
             check = function(core)
                 if core == "" then return "Enter the core's name or address." end
                 local info = net.cell.cellInfo()
@@ -410,13 +562,13 @@ local function run(name)
                 if not ok then return tostring(err) end
                 if info.state == "stopped" then
                     if info.enabled == false and info.cores then
-                        say(("Added %s. The cell is stopped: start it to connect."):format(core))
+                        say(("Added %s. The cell is stopped."):format(core))
                         return nil
                     end
                     ok, err = net.cell.startCell()
                     if not ok then return tostring(err) end
                 end
-                say(("Added %s: the cell connects to it in the background."):format(core))
+                say(("Added %s."):format(core))
                 return nil
             end,
         }
@@ -434,7 +586,7 @@ local function run(name)
             items = function()
                 local info = net.cell.cellInfo()
                 local link = link_of(info, core)
-                local items = text_items({}, link and link_lines(info, link, name) or { "The cell isn't running." })
+                local items = text_items({}, link and link_brief(info, link) or { "The cell isn't running." })
                 items[#items + 1] = { text = "Remove this core", id = "remove" }
                 return items
             end,
@@ -443,16 +595,15 @@ local function run(name)
                 local info = net.cell.cellInfo()
                 local last = #(info.cores or {}) <= 1
                 local sure = menu.confirm_screen("Remove " .. core, last
-                    and "The cell has no other cores: it stops, and its phones lose service."
-                    or "The cell no longer serves this core's network, whose phones here lose service. It carries on serving the others.",
+                    and "The cell has no other cores: it stops."
+                    or "Its network's phones here lose service.",
                     "Remove")
                 if not sure then return nil end
                 local ok, err = net.cell.configureCell({ cores = cores_with(info, nil, core) })
                 if not ok then
                     say(tostring(err), true)
                 else
-                    say(last and ("Removed %s. The cell has no cores left, so it stopped."):format(core)
-                        or ("Removed %s."):format(core))
+                    say(last and ("Removed %s. The cell stopped."):format(core) or ("Removed %s."):format(core))
                 end
                 return "back"
             end,
@@ -495,15 +646,17 @@ local function run(name)
                 local info = net.cell.cellInfo()
                 local lines = {}
                 if not info.cores then
-                    lines[1] = "This computer isn't running a cell. Add a core to start one."
+                    lines[1] = "No cell: add a core to start one."
                 elseif info.state == "stopped" then
                     lines[1] = info.enabled == false and "The cell is stopped." or "The cell isn't running."
                     lines[2] = "Cores: " .. table.concat(info.cores, ", ")
                 else
-                    lines[1] = ("Cell #%d, area %d."):format(info.id, info.area or 0)
-                    for _, line in ipairs(carrier_lines(info)) do lines[#lines + 1] = line end
+                    lines[1] = ("Cell #%d, area %d"):format(info.id, info.area or 0)
+                    for _, cell in ipairs(info.cells or { info }) do
+                        if cell.carrier then lines[#lines + 1] = ("%s, channel %d"):format(cell.carrier, cell.ul) end
+                    end
                     for _, link in ipairs(info.links or {}) do
-                        for _, line in ipairs(link_lines(info, link, name)) do lines[#lines + 1] = line end
+                        for _, line in ipairs(link_brief(info, link)) do lines[#lines + 1] = line end
                     end
                 end
                 return text_items({}, lines)
@@ -523,13 +676,15 @@ local function run(name)
                 local lines = {}
                 for _, link in ipairs(info.links or {}) do
                     if link.state == "standby" then
-                        lines[#lines + 1] = ("%s has the carriers %s."):format(tostring(link.network), table.concat(link.carriers or {}, ", "))
+                        lines[#lines + 1] = ("%s: %s"):format(
+                            tostring(link.network), (link.carriers or {})[1] and table.concat(link.carriers, ", ") or "no carriers yet"
+                        )
                     end
                 end
-                if not lines[1] then lines[1] = "Its cores haven't said which carriers their networks have yet." end
+                if not lines[1] then lines[1] = "Its cores haven't answered yet." end
                 local items = text_items({}, lines)
                 items[#items + 1] = {
-                    text = info.band and "Use " .. band_label(info.band) or "Use any band: its core picks", id = "confirm",
+                    text = info.band and "Use " .. band_label(info.band) or "Use any band", id = "confirm",
                 }
                 items[#items + 1] = { text = "Choose its bands...", id = "choose" }
                 return items
@@ -537,18 +692,15 @@ local function run(name)
             choose = function(item)
                 if item.id == "confirm" then
                     local ok, err = net.cell.configureCell({ confirmed = true })
-                    if ok then say("Its bands are confirmed: it goes on the air.") else say(tostring(err), true) end
+                    if ok then say("Bands confirmed: on the air.") else say(tostring(err), true) end
                     return "back"
                 elseif item.id == "choose" then
-                    edit_setting("band")
+                    bands_screen()
                     if net.cell.cellInfo().confirmed ~= false then return "back" end
                 end
                 return nil
             end,
-            note = function()
-                return "A new cell sends nothing until its bands are confirmed: lower bands reach further, higher ones "
-                    .. "carry more phones, and it may have a cell on each of several."
-            end,
+            note = note,
             hint = { "Enter: choose", "Q: back" },
             refresh = REFRESH,
         }
@@ -556,7 +708,7 @@ local function run(name)
 
     local function start()
         local ok, err = net.cell.startCell()
-        if ok then say("Started the cell: it connects to its cores in the background.") else say(tostring(err), true) end
+        if ok then say("Started the cell.") else say(tostring(err), true) end
     end
 
     menu.list_screen {
@@ -583,9 +735,7 @@ local function run(name)
                 items[#items + 1] = {
                     text = "Restart the cell", id = "restart",
                     open = function()
-                        if not menu.confirm_screen("Restart the cell",
-                            "The cell connects to each core afresh. Its phones lose service for a moment, and attach again.",
-                            "Restart") then
+                        if not menu.confirm_screen("Restart the cell", "Its phones lose service for a moment.", "Restart") then
                             return
                         end
                         net.cell.stopCell()
@@ -595,11 +745,7 @@ local function run(name)
                 items[#items + 1] = {
                     text = "Stop the cell", id = "stop",
                     open = function()
-                        if not menu.confirm_screen("Stop the cell",
-                            "Its phones lose service, and it doesn't start with the computer until it's started again.",
-                            "Stop") then
-                            return
-                        end
+                        if not menu.confirm_screen("Stop the cell", "Its phones lose service.", "Stop") then return end
                         net.cell.stopCell()
                         say("Stopped the cell.")
                     end,
@@ -613,17 +759,20 @@ local function run(name)
         note = function()
             if said then return note() end
             local info = net.cell.cellInfo()
-            if not info.cores then return "This computer isn't running a cell. Add a core to start one." end
+            if not info.cores then return "No cell: add a core to start one." end
             for _, link in ipairs(info.links or {}) do
                 if link.state == "waiting" then
-                    return ("Waiting to be allowed: on the core, run 'cellcore allow %d', and check it shows %s"):format(
-                        info.id, tostring(info.fingerprint)
-                    ), c(colours.yellow, colours.lightGrey)
+                    return ("Waiting to be allowed as #%d: %s"):format(info.id, tostring(info.fingerprint)),
+                        c(colours.yellow, colours.lightGrey)
                 end
             end
             if info.state == "standby" then
-                return "Allowed by its core, but not on the air yet: choose Go on the air to confirm its bands.",
-                    c(colours.yellow, colours.lightGrey)
+                return "Not on the air: confirm its bands under Go on the air.", c(colours.yellow, colours.lightGrey)
+            end
+            if info.state == "unplaced" then
+                for _, link in ipairs(info.links or {}) do
+                    if link.state == "unplaced" then return "Off the air: " .. no_carrier(link) .. ".", c(colours.orange, colours.lightGrey) end
+                end
             end
         end,
         hint = { "Enter: open", "Q: quit" },
@@ -636,6 +785,7 @@ end
 
 return {
     SETTINGS = SETTINGS,
+    OVERRIDE_WARNING = OVERRIDE_WARNING,
     band_label = band_label,
     read_value = read_value,
     setting_values = setting_values,
