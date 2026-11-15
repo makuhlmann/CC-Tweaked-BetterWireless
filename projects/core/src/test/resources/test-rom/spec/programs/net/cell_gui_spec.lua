@@ -20,6 +20,8 @@ describe("The cell program's GUI", function()
 
         if not crypto then stub(_G, "crypto", {}) end
         if not enclave then stub(_G, "enclave", {}) end
+        -- No clock in the status bar, unless a test gives the time (`phone.time`, in hours).
+        stub(os, "time", function() return phone.time end)
         stub(net.cell, "listen", function() return true end)
         stub(net.cell, "info", function()
             phone.info.unread = 0
@@ -490,6 +492,22 @@ describe("The cell program's GUI", function()
             end)
         end)
 
+        it("shows the time of day in the world, until there's a new message", function()
+            local phone = fake_phone()
+            phone.time = 13.5
+            run(phone, {}, function(app)
+                expect(app.line(1)):eq(" ACME     13:30    [|||.]")
+                expect(app.fg(1):sub(11, 15)):eq("88888")
+                -- Time passes.
+                phone.time = 6.25
+                app.timers(2)
+                expect(app.line(1)):eq(" ACME      6:15    [|||.]")
+                phone.messages = { { n = 1, from = "0007", text = "Hello", time = os.epoch("utc"), read = false } }
+                app.event("cell_message", "0007", "Hello", 1)
+                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+            end)
+        end)
+
         it("never draws wider than the screen", function()
             local bar = require "cc.internal.net.cell.bar"
             local info = { state = "attached", network = "ACME", serving_network = "ACME", signal = -60, roaming = true, unread = 12 }
@@ -497,6 +515,16 @@ describe("The cell program's GUI", function()
                 local text, fg, bg = bar.line(info, width, true)
                 expect({ #text, #fg, #bg }):same { width, width, width }
             end
+            -- The time is in the middle when there are no new messages, where there's room beside the name.
+            info.unread = 0
+            expect({ bar.line(info, 26, true, false, "6:05") }):same {
+                " ACME      6:05  R [||||] ", "00000000000888800000000000", ("7"):rep(26),
+            }
+            expect((bar.line(info, 21, true, false, "18:45"))):eq(" ACME 18:45 R [||||] ")
+            expect((bar.line(info, 20, true, false, "18:45"))):eq(" ACME      R [||||] ")
+            info.unread = 2
+            expect((bar.line(info, 26, true, false, "6:05"))):eq(" ACME 2 new msgs R [||||] ")
+            info.unread = 12
             expect((bar.line(info, 15, true))):eq(" ACME R [||||] ")
             expect((bar.line(info, 11, true))):eq(" ACME      ")
             expect((bar.line(info, 7, true))):eq(" ACME  ")

@@ -3,7 +3,8 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 --[[- The phone's status bar: the screen's top line, which says which network the phone is on, how strong its signal
-is, and whether there are new messages. Any program can run beneath it. Without a SIM, once it listens for cells
+is, and whether there are new messages: or, when there are none, the time of day in the world. Any program can run
+beneath it. Without a SIM, once it listens for cells
 (`cell on`), it says so, with the strongest cell's signal.
 
 Basic computers get greys where advanced ones get colours.
@@ -54,7 +55,8 @@ local function wanted(info)
 end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
-(`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle. On a
+(`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle, or the
+time when none are. On a
 network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. On a cell which only
 carries messages, `SMS` follows the name. Without a SIM, it says `No SIM`, and the bars are the strongest cell's, of any
 network (`strongest`). On a narrow screen, the name is cut short to leave room for the rest. The bar is dark grey.
@@ -63,15 +65,17 @@ network (`strongest`). On a narrow screen, the name is cut short to leave room f
 @tparam number width The screen's width.
 @tparam boolean colour Whether the screen shows colours.
 @tparam[opt] boolean quiet Whether the phone has been searching for a while, and so has no service.
+@tparam[opt] string clock The time, as it's shown when there are no new messages (and there's room).
 @treturn string The line's text.
 @treturn string The colour of each character, as `term.blit` takes them.
 @treturn string The background colour of each character.
 ]]
-local function line(info, width, colour, quiet)
+local function line(info, width, colour, quiet, clock)
     expect(1, info, "table")
     expect(2, width, "number")
     expect(3, colour, "boolean")
     expect(4, quiet, "boolean", "nil")
+    expect(5, clock, "string", "nil")
 
     local attached = info.state == "attached"
     local name
@@ -114,16 +118,21 @@ local function line(info, width, colour, quiet)
         put(width - 5 + count, ("."):rep(4 - count), "8")
         put(width - 1, "]", "0")
 
+        -- New messages, or the time when there are none, in grey: it's there to glance at.
         local unread = tonumber(info.unread) or 0
+        local notice, notice_colour = clock, "8"
         if unread > 0 then
-            local notice = unread == 1 and "1 new msg" or ("%d new msgs"):format(unread)
-            -- The notice goes in the middle of the screen, or as near to it as the name and the bars let it.
+            notice, notice_colour = unread == 1 and "1 new msg" or ("%d new msgs"):format(unread), colour and "4" or "0"
+        end
+        if notice then
+            -- The notice goes in the middle of the screen, or as near to it as the name and the bars let it. The
+            -- name makes way for new messages, but not for the time.
             local left = room - #notice - 1
-            if left >= math.min(#name, 3) then
+            if left >= math.min(#name, 3) and (unread > 0 or left >= #name) then
                 name = name:sub(1, left)
                 local x = math.floor((width - #notice) / 2) + 1
                 x = math.min(math.max(x, #name + 3), right - 1 - #notice)
-                put(x, notice, colour and "4" or "0")
+                put(x, notice, notice_colour)
             end
         end
     end
@@ -165,8 +174,11 @@ local function run(fn, ...)
 
     local function draw_bar()
         if not shown then return end
+        -- The time of day in the world, as a clock shows it.
+        local time = os.time()
+        local clock = type(time) == "number" and textutils.formatTime(time, true) or nil
         parent.setCursorPos(1, 1)
-        parent.blit(line(info, width, colour, os.clock() - searching_since >= SEARCH_PATIENCE))
+        parent.blit(line(info, width, colour, os.clock() - searching_since >= SEARCH_PATIENCE, clock))
         child.restoreCursor()
     end
 

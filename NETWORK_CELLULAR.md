@@ -559,7 +559,8 @@ the design above:
   - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
     doing: "Searching...", "Connecting...", "No service" after ten seconds of searching), the signal as four bars in
     brackets on the right (`[||..]`) with an `R` and a space before them when roaming (`R [||..]`), and between them a
-    note such as "1 new msg". The bar is dark grey, with colours or without. There's no bar while
+    note such as "1 new msg", or, when there's nothing new, the time of day in the world (as a clock shows it, in
+    grey, where there's room beside the name). The bar is dark grey, with colours or without. There's no bar while
     cell service is turned off or the phone has no SIM, and what runs beneath it gets the line back (as a
     `term_resize`). `cell bar [program]` runs any program beneath the bar (a shell, if none is given), in a window
     one line shorter. A computer with a SIM starts beneath it: the message of the day, the startup files and the
