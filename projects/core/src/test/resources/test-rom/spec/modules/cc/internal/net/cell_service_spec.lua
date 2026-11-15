@@ -729,6 +729,94 @@ describe("Cellular services", function()
             end, }, 600)
         end)
 
+        it("takes whatever a cell's computer says about its bands and cells, and carries on", function()
+            local b20, b3 = bands.parse_carrier("b20/1"), bands.parse_carrier("b3/1")
+            local function ul(carrier) return bands.carrier(carrier).uplink[1] end
+            local env = setup { config = { network = "ACME", prefix = "10.64.0.0/16", spectrum = { b20, b3 } } }
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            local template = {
+                signing = hex(tower_public), area = 1, band = "b20", bands = { "b20", "b3" }, carrier = b20, ul = ul(b20),
+                cells = { { carrier = b20, ul = ul(b20) }, { carrier = b3, ul = ul(b3) } }, standby = false,
+            }
+            local tried = 0
+            run(env.net, { env.service }, { function()
+                -- Connect as a cell which says this, and then says things about cells which aren't its own.
+                local function try(extra, what)
+                    local key = new_key()
+                    env.service.allowed[key] = { label = "tower", role = "cell" }
+                    local cell = env.connect(key, "10.0.0.11")
+                    local reply = hello(cell, "cell", 11, extra)
+                    if reply ~= nil then expect(type(reply)):describe(what):eq("table") end
+                    for _, bad in ipairs(BAD) do
+                        cell:send({ op = "attach", phone = 70, handshake = "x", at = bad ~= NIL and bad or nil })
+                        cell:send({ op = "path_switch", teid = 5, at = bad ~= NIL and bad or nil })
+                    end
+                    cell:send({ op = "handover", teid = 5, target = common.carrier_cell(11, b3), at = common.carrier_cell(12, b3) })
+                    coroutine.yield()
+                    cell:close()
+                    tried = tried + 1
+                end
+                for field in pairs(template) do
+                    for _, bad in ipairs(BAD) do try(with(template, field, bad), "a bad " .. field) end
+                end
+                for _, bad in ipairs(BAD) do
+                    if bad ~= NIL then
+                        try(with(template, "bands", { "b20", bad }), "a bad band")
+                        try(with(template, "cells", { bad }), "a bad cell")
+                        try(with(template, "cells", { template.cells[1], bad }), "a bad second cell")
+                        try(with(template, "cells", { with(template.cells[1], "carrier", bad) }), "a cell's bad carrier")
+                        try(with(template, "cells", { with(template.cells[1], "ul", bad) }), "a cell's bad uplink")
+                    end
+                end
+                -- More cells than a computer may run, and things which stand by oddly.
+                local many = {}
+                for i, carrier in ipairs(bands.beacon_channels()) do many[i] = { carrier = carrier, ul = ul(carrier) } end
+                try(with(template, "cells", many), "too many cells")
+                try(with(template, "bands", { "b20", "b20", "b20", "b20", "b20", "b20", "b20", "b20", "b20" }), "too many bands")
+                try(with(template, "standby", true), "standing by with cells")
+
+                -- Nothing is left of any of them, and nothing went wrong inside.
+                wait_until(function() return next(env.service.cells) == nil and next(env.service.standby) == nil end)
+                expect(next(env.service.core.towers)):eq(nil)
+                expect(errors_logged(env)):same {}
+                -- A cell which makes sense is still served.
+                local key = new_key()
+                env.service.allowed[key] = { label = "tower", role = "cell" }
+                local welcome = hello(env.connect(key, "10.0.0.11"), "cell", 11, { signing = hex(tower_public), bands = { "b20", "b3" } })
+                expect(#welcome.cells):eq(2)
+            end, }, 900)
+            expect(tried > 150):describe(tried .. " tried"):eq(true)
+            expect(env.service.error):eq(nil)
+        end)
+
+        it("drops the cell a computer ran when it stands by afresh, and the other way round", function()
+            local env = setup { config = { network = "ACME", prefix = "10.64.0.0/16" } }
+            local _, tower_public = crypto.generateKeyPair("ed25519")
+            run(env.net, { env.service }, { function()
+                local key = new_key()
+                env.service.allowed[key] = { label = "tower", role = "cell" }
+                local welcome = hello(env.connect(key, "10.0.0.11"), "cell", 11, { signing = hex(tower_public), bands = { "b20" } })
+                expect(#welcome.cells):eq(1)
+                expect(env.service.core.towers[11] ~= nil):eq(true)
+
+                -- The computer was set up anew, say, and waits for its bands to be confirmed: before the core noticed
+                -- that the connection its cell was on has gone.
+                local standing = hello(env.connect(key, "10.0.0.11"), "cell", 11, { signing = hex(tower_public), standby = true })
+                expect(standing.standby):eq(true)
+                wait_until(function() return env.service.cells[11] == nil end)
+                expect(env.service.standby[11] ~= nil):eq(true)
+                expect(env.service.core.towers[11]):eq(nil)
+
+                -- And on the air again, it stands by no longer.
+                welcome = hello(env.connect(key, "10.0.0.11"), "cell", 11, { signing = hex(tower_public), bands = { "b20" } })
+                expect(#welcome.cells):eq(1)
+                wait_until(function() return env.service.standby[11] == nil end)
+                expect(env.service.core.towers[11] ~= nil):eq(true)
+                expect(errors_logged(env)):same {}
+            end, }, 60)
+            expect(env.service.error):eq(nil)
+        end)
+
         it("makes another network's core say which network it is, before it waits to be allowed", function()
             local env = setup()
             run(env.net, { env.service }, { function()
@@ -1576,6 +1664,138 @@ describe("Cellular services", function()
                 expect(env.service:info().error):eq("The core's answer can't be used")
             end, }, 300)
             env.service:stop()
+        end)
+
+        it("takes whatever a core says about its cells, and only runs cells which make sense", function()
+            local b3, b7 = bands.parse_carrier("b3/1"), bands.parse_carrier("b7/1")
+            local high = common.carrier_cell(11, b3)
+            local function cell(id, carrier)
+                return { id = id, carrier = carrier, ul = bands.carrier(carrier).uplink[1], certificate = "c", tunnel_key = ("k"):rep(32) }
+            end
+            local template = {
+                v = common.VERSION, network = "ACME", certificate = "first", tunnel_key = ("k"):rep(32), carrier = 7935, ul = 8320,
+                interval = 1, carriers = { 7935, b3 }, cells = { cell(11, 7935), cell(high, b3) }, unplaced = { "b7" },
+            }
+            local bad_values = { 0 / 0, math.huge, -math.huge, 1e18, -1, 0.5, 2 ^ 32, "x", {}, true, ("y"):rep(5000), { 1, { 2 } } }
+            local with, NIL = helpers.with, helpers.NIL
+            local served, refused = 0, 0
+            -- What the cell does with an answer: every cell it runs must be one a cell can be.
+            local function try(answer, standby, what)
+                local env = cell_setup(nil, { "b20", "b3" }, standby)
+                run(env.net, { env.service }, { function()
+                    local core = env.connections[1]
+                    core:receive(5)
+                    core:send(answer)
+                    wait_until(function() return env.service:info().state ~= "connecting" end)
+                    -- And whatever it's told afterwards, about any cell.
+                    for _, bad in ipairs(bad_values) do
+                        core:send({ op = "context", phone = 70, teid = 5, key = ("k"):rep(32), at = bad })
+                        core:send({ op = "carriers", carriers = bad, at = high })
+                        core:send({ op = bad, at = 11 })
+                    end
+                    core:send("carriers")
+                    coroutine.yield()
+                end, }, 300)
+                local state = env.service:info().state
+                expect(env.service.error):describe(what):eq(nil)
+                expect(state == "serving" or state == "refused" or state == "standby"):describe(what .. ": " .. tostring(state)):eq(true)
+                if standby then expect(#env.towers):describe(what):eq(0) end
+                for _, tower in ipairs(env.towers) do
+                    local told = tower.welcome
+                    expect(bands.carrier(told.carrier) ~= nil and bands.carrier_of(told.ul) == told.carrier
+                        and (told.id == 11 or told.id == common.carrier_cell(11, told.carrier))
+                        and type(told.certificate) == "string" and #told.tunnel_key == 32 and common.is_network(told.network))
+                        :describe(what):eq(true)
+                end
+                expect(#env.towers <= 2):describe(what):eq(true)
+                if state == "serving" then served = served + 1 else refused = refused + 1 end
+                env.service:stop()
+            end
+
+            for field in pairs(template) do
+                for _, bad in ipairs(bad_values) do try(with(template, field, bad), false, "a bad " .. field) end
+                try(with(template, field, NIL), false, "no " .. field)
+            end
+            for field in pairs(template.cells[2]) do
+                for _, bad in ipairs(bad_values) do
+                    try(with(template, "cells", { template.cells[1], with(template.cells[2], field, bad) }), false, "a cell's bad " .. field)
+                    try(with(template, "cells", { with(template.cells[1], field, bad), template.cells[2] }), false, "its first cell's bad " .. field)
+                end
+            end
+            for _, bad in ipairs(bad_values) do
+                try(with(template, "cells", { template.cells[1], bad }), false, "a bad cell")
+                try(with(template, "unplaced", { "b7", bad }), false, "something bad it has no carrier for")
+            end
+            -- Cells nobody asked for, in any number; and the same carrier under two IDs.
+            local many = { cell(11, 7935) }
+            for _, carrier in ipairs(bands.beacon_channels()) do
+                if #many < 8 and carrier ~= 7935 then many[#many + 1] = cell(common.carrier_cell(11, carrier), carrier) end
+            end
+            try(with(template, "cells", many), false, "eight cells")
+            try(with(template, "cells", { cell(11, b3), cell(high, b3) }), false, "one carrier twice")
+            try(with(template, "cells", { cell(11, b7), cell(common.carrier_cell(11, b7), b7) }), false, "one carrier twice, unasked")
+
+            -- Standing by, whatever the core answers, it runs no cell.
+            local standing = { v = common.VERSION, network = "ACME", standby = true, interval = 1, carriers = { 7935, b3 } }
+            for field in pairs(standing) do
+                for _, bad in ipairs(bad_values) do try(with(standing, field, bad), true, "standing by, a bad " .. field) end
+            end
+            try(template, true, "standing by, with a core which places it")
+            expect(served > 30 and refused > 30):describe(("%d served, %d refused"):format(served, refused)):eq(true)
+        end)
+
+        it("stops standing by whatever it was waiting for", function()
+            -- Told to go on the air while its core still hasn't allowed it: it asks again, as a cell which wants a carrier.
+            local env = cell_setup(nil, nil, true)
+            run(env.net, { env.service }, { function()
+                local core = env.connections[1]
+                expect(core:receive(5).standby):eq(true)
+                core:send({ waiting = true, fingerprint = fingerprint(env.key) })
+                wait_until(function() return env.service:info().state == "waiting" end)
+                env.service:go_on_air()
+                wait_until(function() return env.connections[2] end)
+                expect(env.connections[2]:receive(5).standby):eq(nil)
+                env.connections[2]:send({ waiting = true, fingerprint = fingerprint(env.key) })
+                wait_until(function() return env.service:info().state == "waiting" end)
+                env.connections[2]:send(welcome { network = "ACME", certificate = "certificate", tunnel_key = ("k"):rep(32) })
+                wait_until(function() return env.service:info().state == "serving" end)
+                expect(#env.towers):eq(1)
+            end, }, 300)
+            expect(env.service.error):eq(nil)
+
+            -- Told while it can't reach its core at all: it's a cell as soon as it can. And stopped while standing by,
+            -- it just stops.
+            env = cell_setup(nil, "b20", true)
+            env.unreachable = true
+            run(env.net, { env.service }, { function()
+                -- (Its first try got through, to a core which never answered.)
+                expect(env.connections[1]:receive(5).standby):eq(true)
+                wait_until(function() return env.service:info().state == "lost" end)
+                env.service:go_on_air()
+                env.unreachable = false
+                wait_until(function() return env.connections[2] end)
+                expect(env.connections[2]:receive(5)):same {
+                    role = "cell", v = common.VERSION, id = 11, signing = env.signing, area = 3, band = "b20",
+                }
+            end, }, 300)
+            env.service:stop()
+            env = cell_setup({ "core.acme", "core.beta" }, nil, true)
+            run(env.net, { env.service }, { function()
+                wait_until(function() return env.connections[2] end)
+                for i = 1, 2 do
+                    env.connections[i]:receive(5)
+                    env.connections[i]:send({ v = common.VERSION, network = i == 1 and "ACME" or "BETA", standby = true, carriers = { 7935 } })
+                end
+                wait_until(function()
+                    local links = env.service:info().links
+                    return links[1].state == "standby" and links[2].state == "standby"
+                end)
+                -- One network's name twice is one too many, standing by or not.
+                expect(env.service:bands()):same { b20 = true }
+            end, }, 300)
+            env.service:stop()
+            expect({ env.connections[1].is_gone(), env.connections[2].is_gone(), #env.towers }):same { true, true, 0 }
+            expect(env.service.error):eq(nil)
         end)
 
         it("knows which bands the networks it serves have carriers in", function()

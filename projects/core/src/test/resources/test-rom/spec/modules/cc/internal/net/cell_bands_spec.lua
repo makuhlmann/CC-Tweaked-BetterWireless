@@ -56,6 +56,10 @@ describe("Cell sites with several bands", function()
             expect(common.is_id(id)):eq(true)
             expect({ common.site_of(id) }):same { 11, B3_2 }
             expect(common.cell_label(id)):eq("11 b3/2")
+            -- What isn't an ID (another computer may say anything) is shown as it is.
+            expect({ common.cell_label("x"), common.cell_label(nil), common.cell_label(1.5), common.cell_label(-1) })
+                :same { "x", "nil", "1.5", "-1" }
+            expect(common.cell_label({})):str_match("^table")
             -- However big the computer's ID, and whichever the carrier, no two cells share one.
             local seen = {}
             for _, site in ipairs { 0, 1, 11, 2 ^ 31 - 1 } do

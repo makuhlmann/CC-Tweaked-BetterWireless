@@ -132,10 +132,11 @@ end
 
 --[[- A cell's ID, for people to read: its computer's ID, and its carrier if it isn't the computer's first cell.
 
-@tparam number cell The cell's ID.
+@param cell The cell's ID. Whatever isn't one (as another computer might give) is shown as it is.
 @treturn string The ID, such as `"12"` or `"12 b3/1"`.
 ]]
 local function cell_label(cell)
+    if not is_id(cell) then return tostring(cell) end
     local site, carrier = site_of(cell)
     if not carrier then return ("%d"):format(site) end
     return ("%d %s"):format(site, bands.carrier_name(carrier) or ("?" .. carrier))

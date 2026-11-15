@@ -18,7 +18,7 @@ describe("Subscribers with a network of their own", function()
     local function subscriber_routes(setup)
         local routes = {}
         for _, route in ipairs(setup.core_stack.routes) do
-            if route.source == "subscriber" then
+            if route.source == "subscriber" or route.source == "subscriber-range" then
                 routes[#routes + 1] = ("%s via %s"):format(address.format(route.network, route.prefix), address.format(route.gateway))
             end
         end
@@ -57,6 +57,11 @@ describe("Subscribers with a network of their own", function()
         local own = address.format(phone.address)
         expect(address.contains(ip("10.64.5.0"), 28, phone.address)):eq(false)
         expect(subscriber_routes(acme)):same { "10.64.5.0/28 via " .. own }
+
+        -- Other routers needn't be told: the range is part of the core's own network, which they know of.
+        for _, route in ipairs(rip.start(acme.core_stack):routes_for(acme.core_stack.interfaces.backhaul)) do
+            expect(address.format(route.network, route.prefix)):ne("10.64.5.0/28")
+        end
 
         -- A computer behind the router, with one of the range's addresses, reaches the network, and is reached.
         local host = site(acme, stack, 2, "10.64.5.1/28", "10.64.5.2/28")
@@ -152,6 +157,11 @@ describe("Subscribers with a network of their own", function()
         for _, network in ipairs { "127.0.0.0/8", "224.0.0.0/8", "0.0.0.0/8", "169.254.0.0/16", "192.0.0.0/4" } do
             expect(refused(first, "subnet", network)):describe(network):eq("That isn't a network computers can have addresses in")
         end
+
+        -- Nor a network the core's own computer is on, whose computers would be sent to the subscriber's phone.
+        expect(refused(first, "subnet", "10.0.0.0/24")):eq("The core is on 10.0.0.0/24 itself")
+        expect(refused(first, "subnet", "10.0.0.60/30")):eq("The core is on 10.0.0.0/24 itself")
+        expect(refused(first, "subnet", "10.0.0.0/16")):eq("The core is on 10.0.0.0/24 itself")
 
         -- Nobody has part of another's.
         expect(core:set_network(first, "range", "10.64.5.0/24")):eq("10.64.5.0/24")

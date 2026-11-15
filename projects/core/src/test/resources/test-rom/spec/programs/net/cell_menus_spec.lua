@@ -155,30 +155,66 @@ describe("The menus of celld and cellcore", function()
         end
     end
 
-    it("keep what's typed while they wait for a core's answer", function()
+    it("keep what's typed while they wait for a core's answer, for themselves alone", function()
         local menu = require "cc.internal.net.cell.menu"
         local queued = {}
         stub(os, "queueEvent", function(...) queued[#queued + 1] = { ... } end)
-        -- Something which waits for one kind of event, as a request to a core does, and throws the others away.
-        local co = coroutine.create(function()
-            return menu.wait_for(function(asked)
-                local _, answer = os.pullEvent("answer")
-                return asked, answer
-            end, "asked")
-        end)
-        assert(coroutine.resume(co))
-        assert(coroutine.resume(co, "key", keys.down, false))
-        assert(coroutine.resume(co, "timer", 5))
-        assert(coroutine.resume(co, "char", "x"))
-        expect({ coroutine.resume(co, "answer", 42) }):same { true, "asked", 42 }
-        -- What the user did is there for the menu afterwards, in order: but nobody else's events.
-        expect(queued):same { { "key", keys.down, false }, { "char", "x" } }
+        local screen = window.create(term.current(), 1, 1, 30, 10, false)
+        local old = term.redirect(screen)
+        local ok, err = pcall(function()
+            -- Something which waits for one kind of event, as a request to a core does, and throws the others away:
+            -- and then a line to type in.
+            local co = coroutine.create(function()
+                local asked, answer = menu.wait_for(function(asked)
+                    local _, answer = os.pullEvent("answer")
+                    return asked, answer
+                end, "asked")
+                return asked, answer, menu.input_screen { title = "Name" }
+            end)
+            assert(coroutine.resume(co))
+            assert(coroutine.resume(co, "char", "a"))
+            assert(coroutine.resume(co, "timer", 5))
+            assert(coroutine.resume(co, "key", keys.left, false))
+            assert(coroutine.resume(co, "char", "b"))
+            -- What the user did is there for the menu afterwards, in order: before what they do next.
+            assert(coroutine.resume(co, "answer", 42))
+            expect(coroutine.status(co)):eq("suspended")
+            expect(screen.getLine(3)):str_match("^ba ")
+            assert(coroutine.resume(co, "char", "c"))
+            expect({ coroutine.resume(co, "key", keys.enter, false) }):same { true, "asked", 42, "bca" }
+            -- It's nobody else's: nothing went back on the computer's queue, for other programs to see twice.
+            expect(queued):same {}
 
-        -- An error while waiting is the caller's, and Ctrl+T ends it.
-        expect.error(menu.wait_for, function() error("Lost the core", 0) end):eq("Lost the core")
-        co = coroutine.create(function() return menu.wait_for(os.pullEvent, "answer") end)
-        assert(coroutine.resume(co))
-        expect({ coroutine.resume(co, "terminate") }):same { false, "Terminated" }
+            -- An error while waiting is the caller's, and Ctrl+T ends it.
+            expect.error(menu.wait_for, function() error("Lost the core", 0) end):eq("Lost the core")
+            co = coroutine.create(function() return menu.wait_for(os.pullEvent, "answer") end)
+            assert(coroutine.resume(co))
+            expect({ coroutine.resume(co, "terminate") }):same { false, "Terminated" }
+        end)
+        term.redirect(old)
+        if not ok then error(err, 0) end
+    end)
+
+    it("type a held key's letters into a line, again and again", function()
+        local menu = require "cc.internal.net.cell.menu"
+        local screen = window.create(term.current(), 1, 1, 30, 10, false)
+        local old = term.redirect(screen)
+        local ok, err = pcall(function()
+            local co = coroutine.create(function() return menu.input_screen { title = "Name" } end)
+            assert(coroutine.resume(co))
+            assert(coroutine.resume(co, "key", keys.a, false))
+            assert(coroutine.resume(co, "char", "a"))
+            for _ = 1, 3 do
+                assert(coroutine.resume(co, "key", keys.a, true))
+                assert(coroutine.resume(co, "char", "a"))
+            end
+            -- Enter which is still held from the screen before doesn't give the text: a new press does.
+            assert(coroutine.resume(co, "key", keys.enter, true))
+            expect(coroutine.status(co)):eq("suspended")
+            expect({ coroutine.resume(co, "key", keys.enter, false) }):same { true, "aaaa" }
+        end)
+        term.redirect(old)
+        if not ok then error(err, 0) end
     end)
 
     describe("celld", function()
@@ -1067,11 +1103,47 @@ describe("The menus of celld and cellcore", function()
                     core.down = "Connection refused"
                     app.tick()
                     expect(app.chosen()):eq("Connect again")
-                    core.down = nil
+                    -- Why it's away is said, in place of what was done before.
+                    expect(app.says("Starting the core afresh.")):eq(false)
+                    expect(app.says("Connection refused")):eq(true)
+                    -- It isn't connected to every time the screen looks again, which would hold the menu up: only
+                    -- now and again.
+                    local tried = core.connects
+                    expect(tried):eq(connects + 1)
+                    for _ = 1, 3 do app.tick() end
+                    expect(core.connects):eq(tried)
                     app.tick()
-                    expect(core.connects > connects):eq(true)
+                    expect(core.connects):eq(tried + 1)
+                    expect(app.chosen()):eq("Connect again")
+                    core.down = nil
+                    for _ = 1, 4 do app.tick() end
+                    expect(core.connects):eq(tried + 1)
+                    app.tick()
+                    expect(core.connects):eq(tried + 2)
                     expect(app.line(1)):str_match("^Core of ACME")
                     expect(app.find("Stop the core")):ne(nil)
+
+                    -- "Connect again" doesn't wait for that.
+                    core.down = "Connection refused"
+                    app.tick()
+                    expect(app.chosen()):eq("Connect again")
+                    core.down = nil
+                    connects = core.connects
+                    app.key(keys.enter)
+                    expect(core.connects):eq(connects + 1)
+                    expect(app.line(1)):str_match("^Core of ACME")
+                    expect(app.find("Stop the core")):ne(nil)
+                    -- And when the core still isn't there, it says what else may be done.
+                    core.down = "Connection refused"
+                    app.tick()
+                    connects = core.connects
+                    app.key(keys.enter)
+                    expect(core.connects):eq(connects + 1)
+                    expect(app.says("The core isn't running.")):eq(true)
+                    expect(app.chosen()):eq("Start the core")
+                    core.down = nil
+                    app.choose("Try again")
+                    expect(app.line(1)):str_match("^Core of ACME")
 
                     app.choose("Stop the core")
                     app.type("n")

@@ -25,6 +25,10 @@ local CONFIG = "/.cell/config"
 -- How often the core is asked how the network is doing while the menu is shown, in seconds.
 local REFRESH = 2
 
+-- While the core can't be reached, how many times the menu looks at it again between tries to connect: a try may
+-- take a while, and the menu does nothing else meanwhile.
+local RECONNECT_EVERY = 5
+
 -- How many of the log's lines to keep to show.
 local MAX_LOG = 200
 
@@ -258,7 +262,13 @@ local function run(options)
     local function connect(wait)
         hang_up()
         local err
-        manager, err = net.cell.manage(target, function(fingerprint)
+        -- Connecting again behind the user's back may take a while: what they do meanwhile is kept. (Not while the
+        -- screen says to wait to be allowed: keys pressed then aren't meant for what comes after.)
+        local function manage(...)
+            if wait then return net.cell.manage(...) end
+            return menu.wait_for(net.cell.manage, ...)
+        end
+        manager, err = manage(target, function(fingerprint)
             if not wait then return false end
             menu.clear()
             menu.draw_title("Waiting to be allowed")
@@ -283,7 +293,7 @@ local function run(options)
     -- Ask the core how the network is doing, unless it was just asked (`now`, after something changed: the screen
     -- which is shown again then needn't ask once more). A core which doesn't answer (it was started afresh, say) is
     -- connected to again.
-    local fresh = false
+    local fresh, failures = false, 0
     local function refresh(now)
         if fresh and not now then
             fresh = false
@@ -291,11 +301,16 @@ local function run(options)
         end
         fresh = now == true
         local reply, err = request({ op = "status" })
-        if not reply and not connect(false) then
-            status, problem = nil, problem or tostring(err)
-            return nil
+        if not reply then
+            -- At once the first time (and when asked to), and then only now and again.
+            failures = failures + 1
+            if now or failures == 1 or failures % RECONNECT_EVERY == 0 then
+                if connect(false) then reply, err = request({ op = "status" }) else err = problem or err end
+            end
         end
-        if not reply then reply, err = request({ op = "status" }) end
+        if reply then failures = 0 end
+        -- What was said about the last thing done is old news once the core is lost: why it's lost is said instead.
+        if not reply and status and not now then said = nil end
         status, problem = reply, not reply and tostring(err) or nil
         return status
     end
@@ -1030,7 +1045,14 @@ local function run(options)
                 return "Core of " .. tostring(status.network), remote and tostring(target) or status.prefix
             end,
             items = function()
-                if not refresh() then return { { text = "Connect again", id = "again", open = function() return "lost" end } } end
+                if not refresh() then
+                    -- Choosing it tries at once: and when that doesn't work either, what else may be done is shown.
+                    local function again()
+                        if connect(false) and refresh(true) then return nil end
+                        return "lost"
+                    end
+                    return { { text = "Connect again", id = "again", open = again } }
+                end
                 local attached = 0
                 for _, subscriber in ipairs(status.subscribers) do
                     if subscriber.cell then attached = attached + 1 end

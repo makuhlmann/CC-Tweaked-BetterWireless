@@ -576,6 +576,8 @@ end
 function Service:serve_standby(connection, key, id)
     local old = self.standby[id]
     if old then old.connection:abort() end
+    -- A computer which stands by runs no cell: one it ran before, on another connection, has gone.
+    if self.cells[id] then self.cells[id].connection:abort() end
     local send, stop_sending = self.tasks:sender(connection, self.options.wake)
     local entry = { id = id, key = key, address = connection:getPeer(), since = self.options.epoch(), connection = connection, send = send }
     if not connection:send({

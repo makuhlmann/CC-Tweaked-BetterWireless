@@ -15,6 +15,17 @@ advanced ones get colours, and everything can be done with the keyboard alone.
 @local
 ]]
 
+-- What the user did while a menu waited for something else (see `wait_for`), for the menus to act on next, oldest
+-- first. It's kept here, not put back on the computer's queue, so no other program sees any of it twice.
+local pending = {}
+
+-- Wait for the next event, as `os.pullEvent` does: what was kept while a menu waited comes first.
+local function pull()
+    local kept = table.remove(pending, 1)
+    if kept then return table.unpack(kept, 1, kept.n) end
+    return os.pullEvent()
+end
+
 --- Make some text just as wide as a width: cut short, or with spaces after it.
 --
 -- @param text The text.
@@ -304,7 +315,7 @@ local function list_screen(options)
         dirty = true
 
         local result
-        local event, a, b, y = os.pullEvent()
+        local event, a, b, y = pull()
         if event == "key" then
             held = b
             if a == keys.up and #items > 0 then
@@ -378,7 +389,7 @@ local function confirm_screen(title, question, yes, no)
         end
         places = draw_buttons(h, { yes, no or "Keep" }, selected)
 
-        local event, a, b, y = os.pullEvent()
+        local event, a, b, y = pull()
         if event == "key" then
             held = b
             if a == keys.left then
@@ -485,7 +496,7 @@ or go back.
 @treturn string|nil The text, or nothing if the user went back.
 ]]
 local function input_screen(options)
-    local field, problem, held = new_field(options.max or 200), nil, false
+    local field, problem = new_field(options.max or 200), nil
     field_insert(field, tostring(options.value or ""))
     local label = options.label and options.label .. " " or ""
     while true do
@@ -509,14 +520,11 @@ local function input_screen(options)
         term.setTextColour(colours.white)
         term.setCursorBlink(true)
 
-        local event, a, b = os.pullEvent()
+        local event, a, b = pull()
         if event == "char" or event == "paste" then
-            if not (event == "char" and held) then
-                field_insert(field, a)
-                problem = nil
-            end
+            field_insert(field, a)
+            problem = nil
         elseif event == "key" then
-            held = b
             if is_enter(a) and not b then
                 local text = field.value:gsub("^%s+", ""):gsub("%s+$", "")
                 term.setCursorBlink(false)
@@ -548,7 +556,7 @@ local function message_screen(title, text, colour)
         end
         local places = draw_buttons(h, { "OK" }, 1)
 
-        local event, a, b, y = os.pullEvent()
+        local event, a, b, y = pull()
         if event == "key" then
             held = b
             if (is_enter(a) or a == keys.backspace) and not b then return end
@@ -567,8 +575,8 @@ local INPUT = {
 }
 
 --[[- Call a function which waits for something (an answer from another computer, say), keeping what the user does
-meanwhile for afterwards. Whatever waits for one kind of event throws the others away: without this, keys pressed
-while a menu asks a core something would be lost.
+meanwhile for the menus to act on afterwards. Whatever waits for one kind of event throws the others away: without
+this, keys pressed while a menu asks a core something would be lost.
 
 @tparam function fn The function.
 @param ... What to call it with.
@@ -587,7 +595,7 @@ local function wait_for(fn, ...)
             result = table.pack(coroutine.resume(co, table.unpack(event, 1, event.n)))
         end
     end
-    for _, event in ipairs(kept) do os.queueEvent(table.unpack(event, 1, event.n)) end
+    for _, event in ipairs(kept) do pending[#pending + 1] = event end
     if not result[1] then error(result[2], 0) end
     return table.unpack(result, 2, result.n)
 end

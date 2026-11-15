@@ -357,6 +357,12 @@ function Core:set_network(sim, kind, text)
             if overlaps(network, prefix, self.network_address, self.prefix) then
                 return nil, "That's part of this network's own addresses: give the subscriber a range of them instead"
             end
+            -- Nor one this computer is on itself: its neighbours there would be sent to the subscriber's phone.
+            for _, interface in pairs(self.stack.interfaces) do
+                if interface.address and interface.network and overlaps(network, prefix, interface.network, interface.prefix) then
+                    return nil, ("The core is on %s/%d itself"):format(address.format(interface.network), interface.prefix)
+                end
+            end
         end
         for other_sim, other in pairs(self.subscribers) do
             local other_network, other_prefix = routed_of(other)
@@ -379,19 +385,26 @@ function Core:set_network(sim, kind, text)
     return kept or true
 end
 
+-- Whether a route is one of ours for a subscriber's network: a subnet's (which routers which listen to us are told
+-- of) or a range's (which they needn't be: it's part of our own network, which they know).
+local function is_subscriber_route(route)
+    return (route.source == "subscriber" or route.source == "subscriber-range") and route.interface == "cellular"
+end
+
 --[[- Route each subscriber's own network to their phone, while it's attached: see [`routed_of`]. What a phone may
 send from is kept with its session.
 ]]
 function Core:update_routes()
-    self.stack:remove_routes(function(route) return route.source == "subscriber" and route.interface == "cellular" end)
+    self.stack:remove_routes(is_subscriber_route)
     for sim, session in pairs(self.sessions) do
         local subscriber = self.subscribers[sim]
-        local network, prefix
-        if session.teid and subscriber and not subscriber.barred then network, prefix = routed_of(subscriber) end
+        local network, prefix, kind
+        if session.teid and subscriber and not subscriber.barred then network, prefix, kind = routed_of(subscriber) end
         session.routed = network and { network, prefix } or nil
         if network then
             self.stack:add_route {
-                network = network, prefix = prefix, gateway = session.address, interface = "cellular", source = "subscriber",
+                network = network, prefix = prefix, gateway = session.address, interface = "cellular",
+                source = kind == "range" and "subscriber-range" or "subscriber",
             }
         end
     end
@@ -460,7 +473,7 @@ function Core:stop()
     self.stack:cancel(self.retry_timer)
     self.stack:udp_close(self.socket)
     self.stack:udp_close(self.roam_socket)
-    self.stack:remove_routes(function(route) return route.source == "subscriber" and route.interface == "cellular" end)
+    self.stack:remove_routes(is_subscriber_route)
     self.stack:remove_interface("cellular")
     self.towers, self.sessions, self.by_teid, self.by_address, self.pending = {}, {}, {}, {}, {}
     self.activating, self.activating_count, self.activating_order = {}, 0, {}
@@ -1072,7 +1085,8 @@ function Core:attach_complete(tower, phone, data)
         key = common.cell_key(self.crypto, session.secret, pending.cell or tower.id),
     })
     self:update_paths()
-    self:update_routes()
+    -- A router's network is sent to its phone from now on.
+    if session.routed or routed_of(self.subscribers[pending.sim] or {}) then self:update_routes() end
     self.on_event("attached", pending.sim, address.format(session.address), pending.cell or tower.id, tower.partner)
 
     -- Anything waiting for this phone can go now.
