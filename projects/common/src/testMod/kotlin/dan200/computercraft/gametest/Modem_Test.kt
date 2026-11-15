@@ -134,15 +134,15 @@ class Modem_Test {
 
             // Programs set the power, within the limit for placed computers.
             suspend fun power() = callPeripheral(modem, "getTransmitPower")!!.map { (it as Number).toDouble() }
-            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower), power())
+            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower, -30.0), power())
             assertEquals(Config.radioMaxTransmitPower, (callPeripheral(modem, "setTransmitPower", 1000)!![0] as Number).toDouble())
-            assertEquals(listOf(Config.radioMaxTransmitPower, Config.radioMaxTransmitPower), power())
+            assertEquals(listOf(Config.radioMaxTransmitPower, Config.radioMaxTransmitPower, -30.0), power())
             assertEquals(-30.0, (callPeripheral(modem, "setTransmitPower", -1000)!![0] as Number).toDouble())
             assertEquals(12.5, (callPeripheral(modem, "setTransmitPower", 12.5)!![0] as Number).toDouble())
             assertEquals(12.5, power()[0])
             // And back to the default, given none.
             assertEquals(Config.radioTransmitPower, (callPeripheral(modem, "setTransmitPower")!![0] as Number).toDouble())
-            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower), power())
+            assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower, -30.0), power())
         }
     }
 

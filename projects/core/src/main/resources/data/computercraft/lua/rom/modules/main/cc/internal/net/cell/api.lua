@@ -75,6 +75,14 @@ local tower_instance
 -- Each cell this computer runs, by its ID: the first (`tower_instance`) has the computer's, and there's one more for
 -- each further carrier the computer has a cell on.
 local tower_instances = {}
+-- The settings of the cell which runs now, which its towers and modem follow.
+local running_cell
+
+--[[ The power phones and cells send with, unless they were told otherwise, in dBm. A phone sends with as much as a
+pocket computer may (a placed computer or a turtle as a phone too), and a cell with as much as a phone can answer: cells
+(placed computers) hear 7dB better than pocket computers and turtles do, so a cell 7dB stronger than its phones is heard
+as far away as it hears them. A stronger cell would be heard where its phones couldn't reach it. ]]
+local PHONE_POWER, CELL_POWER = 23, 30
 
 -- Messages received and sent, oldest first. Each has a number, `n`, which stays the same as others come and go.
 local function read_messages()
@@ -144,6 +152,28 @@ end
 which the network stack doesn't make again by itself. This happens whenever the modem's block is replaced, such as
 when it's moved (Sable copies a block to its new place, and then removes the old one). So when a modem comes, put them
 back on a radio modem: the same one, if it's the same modem. ]]
+-- A power, as a file keeps it: a number of dBm, or nil.
+local function read_power(value)
+    if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then return nil end
+    return value
+end
+
+--[[ The power this computer's radio modem should send with: its cell's (what it was set to, or CELL_POWER) while it
+runs one, which a relay's phone sends with too, as they share the modem; or else its phone's (what it was set to, or
+PHONE_POWER) while it runs one; or else nil, the modem's own. ]]
+local function wanted_power()
+    if running_cell then return running_cell.power or CELL_POWER end
+    if phone_instance then return read_power(read_table(PHONE_FILE).power) or PHONE_POWER end
+    return nil
+end
+
+--[[ Set the radio modem's power to what it should be. A modem forgets its power when it's replaced, or its chunk
+unloads, so this is done whenever a phone or cell starts or stops, its power is changed, or a modem comes. ]]
+local function apply_power(modem)
+    modem = modem or radio_modem()
+    if modem then pcall(peripheral.call, modem, "setTransmitPower", wanted_power()) end
+end
+
 local function restore_interface(radio)
     if not radio or radio.stopped or stack.interfaces[radio.interface] then return end
     local modem, kind = radio_modem()
@@ -212,6 +242,9 @@ local function new_phone(operator, partners, equivalent)
             })
         end,
     }
+
+    phone_instance.apply_power = apply_power
+    apply_power(modem)
 
     -- Messages which were waiting to be sent when the phone last stopped (or were sent while cell service was off) go
     -- now, or once it has service, with the IDs they had: the network knows any it took then, and doesn't deliver
@@ -386,22 +419,13 @@ local function cell_settings(config)
         band = config.band ~= nil and read_band(config.band) or nil,
         interval = common.is_interval(config.interval) and config.interval or nil,
         pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil,
-        power = type(config.power) == "number" and config.power == config.power and math.abs(config.power) ~= math.huge
-            and config.power or nil,
+        power = read_power(config.power),
         service = config.service == "sms" and "sms" or nil,
         -- Whether the cell may be on carriers its networks don't offer.
         override = config.override == true or nil,
         -- A cell which was only just set up stands by until its bands are confirmed. Older ones never asked.
         confirmed = config.confirmed ~= false,
     }
-end
-
--- The settings of the cell which runs now, which its tower and modem follow.
-local running_cell
-
--- The power the cell sends with, if it was set: a modem forgets it when it's replaced, or its chunk unloads.
-local function apply_power(modem)
-    if running_cell and running_cell.power then pcall(peripheral.call, modem, "setTransmitPower", running_cell.power) end
 end
 
 -- Run a cell in the background: one cell, which serves the network of each core it reaches.
@@ -413,6 +437,7 @@ local function start_cell_service(config)
     if not radio_modem() then return nil, "A cell needs a wireless modem" end
     local signing = enclave.publicKey("cell.tower") or enclave.generate("cell.tower", "ed25519")
     running_cell = config
+    apply_power()
     background.cell = require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, band = config.band, interval = config.interval, pos = config.pos,
         service = config.service, standby = config.confirmed == false, override = config.override == true,
@@ -758,6 +783,7 @@ function api.info()
     info.enabled = chosen.off ~= true and (type(sim.network) == "string" or chosen.listen == true)
     info.selection = type(chosen.network) == "string" and chosen.network or "auto"
     info.bands, info.pinned = phone_bands(chosen.bands), common.is_id(chosen.pinned) and chosen.pinned or nil
+    info.power = read_power(chosen.power)
     info.roaming = info.roaming == true
     info.newer = info.newer == true
     info.unread = read_cached("unread", INBOX_FILE, function()
@@ -793,6 +819,7 @@ function api.activate(network, code)
     if phone_instance and phone_instance.state ~= "inactive" and phone_instance.state ~= "rejected" then
         phone_instance:stop()
         phone_instance = nil
+        apply_power()
     end
     -- Activating turns cell service on.
     local chosen = read_table(PHONE_FILE)
@@ -879,6 +906,7 @@ function api.setEnabled(enabled)
         if phone_instance then
             phone_instance:stop()
             phone_instance = nil
+            apply_power()
         end
         os.queueEvent("cell_state", "off")
         return true
@@ -894,6 +922,7 @@ function api.setEnabled(enabled)
     if sim and phone_instance and not phone_instance.operator then
         phone_instance:stop()
         phone_instance = nil
+        apply_power()
     end
     if not phone_instance then
         local ok, err = pcall(start_phone)
@@ -995,6 +1024,49 @@ function api.pinCell(cell)
     return true
 end
 
+-- The least and most power this computer's radio modem may send with, if it has one, and the power it sends with now.
+local function power_limits()
+    local modem = radio_modem()
+    if not modem then return nil end
+    local ok, now, most, least = pcall(peripheral.call, modem, "getTransmitPower")
+    if not ok or type(most) ~= "number" then return nil end
+    return type(least) == "number" and least or -30, most, now
+end
+
+-- What this computer is, to say whose limits they are.
+local function device_name()
+    if pocket then return "pocket computer" end
+    if turtle then return "turtle" end
+    return "computer"
+end
+
+function api.setPower(power)
+    load()
+    if power ~= nil then
+        if not read_power(power) then return nil, "A phone's power is a number of dBm" end
+        local least, most = power_limits()
+        if least and (power < least or power > most) then
+            return nil, ("This %s sends with %g to %g dBm"):format(device_name(), least, most)
+        end
+    end
+    local chosen = read_table(PHONE_FILE)
+    chosen.power = power
+    write_table(PHONE_FILE, chosen)
+    apply_power()
+    return true
+end
+
+function api.transmitPower()
+    load()
+    local least, most, now = power_limits()
+    local _, kind = radio_modem()
+    return {
+        power = read_power(read_table(PHONE_FILE).power), default = PHONE_POWER, device = device_name(), kind = kind,
+        now = now, least = least, most = most,
+        cell = running_cell and (running_cell.power or CELL_POWER) or nil,
+    }
+end
+
 -- A cell's settings, besides its cores, in the order they're checked.
 local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service", "override" }
 
@@ -1039,15 +1111,6 @@ local function check_cores(cores)
         return nil, ("A cell serves at most %d networks"):format(common.MAX_SIB_NETWORKS)
     end
     return list
-end
-
--- The least and most power this computer's radio modem may send with, if it has one.
-local function power_limits()
-    local modem = radio_modem()
-    if not modem then return nil end
-    local ok, _, most = pcall(peripheral.call, modem, "getTransmitPower")
-    if not ok or type(most) ~= "number" then return nil end
-    return -30, most
 end
 
 function api.startCell(core, settings)
@@ -1105,7 +1168,7 @@ function api.startCell(core, settings)
         end
         if again then
             background.cell:stop()
-            background.cell = nil
+            background.cell, running_cell = nil, nil
         end
     end
     write_table(CELL_CONFIG, config)
@@ -1188,6 +1251,7 @@ function api.configureCell(changes)
     if not cores[1] then
         service:stop()
         background.cell, running_cell = nil, nil
+        apply_power()
         return true, false
     end
     -- The area, and bands other than those it's on, are said to each core when the cell connects: so connect again.
@@ -1203,7 +1267,7 @@ function api.configureCell(changes)
     end
     if new.area ~= old.area or moves then
         service:stop()
-        background.cell = nil
+        background.cell, running_cell = nil, nil
         local start = {}
         for _, key in ipairs(CELL_SETTINGS) do start[key] = new[key] end
         start.cores, start.confirmed = cores, confirmed
@@ -1227,14 +1291,8 @@ function api.configureCell(changes)
     -- Its bands are confirmed: it goes on the air.
     if confirmed and running_cell.confirmed == false then service:go_on_air() end
     running_cell.confirmed = confirmed
-    if new.power ~= old.power and tower_instance and not tower_instance.stopped then
-        if new.power then
-            apply_power(tower_instance.modem)
-        else
-            -- Back to the modem's own power.
-            pcall(peripheral.call, tower_instance.modem, "setTransmitPower", nil)
-        end
-    end
+    -- (`old` is the running cell's settings, which were changed just now: so set the power whether it changed or not.)
+    apply_power()
     return true, false
 end
 
@@ -1247,6 +1305,7 @@ function api.stopCell()
     if background.cell then
         background.cell:stop()
         background.cell, running_cell = nil, nil
+        apply_power()
     end
 end
 
@@ -1265,6 +1324,7 @@ function api.cellInfo()
     end
     info.cores, info.enabled = cores, config.enabled ~= false
     for _, key in ipairs(CELL_SETTINGS) do info[key] = saved[key] end
+    info.default_power = CELL_POWER
     info.confirmed, info.override = saved.confirmed, saved.override == true
     return info
 end

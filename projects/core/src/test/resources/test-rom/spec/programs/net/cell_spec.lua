@@ -205,6 +205,14 @@ describe("The cell program", function()
                 phone.info.pinned = cell
                 return true
             end)
+            phone.power = { default = 23, device = "pocket computer", kind = "wireless", now = 23, least = -30, most = 23 }
+            stub(net.cell, "transmitPower", function() return phone.power end)
+            stub(net.cell, "setPower", function(power)
+                phone.calls[#phone.calls + 1] = { "setPower", power or "default" }
+                if power and power > 23 then return nil, "This pocket computer sends with -30 to 23 dBm" end
+                phone.power.power = power
+                return true
+            end)
             return phone
         end
 
@@ -270,6 +278,23 @@ describe("The cell program", function()
                 { "setBands", { "b20", "b3", "b3", "b1" } }, { "setBands", { "b33" } }, { "setBands", "any" },
                 { "pinCell", 12 }, { "pinCell", 18075 * 2 ^ 31 + 12 }, { "pinCell", "none" },
             }
+
+            -- How much power it sends with, and what it may send with.
+            phone.calls = {}
+            expect(run("power")):matches {
+                ok = true, error = "",
+                output = "The phone sends with 23 dBm, the default.\nThis pocket computer may send with -30 to 23 dBm.\n",
+            }
+            expect(run("power 17dBm")):matches {
+                ok = true, error = "",
+                output = "The phone sends with 17 dBm.\nThis pocket computer may send with -30 to 23 dBm.\n",
+            }
+            expect(run("power 30")):matches { ok = true, output = "", error = "This pocket computer sends with -30 to 23 dBm\n" }
+            expect(run("power loud")):matches { ok = true, output = "", error = "Expected a number of dBm, or 'default'.\n" }
+            expect(run("power default").output):str_match("^The phone sends with 23 dBm, the default.\n")
+            phone.power.cell = 30
+            expect(run("power").output):str_match("^The phone sends with this computer's cell's power, 30 dBm.\n")
+            expect(phone.calls):same { { "setPower", 17 }, { "setPower", 30 }, { "setPower", "default" } }
 
             -- What it was told is in what it says about itself: and, for a router, the network behind it.
             phone.info.bands, phone.info.pinned = { "b20", "b3" }, 12

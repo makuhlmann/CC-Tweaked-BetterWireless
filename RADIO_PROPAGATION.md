@@ -321,8 +321,10 @@ oracle for the whole planet, and would be the best possible height source here. 
 at the next server tick rather than immediately.
 
 Wireless modems (and pocket computers' and turtles' modems) gain `setTransmitPower(power)`, which sets the power in
-dBm, reduced to the device's limit, and returns what it was set to; and `getTransmitPower()`, which returns the power
-and the limit. The power lasts until it is set again or the modem is removed.
+dBm, reduced to the device's limit (or, given nothing, goes back to the default), and returns what it was set to; and
+`getTransmitPower()`, which returns the power, the most it may be set to, and the least. The power lasts until it is set
+again or the modem is removed. The cellular network sets it on the modems it uses: 23 dBm for phones and 30 dBm for
+cells, unless they're told otherwise (see NETWORK_CELLULAR.md).
 
 `PacketReceiver` keeps upstream's `receiveSameDimension(Packet, double)`, with a new default overload
 `receiveSameDimension(Packet, double, double signalStrength)`, so other mods' receivers keep working.

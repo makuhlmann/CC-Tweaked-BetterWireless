@@ -3,8 +3,8 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 --[[- The phone's menus, which run beneath its status bar: to read and write messages, a conversation with each number,
-to choose a network, to say which bands and which cell it may use, to turn cell service off and on, and to open the
-monitor.
+to choose a network, to say which bands and which cell it may use and how much power it sends with, to turn cell
+service off and on, and to open the monitor.
 
 Everything here is drawn for a pocket computer's screen, and works on wider ones. Basic computers get greys where
 advanced ones get colours, and everything can be done with the keyboard alone.
@@ -581,11 +581,52 @@ local function pin_screen()
     }
 end
 
+-- The power the phone sends with now, as `net.cell.transmitPower` describes it: its cell's, on a computer which runs
+-- one; or what it was set to; or the default.
+local function power_now(power)
+    return power.cell or power.power or power.default
+end
+
+-- How much power the phone sends with: typed in, within what this computer's modem may send with. Empty is the
+-- default. Returns what changed, to say, if anything did.
+local function power_screen()
+    local power, result = net.cell.transmitPower(), nil
+    local notes = {}
+    if power.least and power.most then
+        notes[#notes + 1] = ("This %s sends with %g to %g dBm."):format(power.device, power.least, power.most)
+    end
+    if power.kind == "ender" then notes[#notes + 1] = "An ender modem radiates less than it's set to." end
+    if power.cell then
+        notes[#notes + 1] = ("While this computer runs a cell, it sends with the cell's %g dBm."):format(power.cell)
+    end
+    notes[#notes + 1] = ("Empty: %g dBm. A cell hears the phone only as far as its power reaches."):format(power.default)
+    menu.input_screen {
+        title = "Transmit power", label = "dBm:", max = 8,
+        value = power.power and ("%g"):format(power.power) or "",
+        note = table.concat(notes, " "),
+        check = function(text)
+            local value
+            if text ~= "" then
+                value = tonumber(text)
+                if not value then return "Enter a number of dBm, or nothing for the default." end
+            end
+            local ok, err = net.cell.setPower(value)
+            if not ok then return tostring(err or "The power can't be set") end
+            result = value and ("Sending with %g dBm."):format(value)
+                or ("Sending with %g dBm, the default."):format(power.default)
+            return nil
+        end,
+    }
+    return result
+end
+
 local function advanced_screen()
+    local result
     list_screen {
         hint = { "Enter: change", "Q: back" },
         refresh = NETWORKS_REFRESH,
         title = function() return "Advanced settings" end,
+        note = function() return result end,
         items = function()
             local info = net.cell.info()
             return {
@@ -594,10 +635,21 @@ local function advanced_screen()
                     id = "pin", text = " Pinned cell",
                     tail = { { info.pinned and "#" .. common.cell_label(info.pinned) or "none", colours.lightGrey } },
                 },
+                {
+                    id = "power", text = " Transmit power",
+                    tail = { { ("%g dBm"):format(power_now(net.cell.transmitPower())), colours.lightGrey } },
+                },
             }
         end,
         choose = function(item)
-            if item.id == "bands" then bands_screen() else pin_screen() end
+            result = nil
+            if item.id == "bands" then
+                bands_screen()
+            elseif item.id == "pin" then
+                pin_screen()
+            else
+                result = power_screen()
+            end
             return nil
         end,
     }

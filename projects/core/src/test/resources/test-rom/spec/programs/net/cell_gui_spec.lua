@@ -16,7 +16,9 @@ describe("The cell program's GUI", function()
                 address = "10.64.0.2", heard = {}, events = {},
             },
             messages = {}, networks = {}, sent = {}, read = {}, deleted = {}, chosen = {}, enabled = {}, timers = {},
-            bands = {}, pins = {},
+            bands = {}, pins = {}, powers = {},
+            -- A pocket computer's modem, at the phone's default.
+            power = { default = 23, device = "pocket computer", kind = "wireless", now = 23, least = -30, most = 23 },
         }
 
         if not crypto then stub(_G, "crypto", {}) end
@@ -76,6 +78,13 @@ describe("The cell program's GUI", function()
             phone.pins[#phone.pins + 1] = cell or "none"
             if phone.refuse then return nil, phone.refuse end
             phone.info.pinned = cell
+            return true
+        end)
+        stub(net.cell, "transmitPower", function() return phone.power end)
+        stub(net.cell, "setPower", function(power)
+            phone.powers[#phone.powers + 1] = power or "default"
+            if phone.refuse then return nil, phone.refuse end
+            phone.power.power = power
             return true
         end)
         stub(net.cell, "setEnabled", function(enabled)
@@ -1419,6 +1428,60 @@ describe("The cell program's GUI", function()
 
                 app.key(keys.backspace)
                 expect(app.line(4)):str_match("^ Bands +b3$")
+            end)
+        end)
+
+        it("set how much power the phone sends with, and say what it may send with", function()
+            local phone = fake_phone()
+            run(phone, {}, function(app)
+                open(app)
+                expect(app.line(6)):str_match("^ Transmit power +23 dBm$")
+                app.key(keys.down, keys.down, keys.enter)
+                expect(app.lines(2, 4)):same { "Transmit power", "", "dBm:" }
+                expect(app.says("This pocket computer sends with -30 to 23 dBm.")):eq(true)
+                expect(app.says("Empty: 23 dBm. A cell hears the phone only as far as its power reaches.")):eq(true)
+
+                -- What isn't a number, or what the phone won't take, is said, and changes nothing.
+                app.type("lots")
+                app.key(keys.enter)
+                expect(app.says("Enter a number of dBm, or nothing for the default.")):eq(true)
+                expect(phone.powers):same {}
+                for _ = 1, 4 do app.key(keys.backspace) end
+                phone.refuse = "This pocket computer sends with -30 to 23 dBm"
+                app.type("30")
+                app.key(keys.enter)
+                expect(phone.powers):same { 30 }
+                expect(app.line(2)):eq("Transmit power")
+                expect(app.says("This pocket computer sends with -30 to 23 dBm")):eq(true)
+
+                phone.refuse = nil
+                app.key(keys.backspace, keys.backspace)
+                app.type("12.5")
+                app.key(keys.enter)
+                expect(phone.powers[2]):eq(12.5)
+                expect(app.line(2)):eq("Advanced settings")
+                expect(app.line(6)):str_match("^ Transmit power +12.5 dBm$")
+                expect(app.says("Sending with 12.5 dBm.")):eq(true)
+
+                -- It begins with what it was set to; emptied, the phone sends with its default.
+                app.key(keys.enter)
+                expect(app.line(4)):eq("dBm: 12.5")
+                for _ = 1, 4 do app.key(keys.backspace) end
+                app.key(keys.enter)
+                expect(phone.powers[3]):eq("default")
+                expect(app.says("Sending with 23 dBm, the default.")):eq(true)
+                expect(app.line(6)):str_match("^ Transmit power +23 dBm$")
+
+                -- On a computer which runs a cell, the cell's power is the one it sends with; an ender modem is weaker.
+                phone.power.cell, phone.power.kind, phone.power.device, phone.power.most = 30, "ender", "computer", 50
+                app.timers(2)
+                expect(app.line(6)):str_match("^ Transmit power +30 dBm$")
+                app.key(keys.enter)
+                expect(app.says("This computer sends with -30 to 50 dBm.")):eq(true)
+                expect(app.says("An ender modem radiates less than it's set to.")):eq(true)
+                expect(app.says("While this computer runs a cell, it sends with the cell's 30 dBm.")):eq(true)
+                app.key(keys.tab)
+                expect(app.line(2)):eq("Advanced settings")
             end)
         end)
 

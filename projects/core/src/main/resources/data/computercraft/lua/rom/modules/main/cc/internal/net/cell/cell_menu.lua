@@ -121,7 +121,7 @@ local function setting_values(info)
             or info.current_interval and ("as its core says (%g seconds)"):format(info.current_interval)
             or "as its core says",
         pos = info.pos and ("%d %d %d"):format(info.pos[1], info.pos[2], info.pos[3]) or "not said",
-        power = info.power and ("%g dBm"):format(info.power) or "the modem's own",
+        power = info.power and ("%g dBm"):format(info.power) or ("%g dBm (the default)"):format(info.default_power or 30),
         service = info.service == "sms" and "messages only" or "full",
     }
 end
@@ -234,7 +234,11 @@ local function changed_lines(info, key, value, restarted, name)
             say("The cell no longer says where it is.")
         end
     elseif key == "power" then
-        if value then say(("The cell sends with %g dBm."):format(value)) else say("The cell sends with its modem's own power.") end
+        if value then
+            say(("The cell sends with %g dBm."):format(value))
+        else
+            say(("The cell sends with %g dBm, the default: as far as phones can answer."):format(info.default_power or 30))
+        end
     elseif key == "service" then
         if value then
             say("The cell only carries messages now. Its phones move to a cell which carries everything, if there's one.")
@@ -329,7 +333,7 @@ local NOTES = {
     area = "A whole number. Empty: 0.",
     interval = "0.5 to 10 seconds. Empty: as its core says.",
     pos = "x y z. Empty: not said.",
-    power = "dBm. Empty: the modem's own.",
+    power = "dBm. Empty: 30, as far as phones can answer.",
 }
 
 -- What's in a setting's line to begin with: its value as it would be typed.

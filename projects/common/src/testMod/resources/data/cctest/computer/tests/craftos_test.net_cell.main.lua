@@ -20,6 +20,10 @@ local info = net.cell.info()
 if info.state ~= "attached" then error("Not attached: " .. tostring(info.state) .. " " .. tostring(info.activation_error), 0) end
 if info.subscriber.number ~= "100" then error("Wrong number " .. tostring(info.subscriber.number), 0) end
 
+-- A phone sends with 23 dBm, whatever the computer: so its cell, at 30 dBm, hears it as far away as it hears the cell.
+local radio = peripheral.find("modem", function(_, modem) return modem.isWireless() end)
+if radio.getTransmitPower() ~= 23 then error("The phone sends with " .. tostring(radio.getTransmitPower()) .. " dBm", 0) end
+
 -- What the monitor shows: the cell in use, checked, and the attach.
 local serving
 for _, cell in ipairs(info.heard) do

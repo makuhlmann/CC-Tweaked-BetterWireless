@@ -104,15 +104,16 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
     }
 
     /**
-     * Get the power this modem transmits with, and the most it may be set to.
+     * Get the power this modem transmits with, and the most and least it may be set to.
      *
-     * @return The power, in dBm, and the limit for this kind of device, in dBm.
+     * @return The power, in dBm, and the limits for this kind of device, in dBm.
      * @cc.treturn number The power, in dBm.
      * @cc.treturn number The most power this modem may be set to, in dBm.
+     * @cc.treturn number The least power this modem may be set to, in dBm.
      */
     @LuaFunction("getTransmitPower")
     public final Object[] getTransmitPowerForLua() {
-        return new Object[]{ getSetTransmitPower(), Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()) };
+        return new Object[]{ getSetTransmitPower(), Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()), MIN_TRANSMIT_POWER };
     }
 
     @Override

@@ -15,6 +15,7 @@ local function usage()
     print(name .. " network <name>|auto")
     print(name .. " bands [all|<band>...]")
     print(name .. " pin [<cell> [carrier]|off]")
+    print(name .. " power [<dBm>|default]")
     print(name .. " on|off")
     print(name .. " monitor")
     print(name .. " locate")
@@ -497,6 +498,34 @@ elseif command == "pin" and #args <= 3 then
         print(("The phone only uses cell #%s, and has no service where it can't hear it."):format(cell_label(pinned)))
     else
         print("The phone chooses its cell.")
+    end
+elseif command == "power" and #args <= 2 then
+    -- How much power the phone sends with: shown, or set.
+    if #args == 2 then
+        local power
+        if args[2] ~= "default" then
+            power = tonumber((args[2]:gsub("dBm$", "")))
+            if not power then
+                printError("Expected a number of dBm, or 'default'.")
+                return
+            end
+        end
+        local ok, err = net.cell.setPower(power)
+        if not ok then
+            printError(err)
+            return
+        end
+    end
+    local power = net.cell.transmitPower()
+    if power.cell then
+        print(("The phone sends with this computer's cell's power, %g dBm."):format(power.cell))
+    elseif power.power then
+        print(("The phone sends with %g dBm."):format(power.power))
+    else
+        print(("The phone sends with %g dBm, the default."):format(power.default))
+    end
+    if power.least and power.most then
+        print(("This %s may send with %g to %g dBm."):format(power.device, power.least, power.most))
     end
 elseif (command == "on" or command == "off") and #args == 1 then
     local ok, err = net.cell.setEnabled(command == "on")

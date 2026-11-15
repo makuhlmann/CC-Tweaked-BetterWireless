@@ -694,6 +694,27 @@ describe("The net library", function()
             clean()
         end)
 
+        it("keeps the power the phone was set to, and says what it may be", function()
+            -- No modem here, so no limits: only what a power is.
+            expect(net.cell.transmitPower()):same { default = 23, device = "computer" }
+            expect(net.cell.info().power):eq(nil)
+            expect(net.cell.setPower(17.5)):eq(true)
+            expect(net.cell.info().power):eq(17.5)
+            expect(net.cell.transmitPower()):same { power = 17.5, default = 23, device = "computer" }
+            for _, bad in ipairs { 0 / 0, math.huge, -math.huge } do
+                expect({ net.cell.setPower(bad) }):same { nil, "A phone's power is a number of dBm" }
+            end
+            expect(net.cell.info().power):eq(17.5)
+            expect.error(net.cell.setPower, "loud"):eq("bad argument #1 (number expected, got string)")
+            expect(net.cell.setPower(nil)):eq(true)
+            expect(net.cell.info().power):eq(nil)
+
+            -- What a file says which isn't a power isn't one.
+            write("/.net/phone", { power = "loud" })
+            expect(net.cell.info().power):eq(nil)
+            clean()
+        end)
+
         it("lists networks the SIM treats as its own with it", function()
             write("/.net/sim", {
                 network = "ACME", key = ("ab"):rep(32), signing = ("cd"):rep(32), id = "ACME-1", number = "1",

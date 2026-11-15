@@ -171,7 +171,8 @@ end)
 shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, text, previous)
     if index == 1 then
         return completion.choice(shell, text, previous, {
-            "activate ", "send ", "messages", "networks", "network ", "bands ", "pin ", "on", "off", "monitor", "gui", "bar ",
+            "activate ", "send ", "messages", "networks", "network ", "bands ", "pin ", "power ", "on", "off", "monitor", "gui",
+            "bar ",
         })
     elseif index == 2 and previous[2] == "network" then
         local choices = { "auto" }

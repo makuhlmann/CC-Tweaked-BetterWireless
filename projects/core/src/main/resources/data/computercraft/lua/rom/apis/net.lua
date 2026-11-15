@@ -1805,6 +1805,36 @@ cell = {
         return cellular().pinCell(cell)
     end,
 
+    --[[- Set the power the phone sends with, or let it send with its default: 23dBm, as much as a pocket computer may.
+
+    A cell hears a phone only as far as the phone's power reaches, however strong the cell is. Cells send with 30dBm
+    unless they're told otherwise, as they hear 7dB better than pocket computers and turtles do: so a phone sending with
+    23dBm reaches a cell from as far away as it hears it. Power belongs to the modem, so all the computer's messages
+    on it are sent with it while the phone runs. A computer which is a cell as well (a relay) sends with its cell's power.
+
+    @tparam[opt] number power The power, in dBm, within what this computer's modem may send with (see
+    `net.cell.transmitPower`); or `nil` for the default.
+    @treturn[1] true If it was set.
+    @treturn[2] nil If it couldn't be.
+    @treturn[2] string Why not.
+    ]]
+    setPower = function(power)
+        expect(1, power, "number", "nil")
+        return cellular().setPower(power)
+    end,
+
+    --[[- Get the power the phone sends with, and what it may be set to.
+
+    @treturn table The power it was set to (`power`, or `nil` for the default), the `default`, what this computer is
+    (`device`: `"computer"`, `"pocket computer"` or `"turtle"`), and, if it has a radio modem, its `kind`
+    (`"wireless"` or `"ender"`: an ender modem radiates less than it's set to), the power it sends with `now`, and the
+    `least` and `most` it may be set to, in dBm. If this computer runs a cell, `cell` is the power the cell sends with,
+    which its phone sends with too.
+    ]]
+    transmitPower = function()
+        return cellular().transmitPower()
+    end,
+
     --[[- Run a cell of a cellular network on this computer, in the background, from now on (also when the computer
     starts). It connects to the network's core, and if the core hasn't allowed this computer yet, waits until it does.
     This is for the `celld` program.
@@ -1828,7 +1858,7 @@ cell = {
     the cellular band it should be on (such as `"b20"`; or a list of bands and carriers, such as `{ "b20", "b3/2" }`, for
     a cell on each: a cell site with several bands, which is a cell of its own on each to phones), how often it sends system information, in seconds, where it is (its computer's block position,
     which it says in its system information, so phones can work out where they are), the power its modem sends with, in
-    dBm, `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
+    dBm (30 if not said: as far as phones, sending with 23, can answer), `"sms"` for a cell which only carries messages, such as a satellite: phones use it only when no cell which
     carries everything will do, and have no route for packets while they do; and whether it may be on carriers its
     networks don't offer (`override`).
     @treturn[1] true If it started.
@@ -1874,7 +1904,7 @@ cell = {
     pos? = { number, number, number }|boolean, power? = number|boolean, service? = string|boolean,
     override? = boolean, confirmed? = boolean } changes What to
     change, as `net.cell.startCell` takes it, and `cores`, every core it should connect to. `false` puts a setting back
-    as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, the modem's own power,
+    as it is when it's not set: area 0, any band, as often as its cores say, not saying where it is, 30dBm,
     and carrying everything. `confirmed = true` confirms the cell's bands as they're set, and `override` says whether
     it may be on carriers its networks don't offer.
     @treturn[1] true If it changed.
@@ -1928,7 +1958,7 @@ cell = {
     why; the `core`; the `network` it serves; its `id` and `fingerprint`, which the core's administrator checks before
     allowing it; every core it connects to (`cores`, or `nil` if it has none); whether it starts with the computer
     (`enabled`: false once it was stopped); its settings, if they were set: `area` (0 if not), `band`, `interval`, where it
-    says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm), `service` (`"sms"` if it only
+    says it is (`pos`, as `{ x, y, z }`), the power it sends with (`power`, in dBm, if it was set: otherwise `default_power`), `service` (`"sms"` if it only
     carries messages) and `override` (whether it may be on carriers its networks don't offer); while it's on the air, how often it sends system information now (`current_interval`, in
     seconds), the `carrier` it's on and its `ul` channel there, and `cells`, the same (with its `id`) for each cell the
     computer runs, when it's set to have cells on several bands or carriers (the first is the one `carrier` and `ul` are

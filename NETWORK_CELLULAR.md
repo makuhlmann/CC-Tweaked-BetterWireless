@@ -297,8 +297,13 @@ the design above:
     (up to twice its speed for that long), and for how badly the distances fit (as for one turned earlier). With too
     few distances for that, each may be off by its speed (from a cell's two newest distances) times its age. Cells at
     much the same height, seen from far away, say little about the phone's height; cells all at one height can't say
-    which side of them it is. A cell may also send with more power (`celld set power 30`, in dBm), which it sets
-    again whenever its modem is replaced.
+    which side of them it is.
+  - **Power.** Phones send with 23 dBm unless told otherwise (`cell power`, or Advanced settings in the menus;
+    `net.cell.setPower`): as much as a pocket computer may, whatever the computer is. Cells send with 30 dBm unless
+    told otherwise (`celld set power`): cells hear 7 dB better than pocket computers and turtles do (−100 dBm against
+    −93), so a cell 7 dB stronger than its phones is heard as far away as it hears them. A stronger cell is heard
+    where its phones can't answer it. The power is the modem's, set again whenever the modem is replaced: a relay's
+    phone sends with its cell's.
   - **Cells which only carry messages** (`celld set service sms`, or `service = "sms"` in `net.cell.startCell`'s settings)
     are for when nothing better will do: a satellite (up high, strong, sending system information every 10 seconds),
     for off-grid or emergency messages. The cell says so in its signed system information, carries its phones'
@@ -620,7 +625,8 @@ the design above:
     choosing one keeps the phone to it, and "Automatic" lets it choose), cell service off and on, and the monitor.
     Every screen is left with Q or Backspace (the first quits), but for a conversation, where Q is a letter and
     Backspace in an empty line leaves; and a key held down never leaves two at once.
-  - **Advanced settings** (in the menus, and `cell bands`, `cell pin`; `net.cell.setBands`, `net.cell.pinCell`): the
+  - **Advanced settings** (in the menus, and `cell bands`, `cell pin`, `cell power`; `net.cell.setBands`,
+    `net.cell.pinCell`, `net.cell.setPower`, which shows the device's limits as `net.cell.transmitPower` gives them): the
     bands the phone may use, and one cell to pin it to. A phone chooses its cell by itself, and nearly always should;
     these are for a phone which stays where it is and chooses badly, above all a relay's, whose phone is its cell's
     way to the core and should use a cell with a good link of its own rather than the strongest. On bands it may not

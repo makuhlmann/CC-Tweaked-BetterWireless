@@ -18,10 +18,18 @@ end
 if not shell.run("celld", "confirm") then error("Couldn't confirm the cell's bands", 0) end
 info = net.cell.cellInfo()
 if info.state ~= "serving" then error("The cell isn't serving: " .. tostring(info.state) .. " " .. tostring(info.error), 0) end
+-- A cell sends with 30 dBm unless told otherwise.
+local radio = peripheral.find("modem", function(_, modem) return modem.isWireless() end)
+if radio.getTransmitPower() ~= 30 then error("The cell sends with " .. tostring(radio.getTransmitPower()) .. " dBm", 0) end
 
 -- Its settings change one at a time while it serves. A band the network has no carrier in changes nothing.
 if shell.run("celld", "set", "band", "b3") then error("The cell took a band its network has no carrier in", 0) end
 if not shell.run("celld", "set", "pos", "1", "2", "3") then error("Couldn't say where the cell is", 0) end
+-- Its power changes at once, and back to 30 dBm when it's unset.
+if not shell.run("celld", "set", "power", "40") then error("Couldn't set the cell's power", 0) end
+if radio.getTransmitPower() ~= 40 then error("The cell sends with " .. tostring(radio.getTransmitPower()) .. " dBm, not 40", 0) end
+if not shell.run("celld", "unset", "power") then error("Couldn't unset the cell's power", 0) end
+if radio.getTransmitPower() ~= 30 then error("The cell sends with " .. tostring(radio.getTransmitPower()) .. " dBm, not 30", 0) end
 info = net.cell.cellInfo()
 if info.state ~= "serving" or info.band or not info.pos or info.pos[3] ~= 3 or info.cores[1] ~= "127.0.0.1" then
     error("The cell's settings aren't as they should be: " .. textutils.serialise(info), 0)
