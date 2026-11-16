@@ -128,6 +128,26 @@ Taking the better path means a wooden shed between two modems costs a few dB (th
 diffraction loss over its top (not the sum of every stone block inside it, which the old model did), and a deep cave
 is cut off.
 
+The profile has at most `profile_samples` evenly spread points, which on a long link are several blocks apart (16 at
+8km), so a house right next to a modem would fall between them. On such links every block within `block_radius` of
+each end is sampled too: that's where a building matters most.
+
+**Reflections.** Besides the direct path, the signal may reflect once off a wall near either end (the image method),
+which brings some of it round whatever is in the way there: in a village, the wall of the house across the street.
+Near an end whose direct ray hits something on the way out (and reaches open air), every vertical plane of block faces
+within 24 blocks is tried: the other end is mirrored in it, and where the line to the image meets the plane must be a
+wall's face (a block at least half full, of anything but leaves or water) with open space in front. The leg to the wall
+is walked, and the leg on, as far as this end's section of the link; beyond that, the path shares the direct path. The
+reflection costs what Fresnel's coefficient says for the wall's material (an electric field along the wall: concrete
+about 8dB head-on and next to nothing at a glancing angle, wood more, metal nothing), and the wall only reflects as
+much as it covers of the first Fresnel zone around the point (sampled at 21 points, with the zone stretched along a
+wall the path meets at an angle): a lone block hardly at all. At most 8 reflections are kept near each end. The
+reflected paths' powers add to the direct path's. In a village scene (a cell 2.5km off at an angle to the streets, a
+house in the way, a neighbour's wall across the street) the signal comes back from 129-145dB (lost) to 106-114dB, 6dB
+short of the open street; behind a lone house in a field nothing changes. The walks for reflections don't depend on
+the budget a link is traced for (where the direct path's walks were cut short, they're walked again, to a fixed cap), so
+a cached path answers as a fresh trace would. `reflections = false` turns them off.
+
 Optionally, the terrain profile is bent by the earth's curvature (`earth_radius`, with the standard 4/3 effective
 radius factor for atmospheric refraction). This matters for Tellus at 1:1 scale, where the bulge is 1.5m at the
 middle of a 10km link and 36m over 50km.
@@ -200,6 +220,13 @@ modem reach ~4km. A 40-block ridge halfway along a 1km link costs ~34dB at 150 M
 There is no "material" on blocks any more, so blocks are classified by sound type (a good proxy for what a block is
 made of), a few tags (leaves, ice, dirt, sand) and fluids. Partial blocks attenuate in proportion to their collision
 volume; blocks with no collision count as 10% full.
+
+Blocks people build with (planks, logs, bricks, cobblestone, stone bricks, glass, wool, metal) are marked as **built**:
+a wall one block thick stands for a real wall about 30cm thick, so built blocks count `built_loss_scale` (0.3) of a
+full block. Natural rock (the base stone tags, terracotta, ores, sandstone, end stone and a few more), dirt, sand, snow,
+ice, water and plants keep their full loss, so hills, caves and bunkers block as before. Behind a stone house, low
+frequencies now get through it (about 11dB at 450MHz, 17dB at 800MHz for two walls) while high ones still go over the
+roof (27-29dB at 1.8-2.6GHz), as in real life, where buildings stop high bands much more than low ones.
 
 Attenuation per material is frequency dependent. Most use the ITU-R P.2040 model (`ε' = a·fᵇ`, `σ = c·fᵈ`), water uses
 a Debye relaxation model and vegetation an empirical fit in the spirit of ITU-R P.833:
@@ -350,6 +377,8 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `ground_reflection` | `true` | Two-ray model (height matters) vs free space only. |
 | `min_antenna_height` | 2 | Minimum antenna height above average terrain, in metres. |
 | `material_loss_scale` | 1 | Multiplier for block attenuation. |
+| `built_loss_scale` | 0.3 | Further multiplier for blocks people build with: a one-block wall stands for one this many metres thick. |
+| `reflections` | `true` | Whether signals reflect once off walls near each end of a link. |
 | `block_radius` | 64 | How far from each modem to look for a way out of a building, cave or tunnel, for the path over the terrain. |
 | `profile_samples` | 512 | Maximum terrain profile points. |
 | `storm_noise` | 6 | Thunderstorm noise in dB. |
@@ -377,12 +406,19 @@ doesn't come back within a minute is forgotten.
 
 ## 6. Limitations and future work
 
-- **No reflections or multipath.** Signals don't bounce around corners or down streets; only diffraction over the
-  profile. Deygout also tends to over-estimate loss over many ridges (ITU-R P.526's delta-Bullington method would be a
-  more accurate replacement).
+- **One reflection, near the ends, off axis-aligned walls.** Signals reflect once off vertical block faces within 24
+  blocks of an end; not twice, not off sloped or diagonal surfaces, and not with diffuse scattering. Whether a wall
+  covers the Fresnel zone is judged from how far it reaches along and up from the point the path meets it, so windows
+  and doors in it are ignored. A study (in scratch code) put the cost at +1-3% block lookups and +3-10% time for links
+  with something in the way near an end, and nothing for clear links. Deygout also tends to over-estimate loss over
+  many ridges (ITU-R P.526's delta-Bullington method would be a more accurate replacement).
 - **Fresnel-zone obstruction of a clear path is ignored**, by design: the two-ray model already accounts for nearby
   ground, and counting both cost 6dB on perfectly flat terrain.
 - **Sideways diffraction** around a building corner isn't modelled; the profile is a vertical slice along the path.
+  The study put its gain at 1-8dB behind a house, for 13-21% more work on obstructed links, so it was left out.
+- **The over path counts the ground near the antennas twice** once the direct ray is blocked: the two-ray model, and the
+  ground's intrusion into the Fresnel zone (about 12dB at 450-800MHz on flat ground). And the profile ignores
+  everything within 1.5 blocks of an antenna in the open, so a thin wall right next to one is missed by the over path.
 - **Materials are guessed from sound types.** A data-driven override (block tags such as
   `computercraft:radio/metal`, or a data map with per-block ITU parameters) would let packs fix modded blocks.
 - **Heights are cached in memory only.** Persisting snapshots would avoid disk scans after a restart, though the scans

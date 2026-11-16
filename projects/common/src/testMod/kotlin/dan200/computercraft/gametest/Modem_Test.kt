@@ -20,6 +20,7 @@ import dan200.computercraft.shared.config.Config
 import dan200.computercraft.shared.peripheral.modem.wired.CableBlock
 import dan200.computercraft.shared.peripheral.modem.wired.CableModemVariant
 import dan200.computercraft.shared.peripheral.modem.wired.WiredModemFullBlockEntity
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.BlockRadioProperties
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.DimensionMapping
 import dan200.computercraft.test.core.assertArrayEquals
 import dan200.computercraft.test.core.computer.LuaTaskContext
@@ -30,6 +31,7 @@ import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -37,6 +39,29 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration.Companion.milliseconds
 
 class Modem_Test {
+    /**
+     * Blocks people build with lose less than natural terrain: stone as the world generates it is natural (which takes
+     * the world's tags), while cobblestone, stone bricks and planks are built.
+     */
+    @GameTest(template = Structures.DEFAULT)
+    fun Built_blocks_are_told_from_terrain(helper: GameTestHelper) = helper.sequence {
+        thenExecute {
+            fun built(block: Block) = BlockRadioProperties.get(block.defaultBlockState()).built()
+            for (block in listOf(
+                Blocks.STONE, Blocks.DEEPSLATE, Blocks.GRANITE, Blocks.TUFF, Blocks.NETHERRACK, Blocks.DIRT, Blocks.SAND,
+                Blocks.GRAVEL, Blocks.IRON_ORE, Blocks.DIAMOND_ORE, Blocks.SANDSTONE, Blocks.TERRACOTTA, Blocks.OAK_LEAVES,
+            )) {
+                if (built(block)) throw AssertionError("$block should be natural terrain")
+            }
+            for (block in listOf(
+                Blocks.COBBLESTONE, Blocks.STONE_BRICKS, Blocks.POLISHED_ANDESITE, Blocks.OAK_PLANKS, Blocks.OAK_LOG,
+                Blocks.BRICKS, Blocks.GLASS, Blocks.IRON_BLOCK,
+            )) {
+                if (!built(block)) throw AssertionError("$block should be built")
+            }
+        }
+    }
+
     @GameTest
     fun Have_peripherals(helper: GameTestHelper) = helper.sequence {
         thenOnComputer {

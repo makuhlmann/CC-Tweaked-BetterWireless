@@ -10,15 +10,53 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
  * @param material The material the block is made of.
  * @param fill     How much of the block is filled by the material, between 0 and 1. A fence is mostly air, a slab is
  *                 half full.
+ * @param built    Whether the block is one people build with (planks, bricks, cobblestone, glass), rather than natural
+ *                 terrain. A wall one block thick stands for a much thinner wall, so built blocks lose less (see
+ *                 {@link RadioEnvironment#builtLossScale()}).
  */
-public record BlockRadioInfo(RadioMaterial material, float fill) {
-    public static final BlockRadioInfo AIR = new BlockRadioInfo(RadioMaterial.AIR, 0);
+public record BlockRadioInfo(RadioMaterial material, float fill, boolean built) {
+    public static final BlockRadioInfo AIR = new BlockRadioInfo(RadioMaterial.AIR, 0, false);
 
     public BlockRadioInfo {
         if (fill < 0 || fill > 1) throw new IllegalArgumentException("fill must be between 0 and 1");
     }
 
+    /**
+     * A block of natural terrain.
+     *
+     * @param material The material the block is made of.
+     * @param fill     How much of the block is filled by the material, between 0 and 1.
+     */
+    public BlockRadioInfo(RadioMaterial material, float fill) {
+        this(material, fill, false);
+    }
+
+    /**
+     * A full block of natural terrain.
+     *
+     * @param material The material the block is made of.
+     * @return The block's properties.
+     */
     public static BlockRadioInfo full(RadioMaterial material) {
-        return new BlockRadioInfo(material, 1);
+        return new BlockRadioInfo(material, 1, false);
+    }
+
+    /**
+     * A full block people build with.
+     *
+     * @param material The material the block is made of.
+     * @return The block's properties.
+     */
+    public static BlockRadioInfo built(RadioMaterial material) {
+        return new BlockRadioInfo(material, 1, true);
+    }
+
+    /**
+     * Whether a signal can reflect off this block's face: it's at least half full of something solid.
+     *
+     * @return Whether it can.
+     */
+    public boolean reflects() {
+        return fill >= 0.5f && material.reflects();
     }
 }

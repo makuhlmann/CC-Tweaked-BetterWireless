@@ -38,6 +38,8 @@ public final class Config {
     public static boolean radioGroundReflection = true;
     public static double radioMinAntennaHeight = 2;
     public static double radioMaterialLossScale = 1;
+    public static double radioBuiltLossScale = 0.3;
+    public static boolean radioReflections = true;
     public static int radioVoxelRadius = 64;
     public static int radioProfileSamples = 512;
     public static double radioStormPenalty = 6;

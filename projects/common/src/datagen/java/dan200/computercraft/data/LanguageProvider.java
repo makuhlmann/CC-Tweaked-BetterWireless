@@ -298,6 +298,8 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioGroundReflection, "Ground reflection");
         addConfigEntry(ConfigSpec.radioMinAntennaHeight, "Minimum antenna height (m)");
         addConfigEntry(ConfigSpec.radioMaterialLossScale, "Material loss multiplier");
+        addConfigEntry(ConfigSpec.radioBuiltLossScale, "Built block loss multiplier");
+        addConfigEntry(ConfigSpec.radioReflections, "Reflections");
         addConfigEntry(ConfigSpec.radioVoxelRadius, "Block scan radius");
         addConfigEntry(ConfigSpec.radioProfileSamples, "Terrain profile samples");
         addConfigEntry(ConfigSpec.radioStormPenalty, "Thunderstorm noise (dB)");

@@ -431,7 +431,7 @@ public final class RadioPropagationService {
         var missing = evaluation.missing;
         if (missing == null) {
             var chunks = new LongOpenHashSet();
-            PropagationModel.forEachSample(evaluation.from.x, evaluation.from.z, evaluation.to.x, evaluation.to.z, env.maxProfileSamples(),
+            PropagationModel.forEachProfileColumn(evaluation.from.x, evaluation.from.z, evaluation.to.x, evaluation.to.z, env,
                 (i, x, z) -> chunks.add(ChunkPos.pack(x >> 4, z >> 4)));
             evaluation.missing = missing = chunks;
         }

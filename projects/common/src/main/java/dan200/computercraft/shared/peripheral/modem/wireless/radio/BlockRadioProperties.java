@@ -7,12 +7,17 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 import net.minecraft.core.BlockPos;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -20,6 +25,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * There is no reliable "material" property on blocks any more, so we guess from a block's sound type (which is a decent
  * proxy for what it is made of), a few tags, and its collision shape.
+ * <p>
+ * Blocks people build with (planks, logs, bricks, cobblestone, stone bricks, glass, wool, metal) are marked as built:
+ * a wall one block thick stands for a much thinner real wall, so they lose less than natural terrain of the same
+ * material (see {@link RadioEnvironment#builtLossScale()}). Natural rock is stone as the world generates it (the base
+ * stone tags, terracotta, ores, and a few more); dirt, sand, snow, ice, water and plants are always natural.
  */
 public final class BlockRadioProperties {
     private static final IdentityHashMap<SoundType, RadioMaterial> SOUND_MATERIALS = new IdentityHashMap<>();
@@ -27,6 +37,23 @@ public final class BlockRadioProperties {
 
     /** Plants and other blocks with no collision are mostly air. */
     private static final float NON_SOLID_FILL = 0.1f;
+
+    /** Tags of rock as the world generates it. */
+    private static final List<TagKey<Block>> NATURAL_ROCK_TAGS = List.of(
+        BlockTags.BASE_STONE_OVERWORLD, BlockTags.BASE_STONE_NETHER, BlockTags.STONE_ORE_REPLACEABLES,
+        BlockTags.DEEPSLATE_ORE_REPLACEABLES, BlockTags.TERRACOTTA, BlockTags.IRON_ORES, BlockTags.COPPER_ORES,
+        BlockTags.GOLD_ORES
+    );
+
+    /** Natural rock (and crystal) which none of those tags has. */
+    private static final Set<Block> NATURAL_ROCK = Set.of(
+        Blocks.SANDSTONE, Blocks.RED_SANDSTONE, Blocks.END_STONE, Blocks.BEDROCK, Blocks.OBSIDIAN, Blocks.CRYING_OBSIDIAN,
+        Blocks.CALCITE, Blocks.DRIPSTONE_BLOCK, Blocks.MAGMA_BLOCK, Blocks.SMOOTH_BASALT, Blocks.AMETHYST_BLOCK,
+        Blocks.BUDDING_AMETHYST, Blocks.NETHER_QUARTZ_ORE, Blocks.NETHER_GOLD_ORE, Blocks.ANCIENT_DEBRIS, Blocks.GLOWSTONE,
+        Blocks.COAL_ORE, Blocks.DEEPSLATE_COAL_ORE, Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE, Blocks.LAPIS_ORE,
+        Blocks.DEEPSLATE_LAPIS_ORE, Blocks.DIAMOND_ORE, Blocks.DEEPSLATE_DIAMOND_ORE, Blocks.EMERALD_ORE,
+        Blocks.DEEPSLATE_EMERALD_ORE
+    );
 
     static {
         for (var sound : new SoundType[]{
@@ -153,6 +180,28 @@ public final class BlockRadioProperties {
             material = RadioMaterial.GROUND;
         }
 
-        return new BlockRadioInfo(material, (float) fill);
+        return new BlockRadioInfo(material, (float) fill, isBuilt(state, material));
+    }
+
+    /**
+     * Whether a block is one people build with, rather than natural terrain.
+     *
+     * @param state    The block state.
+     * @param material The material it was found to be made of.
+     * @return Whether it's built.
+     */
+    private static boolean isBuilt(BlockState state, RadioMaterial material) {
+        return switch (material) {
+            case ROCK, WOOD, BRICK, GLASS, FABRIC, METAL -> !isNaturalRock(state);
+            default -> false;
+        };
+    }
+
+    private static boolean isNaturalRock(BlockState state) {
+        if (NATURAL_ROCK.contains(state.getBlock())) return true;
+        for (var tag : NATURAL_ROCK_TAGS) {
+            if (state.is(tag)) return true;
+        }
+        return false;
     }
 }

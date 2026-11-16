@@ -123,6 +123,43 @@ public enum RadioMaterial {
     }
 
     /**
+     * Whether a signal reflects off a wall of this material. Air doesn't, and nor do leaves or water, which make no
+     * walls.
+     *
+     * @return Whether it does.
+     */
+    public boolean reflects() {
+        return this != AIR && this != VEGETATION && this != WATER;
+    }
+
+    /**
+     * How much a signal loses reflecting off a smooth wall of this material: Fresnel's coefficient for an electric field
+     * along the wall (a vertical antenna and a vertical wall), from the material's permittivity (ITU-R P.2040). Concrete
+     * loses about 8dB head-on, and almost nothing at a grazing angle; metal nothing at all.
+     *
+     * @param frequencyMHz The frequency, in MHz.
+     * @param cosIncidence The cosine of the angle between the path and the wall's normal: 1 head-on, 0 grazing.
+     * @return The loss, in dB, or infinity if the material doesn't reflect.
+     */
+    public double reflectionLoss(double frequencyMHz, double cosIncidence) {
+        if (this == METAL) return 0;
+        if (!reflects()) return Double.POSITIVE_INFINITY;
+        var frequency = Math.clamp(frequencyMHz, MIN_FREQUENCY, MAX_FREQUENCY);
+        var ghz = frequency / 1000.0;
+        var permittivity = a * Math.pow(ghz, b);
+        var lossFactor = RadioMath.conductivityToLossFactor(Math.max(minConductivity, c * Math.pow(ghz, d)), frequency);
+        var cos = Math.clamp(cosIncidence, 0, 1);
+
+        // √(ε' − jε'' − sin²θ), the root with a negative imaginary part, and then (cosθ − √…) / (cosθ + √…).
+        var real = permittivity - (1 - cos * cos);
+        var modulus = Math.hypot(real, lossFactor);
+        var rootReal = Math.sqrt((modulus + real) / 2);
+        var rootImaginary = Math.sqrt(Math.max(0, (modulus - real) / 2));
+        var gamma = Math.hypot(cos - rootReal, rootImaginary) / Math.hypot(cos + rootReal, rootImaginary);
+        return -20 * Math.log10(Math.max(gamma, 1e-9));
+    }
+
+    /**
      * Every material's attenuation at a frequency, indexed by {@link #ordinal()}. Each frequency's is computed once.
      *
      * @param frequencyMHz The frequency, in MHz.

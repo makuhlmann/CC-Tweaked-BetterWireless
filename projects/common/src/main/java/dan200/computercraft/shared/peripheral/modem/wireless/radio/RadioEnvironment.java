@@ -15,6 +15,9 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
  * @param groundReflection       Whether to use the two-ray ground reflection model, rather than just free space loss.
  * @param minAntennaHeight       The minimum height of an antenna above the average terrain, in metres.
  * @param materialLossScale      A multiplier applied to all material attenuation.
+ * @param builtLossScale         A further multiplier for blocks people build with (see {@link BlockRadioInfo#built()}):
+ *                               a wall one block thick stands for a wall about this many metres thick.
+ * @param reflections            Whether signals reflect off walls near each end of a link, once.
  * @param voxelRadius            How far from each end of the link, in blocks, we look for the signal to leave any
  *                               enclosure, so it can go over the terrain.
  * @param maxProfileSamples      The maximum number of points we sample along the terrain profile.
@@ -28,11 +31,13 @@ public record RadioEnvironment(
     boolean groundReflection,
     double minAntennaHeight,
     double materialLossScale,
+    double builtLossScale,
+    boolean reflections,
     int voxelRadius,
     int maxProfileSamples,
     double ceilingUnknownFill
 ) {
-    public static final RadioEnvironment DEFAULT = new RadioEnvironment(1, 1, 0, true, 2, 1, 64, 512, 0.02);
+    public static final RadioEnvironment DEFAULT = new RadioEnvironment(1, 1, 0, true, 2, 1, 0.3, true, 64, 512, 0.02);
 
     /**
      * The total path loss two antennas at the minimum height experience over flat, open ground. This is used to derive a

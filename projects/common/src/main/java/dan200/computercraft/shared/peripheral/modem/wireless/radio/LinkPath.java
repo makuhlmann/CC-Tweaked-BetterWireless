@@ -6,9 +6,12 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
 import org.jspecify.annotations.Nullable;
 
+import java.util.List;
+
 /**
  * What lies along a link between two antennas, whatever the frequency: how far apart and how high they are, how much
- * of each material the signal passes through, and the obstacles it diffracts over.
+ * of each material the signal passes through, the obstacles it diffracts over, and the walls near either end it may
+ * reflect off.
  * <p>
  * Finding these means walking the blocks along the link and sampling the terrain, which is the expensive part of
  * evaluating it. Turning them into a loss at a particular frequency ({@link #evaluate(double)}) is cheap, so a link is
@@ -31,6 +34,7 @@ public final class LinkPath {
     private final double @Nullable [] txEscape;
     private final double @Nullable [] rxEscape;
     private final RadioMath.@Nullable DiffractionEdge diffraction;
+    private final List<Reflection> reflections;
 
     /**
      * Create a path.
@@ -49,10 +53,12 @@ public final class LinkPath {
      *                         {@code null} if it doesn't.
      * @param rxEscape         The same for the second antenna.
      * @param diffraction      The obstacles the signal diffracts over once it has left both enclosures, if any.
+     * @param reflections      The paths reflected off walls near either end.
      */
     LinkPath(
         double distance, boolean groundReflection, double height1, double height2, double budget, boolean walked,
-        double[] through, double @Nullable [] txEscape, double @Nullable [] rxEscape, RadioMath.@Nullable DiffractionEdge diffraction
+        double[] through, double @Nullable [] txEscape, double @Nullable [] rxEscape, RadioMath.@Nullable DiffractionEdge diffraction,
+        List<Reflection> reflections
     ) {
         this.distance = distance;
         this.groundReflection = groundReflection;
@@ -64,6 +70,7 @@ public final class LinkPath {
         this.txEscape = txEscape;
         this.rxEscape = rxEscape;
         this.diffraction = diffraction;
+        this.reflections = reflections;
     }
 
     /**
@@ -106,7 +113,7 @@ public final class LinkPath {
      */
     public LinkResult evaluate(double frequencyMHz) {
         var base = baseLoss(distance, groundReflection, height1, height2, frequencyMHz);
-        if (!walked) return new LinkResult(base, base, 0, 0, 0);
+        if (!walked) return new LinkResult(base, base, 0, 0, 0, Double.POSITIVE_INFINITY);
 
         var attenuation = RadioMaterial.attenuationTable(frequencyMHz);
         var through = loss(attenuation, this.through);
@@ -117,7 +124,30 @@ public final class LinkPath {
             over = loss(attenuation, txEscape) + loss(attenuation, rxEscape) + diffraction;
         }
 
-        return new LinkResult(base + Math.min(through, over), base, through, over, diffraction);
+        var direct = base + Math.min(through, over);
+        if (reflections.isEmpty()) return new LinkResult(direct, base, through, over, diffraction, Double.POSITIVE_INFINITY);
+
+        // Each reflected path brings some of the signal by another way, which adds to what comes directly.
+        var reflectedPower = 0.0;
+        for (var reflection : reflections) {
+            var extra = reflection.loss(frequencyMHz, attenuation);
+            if (extra == Double.POSITIVE_INFINITY) continue;
+            var loss = baseLoss(reflection.length(), groundReflection, height1, height2, frequencyMHz) + extra;
+            reflectedPower += Math.pow(10, -loss / 10);
+        }
+        if (reflectedPower <= 0) return new LinkResult(direct, base, through, over, diffraction, Double.POSITIVE_INFINITY);
+        var reflected = -10 * Math.log10(reflectedPower);
+        var total = -10 * Math.log10(Math.pow(10, -direct / 10) + reflectedPower);
+        return new LinkResult(total, base, through, over, diffraction, reflected);
+    }
+
+    /**
+     * The paths reflected off walls near either end.
+     *
+     * @return The reflections.
+     */
+    List<Reflection> reflections() {
+        return reflections;
     }
 
     /**

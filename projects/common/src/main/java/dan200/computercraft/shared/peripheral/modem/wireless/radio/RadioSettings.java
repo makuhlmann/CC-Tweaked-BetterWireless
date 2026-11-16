@@ -76,6 +76,8 @@ public record RadioSettings(
             Config.radioGroundReflection,
             Config.radioMinAntennaHeight,
             Config.radioMaterialLossScale,
+            Config.radioBuiltLossScale,
+            Config.radioReflections,
             Config.radioVoxelRadius,
             Config.radioProfileSamples,
             Config.radioCeilingUnknownFill

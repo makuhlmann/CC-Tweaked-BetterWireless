@@ -6,10 +6,13 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
+import net.jqwik.api.statistics.Statistics;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.function.IntBinaryOperator;
@@ -317,6 +320,140 @@ public class PropagationModelTest {
         assertTrue(link.through() < rock * 12, "The space beneath it shouldn't: " + link.through());
     }
 
+    @Test
+    public void builtWallsLoseLessThanNaturalRock() {
+        // The same wall as above, of cobblestone rather than stone: it stands for a wall a third of a metre thick.
+        var terrain = new FakeTerrain((x, z) -> x == 10 ? GROUND + 200 : GROUND);
+        terrain.solid = (x, y, z) -> x == 10 && y < GROUND + 200 ? BlockRadioInfo.built(RadioMaterial.ROCK) : null;
+
+        var link = evaluate(terrain, 0, 0, 100, VHF);
+        assertFalse(link.diffracted(), "Signal should go through the wall");
+        assertEquals(ENV.builtLossScale() * RadioMaterial.ROCK.attenuation(VHF), link.through(), 0.2);
+
+        var unscaled = new RadioEnvironment(1, 1, 0, true, 2, 1, 1, true, 64, 512, 0.02);
+        var full = PropagationModel.evaluate(0.5, GROUND + 1.5, 0.5, 100.5, GROUND + 1.5, 0.5, VHF, BUDGET + 200, unscaled, terrain);
+        assertEquals(RadioMaterial.ROCK.attenuation(VHF), full.through(), 0.5);
+    }
+
+    @Test
+    public void wallsReflectAsFresnelSays() {
+        // Concrete head-on loses about 8dB, a glancing reflection almost nothing, metal nothing; air doesn't reflect.
+        assertEquals(8, RadioMaterial.ROCK.reflectionLoss(800, 1), 1);
+        assertTrue(RadioMaterial.ROCK.reflectionLoss(800, 0.02) < 0.5);
+        assertTrue(RadioMaterial.WOOD.reflectionLoss(800, 1) > RadioMaterial.ROCK.reflectionLoss(800, 1), "Wood reflects less");
+        assertEquals(0, RadioMaterial.METAL.reflectionLoss(800, 1), 1e-9);
+        assertEquals(Double.POSITIVE_INFINITY, RadioMaterial.AIR.reflectionLoss(800, 1));
+        assertEquals(Double.POSITIVE_INFINITY, RadioMaterial.VEGETATION.reflectionLoss(800, 1));
+    }
+
+    /**
+     * A house: built stone walls from the ground to {@code top}, a wooden roof above, and air inside.
+     *
+     * @param x0  Its first column along X.
+     * @param x1  Its last column along X.
+     * @param z0  Its first column along Z.
+     * @param z1  Its last column along Z.
+     * @param top The height of the top of its walls.
+     */
+    private record House(int x0, int x1, int z0, int z1, int top) {
+        boolean covers(int x, int z) {
+            return x >= x0 && x <= x1 && z >= z0 && z <= z1;
+        }
+
+        @Nullable BlockRadioInfo block(int x, int y, int z) {
+            if (!covers(x, z) || y < GROUND || y > top + 1) return null;
+            if (y == top + 1) return BlockRadioInfo.built(RadioMaterial.WOOD);
+            var edge = x == x0 || x == x1 || z == z0 || z == z1;
+            return edge ? BlockRadioInfo.built(RadioMaterial.ROCK) : BlockRadioInfo.AIR;
+        }
+    }
+
+    /**
+     * Flat ground with houses on it.
+     *
+     * @param houses The houses.
+     * @return The terrain.
+     */
+    private static FakeTerrain houses(List<House> houses) {
+        var terrain = new FakeTerrain((x, z) -> {
+            for (var house : houses) {
+                if (house.covers(x, z)) return house.top() + 2;
+            }
+            return GROUND;
+        });
+        terrain.solid = (x, y, z) -> {
+            for (var house : houses) {
+                var block = house.block(x, y, z);
+                if (block != null) return block;
+            }
+            return null;
+        };
+        return terrain;
+    }
+
+    /**
+     * A cell on a 30 block mast, 2.5km away at an angle to a village's streets; and a player with a phone there.
+     *
+     * @param houses    The village's houses.
+     * @param frequency The frequency, in MHz.
+     * @param env       The model parameters.
+     * @return The link between them.
+     */
+    private static LinkResult village(List<House> houses, double frequency, RadioEnvironment env) {
+        return PropagationModel.evaluate(0.5, GROUND + 30, -1500.5, 2001.5, GROUND + 1.62, 0.5, frequency, BUDGET + 200, env, houses(houses));
+    }
+
+    /** The house in the way of the cell, from where the player stands. */
+    private static final House IN_THE_WAY = new House(1992, 1999, -8, -1, 68);
+
+    @Test
+    public void reflectionsBringTheSignalRoundAHouse() {
+        var open = village(List.of(), 800, ENV);
+        var behind = village(List.of(IN_THE_WAY), 800, ENV);
+        // A neighbour's long wall across the street, which the signal from the cell meets at an angle and reflects off,
+        // round the house.
+        var neighbour = new House(1984, 1998, 8, 14, 69);
+        var reflected = village(List.of(IN_THE_WAY, neighbour), 800, ENV);
+
+        assertEquals(Double.POSITIVE_INFINITY, open.reflected(), "Nothing in the way, nothing to look round: " + open);
+        assertEquals(Double.POSITIVE_INFINITY, behind.reflected(), "No wall to reflect off: " + behind);
+        assertTrue(behind.loss() > open.loss() + 15, "The house should be in the way: " + behind);
+        assertTrue(reflected.reflectionsWin(), "The wall should bring the signal round: " + reflected);
+        assertTrue(reflected.loss() < open.loss() + 10, "Nearly as well as in the open: " + open + " / " + reflected);
+
+        // Turned off, it's as if the wall weren't there.
+        var off = new RadioEnvironment(1, 1, 0, true, 2, 1, 0.3, false, 64, 512, 0.02);
+        assertEquals(village(List.of(IN_THE_WAY), 800, off).loss(), village(List.of(IN_THE_WAY, neighbour), 800, off).loss(), 1e-9);
+    }
+
+    @Test
+    public void aLoneBlockIsNoMirror() {
+        // A single column where the wall was: it covers little of the Fresnel zone, so reflects much less.
+        var wall = village(List.of(IN_THE_WAY, new House(1984, 1998, 8, 14, 69)), 800, ENV);
+        var column = village(List.of(IN_THE_WAY, new House(1991, 1991, 8, 8, 69)), 800, ENV);
+        assertTrue(column.reflected() > wall.reflected() + 8, "A column reflects less than a wall: " + column + " / " + wall);
+    }
+
+    @Test
+    public void housesNearTheEndsOfLongLinksAreSeen() {
+        // A player standing just behind a house, 2km and 8km from a cell on a mast. The profile's samples are 16 blocks
+        // apart at 8km, but every block near each end is sampled too, so the house is seen at both.
+        for (var distance : new int[]{ 2000, 8000 }) {
+            var house = new House(distance - 10, distance - 4, -3, 3, 68);
+            var terrain = houses(List.of(house));
+            var at = distance + 1.5;
+            var low = PropagationModel.evaluate(0.5, GROUND + 30, 0.5, at, GROUND + 1.62, 0.5, 465, BUDGET + 200, ENV, terrain);
+            var high = PropagationModel.evaluate(0.5, GROUND + 30, 0.5, at, GROUND + 1.62, 0.5, 2655, BUDGET + 200, ENV, terrain);
+            assertTrue(low.diffraction() > 15, distance + " blocks: the house should be in the way: " + low);
+            assertTrue(high.diffraction() > low.diffraction(), distance + " blocks: higher frequencies diffract worse: " + low + " / " + high);
+        }
+
+        // And their columns are among those whose terrain is needed.
+        var columns = new int[]{ 0 };
+        PropagationModel.forEachProfileColumn(0.5, 0.5, 8000.5, 0.5, ENV, (i, x, z) -> columns[0]++);
+        assertEquals(ENV.maxProfileSamples() + 1 + 2 * ENV.voxelRadius(), columns[0]);
+    }
+
     /** Frequencies across the whole range radios may use, and the bands in between. */
     private static final double[] FREQUENCIES = {
         RadioMaterial.MIN_FREQUENCY, VHF, 450, 800, 1575.42, UHF, 2600, RadioMaterial.MAX_FREQUENCY,
@@ -334,14 +471,15 @@ public class PropagationModelTest {
         var small = random.nextDouble() * 15;
         var narrow = 5 + random.nextDouble() * 50;
         var phase = random.nextDouble() * 1000;
-        var kind = random.nextInt(3);
+        var kind = random.nextInt(4);
         var wallX = random.nextInt(1200) - 300;
         var wallTop = GROUND + random.nextInt(60);
         IntBinaryOperator hills = (x, z) -> GROUND + (int) Math.floor(big * Math.sin((x + phase) / wide) + small * Math.cos((z - phase) / narrow + x / (2 * narrow)));
         var terrain = new FakeTerrain(kind == 0 ? hills : (x, z) -> x == wallX ? Math.max(wallTop, hills.applyAsInt(x, z)) : hills.applyAsInt(x, z));
         if (kind > 0) {
             var material = kind == 1 ? RadioMaterial.WOOD : RadioMaterial.ROCK;
-            terrain.solid = (x, y, z) -> x == wallX && y < wallTop ? BlockRadioInfo.full(material) : null;
+            var block = kind == 3 ? BlockRadioInfo.built(material) : BlockRadioInfo.full(material);
+            terrain.solid = (x, y, z) -> x == wallX && y < wallTop ? block : null;
         }
         return terrain;
     }
@@ -396,6 +534,51 @@ public class PropagationModelTest {
             var cached = path.evaluate(frequency).loss();
             var fresh = link.trace(budget, terrain).evaluate(frequency).loss();
             var what = link + " at " + frequency + "MHz, traced for " + traced + ", asked for " + budget;
+            assertEquals(fresh <= budget, cached <= budget, "Whether it's heard: " + what + ", " + fresh + " vs " + cached);
+            if (fresh <= budget) assertEquals(fresh, cached, 1e-6, what);
+        }
+    }
+
+    @Property(tries = 300)
+    public void reflectedPathsAnswerTheSameEveryWay(@ForAll long seed) {
+        // A player in a village, with a house in the way of a cell 200 to 2000 blocks off, and other houses about whose
+        // walls the signal may reflect off. Reflected paths are cached as the rest is, and are the same either way round.
+        var random = new Random(seed);
+        var angle = random.nextDouble() * 2 * Math.PI;
+        var length = 200 + random.nextDouble() * 1800;
+        double px = 0.5, py = GROUND + 1.62, pz = 0.5;
+        var cx = Math.floor(px + Math.cos(angle) * length) + 0.5;
+        var cz = Math.floor(pz + Math.sin(angle) * length) + 0.5;
+        var cy = GROUND + 5 + random.nextInt(40) + 0.5;
+
+        var houses = new ArrayList<House>();
+        var away = 5 + random.nextInt(8);
+        var hx = (int) Math.floor(px + Math.cos(angle) * away);
+        var hz = (int) Math.floor(pz + Math.sin(angle) * away);
+        houses.add(new House(hx - 3, hx + 3, hz - 3, hz + 3, GROUND + 3 + random.nextInt(5)));
+        for (var i = 0; i < 5; i++) {
+            var x = random.nextInt(48) - 24;
+            var z = random.nextInt(48) - 24;
+            houses.add(new House(x, x + 2 + random.nextInt(12), z, z + 2 + random.nextInt(12), GROUND + 2 + random.nextInt(6)));
+        }
+        for (var house : houses) {
+            if (house.covers(0, 0)) return;
+        }
+        var terrain = houses(houses);
+
+        var traced = BUDGET - 10 + random.nextDouble() * 80;
+        var path = PropagationModel.trace(cx, cy, cz, px, py, pz, traced, ENV, terrain);
+        var back = PropagationModel.trace(px, py, pz, cx, cy, cz, traced, ENV, terrain);
+        Statistics.collect(path.reflections().isEmpty() ? "no reflections" : "reflections");
+        for (var frequency : FREQUENCIES) {
+            var there = path.evaluate(frequency);
+            var what = "Seed " + seed + " at " + frequency + "MHz: " + there + " / " + back.evaluate(frequency);
+            if (there.loss() <= traced) assertEquals(there.loss(), back.evaluate(frequency).loss(), 1.0, what);
+
+            var budget = traced - 30 + random.nextDouble() * 90;
+            if (!path.serves(frequency, budget)) continue;
+            var cached = there.loss();
+            var fresh = PropagationModel.trace(cx, cy, cz, px, py, pz, budget, ENV, terrain).evaluate(frequency).loss();
             assertEquals(fresh <= budget, cached <= budget, "Whether it's heard: " + what + ", " + fresh + " vs " + cached);
             if (fresh <= budget) assertEquals(fresh, cached, 1e-6, what);
         }

@@ -79,6 +79,8 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Boolean> radioGroundReflection;
     public static final ConfigFile.Value<Double> radioMinAntennaHeight;
     public static final ConfigFile.Value<Double> radioMaterialLossScale;
+    public static final ConfigFile.Value<Double> radioBuiltLossScale;
+    public static final ConfigFile.Value<Boolean> radioReflections;
     public static final ConfigFile.Value<Integer> radioVoxelRadius;
     public static final ConfigFile.Value<Integer> radioProfileSamples;
     public static final ConfigFile.Value<Double> radioStormPenalty;
@@ -436,6 +438,22 @@ public final class ConfigSpec {
                 .comment("A multiplier for how much blocks attenuate signals. 1 is physically based.")
                 .defineInRange("material_loss_scale", Config.radioMaterialLossScale, 0, 100);
 
+            radioBuiltLossScale = builder
+                .comment("""
+                    How much of a full block's loss blocks people build with have (planks, logs, bricks,
+                    cobblestone, stone bricks, glass, wool and the like), on top of the material loss
+                    multiplier. A wall one block thick stands for a real wall about this many metres thick,
+                    so low frequencies get through a house or two while high ones mostly don't. Natural
+                    terrain (stone, dirt, sand, ores, ice) keeps its full loss.""")
+                .defineInRange("built_loss_scale", Config.radioBuiltLossScale, 0, 100);
+
+            radioReflections = builder
+                .comment("""
+                    Whether signals reflect once off walls near each end of a link, so a neighbouring wall
+                    can bring the signal round a building that's in the way. This costs a little more work
+                    for links which have something in the way near an end.""")
+                .define("reflections", Config.radioReflections);
+
             radioVoxelRadius = builder
                 .comment("""
                     How far from each modem (in blocks) to look for a way out of a building, cave or
@@ -670,6 +688,8 @@ public final class ConfigSpec {
         Config.radioGroundReflection = radioGroundReflection.get();
         Config.radioMinAntennaHeight = radioMinAntennaHeight.get();
         Config.radioMaterialLossScale = radioMaterialLossScale.get();
+        Config.radioBuiltLossScale = radioBuiltLossScale.get();
+        Config.radioReflections = radioReflections.get();
         Config.radioVoxelRadius = radioVoxelRadius.get();
         Config.radioProfileSamples = radioProfileSamples.get();
         Config.radioStormPenalty = radioStormPenalty.get();
