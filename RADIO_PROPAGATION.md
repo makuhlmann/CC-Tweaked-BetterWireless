@@ -302,8 +302,22 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    a mountain, a tree or a building reaches the ray, the blocks there are walked as before; loaded chunks always are,
    and nothing is skipped beneath a ceiling (the Nether). The result is exactly the same: `OpenSkyTest` traces 1,200
    random links over random mountains (reaching into the ray or not, with chunks loaded, with heights, or without,
-   and under open sky or a ceiling) both ways, and requires identical losses at six frequencies. It saves about a
-   third of a 40km trace (1.06ms to 0.73ms); most of what's left is stepping along the ray's 54,000 blocks.
+   and under open sky or a ceiling) both ways, and requires identical losses at six frequencies.
+
+   A chunk of open sky isn't even stepped through: the walk jumps to the next chunk, if the lowest block the ray passes
+   through in it is above where it's open sky. For that to change nothing after it, the middle walk (`VoxelRay`'s
+   `traverse` with a `Skipper`) works out where the ray leaves each block afresh on entering each chunk, and adds up
+   step by step within it, so the walk through a chunk is the same however it got there; a jump lands just as stepping
+   would have (`VoxelRayTest`: 3,000 random rays, including ones along an axis, straight up, and at exactly 45° through
+   block corners, skipping random chunks, visit exactly the blocks a walk which never skips does outside them). That
+   makes the middle walk differ from before in the last few digits; the walks near each end and to walls don't
+   change. The walk only works out where the ray leaves a chunk if it enters high enough to skip it, which most chunks
+   near the ground aren't.
+
+   Measured offline, warm: a 40km link which closes went from 1.06ms (every block looked at) to 0.73ms (open sky not
+   looked at) to 0.26ms (open sky jumped over); a 2.5km village link and a 300-block link in a base, which have little
+   open sky to skip, are 5-7% slower than before (46µs and 8µs). Turning a path into a loss for a packet takes under
+   0.4µs.
 7. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
    it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates.
 8. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
@@ -466,9 +480,11 @@ doesn't come back within a minute is forgotten.
   indoors, packets keep the outdoor strength that long. A radio which moves more than `move_tolerance` blocks between
   traces (an aircraft, between two beacons) waits for each trace, as all did before. Nor is the queue fair between
   players: a phone far from many cells, walking about, puts a long trace in it for each cell it hears.
-- **Long links still step along every block of the ray**, though they no longer look at those in open sky. Jumping
-  over a chunk of open sky at once would save most of the rest, but restarting the step arithmetic there moves the
-  later block boundaries in the last few digits, so results would no longer be exactly the same.
+- **New far links wait for terrain heights, on one thread.** A link across chunks nobody has generated waits (up to
+  `lookup_timeout`) for their heights, which one low-priority thread looks up in turn: from disk, from Distant
+  Horizons, or from the world generator, which for Tellus may be slow. A few threads, or looking up the chunks a moving
+  radio's next trace will need before it's traced, would make a phone's first contact with a far cell quicker. (Not
+  the server's CPU time: none of this runs on the server thread.)
 - **Materials are guessed from sound types.** A data-driven override (block tags such as
   `computercraft:radio/metal`, or a data map with per-block ITU parameters) would let packs fix modded blocks.
 - **Heights are cached in memory only.** Persisting snapshots would avoid disk scans after a restart, though the scans

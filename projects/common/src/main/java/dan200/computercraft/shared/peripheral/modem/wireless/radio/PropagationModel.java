@@ -305,7 +305,7 @@ public final class PropagationModel {
             VoxelRay.traverse(
                 tx + (rx - tx) * start, ty + dy * start, tz + (rz - tz) * start,
                 tx + (rx - tx) * end, ty + dy * end, tz + (rz - tz) * end,
-                middleLength, middle
+                middleLength, middle, middle
             );
             add(through, middle.metres);
         }
@@ -587,7 +587,7 @@ public final class PropagationModel {
             VoxelRay.traverse(
                 tx[0] + (rx[0] - tx[0]) * start, tx[1] + (rx[1] - tx[1]) * start, tx[2] + (rx[2] - tx[2]) * start,
                 tx[0] + (rx[0] - tx[0]) * end, tx[1] + (rx[1] - tx[1]) * end, tx[2] + (rx[2] - tx[2]) * end,
-                middleLength, walk
+                middleLength, walk, walk
             );
             return middleMetres = walk.metres;
         }
@@ -797,7 +797,7 @@ public final class PropagationModel {
      * is. Elsewhere we only have heightmaps, so we guess: anything below the ground is rock, and anything between the
      * ground and the surface is vegetation. Where we don't even have heightmaps, we use the (interpolated) profile.
      */
-    private static final class MiddleWalk implements VoxelRay.Visitor {
+    private static final class MiddleWalk implements VoxelRay.Visitor, VoxelRay.Skipper {
         private final TerrainView terrain;
         private final @Nullable Cavern cavern;
         private final double lossScale;
@@ -894,6 +894,29 @@ public final class PropagationModel {
 
             var sample = profileSample((enter + exit) / 2);
             return y >= ground[sample] && y >= surface[sample];
+        }
+
+        // Where a chunk is open sky: from where visit would find every block it passes through there to be air, as
+        // openSky says of each block.
+        @Override
+        public int skipFrom(int chunkX, int chunkZ, double enter, double exit) {
+            if (!skipSky) return Integer.MAX_VALUE;
+            if (chunkX != this.chunkX || chunkZ != this.chunkZ) {
+                this.chunkX = chunkX;
+                this.chunkZ = chunkZ;
+                top = terrain.chunkTop(chunkX, chunkZ);
+            }
+            if (top == TerrainView.UNKNOWN) return Integer.MAX_VALUE;
+            if (top != TerrainView.NO_HEIGHTS) return top;
+
+            // Each block goes by the profile sample nearest its middle, which is somewhere between these (only the first,
+            // for a bound, before it's known where the ray leaves).
+            var from = Integer.MIN_VALUE;
+            var first = profileSample(enter);
+            for (int sample = first, last = Double.isNaN(exit) ? first : profileSample(exit); sample <= last; sample++) {
+                from = Math.max(from, (int) Math.ceil(Math.max(ground[sample], surface[sample])));
+            }
+            return from;
         }
 
         private int profileSample(double distance) {
