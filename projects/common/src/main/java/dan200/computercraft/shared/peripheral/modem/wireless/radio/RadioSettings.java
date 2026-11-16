@@ -30,6 +30,8 @@ import java.util.Map;
  * @param stormPenalty       How much noise thunderstorms add, in dB.
  * @param tickBudgetNanos    How long we may spend evaluating links each tick.
  * @param cacheTicks         How long evaluated links are remembered for.
+ * @param moveTolerance      How far two radios may have moved since their link was traced, in blocks, for a packet
+ *                           between them to be delivered with that path while the link is traced again; 0 for never.
  * @param crossCacheTicks    How long links evaluated for a packet from another dimension are remembered for.
  * @param dimensionHeights   The heights signals from other dimensions may appear at in each dimension, by its ID.
  * @param lookupTimeoutTicks How long to wait for terrain data before guessing.
@@ -47,6 +49,7 @@ public record RadioSettings(
     double stormPenalty,
     long tickBudgetNanos,
     int cacheTicks,
+    int moveTolerance,
     int crossCacheTicks,
     Map<String, DimensionHeights> dimensionHeights,
     int lookupTimeoutTicks,
@@ -95,6 +98,7 @@ public record RadioSettings(
             Config.radioStormPenalty,
             Config.radioTickBudgetMicros * 1000L,
             Config.radioCacheTicks,
+            Config.radioMoveTolerance,
             Config.radioEnderCacheTicks,
             Config.radioEnderYRanges,
             Config.radioLookupTimeoutTicks,

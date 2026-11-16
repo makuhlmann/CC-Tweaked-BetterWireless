@@ -56,6 +56,7 @@ public final class Config {
     public static double radioCeilingUnknownFill = 0.02;
     public static int radioTickBudgetMicros = 2000;
     public static int radioCacheTicks = 100;
+    public static int radioMoveTolerance = 16;
     public static int radioLookupTimeoutTicks = 40;
     public static boolean radioUseGenerator = true;
     public static boolean radioUseDistantHorizons = true;

@@ -283,11 +283,24 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    Concurrent requests for the same link share one trace, as far as the strongest of them needs. A path traced for a
    weaker transmitter is traced again for a stronger one, unless the link was within the weaker one's budget (its
    loss is then exact whatever the budget).
-5. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
+5. **Radios which move don't wait.** As paths are cached by block, every block a phone moves into is a link which
+   hasn't been traced, and on a long link tracing takes a while: a 40km link took about 6ms (more than a tick's
+   budget, so one a tick) and 165,000 terrain lookups, measured offline with the model on hilly heights, and its
+   profile crosses about 500 chunks, most of which a Tellus world hasn't generated, so their heights must be looked
+   up. Walking a block at a time needed about 8 more chunks' heights a block for one 40km link, and 64 for the 15
+   always-loaded computers of a test world 40km off. So the same two radios' last path is remembered too (by the
+   modems themselves, either way round: `RecentLinks`), and a packet between them goes at once with that path if
+   neither has moved more than `move_tolerance` (16) blocks since and it was traced within `2 × cache_ticks`. The link
+   where they are now is traced in the background. Each pair has at most one such trace waiting, which a newer one
+   replaces, so a phone which keeps moving only has its latest position traced, and a cached path which expires is
+   traced again in the background too, rather than holding up the next packet. Only a link between two radios which
+   haven't had one traced lately (or which moved further) waits for a trace.
+6. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
    it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates.
-6. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
-   dropped (congestion, like a real network).
-7. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
+7. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
+   dropped (congestion, like a real network). They're shared by the whole server: a link waiting to be traced waits
+   behind every other, whoever's it is.
+8. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
    can't take down the server tick.
 
 ## 4. Terrain data for unloaded chunks
@@ -387,6 +400,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `storm_noise` | 6 | Thunderstorm noise in dB. |
 | `tick_budget` | 2000 | Microseconds per tick for evaluating links. |
 | `cache_ticks` | 100 | How long link results are reused. |
+| `move_tolerance` | 16 | How far (blocks) two radios may have moved since their link was traced for a packet between them to go at once with that path, while it's traced again in the background. 0 makes every such packet wait. |
 | `lookup_timeout` | 40 | Maximum ticks to wait for unloaded terrain heights. |
 | `use_generator`, `use_distant_horizons` | `true` | Enable those height sources. |
 
@@ -438,6 +452,14 @@ doesn't come back within a minute is forgotten.
   loads chunks without ticking them, was considered and left out: a radius of 2 (25 chunks, 16 more) would cover
   reflections, and 4 (81 chunks) all of `block_radius`. At a player's end, the view distance covers `block_radius`
   unless the server sets it below 5.
+- **A moving radio's packets use a path up to one move old**, until the link where it is now has been traced:
+  usually by the next tick, but up to `lookup_timeout` (2s) when far terrain's heights are being looked up. Walking
+  indoors, packets keep the outdoor strength that long. A radio which moves more than `move_tolerance` blocks between
+  traces (an aircraft, between two beacons) waits for each trace, as all did before. Nor is the queue fair between
+  players: a phone far from many cells, walking about, puts a long trace in it for each cell it hears.
+- **Long links walk every block of open sky.** The straight-through walk of a 40km link steps through every block
+  between the antennas, though most are far above the ground. Skipping a chunk's stretch of the ray where it's above
+  that chunk's highest surface would give the same result (nothing is there but air), with far fewer lookups.
 - **Materials are guessed from sound types.** A data-driven override (block tags such as
   `computercraft:radio/metal`, or a data map with per-block ITU parameters) would let packs fix modded blocks.
 - **Heights are cached in memory only.** Persisting snapshots would avoid disk scans after a restart, though the scans

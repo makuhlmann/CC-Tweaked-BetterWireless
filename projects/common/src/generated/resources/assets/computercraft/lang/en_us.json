@@ -198,6 +198,8 @@
   "gui.computercraft.config.peripheral.radio.metres_per_block_vertical.tooltip": "How many metres a block represents vertically.",
   "gui.computercraft.config.peripheral.radio.min_antenna_height": "Minimum antenna height (m)",
   "gui.computercraft.config.peripheral.radio.min_antenna_height.tooltip": "The minimum height of an antenna above the surrounding terrain, in metres.",
+  "gui.computercraft.config.peripheral.radio.move_tolerance": "Move tolerance (blocks)",
+  "gui.computercraft.config.peripheral.radio.move_tolerance.tooltip": "How far two radios may have moved since their link was last worked out, in blocks, for a\npacket between them to go at once with the strength worked out then, while the link where\nthey are now is worked out in the background. Without this, a packet from a phone which\nhas moved into another block waits for its link to be worked out, which on a long link may\ntake a while. 0 makes every such packet wait.",
   "gui.computercraft.config.peripheral.radio.nether_unknown_fill": "Unloaded Nether fill",
   "gui.computercraft.config.peripheral.radio.nether_unknown_fill.tooltip": "In dimensions with a ceiling (the Nether), how much of the space beneath it is taken\nto be rock where chunks aren't loaded, from 0 to 1. Heights only say where the\nceiling is there, not where the caverns are.",
   "gui.computercraft.config.peripheral.radio.pocket_max_transmit_power": "Pocket computer maximum transmit power (dBm)",

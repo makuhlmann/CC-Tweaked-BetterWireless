@@ -316,6 +316,7 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioCeilingUnknownFill, "Unloaded Nether fill");
         addConfigEntry(ConfigSpec.radioTickBudgetMicros, "Tick budget (microseconds)");
         addConfigEntry(ConfigSpec.radioCacheTicks, "Link cache duration (ticks)");
+        addConfigEntry(ConfigSpec.radioMoveTolerance, "Move tolerance (blocks)");
         addConfigEntry(ConfigSpec.radioLookupTimeoutTicks, "Terrain lookup timeout (ticks)");
         addConfigEntry(ConfigSpec.radioUseGenerator, "Use world generator heights");
         addConfigEntry(ConfigSpec.radioUseDistantHorizons, "Use Distant Horizons LODs");

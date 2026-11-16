@@ -43,6 +43,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *     <li>Evaluated links are cached for a few seconds, and are symmetric, so request/reply traffic (rednet, GPS) is
  *     evaluated once.</li>
+ *     <li>A packet between two radios whose link was traced a moment ago, and which have each moved no further than
+ *     {@code move_tolerance} since, is delivered at once with that path, while the link where they are now is traced
+ *     in the background (see {@link RecentLinks}). So a phone moving about doesn't wait for every block's link to be
+ *     traced, nor does a link which is traced again because it was last traced a while ago.</li>
  *     <li>Work is limited to a fixed time budget each tick. Anything left over waits until the next tick.</li>
  *     <li>Chunks are never loaded. If a link crosses chunks we know nothing about, we ask the
  *     {@linkplain HeightSource height sources} in the background and evaluate the link once they reply, or guess
@@ -77,6 +81,7 @@ public final class RadioPropagationService {
         }
     };
     private final Map<LinkKey, Evaluation> evaluating = new HashMap<>();
+    private final RecentLinks recent = new RecentLinks(MAX_CACHED_LINKS);
     private final ArrayDeque<Evaluation> pending = new ArrayDeque<>();
     private final Map<ResourceKey<Level>, LevelHeights> heights = new ConcurrentHashMap<>();
     private final ExecutorService worker = Executors.newSingleThreadExecutor(ThreadUtils.lowPriorityFactory("Radio-Terrain"));
@@ -184,6 +189,21 @@ public final class RadioPropagationService {
     private record CachedLink(LinkPath path, long expires) {
     }
 
+    /**
+     * Two radios a link is traced for, and where each is: the path is remembered for them once it's traced. A link's
+     * key is the same either way round, so each knows its own direction.
+     *
+     * @param sender   The radio sending.
+     * @param from     Where its antenna is.
+     * @param receiver The radio receiving.
+     * @param to       Where its antenna is.
+     */
+    private record Ends(Object sender, Vec3 from, Object receiver, Vec3 to) {
+        boolean between(Object a, Object b) {
+            return (sender == a && receiver == b) || (sender == b && receiver == a);
+        }
+    }
+
     private static final class Evaluation {
         final LinkKey key;
         final ServerLevel level;
@@ -192,6 +212,8 @@ public final class RadioPropagationService {
         /** Whether this is for a packet from another dimension, whose links are remembered for longer. */
         final boolean crossDimension;
         final List<Waiting> deliveries = new ArrayList<>(1);
+        /** The radios to remember the path for. */
+        final List<Ends> ends = new ArrayList<>(1);
         @Nullable LongSet missing;
         /** The largest budget of anything waiting for the link: how far to trace it. */
         double budget;
@@ -281,6 +303,8 @@ public final class RadioPropagationService {
         tick++;
         settings = RadioSettings.fromConfig();
         var deadline = System.nanoTime() + settings.tickBudgetNanos();
+        // Forget recent links which are too old to use, so modems which are gone aren't held.
+        if (tick % Math.max(20, settings.cacheTicks()) == 0) recent.purge(tick - staleTicks());
 
         // Turn transmissions into evaluations, delivering immediately if we've seen this link recently.
         Transmission transmission;
@@ -320,6 +344,7 @@ public final class RadioPropagationService {
                 // This runs as part of the server tick, so must never throw. Drop the link instead.
                 logError("Failed to evaluate radio link", e);
                 evaluating.remove(evaluation.key);
+                for (var ends : evaluation.ends) recent.refreshed(ends.sender(), ends.receiver(), evaluation);
                 for (var waiting : evaluation.deliveries) complete(waiting, null);
                 done = true;
             }
@@ -347,6 +372,22 @@ public final class RadioPropagationService {
             return;
         }
 
+        // The same two radios had their link traced a moment ago, and have moved little since: deliver with that, and
+        // trace the link where they are now in the background.
+        var tolerance = settings.moveTolerance();
+        if (waiting instanceof Delivery delivery && tolerance > 0) {
+            var sender = delivery.packet().sender();
+            var receiver = delivery.receiver();
+            var path = recent.find(
+                level, sender, from, receiver, to, tick, tolerance, staleTicks(), delivery.frequency(), delivery.budget()
+            );
+            if (path != null) {
+                complete(waiting, path);
+                refresh(level, key, new Ends(sender, from, receiver, to), delivery.budget());
+                return;
+            }
+        }
+
         var evaluation = evaluating.get(key);
         if (evaluation == null) {
             // The server can't keep up with the number of distinct links, so drop the packet.
@@ -361,6 +402,56 @@ public final class RadioPropagationService {
         }
         evaluation.budget = Math.max(evaluation.budget, waiting.budget());
         evaluation.deliveries.add(waiting);
+        if (waiting instanceof Delivery delivery) {
+            addEnds(evaluation, new Ends(delivery.packet().sender(), from, delivery.receiver(), to));
+        }
+    }
+
+    /**
+     * How long ago a link between two radios may have been traced for a packet between them to use it, as they've
+     * moved little since: twice as long as links are cached, so a link which is traced again because its cached path
+     * expired is traced in the background too.
+     *
+     * @return The age, in ticks.
+     */
+    private long staleTicks() {
+        return 2L * settings.cacheTicks();
+    }
+
+    private static void addEnds(Evaluation evaluation, Ends ends) {
+        for (var existing : evaluation.ends) {
+            if (existing.equals(ends)) return;
+        }
+        evaluation.ends.add(ends);
+    }
+
+    /**
+     * Trace a link in the background, as a packet was delivered with the path between the same two radios a moment
+     * ago. A trace still waiting to refresh the link between them is dropped, if nothing else needs it: they've moved
+     * on since.
+     *
+     * @param level  The level the link is in.
+     * @param key    The link.
+     * @param ends   The two radios.
+     * @param budget How far to trace it.
+     */
+    private void refresh(ServerLevel level, LinkKey key, Ends ends, double budget) {
+        var evaluation = evaluating.get(key);
+        if (evaluation == null) {
+            // Too busy: the next packet between them will try again.
+            if (pending.size() >= MAX_EVALUATIONS) return;
+            evaluation = new Evaluation(key, level, ends.from(), ends.to(), tick, false, budget);
+            evaluating.put(key, evaluation);
+            pending.add(evaluation);
+        }
+        evaluation.budget = Math.max(evaluation.budget, budget);
+        addEnds(evaluation, ends);
+
+        if (recent.refreshing(ends.sender(), ends.receiver(), evaluation) instanceof Evaluation previous
+            && previous.deliveries.isEmpty() && previous.ends.stream().allMatch(e -> e.between(ends.sender(), ends.receiver()))) {
+            evaluating.remove(previous.key, previous);
+            pending.remove(previous);
+        }
     }
 
     /**
@@ -455,6 +546,10 @@ public final class RadioPropagationService {
         if (!missing.isEmpty()) cacheTicks = Math.min(cacheTicks, 20);
         links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
         evaluating.remove(evaluation.key);
+        for (var ends : evaluation.ends) {
+            recent.record(level, ends.sender(), ends.from(), ends.receiver(), ends.to(), path, tick);
+            recent.refreshed(ends.sender(), ends.receiver(), evaluation);
+        }
         for (var waiting : evaluation.deliveries) complete(waiting, path);
         return true;
     }

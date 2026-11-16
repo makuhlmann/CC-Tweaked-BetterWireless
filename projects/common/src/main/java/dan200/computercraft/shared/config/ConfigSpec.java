@@ -97,6 +97,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Double> radioCeilingUnknownFill;
     public static final ConfigFile.Value<Integer> radioTickBudgetMicros;
     public static final ConfigFile.Value<Integer> radioCacheTicks;
+    public static final ConfigFile.Value<Integer> radioMoveTolerance;
     public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
     public static final ConfigFile.Value<Boolean> radioUseGenerator;
     public static final ConfigFile.Value<Boolean> radioUseDistantHorizons;
@@ -531,6 +532,15 @@ public final class ConfigSpec {
                 .comment("How long to remember the strength of a link, in ticks.")
                 .defineInRange("cache_ticks", Config.radioCacheTicks, 0, 72_000);
 
+            radioMoveTolerance = builder
+                .comment("""
+                    How far two radios may have moved since their link was last worked out, in blocks, for a
+                    packet between them to go at once with the strength worked out then, while the link where
+                    they are now is worked out in the background. Without this, a packet from a phone which
+                    has moved into another block waits for its link to be worked out, which on a long link may
+                    take a while. 0 makes every such packet wait.""")
+                .defineInRange("move_tolerance", Config.radioMoveTolerance, 0, 256);
+
             radioLookupTimeoutTicks = builder
                 .comment("""
                     How long to wait for the heights of unloaded chunks before guessing, in ticks.
@@ -706,6 +716,7 @@ public final class ConfigSpec {
         Config.radioCeilingUnknownFill = radioCeilingUnknownFill.get();
         Config.radioTickBudgetMicros = radioTickBudgetMicros.get();
         Config.radioCacheTicks = radioCacheTicks.get();
+        Config.radioMoveTolerance = radioMoveTolerance.get();
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();
         Config.radioUseGenerator = radioUseGenerator.get();
         Config.radioUseDistantHorizons = radioUseDistantHorizons.get();
