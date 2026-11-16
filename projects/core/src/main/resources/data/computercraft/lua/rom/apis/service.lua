@@ -38,7 +38,17 @@ local FILE = "/.services"
 --- How long to wait for the background process to start or stop a service, in seconds.
 local WAIT_TIMEOUT = 10
 
+--- How many of the service manager's own errors to keep.
+local MAX_ERRORS = 16
+
 local manager, running
+local errors = {}
+
+-- Remember an error, rather than printing it over whatever the user is doing.
+local function log_error(err)
+    if #errors >= MAX_ERRORS then table.remove(errors, 1) end
+    errors[#errors + 1] = tostring(err)
+end
 
 -- Services which run elsewhere: a cellular network's cell, core and phone, in the network stack's background process.
 local function cellular_services()
@@ -123,12 +133,25 @@ function run()
     -- If this function ever returned or errored, the shell would stop and the computer shut down.
     local ok, m = pcall(load)
     if not ok then
+        log_error(m)
         while true do os.pullEventRaw() end
     end
     while true do
         local event = table.pack(os.pullEventRaw())
-        pcall(m.resume, m, table.unpack(event, 1, event.n))
+        local resumed, err = pcall(m.resume, m, table.unpack(event, 1, event.n))
+        if not resumed then log_error(err) end
     end
+end
+
+--[[- Get the errors the service manager itself has had (not those of the services, which are in their logs), oldest
+first. The `service` program shows them, if there are any.
+
+@treturn { string... } The last 16 errors.
+]]
+function getErrors()
+    local result = {}
+    for i, err in ipairs(errors) do result[i] = err end
+    return result
 end
 
 --[[- Start the services which start with the computer. The shell does this as the computer starts, so there's no need

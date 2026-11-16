@@ -126,7 +126,8 @@ with the network turned off too, and `net.host`'s "services" (names for ports) a
   session ignored the server computer's Ctrl+T).
 - **Asking, not doing.** `start`, `stop` and the rest only record what's wanted and wake the background process, which
   does it, so nothing is resumed from inside itself: a service can stop itself, or a remote shell the `rshd` it runs
-  inside. The API then waits (up to ten seconds) for it to be done.
+  inside. The API then waits (up to ten seconds) for it to be done. As with the stack, the background process runs
+  each event under `pcall`, and keeps its own errors for `service.getErrors` (which the `service` list shows).
 - **Kept in `/.services`**, by name: the command, and whether it starts with the computer. Starting a service has it
   start with the computer, and stopping it not, as for `celld`.
 - **Services which run elsewhere.** A cellular network's cell, core and phone run in the stack's background process.

@@ -24,10 +24,19 @@ end
 local function how_to_stop(service_name) return ('"%s stop %s"'):format(name, service_name) end
 
 -- Each service in a line: its name, state, whether it starts with the computer, and what it runs.
+-- The service manager's own errors, if it's had any: services may not be doing what they're asked.
+local function show_errors()
+    local errors = service.getErrors()
+    if not errors[1] then return end
+    printError("The service manager has had errors:")
+    for _, err in ipairs(errors) do printError(err) end
+end
+
 local function list()
     local services = service.list()
     if not services[1] then
         print(("No services. Add a program with \"%s add <service> <program>\"."):format(name))
+        show_errors()
         return
     end
 
@@ -54,6 +63,7 @@ local function list()
         line(info.name, info.state, info.enabled and "yes" or "no", info.command or info.description or "",
             cli.state_colour(info.state))
     end
+    show_errors()
 end
 
 local command, service_name = args[1], args[2]

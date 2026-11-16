@@ -44,7 +44,7 @@ local DEFAULT_PATH = ".:/rom/programs:/rom/programs/http:/rom/programs/net"
 -- screen of its own.
 local NOT_FOR_SERVICES = {
     terminate = true, key = true, key_up = true, char = true, paste = true, term_resize = true,
-    mouse_click = true, mouse_drag = true, mouse_scroll = true, mouse_up = true,
+    mouse_click = true, mouse_drag = true, mouse_scroll = true, mouse_up = true, service_wake = true,
 }
 
 --[[- Whether something is a service's name: letters, digits, `_`, `-` and `.`, up to 32 of them.
@@ -173,7 +173,7 @@ end
 function Manager:wake()
     if self.wake_queued then return end
     self.wake_queued = true
-    self.queue_event("service")
+    self.queue_event("service_wake")
 end
 
 -- Say a service's state changed, for anyone waiting on it.
@@ -292,7 +292,7 @@ end
 @param ... Its arguments.
 ]]
 function Manager:resume(event, ...)
-    if event == "service" and select("#", ...) == 0 then self.wake_queued = false end
+    if event == "service_wake" then self.wake_queued = false end
     if event == "timer" and ... == self.timer then self.timer = nil end
 
     self:process()

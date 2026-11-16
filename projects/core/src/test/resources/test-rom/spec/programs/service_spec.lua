@@ -67,6 +67,8 @@ describe("The service program", function()
             result = capture("service", "remove", "spec")
             expect(result.output):eq("Stopped and removed spec.\n")
             expect(service.status("spec")):eq(nil)
+            -- The service manager itself has had no trouble.
+            expect(service.getErrors()):same {}
         end)
     end)
 
