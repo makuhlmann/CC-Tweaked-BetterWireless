@@ -292,9 +292,11 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
 
 ## 4. Terrain data for unloaded chunks
 
-The receiver set only contains modems in loaded chunks, so both ends of a link are always loaded. Only the middle of a
-long link can be unloaded, and there the model only needs two heights per column: the ground
-(`MOTION_BLOCKING_NO_LEAVES`) and the surface (`WORLD_SURFACE`). These come from, in order:
+The receiver set only contains modems in loaded chunks, so the chunk at each end of a link is always loaded. The rest
+of the link may not be: the middle of a long link, and the blocks round an end beyond the chunks which keep it loaded
+(see the limitations). There the model has only two heights per column: the ground (`MOTION_BLOCKING_NO_LEAVES`) and
+the surface (`WORLD_SURFACE`), and a block below the ground counts as rock, one between the two as vegetation, and one
+above both as air. The heights come from, in order:
 
 1. **Loaded chunks**, read live.
 2. **Snapshots taken when a chunk unloads** (1KiB per chunk, LRU of 16k chunks per level).
@@ -424,6 +426,18 @@ doesn't come back within a minute is forgotten.
 - **The over path counts the ground near the antennas twice** once the direct ray is blocked: the two-ray model, and the
   ground's intrusion into the Fresnel zone (about 12dB at 450-800MHz on flat ground). And the profile ignores
   everything within 1.5 blocks of an antenna in the open, so a thin wall right next to one is missed by the over path.
+- **Near a computer kept loaded, only its own chunks have real blocks.** `os.setKeepLoaded` loads the computer's chunk
+  and the eight around it: 16-31 blocks each way, depending on where it stands in its chunk. The model looks at single
+  blocks up to `block_radius` (64) from each end, and for walls to reflect off up to 24. Past those chunks, with nobody
+  nearby, it has only heights, so a house there reads as solid rock up to its roof: nothing gets through it
+  (`built_loss_scale` can't apply, as heights don't tell built from natural), and its walls don't reflect. The path
+  over it is the same either way, as the heights include roofs. So a cell among houses at about roof height can gain or
+  lose a phone far away when a player comes near the cell or leaves (links are evaluated again every few seconds). A
+  cell whose antenna is above the roofs around it isn't affected: its rays to distant phones pass over them, through
+  air either way. The model never loads a chunk to look. Loading a wider ring round cells, with a second ticket which
+  loads chunks without ticking them, was considered and left out: a radius of 2 (25 chunks, 16 more) would cover
+  reflections, and 4 (81 chunks) all of `block_radius`. At a player's end, the view distance covers `block_radius`
+  unless the server sets it below 5.
 - **Materials are guessed from sound types.** A data-driven override (block tags such as
   `computercraft:radio/metal`, or a data map with per-block ITU parameters) would let packs fix modded blocks.
 - **Heights are cached in memory only.** Persisting snapshots would avoid disk scans after a restart, though the scans

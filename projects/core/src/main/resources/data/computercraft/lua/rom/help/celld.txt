@@ -1,5 +1,7 @@
 celld runs a cell of a cellular network: a tower which phones attach through. It runs in the background, starts with the computer, and keeps the computer running when nobody is nearby. It reaches the network's core over any route (a cable, a radio link, or the cell's own computer), and tries again if it loses the core.
 
+Put the cell's modem above the roofs around it. With nobody nearby, only the cell's chunk and the eight around it are loaded, and the radio sees buildings beyond them as solid rock up to their roofs: a cell lower than those can lose its far phones whenever nobody is near it.
+
 The cell keeps its cores and settings. Each command changes one thing, and checks it first: a mistyped command or value changes nothing. While the cell runs, most changes are made at once, and its phones keep their service.
 
 The first time, the core must allow the cell: celld shows the command to run on the core, and the fingerprint to check there.
