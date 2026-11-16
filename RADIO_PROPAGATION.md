@@ -130,7 +130,8 @@ is cut off.
 
 The profile has at most `profile_samples` evenly spread points, which on a long link are several blocks apart (16 at
 8km), so a house right next to a modem would fall between them. On such links every block within `block_radius` of
-each end is sampled too: that's where a building matters most.
+each end is sampled too: that's where a building matters most. It also means a flat roof is seen as what it is, which
+Deygout counts as two edges (see the limitations).
 
 **Reflections.** Besides the direct path, the signal may reflect once off a wall near either end (the image method),
 which brings some of it round whatever is in the way there: in a village, the wall of the house across the street.
@@ -143,8 +144,8 @@ about 8dB head-on and next to nothing at a glancing angle, wood more, metal noth
 much as it covers of the first Fresnel zone around the point (sampled at 21 points, with the zone stretched along a
 wall the path meets at an angle): a lone block hardly at all. At most 8 reflections are kept near each end. The
 reflected paths' powers add to the direct path's. In a village scene (a cell 2.5km off at an angle to the streets, a
-house in the way, a neighbour's wall across the street) the signal comes back from 129-145dB (lost) to 106-114dB, 6dB
-short of the open street; behind a lone house in a field nothing changes. The walks for reflections don't depend on
+house in the way, a neighbour's wall across the street) the signal comes back from 134-150dB (lost) to 106-114dB, about
+6dB short of the open street (100-109dB); behind a lone house in a field nothing changes. The walks for reflections don't depend on
 the budget a link is traced for (where the direct path's walks were cut short, they're walked again, to a fixed cap), so
 a cached path answers as a fresh trace would. `reflections = false` turns them off.
 
@@ -226,7 +227,7 @@ a wall one block thick stands for a real wall about 30cm thick, so built blocks 
 full block. Natural rock (the base stone tags, terracotta, ores, sandstone, end stone and a few more), dirt, sand, snow,
 ice, water and plants keep their full loss, so hills, caves and bunkers block as before. Behind a stone house, low
 frequencies now get through it (about 11dB at 450MHz, 17dB at 800MHz for two walls) while high ones still go over the
-roof (27-29dB at 1.8-2.6GHz), as in real life, where buildings stop high bands much more than low ones.
+roof (35-37dB at 1.8-2.6GHz), as in real life, where buildings stop high bands much more than low ones.
 
 Attenuation per material is frequency dependent. Most use the ITU-R P.2040 model (`ε' = a·fᵇ`, `σ = c·fᵈ`), water uses
 a Debye relaxation model and vegetation an empirical fit in the spirit of ITU-R P.833:
@@ -409,13 +410,17 @@ doesn't come back within a minute is forgotten.
 - **One reflection, near the ends, off axis-aligned walls.** Signals reflect once off vertical block faces within 24
   blocks of an end; not twice, not off sloped or diagonal surfaces, and not with diffuse scattering. Whether a wall
   covers the Fresnel zone is judged from how far it reaches along and up from the point the path meets it, so windows
-  and doors in it are ignored. A study (in scratch code) put the cost at +1-3% block lookups and +3-10% time for links
-  with something in the way near an end, and nothing for clear links. Deygout also tends to over-estimate loss over
+  and doors in it are ignored. Measured with the model itself (outside the game), reflections cost 0-4% more block
+  lookups and 3-8% more time for links with something in the way near an end, and nothing for clear links. Deygout also tends to over-estimate loss over
   many ridges (ITU-R P.526's delta-Bullington method would be a more accurate replacement).
 - **Fresnel-zone obstruction of a clear path is ignored**, by design: the two-ray model already accounts for nearby
   ground, and counting both cost 6dB on perfectly flat terrain.
 - **Sideways diffraction** around a building corner isn't modelled; the profile is a vertical slice along the path.
   The study put its gain at 1-8dB behind a house, for 13-21% more work on obstructed links, so it was left out.
+- **Deygout counts a flat roof as two edges**: the near one, and the far one at a grazing angle, which alone costs about
+  6dB. Over a 7-block house with a player 5 blocks behind it, at 800MHz, that's 32dB, against 26dB over a one-block wall
+  of the same height. Before every block near the ends was sampled, samples several blocks apart mostly caught one edge
+  of a roof, so houses cost about 6-8dB less over the top. Deygout is known to over-count edges this close together.
 - **The over path counts the ground near the antennas twice** once the direct ray is blocked: the two-ray model, and the
   ground's intrusion into the Fresnel zone (about 12dB at 450-800MHz on flat ground). And the profile ignores
   everything within 1.5 blocks of an antenna in the open, so a thin wall right next to one is missed by the over path.
