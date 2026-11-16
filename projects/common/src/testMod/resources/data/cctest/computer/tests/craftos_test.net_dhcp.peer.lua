@@ -9,6 +9,6 @@ settings.set("dhcpd.dns", "10.0.0.1")
 settings.set("dhcpd.domain", "test")
 
 parallel.waitForAny(
-    function() shell.run("dhcpd", modem) end,
-    function() shell.run("dnsd", "test", "/zones/test.txt") end
+    function() shell.run("dhcpd", "run", modem) end,
+    function() shell.run("dnsd", "run", "test", "/zones/test.txt") end
 )

@@ -2,7 +2,11 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
+-- A remote shell server, which runs in the background as a service ("rshd start"), or in the foreground ("rshd run")
+-- until Ctrl+T.
+
 local remote_term = require "cc.internal.net.remote_term"
+local cli = require "cc.internal.service_cli"
 
 local PORT = require "cc.internal.net.remote_term".PORT
 local AUTHORIZED = "/.net/authorized_keys"
@@ -11,10 +15,14 @@ local MAX_TRIES = 3
 
 local args = { ... }
 
+local name = arg[0] or fs.getName(shell.getRunningProgram())
+
 local function usage()
-    local name = arg[0] or fs.getName(shell.getRunningProgram())
     print("Usages:")
-    print(name)
+    print(name .. " start")
+    print(name .. " stop")
+    print(name .. " status")
+    print(name .. " run")
     print(name .. " password [none]")
     print(name .. " keys")
     print(name .. " allow <key> [label]")
@@ -51,7 +59,8 @@ local OWN_EVENTS = { rshd_input = true, rshd_output = true, rshd_sent = true }
 -- how many events the session may have waiting meanwhile, as a computer's own queue holds.
 local MAX_OUTBOX, MAX_HELD_EVENTS = 4, 256
 
--- Run a shell, or a command, for a client, drawing on its terminal and taking its input.
+-- Run a shell, or a command, for a client, drawing on its terminal and taking its input. This computer's own Ctrl+T (or
+-- being stopped, as a service) ends the session, and the server: then this returns true.
 --
 -- What's drawn goes into an outbox, which a task of its own sends from: waiting for room on the connection pulls
 -- events, and if the session's task did that, they'd be lost to the session (a `sleep` in it would never end). While
@@ -96,16 +105,26 @@ local function run_session(connection, hello)
     local function give()
         while held[1] and #outbox < MAX_OUTBOX and coroutine.status(session) ~= "dead" do
             local event = table.remove(held, 1)
-            -- Only the client may terminate the session, not this computer's own Ctrl+T.
+            -- The client's Ctrl+T is the session's to deal with, whatever it's waiting for.
             if filter == nil or filter == event[1] or event[1] == "terminate" then resume(table.unpack(event, 1, event.n)) end
         end
     end
 
     local pending = {}
-    local closed = false
+    local closed, stopping = false, false
+    -- Ctrl+T here reaches each of these (parallel gives it to every coroutine), the one waiting on the connection
+    -- first. Whichever it reaches ends the session, rather than failing with it, so the client is still told.
+    local function until_stopped(fn)
+        return function()
+            local ok, err = pcall(fn)
+            if ok then return end
+            if err ~= "Terminated" then error(err, 0) end
+            stopping = true
+        end
+    end
     parallel.waitForAny(
         -- Messages from the client.
-        function()
+        until_stopped(function()
             while true do
                 local message = connection:receive()
                 if type(message) ~= "table" then
@@ -122,18 +141,21 @@ local function run_session(connection, hello)
                     os.queueEvent("rshd_input")
                 end
             end
-        end,
+        end),
         -- The session, taking the client's input and this computer's other events.
         function()
             resume()
             while coroutine.status(session) ~= "dead" and not closed do
                 local event = table.pack(os.pullEventRaw())
-                if event[1] == "rshd_input" then
+                if event[1] == "terminate" then
+                    stopping = true
+                    return
+                elseif event[1] == "rshd_input" then
                     while pending[1] do
                         local remote_event = table.remove(pending, 1)
                         offer(table.pack(table.unpack(remote_event)))
                     end
-                elseif not OWN_EVENTS[event[1]] and not LOCAL_INPUT[event[1]] and event[1] ~= "terminate" then
+                elseif not OWN_EVENTS[event[1]] and not LOCAL_INPUT[event[1]] then
                     offer(event)
                 end
                 give()
@@ -141,7 +163,7 @@ local function run_session(connection, hello)
         end,
         -- What the session drew, to the client. A batch which can't be sent would leave the client's screen out of
         -- step with the session's for good, so that ends the session.
-        function()
+        until_stopped(function()
             while true do
                 local message = table.remove(outbox, 1)
                 if message then
@@ -154,7 +176,7 @@ local function run_session(connection, hello)
                     os.pullEvent("rshd_output")
                 end
             end
-        end
+        end)
     )
 
     -- Send what's still to go, and then say the session is over.
@@ -162,8 +184,9 @@ local function run_session(connection, hello)
         if closed then break end
         if not connection:send(message) then closed = true end
     end
-    if not closed then connection:send({ exit = true, ok = result }) end
+    if not closed then connection:send({ exit = true, ok = result, stopped = stopping or nil }) end
     connection:close()
+    return stopping
 end
 
 -- Find out whether a client may log in, asking for the password if need be.
@@ -195,6 +218,23 @@ local function authorise(connection, hello)
     return false
 end
 
+-- Deal with one client: check it may log in, and run its session. True if the server was stopped meanwhile.
+local function handle(connection)
+    local peer = connection:getPeer()
+    local hello = connection:receive(10)
+    if type(hello) ~= "table" or type(hello.width) ~= "number" or type(hello.height) ~= "number"
+        or (hello.command ~= nil and type(hello.command) ~= "string") then
+        return false
+    end
+    if not authorise(connection, hello) then
+        print(peer .. ": refused")
+        return false
+    end
+    connection:send({ auth = "ok" })
+    print(("%s: %s"):format(peer, hello.command or "shell"))
+    return run_session(connection, hello)
+end
+
 local function serve()
     if not crypto or not enclave then
         printError("rshd needs the crypto and enclave APIs, which are turned off on this server")
@@ -205,26 +245,17 @@ local function serve()
         printError("Cannot start the remote shell server: " .. err)
         return
     end
-    print(("Waiting for remote shells on port %d. Press Ctrl+T to stop."):format(PORT))
+    print(("Waiting for remote shells on port %d."):format(PORT))
+    if not service.current() then print("Press Ctrl+T to stop.") end
 
     local ok, result = pcall(function()
         while true do
             local connection = listener:accept()
-            local peer = connection:getPeer()
-            local hello = connection:receive(10)
-            if type(hello) == "table" and type(hello.width) == "number" and type(hello.height) == "number"
-                and (hello.command == nil or type(hello.command) == "string") then
-                if authorise(connection, hello) then
-                    connection:send({ auth = "ok" })
-                    print(("%s: %s"):format(peer, hello.command or "shell"))
-                    local session_ok, session_err = pcall(run_session, connection, hello)
-                    if not session_ok and session_err ~= "Terminated" then printError(session_err) end
-                    if not session_ok and session_err == "Terminated" then error(session_err, 0) end
-                else
-                    print(peer .. ": refused")
-                end
-            end
+            local handled, stopped = pcall(handle, connection)
             connection:close()
+            -- What goes wrong with one client is said, and the server carries on.
+            if (handled and stopped) or (not handled and stopped == "Terminated") then error("Terminated", 0) end
+            if not handled then printError(stopped) end
         end
     end)
     listener:close()
@@ -232,8 +263,15 @@ local function serve()
 end
 
 local command = args[1]
-if command == nil then
+if command == nil or (command == "start" and #args == 1) then
+    if not crypto or not enclave then error("rshd needs the crypto and enclave APIs, which are turned off on this server", 0) end
+    cli.add("rshd", { "/" .. shell.getRunningProgram(), "run" }, ('"%s stop"'):format(name))
+elseif command == "run" and #args == 1 then
     serve()
+elseif command == "stop" and #args == 1 then
+    cli.stop("rshd", "rshd isn't running here.")
+elseif command == "status" and #args == 1 then
+    cli.status("rshd", ("rshd isn't set up here: start it with \"%s start\"."):format(name))
 elseif command == "password" and #args <= 2 then
     if args[2] == "none" then
         fs.delete(PASSWORD)

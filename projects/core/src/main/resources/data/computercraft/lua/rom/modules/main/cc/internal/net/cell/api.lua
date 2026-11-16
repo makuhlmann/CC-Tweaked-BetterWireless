@@ -1372,6 +1372,12 @@ function api.startCore()
     return start_core_service()
 end
 
+function api.coreInfo()
+    local config = read_table(CORE_CONFIG)
+    if type(config.network) ~= "string" then return nil end
+    return { network = config.network, running = background.core ~= nil, enabled = config.enabled ~= false }
+end
+
 function api.manage(core, waiting)
     require_crypto()
     local connection, err = secure.connect(core or "127.0.0.1", CONTROL_PORT)

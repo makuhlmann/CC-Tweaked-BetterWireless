@@ -1,0 +1,15 @@
+service lists the services: programs which run in the background, and start with the computer, so the shell stays free. It starts and stops them, shows what they've printed, and runs programs of your own as services.
+
+A service has no screen: what it prints goes to its log, which keeps the last 100 lines. Nor does it get this computer's keyboard and mouse, or Ctrl+T. Starting a service has it start with the computer from now on; stopping it, not. To stop one, it's sent Ctrl+T, so it can close what it has open; one which hasn't finished three seconds later is stopped anyway.
+
+The network's servers run as services: "dnsd start home", "dhcpd start top" and "rshd start" each add one. A cellular network's cell (celld), core (cellcore) and phone run in the network's background process, but are listed, started and stopped here too, once they're set up on this computer.
+
+ex:
+"service" lists the services: whether each is running, and whether it starts with the computer.
+"service status dnsd" says how dnsd is doing, and shows its log.
+"service log dnsd" shows what dnsd has printed since it started.
+"service stop dnsd" stops dnsd, and it doesn't start with the computer.
+"service start dnsd" starts it again, and it starts with the computer.
+"service restart dnsd" stops it and starts it again.
+"service add beacon beacon.lua loud" runs the program beacon.lua (with the argument "loud") as a service called beacon, from now on. Services run from the root directory, so a program's arguments which are files should be full paths.
+"service remove beacon" stops it, and forgets it.

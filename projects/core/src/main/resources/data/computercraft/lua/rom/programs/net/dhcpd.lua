@@ -2,42 +2,90 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
+-- A DHCP server for one interface, which runs in the background as a service ("dhcpd start top"), or in the
+-- foreground ("dhcpd run top") until Ctrl+T.
+
 local address = require "cc.net.address"
 local dhcp = require "cc.internal.net.dhcp"
 local files = require "cc.internal.net.files"
+local cli = require "cc.internal.service_cli"
 
 local args = { ... }
-if #args < 1 or #args > 3 then
-    local name = arg[0] or fs.getName(shell.getRunningProgram())
-    print("Usage: " .. name .. " <interface> [first address] [last address]")
+local name = arg[0] or fs.getName(shell.getRunningProgram())
+
+local function usage()
+    print("Usages:")
+    print(name .. " start <interface> [first address] [last address]")
+    print(name .. " start")
+    print(name .. " stop")
+    print(name .. " status")
+    print(name .. " run <interface> [first address] [last address]")
+end
+
+-- The interface, its address, and the range to hand out, from the arguments from `first` on. Nil if they don't make
+-- sense, with what's wrong, if it's more than how they're typed.
+local function read_args(first)
+    if #args < first or #args > first + 2 then return nil end
+    local interface = args[first]
+    local own = net.getAddress(interface)
+    if not own then return nil, interface .. " has no address. Give it a fixed one first, for example with ifconfig." end
+
+    local server_address, prefix = address.parse(own)
+    local network = address.network(server_address, prefix)
+    local broadcast = address.broadcast(server_address, prefix)
+
+    -- The range to hand out: either addresses, or numbers within the network. By default, .100 to .199.
+    local function host(value, default)
+        if value == nil then return default end
+        if tonumber(value) then return network + tonumber(value) end
+        return (address.parse(value))
+    end
+
+    local range_first = host(args[first + 1], network + 100)
+    local range_last = range_first and host(args[first + 2], math.min(range_first + 99, broadcast - 1))
+    if not range_first or not range_last or range_first > range_last or not address.contains(network, prefix, range_first)
+        or not address.contains(network, prefix, range_last) or range_last >= broadcast then
+        return nil, ("The range must be within %s."):format(address.format(network, prefix))
+    end
+    return { interface = interface, address = server_address, prefix = prefix, first = range_first, last = range_last }
+end
+
+-- "dhcpd top" is "dhcpd start top", unless the interface has one of these names: then it's "dhcpd start stop", say.
+local COMMANDS = { start = true, stop = true, status = true, run = true }
+
+local command = args[1]
+local missing = ("dhcpd isn't set up here: start it with \"%s start <interface>\"."):format(name)
+if command == "stop" and #args == 1 then
+    cli.stop("dhcpd", "dhcpd isn't running here.")
+    return
+elseif command == "status" and #args == 1 then
+    cli.status("dhcpd", missing)
+    return
+elseif command == "start" and #args == 1 then
+    cli.start("dhcpd", ('"%s stop"'):format(name), missing)
+    return
+elseif command == "start" or (command ~= nil and not COMMANDS[command]) then
+    -- What's wrong is said before anything changes.
+    local first = command == "start" and 2 or 1
+    local config, err = read_args(first)
+    if not config then
+        if err then printError(err) else usage() end
+        return
+    end
+    local words = { "/" .. shell.getRunningProgram(), "run" }
+    for i = first, #args do words[#words + 1] = args[i] end
+    cli.add("dhcpd", words, ('"%s stop"'):format(name))
     return
 end
 
-local interface = args[1]
-local own = net.getAddress(interface)
-if not own then
-    printError(interface .. " has no address. Give it a fixed one first, for example with ifconfig.")
+local config, config_err
+if command == "run" then config, config_err = read_args(2) end
+if not config then
+    if config_err then printError(config_err) else usage() end
     return
 end
-
-local server_address, prefix = address.parse(own)
-local network = address.network(server_address, prefix)
-local broadcast = address.broadcast(server_address, prefix)
-
--- The range to hand out: either addresses, or numbers within the network. By default, .100 to .199.
-local function host(value, default)
-    if value == nil then return default end
-    if tonumber(value) then return network + tonumber(value) end
-    return (address.parse(value))
-end
-
-local first = host(args[2], network + 100)
-local last = host(args[3], math.min(first + 99, broadcast - 1))
-if not first or not last or first > last or not address.contains(network, prefix, first)
-    or not address.contains(network, prefix, last) or last >= broadcast then
-    printError(("The range must be within %s."):format(address.format(network, prefix)))
-    return
-end
+local interface, server_address, prefix = config.interface, config.address, config.prefix
+local first, last = config.first, config.last
 
 local dns = {}
 for value in (settings.get("dhcpd.dns") or ""):gmatch("[^,%s]+") do
@@ -72,7 +120,8 @@ if not socket then
     return
 end
 
-print(("Handing out %s to %s on %s. Press Ctrl+T to stop."):format(address.format(first), address.format(last), interface))
+print(("Handing out %s to %s on %s."):format(address.format(first), address.format(last), interface))
+if not service.current() then print("Press Ctrl+T to stop.") end
 local ok, result = pcall(function()
     while true do
         local message, _, _, received_on = socket:receive()

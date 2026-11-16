@@ -2,17 +2,64 @@
 --
 -- SPDX-License-Identifier: MPL-2.0
 
+-- A DNS server for one zone, which runs in the background as a service ("dnsd start home"), or in the foreground
+-- ("dnsd run home") until Ctrl+T.
+
 local dns = require "cc.internal.net.dns"
+local cli = require "cc.internal.service_cli"
 
 local args = { ... }
-if #args < 1 or #args > 2 then
-    local name = arg[0] or fs.getName(shell.getRunningProgram())
-    print("Usage: " .. name .. " <zone> [zone file]")
+local name = arg[0] or fs.getName(shell.getRunningProgram())
+
+local function usage()
+    print("Usages:")
+    print(name .. " start <zone> [zone file]")
+    print(name .. " start")
+    print(name .. " stop")
+    print(name .. " status")
+    print(name .. " run <zone> [zone file]")
+end
+
+-- The zone, and its file, from the arguments from `first` on: nil if they don't make sense. The file is found from the
+-- current directory, if one is given, and /zones otherwise.
+local function read_args(first)
+    if #args < first or #args > first + 1 then return nil end
+    local zone = dns.normalise(args[first])
+    if zone == "" then return nil end
+    return zone, args[first + 1] and shell.resolve(args[first + 1]) or fs.combine("zones", zone .. ".txt")
+end
+
+-- "dnsd home" is "dnsd start home", unless the zone has one of these names: then it's "dnsd start stop", say.
+local COMMANDS = { start = true, stop = true, status = true, run = true }
+
+local command = args[1]
+local missing = ("dnsd isn't set up here: start it with \"%s start <zone>\"."):format(name)
+if command == "stop" and #args == 1 then
+    cli.stop("dnsd", "dnsd isn't running here.")
+    return
+elseif command == "status" and #args == 1 then
+    cli.status("dnsd", missing)
+    return
+elseif command == "start" and #args == 1 then
+    cli.start("dnsd", ('"%s stop"'):format(name), missing)
+    return
+elseif command == "start" or (command ~= nil and not COMMANDS[command]) then
+    local zone, file = read_args(command == "start" and 2 or 1)
+    if not zone then
+        usage()
+        return
+    end
+    -- Services run from the root, so the file is given by its full path.
+    cli.add("dnsd", { "/" .. shell.getRunningProgram(), "run", zone, "/" .. file }, ('"%s stop"'):format(name))
     return
 end
 
-local zone = dns.normalise(args[1])
-local zone_file = shell.resolve(args[2] or fs.combine("/zones", zone .. ".txt"))
+local zone, zone_file
+if command == "run" then zone, zone_file = read_args(2) end
+if not zone then
+    usage()
+    return
+end
 
 -- When a file last changed, and its size: when neither has, what was read from it last time is still right.
 local function stamp(path)
@@ -78,7 +125,8 @@ if not socket then
 end
 
 if not fs.exists(zone_file) then print(("No zone file at %s yet: only DHCP clients have names."):format(zone_file)) end
-print(("Answering for %s. Press Ctrl+T to stop."):format(zone))
+print(("Answering for %s."):format(zone))
+if not service.current() then print("Press Ctrl+T to stop.") end
 
 local ok, result = pcall(function()
     while true do

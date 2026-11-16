@@ -24,7 +24,7 @@ describe("The dnsd program", function()
 
         local answers, result = {}, nil
         local ok, err = pcall(parallel.waitForAny,
-            function() result = capture("/rom/programs/net/dnsd.lua", "home") end,
+            function() result = capture("/rom/programs/net/dnsd.lua", "run", "home") end,
             function()
                 local socket = assert(net.udp.open())
                 for i, name in ipairs { "bank.home", "laptop.home", "broken.home", "bank.home", "bank.home" } do

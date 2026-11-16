@@ -1,6 +1,13 @@
-dnsd is a DNS server for one zone, such as "home". It answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home). Computers which got their address from dhcpd on the same computer can be found by their hostname too. Run it in the background with "bg" on an advanced computer, or from startup.
+dnsd is a DNS server for one zone, such as "home". It answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home). Computers which got their address from dhcpd on the same computer can be found by their hostname too. The zone file is read again whenever it changes.
+
+It runs in the background, as a service (see "help service"), and starts with the computer.
 
 Clients find the server through DHCP (set dhcpd.dns and dhcpd.domain), or the settings net.dns and net.domain.
 
 ex:
-"dnsd home" answers for names ending in .home.
+"dnsd start home" answers for names ending in .home, from now on. "dnsd home" does the same.
+"dnsd start home records.txt" answers from the file records.txt instead.
+"dnsd stop" stops it, and it doesn't start with the computer.
+"dnsd start" starts it again, as it was.
+"dnsd status" says how it's doing, and what it's printed.
+"dnsd run home" answers in the foreground instead, until Ctrl+T is pressed.

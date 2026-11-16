@@ -14,7 +14,7 @@ hello.close()
 
 parallel.waitForAll(
     -- The remote shell server.
-    function() shell.run("rshd") end,
+    function() shell.run("rshd", "run") end,
     -- Allow whichever computer sends its key.
     function()
         local listener = assert(net.tcp.listen(9010))

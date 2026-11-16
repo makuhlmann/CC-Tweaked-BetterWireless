@@ -190,6 +190,35 @@ shell.setCompletionFunction("rom/programs/net/cell.lua", function(shell, index, 
         return completion.programWithArgs(shell, text, previous, 3)
     end
 end)
+local function service_names(names)
+    local ok, services = pcall(service.list)
+    for _, info in ipairs(ok and services or {}) do names[#names + 1] = info.name end
+    return names
+end
+shell.setCompletionFunction("rom/programs/service.lua", function(shell, index, text, previous)
+    if index == 1 then
+        return completion.choice(shell, text, previous, {
+            "list", "status ", "start ", "stop ", "restart ", "log ", "add ", "remove ",
+        })
+    elseif index == 2 and previous[2] ~= "add" and previous[2] ~= "list" then
+        return completion.choice(shell, text, previous, service_names({}))
+    elseif index >= 3 and previous[2] == "add" then
+        return completion.programWithArgs(shell, text, previous, 4)
+    end
+end)
+local daemon_commands = { "start", "stop", "status", "run" }
+shell.setCompletionFunction("rom/programs/net/dnsd.lua", completion.build({ completion.choice, daemon_commands }))
+shell.setCompletionFunction("rom/programs/net/dhcpd.lua", function(shell, index, text, previous)
+    if index == 1 then
+        return completion.choice(shell, text, previous, { "start ", "stop", "status", "run " })
+    elseif index == 2 and (previous[2] == "start" or previous[2] == "run") then
+        local names, ok, interfaces = {}, pcall(net.interfaces)
+        for _, interface in ipairs(ok and interfaces or {}) do names[#names + 1] = interface.name end
+        return completion.choice(shell, text, previous, names)
+    end
+end)
+local rshd_commands = { "start", "stop", "status", "run", "password", "keys", "allow ", "deny " }
+shell.setCompletionFunction("rom/programs/net/rshd.lua", completion.build({ completion.choice, rshd_commands }))
 shell.setCompletionFunction("rom/programs/command/exec.lua", completion.build(completion.command))
 shell.setCompletionFunction("rom/programs/http/wget.lua", completion.build({ completion.choice, { "run " } }))
 
@@ -218,6 +247,10 @@ if pocket then
         { completion.choice, { "top", "back" } }
     ))
 end
+
+-- Start the services which start with the computer (see the service API), before the user's startup, which may never
+-- finish.
+if service then pcall(service.boot, shell) end
 
 -- Run autorun files
 if fs.exists("/rom/autorun") and fs.isDir("/rom/autorun") then

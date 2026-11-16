@@ -61,7 +61,7 @@ local FORWARD = {
     key = true, key_up = true, char = true, paste = true, terminate = true,
     mouse_click = true, mouse_drag = true, mouse_scroll = true, mouse_up = true,
 }
-local finished, succeeded, reason = false, nil, nil
+local finished, succeeded, stopped, reason = false, nil, false, nil
 -- Ctrl+T is for the other computer, so nothing here may treat it as a reason to stop.
 local pull_event = os.pullEvent
 os.pullEvent = os.pullEventRaw
@@ -75,7 +75,7 @@ local ok, session_err = pcall(parallel.waitForAny,
             end
             if message.term then remote_term.apply(term.current(), message.term) end
             if message.exit then
-                finished, succeeded = true, message.ok
+                finished, succeeded, stopped = true, message.ok, message.stopped == true
                 return
             end
         end
@@ -98,6 +98,8 @@ if not ok then error(session_err, 0) end
 term.setCursorBlink(false)
 if not finished then
     printError(("Connection to %s lost%s"):format(host, reason and (": " .. reason) or ""))
+elseif stopped then
+    printError(("The remote shell server on %s stopped."):format(host))
 elseif not command then
     print(("Connection to %s closed."):format(host))
 elseif succeeded == false then

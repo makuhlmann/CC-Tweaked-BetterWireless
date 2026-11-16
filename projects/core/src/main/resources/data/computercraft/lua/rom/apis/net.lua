@@ -1985,6 +1985,16 @@ cell = {
         return cellular().startCore()
     end,
 
+    --[[- Say whether this computer is a cellular network's core, and whether the core is running. The `cellcore`
+    program says more, from the core itself.
+
+    @treturn table|nil `network`, the network's name; `running`, whether the core is running now; and `enabled`,
+    whether it starts with the computer. Nil if this computer isn't set up as a core.
+    ]]
+    coreInfo = function()
+        return cellular().coreInfo()
+    end,
+
     --[[- Manage a cellular network's core: this computer's, or (over the network) another's.
 
     The core must know the computer managing it. Its own computer always may. Any other waits the first time, until

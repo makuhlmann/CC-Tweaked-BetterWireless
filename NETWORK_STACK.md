@@ -77,10 +77,10 @@ The stack is a global API, `net`, loaded from `rom/apis/net.lua` like rednet, so
 one instance. APIs load in alphabetical order, before `settings`, `peripheral` and the rest exist, so the file's top
 level only defines functions. All setup happens when `net.run` starts: defining settings, finding modems, and loading
 the internal modules with a `require` of its own (APIs can't use the shell's), and the few it needs before that with
-`dofile`. `bios.lua` runs that background process next to the shell:
+`dofile`. `bios.lua` runs that background process next to the shell, with the service manager's (below):
 
 ```lua
-parallel.waitForAny(shell, rednet.run, net.run)
+parallel.waitForAny(shell, rednet.run, net.run, service.run)
 ```
 
 The background process only handles input: `modem_message` events, its own timers, and modems being attached or
@@ -101,6 +101,41 @@ To be robust:
 - Buffers are bounded: a few dozen datagrams per socket, and a connection's receive window. A sender that ignores this
   loses datagrams, which is no different from a real network.
 - It ignores `terminate`, so pressing Ctrl+T in a program doesn't kill the network.
+
+### Services
+
+Servers (`dnsd`, `dhcpd`, `rshd`) used to run in the foreground until Ctrl+T, taking the shell with them (or a tab, with
+`bg`, on an advanced computer). They run as **services** now: programs which run in the background and start with the
+computer. The `service` API (`rom/apis/service.lua`) is a global API, for the same reason the stack is one, with its
+own background process, `service.run`; the logic is in `cc.internal.services`. It isn't part of `net`, so services run
+with the network turned off too, and `net.host`'s "services" (names for ports) aren't confused with them.
+
+- **Running a program in the background.** Each service is a command, run in a coroutine of its own by a shell of its
+  own (`rom/programs/shell.lua`, given the command), from the root directory. That shell takes its path, aliases and
+  completion from the computer's first shell, which `rom/startup.lua` hands over as it starts the services which start
+  with the computer, before the user's startup (which may never finish). Without a parent, a nested shell would have
+  only the default path; and a shell with neither a parent nor a command runs startup again.
+- **No screen.** While a service runs, the terminal is redirected to its log, an invisible window as wide as the screen
+  and 100 lines tall, and back afterwards; a service which redirects elsewhere keeps its own redirect. `service status`
+  shows the log.
+- **No keyboard.** A service gets every event except `terminate` and the computer's own keyboard, mouse and resizing:
+  one which reads input mustn't take the user's.
+- **Stopping.** A stopped service gets a `terminate` event, as Ctrl+T would send, so it closes what it has open (a
+  server's socket: otherwise the port stays taken in the stack, and the next start fails). One which hasn't finished
+  three seconds later is dropped. `rshd` ends any session on it, telling the client the server stopped (where before a
+  session ignored the server computer's Ctrl+T).
+- **Asking, not doing.** `start`, `stop` and the rest only record what's wanted and wake the background process, which
+  does it, so nothing is resumed from inside itself: a service can stop itself, or a remote shell the `rshd` it runs
+  inside. The API then waits (up to ten seconds) for it to be done.
+- **Kept in `/.services`**, by name: the command, and whether it starts with the computer. Starting a service has it
+  start with the computer, and stopping it not, as for `celld`.
+- **Services which run elsewhere.** A cellular network's cell, core and phone run in the stack's background process.
+  `service` lists them once they're set up (`celld`, `cellcore` and `phone`), and starts and stops them through
+  `net.cell`, but keeps no log of theirs.
+
+`dnsd start <zone>`, `dhcpd start <interface>` and `rshd start` add their service, with the command `<program> run ...`,
+which is also what runs one in the foreground, as before. They check what they're given first, so a mistake changes
+nothing; and `dnsd <zone>` is `dnsd start <zone>` unless the zone is called `start`, `stop`, `status` or `run`.
 
 ### Testability
 
@@ -797,11 +832,12 @@ handle the events themselves:
 | `ping`, `traceroute` | Test reachability and paths |
 | `nslookup` | Query DNS |
 | `netdump` | Show frames as they arrive, with a simple filter. Mostly for learning and debugging. |
-| `dhcpd`, `dnsd` | DHCP and DNS servers |
+| `dhcpd`, `dnsd` | DHCP and DNS servers, which run as services |
 | `nc` | Send and receive datagrams or connection messages from the shell |
 | `ncp` | Copy files over a connection |
 | `rsh` | Remote shell over a secure connection, with the remote terminal redirected, or one command |
-| `rshd` | Remote shell server, with the computers allowed in by key, or by a password which then remembers them |
+| `rshd` | Remote shell server, with the computers allowed in by key, or by a password which then remembers them. It runs as a service |
+| `service` | List the services, start and stop them, show their logs, and run programs of your own as services (§2) |
 | `netkeys` | This computer's key and fingerprint, known hosts, certificate authorities and certificates |
 | `cell`, `cellcore`, `celld` | A phone, a network's core and a cell (see `NETWORK_CELLULAR.md`) |
 

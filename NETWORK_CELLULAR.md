@@ -21,7 +21,8 @@ must keep running when nobody is nearby, so they call `os.setKeepLoaded(true)` (
 [RADIO_PROPAGATION.md](RADIO_PROPAGATION.md#keeping-computers-running)). That loads only the computer's chunk and the
 eight around it, and the radio model sees buildings beyond those as solid rock up to their roofs while nobody is near.
 So a cell's antenna belongs above the roofs around it, as a real one's does (see
-[the limitations](RADIO_PROPAGATION.md#6-limitations-and-future-work)).
+[the limitations](RADIO_PROPAGATION.md#6-limitations-and-future-work)). The `service` program lists the cell, core and phone
+with the computer's other services (see [NETWORK_STACK.md](NETWORK_STACK.md#services)), and starts and stops them.
 
 ## Radio
 
