@@ -22,6 +22,7 @@ public final class ChunkHeights {
     private final short @Nullable [] surface;
     private final Source source;
     private final long created;
+    private final int top;
 
     /**
      * Create a new snapshot.
@@ -37,6 +38,24 @@ public final class ChunkHeights {
         this.surface = surface;
         this.source = source;
         this.created = created;
+        top = top(ground, surface);
+    }
+
+    private static int top(short @Nullable [] ground, short @Nullable [] surface) {
+        if (ground == null || surface == null) return TerrainView.UNKNOWN;
+        int top = Short.MIN_VALUE;
+        for (var height : ground) top = Math.max(top, height);
+        for (var height : surface) top = Math.max(top, height);
+        return top;
+    }
+
+    /**
+     * The top of the chunk: the highest of its columns' ground and surface heights (see {@link TerrainView#chunkTop}).
+     *
+     * @return The top, or {@link TerrainView#UNKNOWN} if the heights aren't known.
+     */
+    public int top() {
+        return top;
     }
 
     public Source source() {

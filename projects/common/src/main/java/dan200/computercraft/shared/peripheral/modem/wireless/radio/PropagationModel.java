@@ -203,6 +203,29 @@ public final class PropagationModel {
         double tx, double ty, double tz, double rx, double ry, double rz,
         double linkBudget, RadioEnvironment env, TerrainView terrain
     ) {
+        return trace(tx, ty, tz, rx, ry, rz, linkBudget, env, terrain, true);
+    }
+
+    /**
+     * Trace a link between two antennas, perhaps looking at every block of open sky along the way. That gives the same
+     * result as not (see {@link TerrainView#chunkTop}), which the tests check.
+     *
+     * @param tx         The transmitting antenna's X position.
+     * @param ty         The transmitting antenna's Y position.
+     * @param tz         The transmitting antenna's Z position.
+     * @param rx         The receiving antenna's X position.
+     * @param ry         The receiving antenna's Y position.
+     * @param rz         The receiving antenna's Z position.
+     * @param linkBudget The largest link budget the path is needed for, in dB.
+     * @param env        The model parameters.
+     * @param terrain    The terrain to propagate through.
+     * @param skipSky    Whether to skip open sky.
+     * @return The traced link.
+     */
+    static LinkPath trace(
+        double tx, double ty, double tz, double rx, double ry, double rz,
+        double linkBudget, RadioEnvironment env, TerrainView terrain, boolean skipSky
+    ) {
         var horizontalBlocks = Math.hypot(rx - tx, rz - tz);
         var dy = ry - ty;
         var rayBlocks = Math.sqrt(horizontalBlocks * horizontalBlocks + dy * dy);
@@ -276,7 +299,9 @@ public final class PropagationModel {
         if (middleLength > 0 && throughLoss <= headroom) {
             var start = txThrough / rayBlocks;
             var end = 1 - rxThrough / rayBlocks;
-            middle = new MiddleWalk(terrain, cavern, lossScale, builtScale, headroom - throughLoss, ground, surface, start, 1 / rayBlocks);
+            middle = new MiddleWalk(
+                terrain, cavern, lossScale, builtScale, headroom - throughLoss, ground, surface, start, 1 / rayBlocks, skipSky
+            );
             VoxelRay.traverse(
                 tx + (rx - tx) * start, ty + dy * start, tz + (rz - tz) * start,
                 tx + (rx - tx) * end, ty + dy * end, tz + (rz - tz) * end,
@@ -322,7 +347,7 @@ public final class PropagationModel {
         if (env.reflections()) {
             var search = new ReflectionSearch(
                 terrain, cavern, env, new double[]{ tx, ty, tz }, new double[]{ rx, ry, rz }, rayBlocks, walkLength,
-                txThrough, rxThrough, lossScale, fromTx, fromRx, middle, ground, surface
+                txThrough, rxThrough, lossScale, fromTx, fromRx, middle, ground, surface, skipSky
             );
             var found = new ArrayList<Reflection>();
             search.near(found, false);
@@ -434,13 +459,15 @@ public final class PropagationModel {
         private final @Nullable MiddleWalk middle;
         private final double[] ground;
         private final double[] surface;
+        private final boolean skipSky;
         private double @Nullable [] middleMetres;
 
         ReflectionSearch(
             TerrainView terrain, @Nullable Cavern cavern, RadioEnvironment env, double[] tx, double[] rx, double rayBlocks,
             double walkLength, double txThrough, double rxThrough, double lossScale, Walk fromTx, Walk fromRx,
-            @Nullable MiddleWalk middle, double[] ground, double[] surface
+            @Nullable MiddleWalk middle, double[] ground, double[] surface, boolean skipSky
         ) {
+            this.skipSky = skipSky;
             this.terrain = terrain;
             this.cavern = cavern;
             this.env = env;
@@ -554,7 +581,9 @@ public final class PropagationModel {
 
             var start = txThrough / rayBlocks;
             var end = 1 - rxThrough / rayBlocks;
-            var walk = new MiddleWalk(terrain, cavern, lossScale, env.builtLossScale(), FIXED_CAP, ground, surface, start, 1 / rayBlocks);
+            var walk = new MiddleWalk(
+                terrain, cavern, lossScale, env.builtLossScale(), FIXED_CAP, ground, surface, start, 1 / rayBlocks, skipSky
+            );
             VoxelRay.traverse(
                 tx[0] + (rx[0] - tx[0]) * start, tx[1] + (rx[1] - tx[1]) * start, tx[2] + (rx[2] - tx[2]) * start,
                 tx[0] + (rx[0] - tx[0]) * end, tx[1] + (rx[1] - tx[1]) * end, tx[2] + (rx[2] - tx[2]) * end,
@@ -780,6 +809,12 @@ public final class PropagationModel {
         private final double scale;
         private final double[] least = RadioMaterial.leastAttenuationTable();
 
+        /** Whether to skip open sky: not beneath a ceiling (the Nether), where unloaded space isn't air. */
+        private final boolean skipSky;
+        // The chunk the walk is in, and its top (see TerrainView.chunkTop).
+        private int chunkX = Integer.MIN_VALUE, chunkZ = Integer.MIN_VALUE;
+        private int top = TerrainView.UNKNOWN;
+
         /** How many metres of each material the walk has passed through. */
         final double[] metres = new double[RadioMaterial.COUNT];
         /** The loss so far, at each material's least attenuation. */
@@ -797,11 +832,13 @@ public final class PropagationModel {
          * @param surface   The surface heights along the profile.
          * @param start     How far along the whole link the walk starts, between 0 and 1.
          * @param scale     The fraction of the whole link covered by one block.
+         * @param skipSky   Whether to skip open sky, where the model would only find air.
          */
         MiddleWalk(
             TerrainView terrain, @Nullable Cavern cavern, double lossScale, double builtScale, double cap,
-            double[] ground, double[] surface, double start, double scale
+            double[] ground, double[] surface, double start, double scale, boolean skipSky
         ) {
+            this.skipSky = skipSky && cavern == null;
             this.terrain = terrain;
             this.cavern = cavern;
             this.lossScale = lossScale;
@@ -815,6 +852,10 @@ public final class PropagationModel {
 
         @Override
         public boolean visit(int x, int y, int z, double enter, double exit) {
+            // Open sky: what the rest of this would find to be air, which costs nothing. Most of a long link is this, so
+            // it's worth not asking about each block.
+            if (skipSky && openSky(x, y, z, enter, exit)) return true;
+
             var info = terrain.block(x, y, z);
             RadioMaterial material;
             double fill;
@@ -838,12 +879,33 @@ public final class PropagationModel {
             return loss <= cap;
         }
 
+        // Whether a block is air, as the rest of visit would find: above the top of a chunk whose heights are known, or,
+        // in a chunk with none, above the profile's heights, as guessMaterial would go by. Loaded chunks aren't skipped.
+        private boolean openSky(int x, int y, int z, double enter, double exit) {
+            var cx = x >> 4;
+            var cz = z >> 4;
+            if (cx != chunkX || cz != chunkZ) {
+                chunkX = cx;
+                chunkZ = cz;
+                top = terrain.chunkTop(cx, cz);
+            }
+            if (top == TerrainView.UNKNOWN) return false;
+            if (top != TerrainView.NO_HEIGHTS) return y >= top;
+
+            var sample = profileSample((enter + exit) / 2);
+            return y >= ground[sample] && y >= surface[sample];
+        }
+
+        private int profileSample(double distance) {
+            return Math.clamp(Math.round((start + distance * scale) * (ground.length - 1)), 0, ground.length - 1);
+        }
+
         private RadioMaterial guessMaterial(int x, int y, int z, double distance) {
             var groundY = terrain.groundHeight(x, z);
             var surfaceY = terrain.surfaceHeight(x, z);
             if (groundY != TerrainView.UNKNOWN && surfaceY != TerrainView.UNKNOWN) return classify(y, groundY, surfaceY);
 
-            var sample = Math.clamp(Math.round((start + distance * scale) * (ground.length - 1)), 0, ground.length - 1);
+            var sample = profileSample(distance);
             return classify(y, ground[sample], surface[sample]);
         }
 

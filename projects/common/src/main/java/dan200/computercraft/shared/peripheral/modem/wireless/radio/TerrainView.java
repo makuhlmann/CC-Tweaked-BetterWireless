@@ -16,6 +16,12 @@ public interface TerrainView {
     int UNKNOWN = Integer.MIN_VALUE;
 
     /**
+     * What {@link #chunkTop} says of a chunk none of whose columns' heights are known, so the model goes by its profile
+     * there.
+     */
+    int NO_HEIGHTS = Integer.MIN_VALUE + 1;
+
+    /**
      * The height of the ground in a column: the first free Y position above every motion-blocking block other than
      * leaves. This is the {@code MOTION_BLOCKING_NO_LEAVES} heightmap, so includes fluids and buildings.
      *
@@ -45,6 +51,25 @@ public interface TerrainView {
      */
     @Nullable
     BlockRadioInfo block(int x, int y, int z);
+
+    /**
+     * The top of a chunk which isn't loaded: the first Y position above every block in it, the highest of its columns'
+     * {@linkplain #surfaceHeight surface} and {@linkplain #groundHeight ground} heights. Above this the model takes
+     * the chunk to be nothing but air, so a walk along a ray above it needn't look at each block: that's most of a long
+     * link, which crosses thousands of chunks high above the ground. Where any column reaches the ray (a mountain, a
+     * tree, a building), the blocks there are walked as usual.
+     * <p>
+     * A chunk none of whose columns' heights are known is {@link #NO_HEIGHTS}: the model goes by its profile there,
+     * which it can tell the same way. A loaded chunk, whose blocks are read rather than guessed, should be
+     * {@link #UNKNOWN}, as should one with only some heights known.
+     *
+     * @param chunkX The chunk's X coordinate.
+     * @param chunkZ The chunk's Z coordinate.
+     * @return The top, {@link #NO_HEIGHTS}, or {@link #UNKNOWN}, in which case each block is looked at.
+     */
+    default int chunkTop(int chunkX, int chunkZ) {
+        return UNKNOWN;
+    }
 
     /**
      * The height of this world's ceiling, if it has one, as the Nether does: the first Y position above it.

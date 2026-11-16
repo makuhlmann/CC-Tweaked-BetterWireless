@@ -86,6 +86,15 @@ final class LevelTerrainView implements TerrainView {
     }
 
     @Override
+    public int chunkTop(int chunkX, int chunkZ) {
+        select(chunkX << 4, chunkZ << 4);
+        // Loaded chunks are few, near the ends of a link, and their real blocks are walked.
+        if (lastChunk != null) return UNKNOWN;
+        var heights = lastHeights;
+        return heights == null || !heights.isAvailable() ? NO_HEIGHTS : heights.top();
+    }
+
+    @Override
     public @Nullable BlockRadioInfo block(int x, int y, int z) {
         select(x, z);
         var chunk = lastChunk;

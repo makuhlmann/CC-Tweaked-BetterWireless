@@ -284,10 +284,10 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    weaker transmitter is traced again for a stronger one, unless the link was within the weaker one's budget (its
    loss is then exact whatever the budget).
 5. **Radios which move don't wait.** As paths are cached by block, every block a phone moves into is a link which
-   hasn't been traced, and on a long link tracing takes a while: a 40km link took about 6ms (more than a tick's
-   budget, so one a tick) and 165,000 terrain lookups, measured offline with the model on hilly heights, and its
-   profile crosses about 500 chunks, most of which a Tellus world hasn't generated, so their heights must be looked
-   up. Walking a block at a time needed about 8 more chunks' heights a block for one 40km link, and 64 for the 15
+   hasn't been traced, and on a long link tracing takes a while: a 40km link which closes took about 1ms (half a
+   tick's budget), measured offline and warm, with heights only for the chunks its profile samples, as a server has;
+   and its profile crosses about 500 chunks, most of which a Tellus world hasn't generated, so their heights must be
+   looked up. Walking a block at a time needed about 8 more chunks' heights a block for one 40km link, and 64 for the 15
    always-loaded computers of a test world 40km off. So the same two radios' last path is remembered too (by the
    modems themselves, either way round: `RecentLinks`), and a packet between them goes at once with that path if
    neither has moved more than `move_tolerance` (16) blocks since and it was traced within `2 × cache_ticks`. The link
@@ -295,12 +295,21 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    replaces, so a phone which keeps moving only has its latest position traced, and a cached path which expires is
    traced again in the background too, rather than holding up the next packet. Only a link between two radios which
    haven't had one traced lately (or which moved further) waits for a trace.
-6. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
+6. **Open sky isn't walked block by block.** The straight-through walk of a long link crosses thousands of chunks,
+   mostly high above the ground. Where it's above the top of a chunk whose heights are known (`TerrainView.chunkTop`,
+   the highest of its columns' heights), or, in a chunk with no heights, above the profile's heights that the walk
+   would go by there, the model would only find air, which costs nothing; so the walk goes on without looking. Wherever
+   a mountain, a tree or a building reaches the ray, the blocks there are walked as before; loaded chunks always are,
+   and nothing is skipped beneath a ceiling (the Nether). The result is exactly the same: `OpenSkyTest` traces 1,200
+   random links over random mountains (reaching into the ray or not, with chunks loaded, with heights, or without,
+   and under open sky or a ceiling) both ways, and requires identical losses at six frequencies. It saves about a
+   third of a 40km trace (1.06ms to 0.73ms); most of what's left is stepping along the ray's 54,000 blocks.
+7. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
    it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates.
-7. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
+8. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
    dropped (congestion, like a real network). They're shared by the whole server: a link waiting to be traced waits
    behind every other, whoever's it is.
-8. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
+9. Errors (for instance, from another mod's `PacketReceiver`) are caught and logged at most once a minute, so they
    can't take down the server tick.
 
 ## 4. Terrain data for unloaded chunks
@@ -457,9 +466,9 @@ doesn't come back within a minute is forgotten.
   indoors, packets keep the outdoor strength that long. A radio which moves more than `move_tolerance` blocks between
   traces (an aircraft, between two beacons) waits for each trace, as all did before. Nor is the queue fair between
   players: a phone far from many cells, walking about, puts a long trace in it for each cell it hears.
-- **Long links walk every block of open sky.** The straight-through walk of a 40km link steps through every block
-  between the antennas, though most are far above the ground. Skipping a chunk's stretch of the ray where it's above
-  that chunk's highest surface would give the same result (nothing is there but air), with far fewer lookups.
+- **Long links still step along every block of the ray**, though they no longer look at those in open sky. Jumping
+  over a chunk of open sky at once would save most of the rest, but restarting the step arithmetic there moves the
+  later block boundaries in the last few digits, so results would no longer be exactly the same.
 - **Materials are guessed from sound types.** A data-driven override (block tags such as
   `computercraft:radio/metal`, or a data map with per-block ITU parameters) would let packs fix modded blocks.
 - **Heights are cached in memory only.** Persisting snapshots would avoid disk scans after a restart, though the scans
