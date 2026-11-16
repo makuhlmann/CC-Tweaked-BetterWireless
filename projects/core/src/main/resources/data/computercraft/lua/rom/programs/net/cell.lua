@@ -8,6 +8,7 @@ local function usage()
     local name = arg[0] or fs.getName(shell.getRunningProgram())
     print("Usages:")
     print(name)
+    print(name .. " status")
     print(name .. " activate <network> <code>")
     print(name .. " send <number> <message>")
     print(name .. " messages")
@@ -259,7 +260,8 @@ end
 local command = args[1]
 if command == "monitor" and #args == 1 then
     monitor()
-elseif command == "gui" and #args == 1 then
+elseif command == nil or (command == "gui" and #args == 1) then
+    -- The menus, which are what most people want: "cell status" says how the phone is doing in a few lines.
     require("cc.internal.net.cell.gui").run(monitor)
 elseif command == "locate" and #args == 1 then
     -- Where this computer is, from the cells around which say where they are. One which isn't listening yet starts,
@@ -300,7 +302,7 @@ elseif command == "bar" then
     -- Run a program beneath the status bar: a shell, if none is given.
     if #args == 1 then args[2] = "shell" end
     require("cc.internal.net.cell.bar").run(shell.execute, table.unpack(args, 2))
-elseif command == nil then
+elseif command == "status" and #args == 1 then
     local info = net.cell.info()
     if info.state == "none" and info.network then
         -- It has a SIM, but the phone isn't running.
@@ -482,7 +484,7 @@ elseif command == "pin" and #args <= 3 then
             cell = tonumber((args[2]:gsub("^#", "")))
             local carrier = args[3] and require("cc.internal.net.bands").parse_carrier(args[3])
             if not cell or (args[3] and not carrier) then
-                printError("Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.")
+                printError("Expected a cell's ID, as 'cell status' lists them: 12, or 12 b3/1.")
                 return
             end
             if carrier then cell = common.carrier_cell(cell, carrier) end

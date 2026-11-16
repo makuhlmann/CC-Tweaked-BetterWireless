@@ -271,8 +271,8 @@ describe("The cell program", function()
             expect(run("pin #12 b3/1")):matches {
                 ok = true, output = "The phone only uses cell #12 b3/1, and has no service where it can't hear it.\n", error = "",
             }
-            expect(run("pin twelve")):matches { ok = true, output = "", error = "Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.\n" }
-            expect(run("pin 12 b3/99").error):eq("Expected a cell's ID, as 'cell' lists them: 12, or 12 b3/1.\n")
+            expect(run("pin twelve")):matches { ok = true, output = "", error = "Expected a cell's ID, as 'cell status' lists them: 12, or 12 b3/1.\n" }
+            expect(run("pin 12 b3/99").error):eq("Expected a cell's ID, as 'cell status' lists them: 12, or 12 b3/1.\n")
             expect(run("pin off")):matches { ok = true, output = "The phone chooses its cell.\n", error = "" }
             expect(phone.calls):same {
                 { "setBands", { "b20", "b3", "b3", "b1" } }, { "setBands", { "b33" } }, { "setBands", "any" },
@@ -300,11 +300,11 @@ describe("The cell program", function()
             phone.info.bands, phone.info.pinned = { "b20", "b3" }, 12
             phone.info.address = "10.64.0.9"
             phone.info.subscriber = { id = "ACME-7", number = "107", routed = { kind = "range", network = "10.64.5.0/28" } }
-            local output = capture("/rom/programs/net/cell.lua").output
+            local output = capture("/rom/programs/net/cell.lua", "status").output
             expect(output):str_match("\nOnly uses the bands b20, b3\nPinned to cell #12\n")
             expect(output):str_match("\nAddress:  10%.64%.0%.9\nRoutes:   10%.64%.5%.0/28 %(a range of the network's addresses%)\n")
             phone.info.subscriber.routed = { kind = "subnet", network = "192.168.5.0/24" }
-            expect(capture("/rom/programs/net/cell.lua").output):str_match("\nRoutes:   192%.168%.5%.0/24 %(a network of its own%)\n")
+            expect(capture("/rom/programs/net/cell.lua", "status").output):str_match("\nRoutes:   192%.168%.5%.0/24 %(a network of its own%)\n")
         end)
 
         it("turns cell service off and on", function()
@@ -338,18 +338,18 @@ describe("The cell program", function()
                 state = "inactive", enabled = true, selection = "auto", roaming = false, networks = { "ACME", "BETA" },
                 strongest = { id = 21, network = "BETA", signal = -64.6 },
             }
-            expect(capture("/rom/programs/net/cell.lua")):matches {
+            expect(capture("/rom/programs/net/cell.lua", "status")):matches {
                 ok = true, error = "",
                 output = "No SIM: listening for cells\nStrongest: #21 BETA, -65 dBm\nNetworks in range: ACME, BETA\n",
             }
             phone.info = { state = "none", enabled = false, selection = "auto", roaming = false }
-            expect(capture("/rom/programs/net/cell.lua")):matches {
+            expect(capture("/rom/programs/net/cell.lua", "status")):matches {
                 ok = true, error = "",
                 output = "No SIM: activate one with 'cell activate', or listen for cells with 'cell on'\n",
             }
             -- With a SIM, but no modem to run the phone on.
             phone.info = { state = "none", enabled = true, network = "ACME", selection = "auto", roaming = false }
-            expect(capture("/rom/programs/net/cell.lua")):matches {
+            expect(capture("/rom/programs/net/cell.lua", "status")):matches {
                 ok = true, error = "", output = "Not running: this needs a wireless modem\nNetwork:  ACME\n",
             }
         end)
@@ -357,7 +357,7 @@ describe("The cell program", function()
         it("says when the phone is roaming, or kept to one network", function()
             local phone = fake_phone()
             phone.info.roaming, phone.info.serving_network, phone.info.selection = true, "OTHER", "OTHER"
-            expect(capture("/rom/programs/net/cell.lua")):matches {
+            expect(capture("/rom/programs/net/cell.lua", "status")):matches {
                 ok = true, error = "",
                 output = "Attached\nNetwork:  ACME\nRoaming:  on OTHER\nOnly uses OTHER\n",
             }

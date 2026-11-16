@@ -407,6 +407,13 @@ describe("The cell program's GUI", function()
             end)
         end)
 
+        it("is what \"cell\" alone shows", function()
+            run(fake_phone(), { args = {} }, function(app)
+                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(2)):eq("Phone             No. 0042")
+            end)
+        end)
+
         it("fills a normal computer's screen", function()
             run(fake_phone(), { width = 51, height = 19 }, function(app)
                 expect(app.line(1)):eq(" ACME" .. (" "):rep(39) .. "[|||.]")

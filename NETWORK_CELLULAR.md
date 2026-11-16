@@ -323,8 +323,8 @@ the design above:
     when it starts too, until `cell off`; `/.net/phone` keeps that, even while there's no modem. It never sends. It
     camps as an attached phone does, listening on every carrier for five seconds first and each minute, and otherwise
     on the carriers every network was heard naming lately, so it hears every cell around. The status bar says
-    `No SIM`, with the strongest cell's signal, of any network (`net.cell.info().strongest`); `cell` names that cell,
-    and `cell monitor` shows it in place of the one in use. It can say where it is (`cell locate`), from any cells
+    `No SIM`, with the strongest cell's signal, of any network (`net.cell.info().strongest`); `cell status` names that
+    cell, and `cell monitor` shows it in place of the one in use. It can say where it is (`cell locate`), from any cells
     which say where they are, as none can be checked without a SIM. Activating on a network it hasn't heard lately
     listens on every carrier first: until it has for three seconds, it says there's no cell of that network in range,
     and the `cell` program asks again. (Later, cell broadcast: messages from a cell to every phone around, SIM or
@@ -541,7 +541,7 @@ the design above:
     that address (a route on its gateway interface, more specific than its own network's), wherever the phone is,
     roaming included. The phone may then send from addresses in its network as well as its own; anything else from
     it is still dropped. It's told what it has as it attaches (in the core's sealed answer, so through any cell), and
-    `cell` shows it: using it is its user's business (an interface with an address in it, and forwarding on). A range
+    `cell status` shows it: using it is its user's business (an interface with an address in it, and forwarding on). A range
     mustn't have the gateway's address in it, a subnet mustn't overlap the core's addresses, and no two subscribers'
     networks overlap. Changing a subscriber's kind cuts their phone off, so it attaches again as what it now is.
 - **Renaming a network** (`cellcore rename ZETA`, or Name under Network settings in the menu). The core writes the new

@@ -81,7 +81,7 @@ local function cellular_services()
             end,
         },
         {
-            name = "phone", description = "Cell service, as a phone", hint = "cell",
+            name = "phone", description = "Cell service, as a phone", hint = "cell status",
             info = function()
                 local info = cell().info()
                 if not info.enabled and info.state ~= "off" then return nil end
