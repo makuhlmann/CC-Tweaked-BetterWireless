@@ -221,6 +221,12 @@ local function setup(network, prefix, numbers)
         return nil, "Number prefixes are 1 to 8 digits, such as 555."
     end
     local config = files.read_table(CONFIG)
+    -- Set up again under another name, the network is renamed: the name it had is kept, as `cellcore rename` keeps it.
+    if type(config.network) == "string" and config.network ~= network then
+        local former = common.former_names(config.former, network)
+        former[#former + 1] = config.network
+        config.former = common.former_names(former, network)
+    end
     config.network, config.prefix, config.enabled = network, prefix, nil
     if numbers then config.number_prefix = numbers end
     -- Start again with the new settings.
@@ -886,6 +892,7 @@ local function run(options)
                 if not refresh() then return {} end
                 local carriers = status.spectrum or {}
                 return {
+                    { text = "Name", tail = { { tostring(status.network), colours.lightGrey } }, id = "name" },
                     {
                         text = "Carriers", id = "spectrum",
                         tail = { {
@@ -904,6 +911,27 @@ local function run(options)
                 if not status then return nil end
                 if item.id == "spectrum" then
                     carriers_screen()
+                elseif item.id == "name" then
+                    local renamed
+                    menu.input_screen {
+                        title = "Rename the network", label = "Name:", value = tostring(status.network), max = 32,
+                        note = "Letters, digits and dashes.",
+                        check = function(text)
+                            if text == status.network then return nil end
+                            if not common.is_network(text) then return "Network names are letters, digits and dashes, up to 32 of them." end
+                            if not menu.confirm_screen("Rename to " .. text,
+                                "The core starts afresh: cells and phones connect again, under the new name.", "Rename") then
+                                return nil
+                            end
+                            local reply, err = request({ op = "rename", network = text })
+                            if not reply then return tostring(err) end
+                            renamed = reply
+                            return nil
+                        end,
+                    }
+                    if renamed then
+                        say(("%s is called %s now."):format(tostring(renamed.was), tostring(renamed.network)))
+                    end
                 elseif item.id == "beacon" then
                     menu.input_screen {
                         title = "System information", label = "Seconds:", value = tostring(status.interval or ""),

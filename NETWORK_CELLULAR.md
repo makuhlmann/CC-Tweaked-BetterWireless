@@ -540,6 +540,25 @@ the design above:
     `cell` shows it: using it is its user's business (an interface with an address in it, and forwarding on). A range
     mustn't have the gateway's address in it, a subnet mustn't overlap the core's addresses, and no two subscribers'
     networks overlap. Changing a subscriber's kind cuts their phone off, so it attaches again as what it now is.
+- **Renaming a network** (`cellcore rename ZETA`, or Name under Network settings in the menu). The core writes the new
+  name, keeps the one it had with the last four (`former` in its settings), and starts afresh, as `cellcore restart`
+  does. A network's name is in its cells' certificates, in their system information, in every phone's SIM, in the
+  attach handshake and in other networks' agreements: each follows by a key it already trusts, so nothing need be
+  set up again.
+  - **Cells** join again by themselves, and are certified under the new name.
+  - **Phones** know their operator by its signing key, which is on every cell's certificate. A cell named for a
+    network the phone doesn't know, certified with a key it does (its own operator's, or a partner's), is that
+    network under a new name, if its certificate is newer than any the phone has seen under the old one (a
+    certificate issued later expires later; what the phone had seen is kept with the SIM). Then the phone takes the
+    name, and attaches by it. A cell which still names the old network, with an older certificate, isn't used.
+  - **Phones which were away** when it happened, roaming where they hear none of their own network's cells (or
+    with a network which has none), attach by the old name. The core answers attaches by any of the names it had, and
+    says what the network is called in its answer, which only it could have written: the phone takes that.
+  - **Other networks' cores** know a core by its key. One which says it's another network's than the agreement says
+    (as it connects, or as it's connected to) is the same core, renamed: the agreement, and messages waiting for its
+    phones, are kept under the new name, unless another agreement has that name. Its hello says what it was called,
+    so that a network which carries its phones takes attaches by the old names too.
+  - `cellcore setup`, run again with another name, keeps the old one the same way.
 - **Menus.** `celld` and `cellcore`, run with nothing asked of them, open a menu (`celld status` and `cellcore
   status` say what they used to): how the cell or the network is doing, kept up to date, and everything the commands
   can change, to look through and change where it's shown. A cell's has its status, cores and settings; a core's its

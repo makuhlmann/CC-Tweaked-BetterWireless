@@ -936,6 +936,13 @@ describe("The menus of celld and cellcore", function()
                 if message.carriers then status.spectrum = message.carriers end
                 return { carriers = status.spectrum }
             end
+            function answers.rename(message)
+                if not message.network:match("^[%w%-]+$") then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
+                if message.network == "BETA" then return nil, "There's an agreement with a network called BETA" end
+                local was = status.network
+                status.network = message.network
+                return { network = message.network, was = was, restarting = true }
+            end
             function answers.beacon(message)
                 if message.interval < 0.5 or message.interval > 10 then return nil, "Cells send system information every 0.5 to 10 seconds" end
                 status.interval = message.interval
@@ -1272,7 +1279,7 @@ describe("The menus of celld and cellcore", function()
             configured(true, function()
                 run({ "cellcore" }, {}, function(app)
                     app.choose("Network settings")
-                    expect(app.chosen()):str_match("^Carriers +b20/1$")
+                    expect(select(2, app.find("Carriers"))):str_match("^Carriers +b20/1$")
                     app.choose("Carriers")
                     expect(app.line(1)):str_match("^Carriers +1 of 8$")
                     -- Every cellular band is there, with what's chosen of it.
@@ -1326,7 +1333,7 @@ describe("The menus of celld and cellcore", function()
                 run({ "cellcore" }, {}, function(app)
                     expect(select(2, app.find("Network settings"))):str_match("^Network settings +no carriers$")
                     app.choose("Network settings")
-                    expect(app.chosen()):str_match("^Carriers +none$")
+                    expect(select(2, app.find("Carriers"))):str_match("^Carriers +none$")
                     app.choose("Carriers")
                     expect(app.line(1)):str_match("^Carriers +0 of 8$")
                     expect(app.says("No carriers: cells stay off the air.")):eq(true)
@@ -1339,6 +1346,60 @@ describe("The menus of celld and cellcore", function()
                     expect(app.says("At most 8 may be chosen.")):eq(true)
                     expect(#core.asked):eq(8)
                 end)
+            end)
+        end)
+
+        it("renames the network, once that's confirmed", function()
+            local core = fake_core()
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Network settings")
+                    expect(app.chosen()):str_match("^Name +ACME$")
+                    app.choose("Name")
+                    expect(app.line(1)):eq("Rename the network")
+                    expect(app.line(3)):eq("Name: ACME")
+                    -- Left as it is, nothing is asked.
+                    app.key(keys.enter)
+                    expect(app.line(1)):str_match("^Network settings")
+                    expect(core.asked):same {}
+
+                    app.choose("Name")
+                    app.enter("not a name")
+                    expect(app.says("Network names are letters, digits and dashes")):eq(true)
+                    -- It says what renaming does, and may be thought better of.
+                    app.enter("ZETA")
+                    expect(app.line(1)):eq("Rename to ZETA")
+                    expect(app.says("The core starts afresh: cells and phones connect again, under the new name.")):eq(true)
+                    app.type("n")
+                    expect(app.line(1)):str_match("^Network settings")
+                    expect(core.asked):same {}
+                    -- What the core won't have is said.
+                    app.choose("Name")
+                    app.enter("BETA")
+                    app.type("y")
+                    expect(app.says("There's an agreement with a network called BETA")):eq(true)
+                    expect(app.line(1)):eq("Rename the network")
+
+                    app.enter("ZETA")
+                    app.type("y")
+                    expect(core.asked[2]):same { op = "rename", network = "ZETA" }
+                    expect(app.line(1)):str_match("^Network settings +ZETA$")
+                    expect(app.chosen()):str_match("^Name +ZETA$")
+                    expect(app.says("ACME is called ZETA now.")):eq(true)
+                end)
+            end)
+
+            -- From the shell too, on the core or from another computer.
+            core = fake_core()
+            configured(true, function()
+                expect(capture("cellcore", "rename", "ZETA").output):str_match("^ACME is called ZETA now%. The core starts afresh")
+                expect(capture("cellcore", "rename", "BETA")):matches { ok = false, error = "There's an agreement with a network called BETA\n" }
+                expect(capture("cellcore", "rename").output):str_match("cellcore rename <network>")
+                expect(core.asked):same { { op = "rename", network = "ZETA" }, { op = "rename", network = "BETA" } }
+                -- Set up again under another name, the name it had is kept the same way.
+                expect(capture("cellcore", "setup", "OMEGA", "10.64.0.0/16").ok):eq(true)
+                local config = textutils.unserialise(fs.open(CONFIG, "r").readAll())
+                expect({ config.network, config.former }):same { "OMEGA", { "ACME" } }
             end)
         end)
 

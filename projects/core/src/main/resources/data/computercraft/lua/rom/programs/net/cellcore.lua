@@ -31,6 +31,7 @@ local function usage()
     print(name .. " network <network> core <core>|none")
     print(name .. " network <network> forget")
     print(name .. " numbers <prefix>")
+    print(name .. " rename <network>")
     print(name .. " spectrum [<carrier>...|none]")
     print(name .. " beacon [seconds]")
     print(name .. " remote <core> [command...]")
@@ -97,7 +98,7 @@ end
 
 local known = {
     status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1, networks = 1,
-    network = 1, numbers = 1, spectrum = 1, beacon = 1, stop = 1, restart = 1,
+    network = 1, numbers = 1, rename = 1, spectrum = 1, beacon = 1, stop = 1, restart = 1,
     -- As older versions had them: they show or change agreements with other networks, as 'network' does.
     roaming = 1, carry = 1, uncarry = 1, partner = 1, peers = 1, peer = 1, unpeer = 1,
 }
@@ -476,6 +477,16 @@ function commands.numbers(prefix)
     if not prefix then return usage() end
     request({ op = "numbers", prefix = prefix })
     print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
+end
+
+-- Rename the network: the core starts afresh under the new name.
+function commands.rename(network, more)
+    if not network or more then return usage() end
+    local reply = request({ op = "rename", network = network })
+    print(("%s is called %s now. The core starts afresh: cells join again by themselves, and phones find the network under its new name."):format(
+        tostring(reply.was), tostring(reply.network)
+    ))
+    print(("Other networks keep their agreements with it. A phone which was away still attaches as %s, and is told."):format(tostring(reply.was)))
 end
 
 -- See or set the carriers this network's cells use: "none" for none.

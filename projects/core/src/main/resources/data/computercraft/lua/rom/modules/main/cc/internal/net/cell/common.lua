@@ -158,6 +158,28 @@ local function is_network(value)
     return type(value) == "string" and #value >= 1 and #value <= 32 and value:find("^[%w%-]+$") ~= nil
 end
 
+--- How many names a network had before the one it has now are remembered, by its core and by other networks' cores.
+local MAX_FORMER = 4
+
+--[[- The names a network had before it was renamed, from a list which may be anything: the newest of them, each once.
+
+@param list The list.
+@tparam[opt] string now The name it has now, which isn't one it had before.
+@treturn { string... } The names, oldest first: at most [`MAX_FORMER`].
+]]
+local function former_names(list, now)
+    local names, seen = {}, {}
+    if type(list) ~= "table" then return names end
+    for i = #list, 1, -1 do
+        local name = list[i]
+        if #names < MAX_FORMER and is_network(name) and name ~= now and not seen[name] then
+            seen[name] = true
+            table.insert(names, 1, name)
+        end
+    end
+    return names
+end
+
 --- The name a cell's certificate is for: its network and its ID.
 --
 -- @tparam string network The network's name.
@@ -372,6 +394,7 @@ end
 certificates which checked out before, to check again only once they've expired (a cell sends the same one every
 second, and checking it is one of the two signatures to check).
 @treturn[1] true If it's good.
+@treturn[1] number When the cell's certificate expires: one issued later expires later.
 @treturn[2] nil If it isn't.
 @treturn[2] string Why not.
 ]]
@@ -390,8 +413,9 @@ local function check_sib(crypto, sib, entry, options)
     local cache_key = certificates and type(entry.cert) == "string"
         and ("%s\0%d\0%s\0%s"):format(options.network, options.sender, options.signing, entry.cert)
     local known = cache_key and certificates.checked[cache_key]
+    local expires
     if known and known.expires > options.now then
-        signer = known.key
+        signer, expires = known.key, known.expires
     else
         local cert = certificate.decode(entry.cert)
         if not cert then return nil, "no certificate" end
@@ -400,7 +424,7 @@ local function check_sib(crypto, sib, entry, options)
             name = name, key = cert.key, now = options.now, trusted = { [options.signing] = true },
         })
         if not ok then return nil, "certificate " .. reason end
-        signer = cert.key
+        signer, expires = cert.key, cert.expires
         if cache_key then
             -- Only so many: a phone hears a few dozen cells at most, so this many is someone making them up.
             if certificates.count >= MAX_CERTIFICATES then certificates.checked, certificates.count = {}, 0 end
@@ -412,7 +436,7 @@ local function check_sib(crypto, sib, entry, options)
     if not crypto.verify(signer, SIB_PREFIX .. codec.encode(signed_fields(sib, entry)), entry.sig) then
         return nil, "bad signature"
     end
-    return true
+    return true, expires
 end
 
 --- Make a store of certificates which checked out, for [`check_sib`].
@@ -564,6 +588,8 @@ return {
     DOWNLINK = DOWNLINK,
     MAX_PATH = MAX_PATH,
     MAX_SIB_NETWORKS = MAX_SIB_NETWORKS,
+    MAX_FORMER = MAX_FORMER,
+    former_names = former_names,
     TUNNEL_LIMITS = TUNNEL_LIMITS,
     cell_name = cell_name,
     carrier_cell = carrier_cell,

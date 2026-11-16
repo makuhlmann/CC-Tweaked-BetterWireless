@@ -222,6 +222,18 @@ local function new_phone(operator, partners, equivalent)
             for network in pairs(equivalent or {}) do sim.equivalent[network] = true end
             write_table(SIM_FILE, sim)
         end,
+        -- The network has a new name (or so its operator's key says): it's the SIM's from now on, and the one the
+        -- phone was told to use, if it was told to use that one.
+        on_renamed = function(network, since, was)
+            local sim = read_table(SIM_FILE)
+            sim.network, sim.since = network, since
+            write_table(SIM_FILE, sim)
+            local told = read_table(PHONE_FILE)
+            if told.network == was then
+                told.network = network
+                write_table(PHONE_FILE, told)
+            end
+        end,
         -- With a cell on this computer, this phone may be its backhaul.
         relay = function() return background.cell ~= nil end,
         on_change = function(phone) os.queueEvent("cell_state", phone.state) end,
@@ -289,7 +301,9 @@ function start_phone()
     for network in pairs(type(sim.equivalent) == "table" and sim.equivalent or {}) do
         if partners[network] then equivalent[network] = true end
     end
-    new_phone({ network = sim.network, key = key, signing = signing }, partners, equivalent)
+    new_phone({
+        network = sim.network, key = key, signing = signing, since = type(sim.since) == "number" and sim.since or nil,
+    }, partners, equivalent)
 end
 
 local CORE_CONFIG, CELL_CONFIG = "/.cell/config", "/.cell/cell"
@@ -315,7 +329,7 @@ local function new_core(options)
     end
     stack:set_forwarding(true)
     return require("cc.internal.net.cell.core").new {
-        stack = stack, crypto = crypto, network = options.network, prefix = options.prefix,
+        stack = stack, crypto = crypto, network = options.network, former = options.former, prefix = options.prefix,
         operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
         signing = signing, subscribers = options.subscribers, codes = options.codes, number_prefix = options.number_prefix,
         tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
@@ -668,6 +682,19 @@ end
 function Manager:numbers(prefix)
     expect(1, prefix, "string")
     return self:request({ op = "numbers", prefix = prefix })
+end
+
+--- Rename the network. Its core starts afresh under the new name: cells join again by themselves, phones take the
+-- name from their operator's cells (or as they next attach), and other networks' cores keep their agreements, as they
+-- know this core by its key. The names it had are remembered, so phones which were away still attach.
+--
+-- @tparam string network The new name: letters, digits and dashes, up to 32 of them.
+-- @treturn[1] table The `network`, and the name it had (`was`).
+-- @treturn[2] nil If it couldn't be renamed.
+-- @treturn[2] string Why not.
+function Manager:rename(network)
+    expect(1, network, "string")
+    return self:request({ op = "rename", network = network })
 end
 
 --- See or set the carriers this network's cells use: 5MHz blocks of cellular bands, by name, such as `"b20/1"` (a band

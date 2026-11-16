@@ -312,6 +312,7 @@ local function operator(cell_positions, options)
                     stack = core_stack, crypto = crypto, network = core_options.network, prefix = core_options.prefix,
                     operator = operator_key, signing = signing_public, subscribers = core_options.subscribers,
                     codes = core_options.codes, secret = secret, epoch = now, number_prefix = core_options.number_prefix,
+                    former = core_options.former,
                     on_event = function(...)
                         events[#events + 1] = { ... }
                         return core_options.on_event(...)
@@ -581,6 +582,16 @@ local function operator(cell_positions, options)
         listen_for_relays()
     end
 
+    --[[- Rename the network, as `cellcore rename` does: its core starts afresh under the new name.
+
+    @tparam string new The new name.
+    ]]
+    function setup.rename(new)
+        assert(setup.service:rename(new))
+        setup.name = new
+        setup.restart_core()
+    end
+
     local function add_phone(id, position, subscribed, phone_options)
         phone_options = phone_options or {}
         local stack = net.stack(id)
@@ -591,7 +602,11 @@ local function operator(cell_positions, options)
         if subscribed ~= false then setup.subscribers[hex(sim.public)] = { id = name .. "-" .. id, number = tostring(id) } end
         local phone = cell_phone.new {
             stack = stack, crypto = crypto, modem = "air", kind = "wireless", epoch = now, sim = sim,
-            operator = phone_options.activated ~= false and { network = name, key = operator_key.public, signing = signing_public } or nil,
+            -- (It knows the network by the name it has now, unless it was away while it was renamed: `network`.)
+            operator = phone_options.activated ~= false and {
+                network = phone_options.network or setup.name, key = operator_key.public, signing = signing_public,
+            } or nil,
+            on_renamed = phone_options.on_renamed,
             on_message = phone_options.on_message, on_activated = phone_options.on_activated,
             on_sent = phone_options.on_sent, partners = phone_options.partners, selection = phone_options.selection,
             on_partners = phone_options.on_partners, bands = phone_options.bands, pinned = phone_options.pinned,

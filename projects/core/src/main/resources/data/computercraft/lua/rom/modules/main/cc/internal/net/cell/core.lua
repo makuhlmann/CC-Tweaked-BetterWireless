@@ -105,9 +105,10 @@ local to_hex = require "cc.internal.net.files".hex.encode
     stack = table, crypto = table, network = string,
     operator = { public = string, exchange = function(public:string):string }, signing = string,
     prefix = string, subscribers = table, secret? = string, tunnel_key? = function(cell:number):string,
-    codes? = table, epoch = function():number, number_prefix? = string,
+    codes? = table, epoch = function():number, number_prefix? = string, former? = { string... },
     on_event? = function(event:string, ...:any),
-} options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name;
+} options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name
+(and, with `former`, those it had before it was renamed);
 the operator's X25519 key, and its Ed25519 signing key's public half (which phones check cells' certificates with); the
 operator's network for phones' addresses (such as `"10.64.0.0/16"`), whose first address the gateway takes; the
 subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys (or a
@@ -122,6 +123,10 @@ local function new(options)
 
     local self = setmetatable({
         stack = options.stack, crypto = options.crypto, network = options.network, operator = options.operator,
+        -- The names the network had before it was renamed: a phone which hasn't heard yet still attaches by one.
+        former = common.former_names(options.former, options.network),
+        -- And those of the networks whose phones we carry, by the name each had: which network that is now.
+        partner_aliases = {},
         signing = options.signing, codes = options.codes or {}, messages = {},
         activating = {}, activating_count = 0, activating_order = {},
         -- Messages are numbered from a different place each time the core starts, so a phone which remembers the
@@ -872,6 +877,18 @@ function Core:add_peer(network, prefix, send)
     end
 end
 
+--[[- Another network we exchange messages with has a new name: what's kept for its phones is kept for it still.
+
+@tparam string old The name it had.
+@tparam string new The name it has now.
+]]
+function Core:rename_peer(old, new)
+    if self.peers[old] and not self.peers[new] then self.peers[old], self.peers[new] = nil, self.peers[old] end
+    for _, held in pairs(self.held) do
+        if held.network == old then held.network = new end
+    end
+end
+
 --[[- Stop exchanging messages with another network. Its numbers can't be reached any more, and the senders of messages
 kept for it are told they weren't delivered.
 
@@ -1009,11 +1026,17 @@ function Core:attach(tower, phone, message, visited_cell)
         local refused = self:refuse(phone, tower.id)
         if refused then return self:send(tower.id, { op = "reject", phone = phone, reason = refused }) end
     end
-    local handshake = noise.new {
-        crypto = self.crypto, pattern = "IK", initiator = false, prologue = PROLOGUE .. self.network,
-        static = self.operator,
-    }
-    local payload = handshake:read(message)
+    -- A phone attaches to its network by name. One which hasn't heard that the network was renamed (it was away, or
+    -- roaming, when it was) uses a name it had before: it's answered, and told the name in the answer.
+    local handshake, payload
+    for i = 0, #self.former do
+        handshake = noise.new {
+            crypto = self.crypto, pattern = "IK", initiator = false, static = self.operator,
+            prologue = PROLOGUE .. (i == 0 and self.network or self.former[#self.former - i + 1]),
+        }
+        payload = handshake:read(message)
+        if payload then break end
+    end
     if not payload then return end
 
     local sim = to_hex(handshake.rs)
@@ -1034,7 +1057,7 @@ function Core:attach(tower, phone, message, visited_cell)
     local network, prefix, kind = routed_of(subscriber)
     local reply = handshake:write(codec.encode({
         v = common.VERSION, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
-        numbers = self.number_prefix,
+        numbers = self.number_prefix, network = self.network,
         routed = network and { kind = kind, network = ("%s/%d"):format(address.format(network), prefix) } or nil,
     }))
     if not reply then return end
@@ -1193,8 +1216,9 @@ end
 [`Core:add_tower`]).
 
 @tparam string network The other network's name.
-@tparam { address = number, tunnel_key = string, send = function(message:table) } options The other core's address;
-the key it gave us for the tunnel to it; and a way to send it control messages.
+@tparam { address = number, tunnel_key = string, send = function(message:table), former? = { string... } } options
+The other core's address; the key it gave us for the tunnel to it; a way to send it control messages; and the names
+its network had before, which its phones may still attach by.
 ]]
 function Core:add_partner(network, options)
     self:remove_partner(network)
@@ -1202,6 +1226,37 @@ function Core:add_partner(network, options)
         network = network, address = options.address, send = options.send,
         sealer = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
     }
+    for _, name in ipairs(common.former_names(options.former, network)) do
+        if name ~= self.network then self.partner_aliases[name] = network end
+    end
+end
+
+--[[- Whether a phone which attaches by a name means this network: its name, or one it had before it was renamed
+(unless another network, whose phones we carry, has that name now).
+
+@param name The name the phone gave, which may be anything.
+@treturn boolean Whether it's ours.
+]]
+function Core:is_own(name)
+    if name == self.network then return true end
+    if self.partners[name] then return false end
+    for _, former in ipairs(self.former) do
+        if former == name then return true end
+    end
+    return false
+end
+
+--[[- The network a phone means by the name it attaches (or activates) with: the one whose phones we carry by that
+name, or which had that name before it was renamed.
+
+@param name The name the phone gave, which may be anything.
+@treturn string|nil The network's name as it is now, or `nil` if we carry no such network's phones.
+]]
+function Core:partner_called(name)
+    if not common.is_network(name) then return nil end
+    if self.partners[name] then return name end
+    local now = self.partner_aliases[name]
+    return now and self.partners[now] and now or nil
 end
 
 --[[- Stop carrying another network's phones: those here lose service until they find another cell.
@@ -1214,6 +1269,9 @@ function Core:remove_partner(network, send)
     local partner = self.partners[network]
     if not partner or (send ~= nil and partner.send ~= send) then return end
     self.partners[network] = nil
+    for name, now in pairs(self.partner_aliases) do
+        if now == network then self.partner_aliases[name] = nil end
+    end
     local gone = {}
     for _, visitor in pairs(self.visitors) do
         if visitor.network == network then gone[#gone + 1] = visitor end
@@ -1270,9 +1328,10 @@ function Core:carry(tower, message)
     local op = message.op
     if op == "attach" then
         local network = message.network
-        if network == nil or network == self.network then return false end
+        if network == nil or self:is_own(network) then return false end
         if not is_id(message.phone) or type(message.handshake) ~= "string" then return true end
-        local partner = common.is_network(network) and self.partners[network]
+        network = self:partner_called(network)
+        local partner = network and self.partners[network]
         if not partner then
             self:send(tower.id, { op = "reject", phone = message.phone, reason = ("%s doesn't carry phones of that network"):format(self.network) })
         elseif self:remember_roamer(network, message.phone, tower.id) then
@@ -1292,7 +1351,8 @@ function Core:carry(tower, message)
         local network = message.network
         if network == nil or network == self.network then return false end
         if not is_id(message.phone) or type(message.tag) ~= "string" or type(message.handshake) ~= "string" then return true end
-        local partner = common.is_network(network) and self.partners[network]
+        network = self:partner_called(network)
+        local partner = network and self.partners[network]
         if not partner then
             self:send(tower.id, { op = "reject", phone = message.phone, reason = ("%s doesn't carry phones of that network"):format(self.network) })
         elseif self:remember_roamer(network, message.phone, tower.id) then

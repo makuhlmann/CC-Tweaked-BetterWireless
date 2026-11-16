@@ -164,6 +164,9 @@ local function band_rank(cell)
     return info and info.downlink[1] or 0
 end
 
+-- How many certificates' issuers to remember: a phone hears a few dozen cells at most.
+local MAX_ISSUERS = 64
+
 local Phone = {}
 Phone.__index = Phone
 
@@ -183,9 +186,10 @@ end
 @tparam {
     stack = table, crypto = table, modem = string, kind? = string, epoch = function():number,
     sim = { public = string, exchange = function(public:string):string },
-    operator? = { network = string, key = string, signing = string },
+    operator? = { network = string, key = string, signing = string, since? = number },
     partners? = { [string] = string }, equivalent? = { [string] = boolean }, selection? = string,
     on_partners? = function(partners:table, equivalent:table),
+    on_renamed? = function(network:string, since:number|nil, was:string),
     on_change? = function(phone:table),
     on_message? = function(from:string, text:string),
     on_sent? = function(id:number, ok:boolean, reason:string|nil),
@@ -193,10 +197,12 @@ end
     bands? = { string... }, pinned? = number,
 } options The stack; the `crypto` API; the modem cells are heard on, and what kind it is (`"wireless"` or
 `"ender"`); the time, as `os.epoch("utc")` gives; the
-phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated; the
+phone's SIM key; its operator's network name, X25519 key and Ed25519 signing key, if it has been activated (and, if
+the network was renamed since, `since`: what it was given when it took the name); the
 networks it may roam on, by name, with their signing keys, as its operator last gave them, and which of those it
 treats as home; the only network it should use, if it has been told to use one; what to call when its operator gives it
-other networks to roam on (or treat as home); what to call
+other networks to roam on (or treat as home); what to call when its network has a new name, with the name, something
+to give back as the operator's `since`, and the name it had; what to call
 when its state changes; what to call with each message; what to call when the network has taken a message we sent (or
 refused it, or it couldn't be sent); what to call when it's activated, with the operator's keys and its subscription,
 to save them; whether this computer is a relay, whose cell's backhaul is this phone (so it avoids cells already as
@@ -211,7 +217,11 @@ local function new(options)
         sim = options.sim, operator = options.operator, on_change = options.on_change or function() end,
         on_message = options.on_message or function() end, on_activated = options.on_activated or function() end,
         on_sent = options.on_sent or function() end, on_partners = options.on_partners or function() end,
+        on_renamed = options.on_renamed or function() end,
         partners = options.partners or {}, equivalent = options.equivalent or {}, selection = options.selection,
+        -- For each operator's key, when the newest certificate we've seen it give a cell expires (under the name we
+        -- know its network by): a network which was renamed gives newer ones. And who issued each certificate heard.
+        newest = {}, issuers = { by_cert = {}, count = 0 },
         relay = options.relay or function() return false end,
         allowed_bands = band_set(options.bands), pinned = common.is_id(options.pinned) and options.pinned or nil,
         cells = {}, heard = {}, events = {}, certificates = common.new_certificates(),
@@ -227,6 +237,9 @@ local function new(options)
         uplinks = {}, carriers = {}, listening = {}, last_scan = stack.clock() - SCAN_PERIOD,
     }, Phone)
 
+    if options.operator and type(options.operator.since) == "number" then
+        self.newest[options.operator.signing] = options.operator.since
+    end
     self:set_modem(options.modem, options.kind or "wireless")
     self.frame_handler = stack:on_frame(common.FRAME, function(interface, src, body, signal, _, distance)
         if interface.name == self.interface then self:radio(src, body, signal, distance) end
@@ -709,11 +722,29 @@ function Phone:radio(src, message, signal, distance)
         for i, entry in ipairs(entries) do
             local name = entry.network
             local signing = self.operator and (name == self.operator.network and self.operator.signing or self.partners[name])
+            -- A network we know by another name, which its operator has renamed: its cells are certified with the
+            -- key we know, under a name we don't.
+            local was
+            if self.operator and not signing then signing, was = self:issuer_known(entry.cert) end
             local verified
             if signing then
-                verified = common.check_sib(self.crypto, message, entry, {
+                local ok, expires = common.check_sib(self.crypto, message, entry, {
                     network = name, signing = signing, now = epoch, sender = src, certificates = self.certificates,
-                }) == true
+                })
+                verified = ok == true
+                local newest = self.newest[signing] or 0
+                if verified and was then
+                    -- Only a certificate newer than any we've seen says so: an older one is from before the network
+                    -- had the name we know, and that cell isn't one to use.
+                    if expires > newest then
+                        self.newest[signing] = expires
+                        self:network_renamed(was, name)
+                    else
+                        verified = nil
+                    end
+                elseif verified and expires > newest then
+                    self.newest[signing] = expires
+                end
             end
             -- The certificate is kept, unchecked, for activating: it says which operator the cell claims to be of.
             networks[i] = {
@@ -757,6 +788,11 @@ function from_cell.attaching.attach_reply(self, here, message)
     if type(info) ~= "table" then return end
     if common.is_newer(info.v) then self.newer_heard = self.stack.clock() end
     self.subscriber = { id = info.id, number = info.number }
+    -- Our network says what it's called. If that's not what we attached as, it was renamed while we were away (and
+    -- we're roaming, or we'd have heard from its cells): it's called that from now on.
+    if common.is_network(info.network) and info.network ~= self.operator.network and not self.partners[info.network] then
+        self:network_renamed(self.operator.network, info.network)
+    end
     -- A network of our own, behind this computer, which our network routes to us: a range of its addresses, or a
     -- subnet which isn't its own. It's for whoever set this computer up as a router to use: we only say what it is.
     local routed = info.routed
@@ -906,6 +942,57 @@ function from_cell.activating.reject(self, here, message)
     self.stack:schedule(REJECT_GRACE, function()
         if self.here == here and not here.finished then self:activation_over(here) end
     end)
+end
+
+-- The operator whose key certified a cell, if we know it by another name than the cell gives: our own network's, or a
+-- partner's. Returns the key, and the name we know its network by.
+function Phone:issuer_known(bytes)
+    if type(bytes) ~= "string" then return nil end
+    local issuers = self.issuers
+    local issuer = issuers.by_cert[bytes]
+    if issuer == nil then
+        local cert = certificate.decode(bytes)
+        issuer = cert and cert.issuer or false
+        -- Only so many: anyone can send certificates.
+        if issuers.count >= MAX_ISSUERS then issuers.by_cert, issuers.count = {}, 0 end
+        issuers.by_cert[bytes], issuers.count = issuer, issuers.count + 1
+    end
+    if not issuer then return nil end
+    if issuer == self.operator.signing then return issuer, self.operator.network end
+    for network, signing in pairs(self.partners) do
+        if signing == issuer then return signing, network end
+    end
+    return nil
+end
+
+--[[- A network we know has a new name: ours, or one we may roam on. Its operator's key says so (on its cells'
+certificates), or our own network did as we attached. Everything we know of it goes by the new name from now on, and
+whoever keeps what we know is told.
+
+@tparam string was The name we knew it by.
+@tparam string name The name it has now.
+]]
+function Phone:network_renamed(was, name)
+    if was == name or name == self.operator.network or self.partners[name] then return end
+    if was == self.operator.network then
+        self.operator.network = name
+        self.on_renamed(name, self.newest[self.operator.signing], was)
+    elseif self.partners[was] then
+        self.partners[name], self.partners[was] = self.partners[was], nil
+        self.equivalent[name], self.equivalent[was] = self.equivalent[was], nil
+        self.on_partners(self.partners, self.equivalent)
+    else
+        return
+    end
+    if self.selection == was then self.selection = name end
+    self.forbidden:remove(name)
+    -- What its cells said under the old name is no use: they say the new one now.
+    for id, cell in pairs(self.cells) do
+        cell.networks[was] = nil
+        if next(cell.networks) == nil and not (self.here and self.here.cell == id) then self.cells[id] = nil end
+    end
+    self:event("renamed", { from = was, to = name })
+    self.on_change(self)
 end
 
 -- Our operator says which other networks we may use (and which we treat as home), each time we attach.

@@ -12,6 +12,7 @@ An agreement says who the other network's core is, and what the two networks do 
  - `key`, `id` and `label`: the other core's key (once it's been allowed, or met), its computer's ID, and a name for it.
  - `signing`: the key its operator certifies its cells with, which our phones check them by.
  - `prefix`: its number prefix, as it last said.
+ - `former`: the names it had before it was renamed, as its core said: its phones may still attach by one.
  - `core`: where to reach its core. With one, our core connects to it; without, it waits for the other to connect.
  - `carry`: whether we carry its phones at our cells.
  - `roam`: whether our phones may use its cells, if it carries them: `"partner"` (they're roaming there), `"home"`
@@ -52,6 +53,7 @@ local function clean(entry)
         label = type(entry.label) == "string" and entry.label ~= "" and entry.label:sub(1, 32) or nil,
         signing = is_key(entry.signing) and entry.signing:lower() or nil,
         prefix = common.is_number_prefix(entry.prefix) and entry.prefix or nil,
+        former = common.former_names(entry.former)[1] and common.former_names(entry.former) or nil,
         core = is_core(entry.core) and entry.core or nil,
         carry = entry.carry == true,
         roam = ROAM[entry.roam] and entry.roam or false,

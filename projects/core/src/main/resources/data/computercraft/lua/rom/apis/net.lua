@@ -1996,8 +1996,8 @@ cell = {
     with this computer's fingerprint, to show whoever can allow it. Unless it returns `false`, this function then waits
     until the core allows this computer, refuses it, or gives up (after ten minutes). Without it, there's no waiting.
     @treturn[1] table The manager, with a method for each thing a core can be asked (`status`, `log`, `add`, `remove`,
-    `set`, `allow`, `deny`, `carry`, `uncarry`, `stop`, `restart`), `request` for anything else, and `close`. Its
-    `network` field is the network's name.
+    `set`, `allow`, `deny`, `carry`, `uncarry`, `rename`, `stop`, `restart`), `request` for anything else, and `close`.
+    Its `network` field is the network's name.
     @treturn[2] nil If the core can't be managed from here.
     @treturn[2] string Why not.
     @treturn[2] string|nil This computer's fingerprint, if it's because the core hasn't allowed it.

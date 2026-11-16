@@ -104,8 +104,8 @@ end
     stop? = function(), restart? = function(),
 } options Where the core's files are, with its `config` (the network's name and prefix, from `cellcore setup`); this
 computer's key, as hexadecimal digits, and a way to get a key's fingerprint; a way to listen for secure connections on
-the control port; a way to start the core itself (given the network, prefix, subscribers, activation codes, and a
-function told about events); the operator's Ed25519 key and a way to sign with it, for cells' certificates; the time,
+the control port; a way to start the core itself (given the network, the names it had before, prefix, subscribers,
+activation codes, and a function told about events); the operator's Ed25519 key and a way to sign with it, for cells' certificates; the time,
 as `os.clock` and `os.epoch("utc")` give it; a way to wake tasks waiting for something to change; and, to carry other
 networks' phones, this computer's ID, a way to connect securely to another core's control port, and a way to wait;
 and ways to stop the whole service for good, and to start it afresh, when an administrator asks.
@@ -141,6 +141,8 @@ local function new(options)
     local ok, core = pcall(options.start_core, {
         network = config.network, prefix = config.prefix, subscribers = self.subscribers, codes = self.codes,
         number_prefix = config.number_prefix, on_event = function(...) self:event(...) end,
+        -- The names the network had before it was renamed, which phones may not have heard of yet.
+        former = common.former_names(config.former, config.network),
     })
     if not ok then
         listener:close()
@@ -323,6 +325,13 @@ function Service:serve(connection)
         return refuse(connection, "That's this network's own name.")
     end
     self:note_version(hello.v, ("%s #%s"):format(ROLES[role].name, tostring(id or "?")))
+    -- A core we have an agreement with, whose network has another name now: it's the same core, by its key.
+    if role == "network" then
+        local known = self:network_of(key)
+        if known and known ~= hello.network and not self.networks[hello.network] then
+            self:rename_network(known, hello.network)
+        end
+    end
 
     local entry = self.allowed[key]
     if entry and entry.role == "denied" then return refuse(connection, "The core has refused this computer.") end
@@ -745,6 +754,8 @@ function Service:network_hello(agreement)
         role = "network", v = common.VERSION, id = self.options.id, network = self.config.network,
         signing = to_hex(self.options.signing), number_prefix = self.config.number_prefix,
         carry = agreement.carry, messages = agreement.messages,
+        -- The names our network had before: its phones may still attach by one, where the other network carries them.
+        former = common.former_names(self.config.former, self.config.network),
     }
 end
 
@@ -824,6 +835,13 @@ function Service:call(entry, connection)
     end
     if type(reply) ~= "table" or reply.role ~= "network" then return err or "Its core didn't answer" end
     if reply.network ~= network then
+        -- The core we met before, by its key, whose network has another name now: the agreement is with that one,
+        -- and it's connected to afresh under its name.
+        if agreement.key and agreement.key == connection:getPeerKey() and common.is_network(reply.network)
+            and reply.network ~= self.config.network and not self.networks[reply.network] then
+            self:rename_network(network, reply.network)
+            return ("%s is called %s now"):format(network, reply.network)
+        end
         entry.state, entry.error = "refused", ("That's the core of %s, not of %s"):format(tostring(reply.network), network)
         return
     end
@@ -880,6 +898,14 @@ function Service:run_link(network, connection, other, link)
     local prefix = is_number_prefix(other.number_prefix) and other.number_prefix ~= self.config.number_prefix
         and not self:prefix_taken(other.number_prefix, network) and other.number_prefix or nil
     if prefix and prefix ~= agreement.prefix then agreement.prefix, changed = prefix, true end
+    -- The names it had before, which its phones may still attach by: but none which is ours, or another network's.
+    local former = {}
+    for _, name in ipairs(common.former_names(other.former, network)) do
+        if name ~= self.config.network and not self.networks[name] then former[#former + 1] = name end
+    end
+    if table.concat(former, " ") ~= table.concat(agreement.former or {}, " ") then
+        agreement.former, changed = former[1] and former or nil, true
+    end
     if changed then
         self:save_networks()
         self:update_partner_keys()
@@ -935,7 +961,9 @@ function Service:run_link(network, connection, other, link)
             elseif service == "tunnel" and agreement.carry and not link.partner
                 and type(message.key) == "string" and #message.key == 32 then
                 -- We carry its phones: our core is one big cell to its.
-                self.core:add_partner(network, { address = peer_address, tunnel_key = message.key, send = to_home })
+                self.core:add_partner(network, {
+                    address = peer_address, tunnel_key = message.key, send = to_home, former = agreement.former,
+                })
                 link.partner = true
                 self:log(("Carrying the phones of %s"):format(network))
             elseif service == "prefix" and is_number_prefix(message.prefix) and message.prefix ~= self.config.number_prefix
@@ -965,6 +993,26 @@ function Service:run_link(network, connection, other, link)
         self:log(("Lost %s's core: %s"):format(network, tostring(reason)))
     end
     return reason
+end
+
+--[[- Another network has a new name: its core, which we know by its key, says so. The agreement with it is kept under
+the new name, and so is what waits for its phones; the connection between the cores is made again.
+
+@tparam string old The name it had.
+@tparam string new The name it has now, which no other agreement is under.
+]]
+function Service:rename_network(old, new)
+    local agreement = self.networks[old]
+    if not agreement or self.networks[new] or new == self.config.network then return end
+    self.networks[old], self.networks[new] = nil, agreement
+    local link, dialing = self.links[old], self.dialing[old]
+    if link then link.connection:abort() end
+    self.dialing[old] = nil
+    if dialing and dialing.connection then dialing.connection:abort() end
+    self.core:rename_peer(old, new)
+    self:save_networks()
+    self:log(("%s is called %s now: the agreement with it is kept"):format(old, new))
+    self:agreement_changed(new)
 end
 
 -- Forget what a network's core was doing for ours, now its agreement has changed: drop the connection, which is made
@@ -1407,6 +1455,47 @@ function requests.spectrum(self, request, by)
     local names = {}
     for i, carrier in ipairs(self:spectrum()) do names[i] = bands.carrier_name(carrier) end
     return { carriers = names }
+end
+
+--[[- Rename the network, in its settings: it goes by the new name once the core has started afresh. The name it had
+is kept with those it had before, the newest few, for phones which haven't heard.
+
+@tparam string name The new name.
+@tparam[opt] string by The key of whoever asked, for the log.
+@treturn[1] string The name it had.
+@treturn[2] nil If it can't be called that.
+@treturn[2] string Why not.
+]]
+function Service:rename(name, by)
+    local old = self.config.network
+    if not common.is_network(name) then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
+    if name == old then return nil, ("The network is called %s already"):format(name) end
+    if self.networks[name] then return nil, ("There's an agreement with a network called %s"):format(name) end
+    -- The file may have changed since the core started (it says whether the core starts with the computer).
+    local config = read_table(self.files.config)
+    local former = common.former_names(config.former, name)
+    for i = #former, 1, -1 do
+        if former[i] == old then table.remove(former, i) end
+    end
+    former[#former + 1] = old
+    config.network, config.former = name, common.former_names(former, name)
+    write_table(self.files.config, config)
+    self.config.network, self.config.former = config.network, config.former
+    self:log(("This network is called %s now, not %s%s"):format(name, old, by and self:by(by) or ""))
+    return old
+end
+
+--[[- Rename the network. The core starts afresh under the new name: its cells join again by themselves, and name the
+network as it's now called; phones find their operator's cells under the new name, and take it; and other networks'
+cores, which know this one by its key, keep their agreements. The name it had is remembered, for phones which were
+away: they still attach by it, and are told the new one.
+]]
+function requests.rename(self, request, by)
+    if not self.options.restart then return { error = "This core can't be started again from here" } end
+    local old, err = self:rename(request.network, by)
+    if not old then return { error = err } end
+    self.ending = "restart"
+    return { network = self.config.network, was = old, restarting = true }
 end
 
 --- See or set how often this network's cells send system information, in seconds. Cells connected now hear of it at

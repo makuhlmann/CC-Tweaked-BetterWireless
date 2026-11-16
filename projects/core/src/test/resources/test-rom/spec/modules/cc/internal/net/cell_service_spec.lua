@@ -141,6 +141,7 @@ describe("Cellular services", function()
                     stack = stack, crypto = crypto, network = options.network, prefix = options.prefix, operator = operator,
                     signing = signing_public, subscribers = options.subscribers, codes = options.codes,
                     secret = crypto.random(32), epoch = now, on_event = options.on_event, number_prefix = options.number_prefix,
+                    former = options.former,
                 }
             end,
             signing = signing_public, sign = function(data) return crypto.sign(signing_private, data) end,
@@ -657,6 +658,50 @@ describe("Cellular services", function()
                 wait_until(function() return #asked == 2 end)
             end, })
             expect(asked):same { "restart", "stop" }
+        end)
+
+        it("is renamed, keeping the names it had, and starts afresh", function()
+            local env = setup()
+            local config_file = fs.combine(env.dir, "config")
+            local restarts = 0
+            -- Its own computer, managing it: whatever the network is called by then.
+            local function admin()
+                local connection = env.connect(env.identity, "127.0.0.1")
+                expect(hello(connection, "admin", 50).ok):eq(true)
+                return connection
+            end
+            run(env.net, { env.service }, { function()
+                local first = admin()
+                expect(ask(first, { op = "rename", network = "ZETA" })):same { error = "This core can't be started again from here" }
+                env.options.restart = function() restarts = restarts + 1 end
+                expect(ask(first, { op = "rename", network = "ACME" })):same { error = "The network is called ACME already" }
+                expect(ask(first, { op = "rename", network = "not a name" }).error)
+                    :eq("Network names are letters, digits and dashes, up to 32 of them")
+                expect(ask(first, { op = "rename" }).error):eq("Network names are letters, digits and dashes, up to 32 of them")
+                env.service.networks.BETA = { carry = false, roam = false, messages = false }
+                expect(ask(first, { op = "rename", network = "BETA" })):same { error = "There's an agreement with a network called BETA" }
+                expect({ read_table(config_file).network, read_table(config_file).former, restarts }):same { "ACME", nil, 0 }
+
+                expect(ask(first, { op = "rename", network = "ZETA" })):same { network = "ZETA", was = "ACME", restarting = true }
+                wait_until(function() return restarts == 1 end)
+                local config = read_table(config_file)
+                expect({ config.network, config.former, config.prefix }):same { "ZETA", { "ACME" }, "10.64.0.0/16" }
+                -- Other networks' cores are told what it was called, for its phones which haven't heard.
+                expect(env.service:network_hello({})):matches { network = "ZETA", former = { "ACME" } }
+                expect(env.service.lines[#env.service.lines].text):str_match("^This network is called ZETA now, not ACME")
+
+                -- The newest four names it had are kept, each once: and never the one it has.
+                for _, name in ipairs { "ETA", "THETA", "IOTA", "KAPPA" } do
+                    expect(ask(admin(), { op = "rename", network = name }).was):ne(nil)
+                end
+                expect(read_table(config_file).former):same { "ZETA", "ETA", "THETA", "IOTA" }
+                expect(ask(admin(), { op = "rename", network = "ETA" })):matches { network = "ETA", was = "KAPPA" }
+                expect(read_table(config_file).former):same { "ZETA", "THETA", "IOTA", "KAPPA" }
+                wait_until(function() return restarts == 6 end)
+            end, })
+            -- Started afresh, the core answers phones by any of them.
+            expect(common.former_names({ "A", "B", "not a name", "B", 5, "C", "D", "E" }, "C")):same { "A", "B", "D", "E" }
+            expect(common.former_names("ACME")):same {}
         end)
 
         it("keeps a log", function()
@@ -1207,14 +1252,67 @@ describe("Cellular services", function()
                 end, }, 600)
             end)
 
+            it("follow a network to its new name, by its core's key", function()
+                -- ACME carries BETA's phones, exchanges messages with it, and knows where its core is.
+                local acme, beta = two_cores({
+                    acme_numbers = "555",
+                    acme_files = { networks = { BETA = { carry = true, roam = false, messages = true, prefix = "666", core = "10.0.0.2" } } },
+                })
+                acme.service.networks.BETA.key = beta.identity
+                beta.service.networks.ACME = { key = acme.identity, carry = false, roam = "partner", messages = false }
+                expect(acme.service.core.peers.BETA ~= nil):eq(true)
+                -- BETA was renamed, and its core started afresh.
+                beta.service.config.network, beta.service.config.former = "GAMMA", { "BETA" }
+                acme.service:dial("BETA")
+                run(acme.net, { acme.service, beta.service }, { function()
+                    -- ACME's core finds GAMMA's where BETA's was: the same core, by its key.
+                    wait_until(function() return acme.service.links.GAMMA and beta.service.links.ACME end)
+                    expect(acme.service.networks.BETA):eq(nil)
+                    expect(acme.service.networks.GAMMA):matches { key = beta.identity, carry = true, messages = true, former = { "BETA" } }
+                    expect({ acme.service.dialing.BETA, acme.service.dialing.GAMMA.state }):same { nil, "connected" }
+                    expect(read_table(fs.combine(acme.dir, "networks")).GAMMA.former):same { "BETA" }
+                    expect(read_table(fs.combine(acme.dir, "networks")).BETA):eq(nil)
+                    local said = false
+                    for _, line in ipairs(acme.service.lines) do
+                        said = said or line.text == "BETA is called GAMMA now: the agreement with it is kept"
+                    end
+                    expect(said):eq(true)
+                    -- What waited for its phones waits for them still, and its phones are carried by either name.
+                    expect({ acme.service.core.peers.BETA, acme.service.core.peers.GAMMA ~= nil }):same { nil, true }
+                    wait_until(function() return acme.service.core.partners.GAMMA end)
+                    expect({ acme.service.core:partner_called("BETA"), acme.service.core:partner_called("GAMMA") }):same { "GAMMA", "GAMMA" }
+                    expect(acme.service.core:partner_called("DELTA")):eq(nil)
+
+                    -- And the other way: GAMMA's core connects to ACME's as OMEGA's.
+                    beta.service.config.network, beta.service.config.former = "OMEGA", { "BETA", "GAMMA", "ACME", "no good" }
+                    acme.service.networks.GAMMA.core = nil
+                    acme.service:agreement_changed("GAMMA")
+                    wait_until(function() return acme.service.links.GAMMA == nil end)
+                    local reply = hello(acme.connect(beta.identity, "10.0.0.2"), "network", 51, {
+                        network = "OMEGA", signing = hex(beta.signing), former = beta.service.config.former,
+                    })
+                    expect(reply):matches { role = "network", network = "ACME" }
+                    wait_until(function() return acme.service.links.OMEGA end)
+                    -- (Its own name isn't one a partner had, whatever the partner says.)
+                    expect(acme.service.networks.OMEGA.former):same { "BETA", "GAMMA" }
+                    expect(acme.service.networks.GAMMA):eq(nil)
+                    expect(errors_logged(acme)):same {}
+                end, }, 120)
+            end)
+
             it("say when a core isn't the network's, and check what they're asked", function()
                 local acme, beta = two_cores()
                 acme.service.networks.BETA = { key = beta.identity, carry = false, roam = "partner", messages = false }
                 run(acme.net, { acme.service, beta.service }, { function()
-                    -- BETA's core, saying it's another network's.
+                    -- BETA's core, saying it's another network's: one we have an agreement with, whose core it isn't.
+                    acme.service.networks.GAMMA = { key = new_key(), carry = false, roam = false, messages = false }
                     expect(hello(acme.connect(beta.identity, "10.0.0.2"), "network", 51, { network = "GAMMA" })):same {
                         error = "This computer is the core of BETA, not of GAMMA.",
                     }
+                    expect(hello(acme.connect(beta.identity, "10.0.0.2"), "network", 51, { network = "ACME" })):same {
+                        error = "That's this network's own name.",
+                    }
+                    expect(acme.service.networks.BETA.key):eq(beta.identity)
 
                     -- And ACME's, reached where GAMMA's should be.
                     local beta_admin = beta.admin()
