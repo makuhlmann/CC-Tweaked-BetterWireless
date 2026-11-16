@@ -1,8 +1,8 @@
 # Testing the network stack
 
 What each round of testing found, and what was done about it: for the stack, connections and security, cellular
-networks, several networks at once, and wired networks through unloaded chunks. How the stack is tested is in
-`NETWORK_STACK.md` §13; this was the rest of that section.
+networks, several networks at once, wired networks through unloaded chunks, and the services servers run as. How the
+stack is tested is in `NETWORK_STACK.md` §13; this was the rest of that section.
 
 ## Robustness
 
@@ -225,6 +225,47 @@ The wiring remembered for chunks which aren't loaded (NETWORK_STACK.md §4) was 
 **Not tested:** the side which talks to the game (`UnloadedWiring` scanning chunks, joining, saving, and the `wiring`
 commands) has no automated test, and the NeoForge hooks were only read. What was noticed there by reading, and not
 confirmed, is in `NETWORK_STACK_PLAN.md`.
+
+## Robustness of services
+
+The service manager (NETWORK_STACK.md §2, `cc.internal.services` and the `service` API) was tested two ways: with a set
+of services of the test's own, which it drives an event at a time with a clock and timers it moves on itself
+(`services_spec`, `services_fuzz_spec`); and through the computer's own background process (`service_spec`, and
+`dnsd_spec` and `rshd_spec` for the servers).
+
+- **At random:** five services, each one of five programs: one which exits at once, one which stops when told, one
+  which ignores being told, one which on its first event asks for something of another service (start, stop, restart
+  or remove), and one which, as it's told to stop, asks to start again or to be removed. Among them, at random: adds,
+  starts, stops, restarts, removes, events, time passing (and the timer firing), and the computer restarting, with a
+  new set of services read from the file. After every step: a service has a coroutine exactly when it's running or
+  stopping; one which is stopping will be stopped by a timer if it doesn't stop itself; the file holds every service
+  but those being removed, with the same command and whether it starts with the computer; nothing is left redirected.
+  At the end, everything asked is done within a few seconds, what starts with the computer is running (or exited by
+  itself), and what doesn't, isn't. Six seeds of 150 steps; each prints the seed and the steps before a failure.
+- **Services which misbehave:** one which waits for something it'll never get (`coroutine.yield({})`), redirects to a
+  window of its own and changes its palette, prints a thousand lines and one of 10,000 characters, whose program has
+  gone by the time the computer starts, which exits having asked for another to start, or which asks to start again
+  or to be removed as it stops.
+- **Asking twice before the background process runs:** stop and then add with a new command (one restart), remove and
+  then start (kept), start and then remove, remove and then stop (removed).
+- **Through the computer's own process:** a service which ignores being told to stop is stopped three seconds later,
+  with a line saying so in its log; `service.current()` names the service inside one and nothing outside; arguments
+  are checked before anything waits on the background; mistyped server commands change nothing; the list fits a
+  pocket computer's screen, a line each; and `rshd`, as a service, runs commands with the computer's own path and
+  aliases (`id`, and `ls`, which is an alias), and tells its client when it's stopped mid-session.
+
+**What broke, and what changed:**
+
+| Found | Change |
+|---|---|
+| A service asked to stop got Ctrl+T, and what was asked of it was read before that, not after. One which asked, as it stopped, to start again or to be removed had that forgotten: a removed one stayed, but wasn't in the file, so it was gone after a restart. (The random runs find this in five seeds of six, when the fix is taken out.) | What was asked is read again once the service has run. |
+| A wake for the background process lost to a full event queue was never queued again, as it was still thought to be on its way. Requests were still done at the next event of any kind, but could wait for one. | Every event counts as the wake. |
+| `rshd`'s session ran beside two other coroutines, one waiting on the connection. The server's own Ctrl+T reached that one first, and failed the whole session, so the client was never told it had ended, and was left waiting. (Found writing the first service specs.) | Ctrl+T ends the session from whichever coroutine it reaches, and the client is told the server stopped. |
+
+**Not tested:** a user's own `startup.lua` which starts a service as the computer starts (the shell runs it before the
+background process has started; it should only wait for it, but only a game test with a startup file would show
+it), an interactive remote shell into `rshd` as a service, services starting at boot on an advanced computer with
+tabs, and NeoForge.
 
 ## The test suite's stalls
 

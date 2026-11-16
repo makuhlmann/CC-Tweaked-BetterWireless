@@ -270,6 +270,229 @@ describe("cc.internal.services", function()
         end)
     end)
 
+    describe("copes with services which misbehave", function()
+        it("may ask to start again as it stops, and does", function()
+            with_cleanup(function()
+                write(PROGRAM, [[
+                    pcall(function() while true do os.pullEvent() end end)
+                    local spec = _G.services_spec
+                    spec.runs = spec.runs + 1
+                    if spec.runs == 1 then spec.manager:start("phoenix") end
+                ]])
+                local m = setup()
+                _G.services_spec = { manager = m, runs = 0 }
+                m:add("phoenix", { PROGRAM })
+                m:resume("service")
+                m:stop("phoenix")
+                m:resume("service")
+                local info = m:status("phoenix")
+                expect(info.state):eq("running")
+                expect(info.enabled):eq(true)
+                expect(m:settled("phoenix")):eq(true)
+                local file = fs.open(FILE, "r")
+                local saved = textutils.unserialise(file.readAll())
+                file.close()
+                expect(saved.phoenix.enabled):eq(true)
+            end)
+        end)
+
+        it("may ask to be removed as it stops, and is", function()
+            with_cleanup(function()
+                write(PROGRAM, [[
+                    pcall(function() while true do os.pullEvent() end end)
+                    _G.services_spec.manager:remove("leaving")
+                ]])
+                local m = setup()
+                _G.services_spec = { manager = m }
+                m:add("leaving", { PROGRAM })
+                m:resume("service")
+                m:stop("leaving")
+                m:resume("service")
+                expect(m:status("leaving")):eq(nil)
+                expect(setup():list()):same {}
+            end)
+        end)
+
+        it("is still stopped if it waits for something it'll never get", function()
+            with_cleanup(function()
+                write(PROGRAM, [[while true do coroutine.yield({}) end]])
+                local m, fake = setup()
+                m:add("waiting", { PROGRAM })
+                m:resume("service")
+                m:resume("spec")
+                m:stop("waiting")
+                m:resume("service")
+                expect(m:status("waiting").state):eq("stopping")
+                fake.advance(3)
+                m:resume("timer", 1)
+                expect(m:status("waiting").state):eq("stopped")
+            end)
+        end)
+
+        it("leaves the user's terminal as it was, whatever it redirects to", function()
+            with_cleanup(function()
+                write(PROGRAM, [[
+                    local own = window.create(term.current(), 1, 1, 20, 3, false)
+                    _G.services_spec = own
+                    term.redirect(own)
+                    term.setPaletteColour(colours.red, 0x123456)
+                    print("Hidden")
+                    os.pullEvent("spec")
+                    print("Again")
+                    while true do os.pullEvent() end
+                ]])
+                local m = setup()
+                local screen, red = term.current(), { term.getPaletteColour(colours.red) }
+                m:add("redirects", { PROGRAM })
+                m:resume("service")
+                expect(term.current()):eq(screen)
+                m:resume("spec")
+                expect(term.current()):eq(screen)
+                expect({ term.getPaletteColour(colours.red) }):same(red)
+
+                local own = _G.services_spec
+                expect(own.getLine(1):gsub(" +$", "")):eq("Hidden")
+                expect(own.getLine(2):gsub(" +$", "")):eq("Again")
+                expect(m:status("redirects").log):same {}
+            end)
+        end)
+
+        it("keeps the last lines of a service which prints a lot", function()
+            with_cleanup(function()
+                write(PROGRAM, [[
+                    for i = 1, 1000 do print("Line " .. i) end
+                    print(("x"):rep(10000))
+                    print("End")
+                ]])
+                local m = setup()
+                m:add("chatty", { PROGRAM })
+                m:resume("service")
+                local log = m:status("chatty").log
+                expect(#log <= 100):eq(true)
+                expect(log[#log]):eq("End")
+                expect(log[#log - 1]):eq(("x"):rep(10000 % 51))
+            end)
+        end)
+
+        it("says so when its program has gone", function()
+            with_cleanup(function()
+                write(PROGRAM, [[while true do os.pullEvent() end]])
+                setup():add("gone", { PROGRAM })
+                fs.delete(PROGRAM)
+                local m = setup()
+                m:boot(shell)
+                m:resume("service")
+                local info = m:status("gone")
+                expect(info.state):eq("exited")
+                expect(info.log):same { "No such program" }
+            end)
+        end)
+
+        it("exits at once, having asked for another to start", function()
+            with_cleanup(function()
+                write(PROGRAM, [[
+                    if ... == "starter" then
+                        _G.services_spec.manager:start("other")
+                        return
+                    end
+                    while true do os.pullEvent() end
+                ]])
+                local m = setup()
+                _G.services_spec = { manager = m }
+                m:add("other", { PROGRAM, "other" })
+                m:resume("service")
+                m:stop("other")
+                m:resume("service")
+                m:add("starter", { PROGRAM, "starter" })
+                m:resume("service")
+                expect(m:status("starter").state):eq("exited")
+                expect(m:status("other").state):eq("running")
+            end)
+        end)
+    end)
+
+    describe("does what was asked last, when asked twice before it runs", function()
+        local function program()
+            write(PROGRAM, [[
+                local spec = _G.services_spec
+                spec.starts = spec.starts + 1
+                print("Running " .. ...)
+                while true do os.pullEvent() end
+            ]])
+            _G.services_spec = { starts = 0 }
+        end
+
+        it("stops, then starts with a new command, once", function()
+            with_cleanup(function()
+                program()
+                local m = setup()
+                m:add("twice", { PROGRAM, "first" })
+                m:resume("service")
+                m:stop("twice")
+                m:add("twice", { PROGRAM, "second" })
+                m:resume("service")
+                local info = m:status("twice")
+                expect(info.state):eq("running")
+                expect(info.log):same { "Running second" }
+                expect(_G.services_spec.starts):eq(2)
+            end)
+        end)
+
+        it("keeps a service which is started once it's been removed", function()
+            with_cleanup(function()
+                program()
+                local m = setup()
+                m:add("kept", { PROGRAM, "first" })
+                m:resume("service")
+                m:remove("kept")
+                m:start("kept")
+                m:resume("service")
+                expect(m:status("kept").state):eq("running")
+                expect(#setup():list()):eq(1)
+            end)
+        end)
+
+        it("removes a service which is removed once it's been started, or stopped", function()
+            with_cleanup(function()
+                program()
+                local m = setup()
+                m:add("first", { PROGRAM, "first" })
+                m:add("second", { PROGRAM, "second" })
+                m:resume("service")
+                m:start("first")
+                m:remove("first")
+                m:remove("second")
+                m:stop("second")
+                m:resume("service")
+                expect(m:list()):same {}
+                expect(setup():list()):same {}
+            end)
+        end)
+    end)
+
+    it("still wakes after a wake is lost to a full event queue", function()
+        with_cleanup(function()
+            write(PROGRAM, [[while true do os.pullEvent() end]])
+            local dropped, queued = false, {}
+            local m = services.new {
+                file = FILE, width = 51,
+                queue_event = function(event)
+                    if event == "service_wake" and not dropped then
+                        dropped = true
+                        return
+                    end
+                    queued[#queued + 1] = event
+                end,
+            }
+            m:add("woken", { PROGRAM })
+            -- Any event does what was asked.
+            m:resume("spec")
+            expect(m:status("woken").state):eq("running")
+            m:stop("woken")
+            expect(queued[#queued]):eq("service_wake")
+        end)
+    end)
+
     it("lists services which run elsewhere, once they're set up here, and starts and stops them", function()
         with_cleanup(function()
             local set_up, running, calls = false, false, {}

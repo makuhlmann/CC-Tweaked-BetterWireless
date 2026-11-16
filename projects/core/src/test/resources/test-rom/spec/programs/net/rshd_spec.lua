@@ -80,6 +80,50 @@ describe("The rshd program", function()
         end)
     end)
 
+    it("runs commands with the computer's own path and aliases, as a service", function()
+        with_enclave(function()
+            local ok, err = pcall(function()
+                local file = fs.open("/.net/authorized_keys", "w")
+                file.write(textutils.serialise({ [net.getIdentity()] = "itself" }))
+                file.close()
+                expect(shell.run("/rom/programs/net/rshd.lua", "start")):eq(true)
+
+                local function run(command)
+                    local connection
+                    for _ = 1, 20 do
+                        connection = net.secure.connect("127.0.0.1", 22)
+                        if connection then break end
+                        sleep(0.1)
+                    end
+                    assert(connection, "Couldn't connect")
+                    connection:send({ width = 30, height = 10, colour = true, command = command })
+                    local client, last = window.create(term.current(), 1, 1, 30, 10, false), nil
+                    while true do
+                        local message = connection:receive(5)
+                        if message == nil then break end
+                        if message.term then remote_term.apply(client, message.term) end
+                        last = message
+                        if message.exit then break end
+                    end
+                    connection:close()
+                    local lines = {}
+                    for y = 1, 10 do lines[y] = client.getLine(y):gsub(" +$", "") end
+                    return table.concat(lines, "\n"), last
+                end
+
+                -- id is found on the path, and ls is an alias, which a shell of its own wouldn't have.
+                local screen, last = run("id")
+                expect(screen):str_match("This is computer #%d+")
+                expect(last):same { exit = true, ok = true }
+                screen, last = run("ls /rom")
+                expect(screen):str_match("programs")
+                expect(last):same { exit = true, ok = true }
+            end)
+            if service.status("rshd") then service.remove("rshd") end
+            if not ok then error(err, 0) end
+        end)
+    end)
+
     it("ends a session when it's stopped as a service, and tells the client", function()
         with_enclave(function()
             local ok, err = pcall(function()

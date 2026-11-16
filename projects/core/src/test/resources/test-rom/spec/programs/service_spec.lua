@@ -15,11 +15,12 @@ describe("The service program", function()
     -- Run a test, and stop and forget the services it started, whatever happens.
     local function with_cleanup(fn)
         local ok, err = pcall(fn)
-        for _, name in ipairs { "spec", "dnsd" } do
+        for _, name in ipairs { "spec", "dnsd", "dhcpd" } do
             if service.status(name) then service.remove(name) end
         end
         fs.delete(PROGRAM)
         fs.delete("/zones")
+        _G.service_spec_current = nil
         if not ok then error(err, 0) end
     end
 
@@ -87,6 +88,71 @@ describe("The service program", function()
             expect(capture("service", "start", "spec").error):eq("There's no service called spec.\n")
             expect(capture("service", "stop", "spec").error):eq("There's no service called spec.\n")
             expect(service.status("spec")):eq(nil)
+        end)
+    end)
+
+    it("stops a service which ignores being told to, three seconds later", function()
+        with_cleanup(function()
+            write(PROGRAM, [[while true do os.pullEventRaw() end]])
+            expect(service.add("spec", PROGRAM)):eq(true)
+            local started = os.clock()
+            expect(service.stop("spec")):eq(true)
+            local took = os.clock() - started
+            expect(took >= 2.5 and took < 6):describe("Took " .. took .. "s"):eq(true)
+            local info = service.status("spec")
+            expect(info.state):eq("stopped")
+            expect(info.log[#info.log]):eq("Stopped, as it didn't finish when told to stop.")
+            expect(service.getErrors()):same {}
+        end)
+    end)
+
+    it("knows which service is running", function()
+        with_cleanup(function()
+            write(PROGRAM, [[
+                _G.service_spec_current = service.current()
+                while true do os.pullEvent() end
+            ]])
+            expect(service.add("spec", PROGRAM)):eq(true)
+            expect(_G.service_spec_current):eq("spec")
+            expect(service.current()):eq(nil)
+        end)
+    end)
+
+    it("checks its arguments, without waiting on the background", function()
+        expect.error(service.add, "x"):eq("bad argument #2 (string expected, got nil)")
+        expect.error(service.add, "x", "/p", 3):eq("bad argument #3 (string expected, got number)")
+        expect.error(service.start, 1):eq("bad argument #1 (string expected, got number)")
+        expect.error(service.status, nil):eq("bad argument #1 (string expected, got nil)")
+        expect.error(service.boot, "shell"):eq("bad argument #1 (table expected, got string)")
+        expect({ service.remove("phone") }):same { nil, "phone can't be removed, only stopped" }
+        expect({ service.add("bad name", "/rom/programs/id.lua") })
+            :same { nil, "A service's name is up to 32 letters, digits, _, - and ." }
+    end)
+
+    it("changes nothing when a server's command is mistyped", function()
+        with_cleanup(function()
+            local result = capture("dhcpd", "start", "nowhere")
+            expect(result.error):eq("nowhere has no address. Give it a fixed one first, for example with ifconfig.\n")
+            expect(service.status("dhcpd")):eq(nil)
+
+            result = capture("dnsd", "stop", "home")
+            expect(result.output:sub(1, 7)):eq("Usages:")
+            expect(service.status("dnsd")):eq(nil)
+
+            expect(capture("dnsd", "stop").error):eq("dnsd isn't running here.\n")
+            expect(capture("dnsd", "start").error):eq("dnsd isn't set up here: start it with \"dnsd start <zone>\".\n")
+            expect(capture("rshd", "status").error):eq("rshd isn't set up here: start it with \"rshd start\".\n")
+        end)
+    end)
+
+    it("lists services on a pocket computer's screen, a line each", function()
+        with_cleanup(function()
+            write(PROGRAM, [[while true do os.pullEvent() end]])
+            expect(service.add("spec", PROGRAM, "with", "a", "long", "list", "of", "arguments")):eq(true)
+            local lines = require "test_helpers".with_window_lines(26, 6, function() shell.run("service") end)
+            expect(lines[1]:gsub(" +$", "")):eq("Name State    Boot Runs")
+            expect(lines[2]):eq("spec running  yes  /ser...")
+            expect(lines[3]:gsub(" +$", "")):eq("")
         end)
     end)
 

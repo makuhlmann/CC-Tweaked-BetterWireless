@@ -235,11 +235,11 @@ function Manager:spawn(record)
     self:step(record)
 end
 
--- Do what's been asked of each service: stop it (telling it to first), start it, or both.
+-- Do what's been asked of each service: stop it (telling it to first), start it, or both. What's asked is read again
+-- after a service runs, as it may ask for something else as it stops (to start again, say, or be removed).
 function Manager:process()
     for _, record in ipairs(self:sorted()) do
-        local want = record.want
-        if want == "stop" or want == "restart" or want == "remove" then
+        if record.want == "stop" or record.want == "restart" or record.want == "remove" then
             if record.co and not record.terminated then
                 record.terminated, record.deadline, record.state = true, self.clock() + STOP_GRACE, "stopping"
                 self:changed(record)
@@ -252,13 +252,14 @@ function Manager:process()
             end
             if not record.co then
                 record.terminated, record.deadline = nil, nil
+                local want = record.want
                 if want == "remove" then
                     self.services[record.name] = nil
                     record.want, record.state = nil, "removed"
                     self:changed(record)
-                elseif want == "restart" then
+                elseif want == "restart" or want == "start" then
                     record.want = "start"
-                else
+                elseif want == "stop" then
                     record.want = nil
                     if record.state ~= "stopped" then
                         record.state = "stopped"
@@ -292,7 +293,9 @@ end
 @param ... Its arguments.
 ]]
 function Manager:resume(event, ...)
-    if event == "service_wake" then self.wake_queued = false end
+    -- Everything asked for is done now, whatever the event. A wake lost to a full event queue mustn't stop another
+    -- being queued.
+    self.wake_queued = false
     if event == "timer" and ... == self.timer then self.timer = nil end
 
     self:process()
@@ -455,7 +458,8 @@ function Manager:start(name)
     record.enabled = true
     if not record.co then
         record.want = "start"
-    elseif record.want == "stop" then
+    elseif record.want == "stop" or record.want == "remove" then
+        -- The last asked wins: starting a service which is being removed keeps it.
         record.want = "restart"
     end
     self:save()
@@ -475,7 +479,10 @@ function Manager:stop(name)
     local record, err = self:find(name)
     if not record then return nil, err end
     record.enabled = false
-    if record.co or record.want == "start" or record.want == "restart" then record.want = "stop" end
+    -- Removing it stops it anyway.
+    if record.want ~= "remove" and (record.co or record.want == "start" or record.want == "restart") then
+        record.want = "stop"
+    end
     self:save()
     self:wake()
     return true
