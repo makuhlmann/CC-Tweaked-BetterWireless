@@ -122,12 +122,15 @@ with the network turned off too, and `net.host`'s "services" (names for ports) a
   one which reads input mustn't take the user's.
 - **Stopping.** A stopped service gets a `terminate` event, as Ctrl+T would send, so it closes what it has open (a
   server's socket: otherwise the port stays taken in the stack, and the next start fails). One which hasn't finished
-  three seconds later is dropped. `rshd` ends any session on it, telling the client the server stopped (where before a
-  session ignored the server computer's Ctrl+T).
+  three seconds later is dropped. `rshd` ends any session on it, telling the client the server stopped (before, the
+  server computer's Ctrl+T during a session stopped the server without telling the client).
 - **Asking, not doing.** `start`, `stop` and the rest only record what's wanted and wake the background process, which
   does it, so nothing is resumed from inside itself: a service can stop itself, or a remote shell the `rshd` it runs
-  inside. The API then waits (up to ten seconds) for it to be done. As with the stack, the background process runs
-  each event under `pcall`, and keeps its own errors for `service.getErrors` (which the `service` list shows).
+  inside. What's asked is read again once a service has run, as it may ask for something else as it stops. When two
+  requests come before the background process runs, the last wins, except that stopping a service which is being
+  removed still removes it. The API then waits (up to ten seconds) for it to be done. As with the stack, the
+  background process runs each event under `pcall`, and keeps its own errors for `service.getErrors` (which the
+  `service` list shows).
 - **Kept in `/.services`**, by name: the command, and whether it starts with the computer. Starting a service has it
   start with the computer, and stopping it not, as for `celld`.
 - **Services which run elsewhere.** A cellular network's cell, core and phone run in the stack's background process.
