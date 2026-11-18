@@ -216,7 +216,8 @@ local FIRST_LINK_CHANNEL, LAST_LINK_CHANNEL = 300, 65532
 
 Channels in the cellular bands can't: phones listen on every beacon channel, and cells on their uplinks, so a link
 there would take channels a phone or cell on the same modem needs, and its broadcasts would reach every phone around.
-The stack's own bands are fine: a computer whose channel it is just ignores frames which aren't for it.
+The stack's own bands are fine: a computer whose unicast channel it is ignores frames for other computers, and only
+hears the link's broadcasts, as it would from any other computer on its band.
 
 @tparam number channel The channel.
 @treturn boolean|nil `true` if it can be used.
