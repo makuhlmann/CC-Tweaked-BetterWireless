@@ -11,6 +11,7 @@ import dan200.computercraft.api.peripheral.IPeripheral;
 import dan200.computercraft.core.computer.ComputerSide;
 import dan200.computercraft.impl.BundledRedstone;
 import dan200.computercraft.shared.ModRegistry;
+import dan200.computercraft.shared.computer.core.ComputerChunkLoader;
 import dan200.computercraft.shared.computer.core.ComputerFamily;
 import dan200.computercraft.shared.computer.core.ComputerState;
 import dan200.computercraft.shared.computer.core.ServerComputer;
@@ -105,6 +106,16 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
         return false;
     }
 
+    /**
+     * How large an area to keep loaded around this computer, when it asks to keep running with {@code os.setKeepLoaded}.
+     *
+     * @return The radius of the computer's chunk ticket.
+     * @see ComputerChunkLoader
+     */
+    protected int getKeepLoadedRadius() {
+        return ComputerChunkLoader.RADIUS;
+    }
+
     @Override
     public void setRemoved() {
         super.setRemoved();
@@ -170,7 +181,7 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
             }
         }
         if (keepLoaded && (on || starting) && computer.canKeepLoaded()) {
-            ServerContext.get(computer.getLevel().getServer()).chunkLoader().keepLoaded(computer.getLevel(), getBlockPos());
+            ServerContext.get(computer.getLevel().getServer()).chunkLoader().keepLoaded(computer.getLevel(), getBlockPos(), getKeepLoadedRadius());
         }
 
         // Update the block state if needed.
@@ -487,7 +498,15 @@ public abstract class AbstractComputerBlockEntity extends BlockEntity implements
             lockCode = copy.lockCode;
 
             var computer = getServerComputer();
-            if (computer != null) computer.setPosition((ServerLevel) getLevel(), getBlockPos());
+            if (computer != null) {
+                computer.setPosition((ServerLevel) getLevel(), getBlockPos());
+
+                // If the computer is kept loaded, take its chunk ticket along, so the chunk it left isn't kept loaded.
+                // (The old block entity is still in the world, so we can ask it where it was.)
+                ServerContext.get(computer.getLevel().getServer()).chunkLoader().move(
+                    (ServerLevel) copy.getLevel(), copy.getBlockPos(), (ServerLevel) getLevel(), getBlockPos(), getKeepLoadedRadius()
+                );
+            }
 
             BlockEntityHelpers.updateBlock(this);
         }

@@ -4,19 +4,24 @@
 
 package dan200.computercraft.shared.computer.core;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ChunkLevel;
+import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.TicketStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,10 +43,15 @@ import java.util.*;
  * it (it is turned off, broken, or no longer wants to be kept loaded), the ticket times out and the chunk unloads as
  * usual.
  * <p>
+ * A turtle keeps a larger area loaded (see {@link #MOVING_RADIUS}), and takes its ticket with it when it moves (see
+ * {@link #move}), so the chunk it left isn't kept loaded.
+ * <p>
  * Computers should also come back when the server restarts. Vanilla can save tickets with the world, but if CC: Tweaked
  * was ever removed, the world would then fail to read any of its tickets, including those from {@code /forceload}.
  * Instead, we remember which computers were being kept loaded in a file of our own, and add tickets for them when the
- * server starts. The computers then turn themselves back on as their chunks load.
+ * server starts. The computers then turn themselves back on as their chunks load. The file is written at most once a
+ * second (a moving turtle changes it with every move), and when the server stops. If the server crashes, a turtle may
+ * have moved since, and its chunk is then not loaded again.
  */
 public final class ComputerChunkLoader {
     private static final Logger LOG = LoggerFactory.getLogger(ComputerChunkLoader.class);
@@ -56,14 +66,28 @@ public final class ComputerChunkLoader {
     /** How long a computer has to turn back on after the server starts before we forget about it, in ticks. */
     private static final int STARTUP_GRACE = 20 * 60;
 
-    /** How often we forget computers which stopped refreshing their ticket, in ticks. */
+    /**
+     * How often we forget computers which stopped refreshing their ticket, and save the computers we keep loaded if they
+     * changed, in ticks.
+     */
     private static final int PURGE_INTERVAL = 20;
 
     /**
-     * The radius of the ticket. The computer's own chunk ticks, and the chunks around it are loaded (but don't tick),
-     * which is enough for peripherals in a neighbouring chunk.
+     * The radius of the ticket of a computer which stays put. The computer's own chunk ticks, and the chunks around it
+     * are loaded (but don't tick), which is enough for peripherals in a neighbouring chunk.
      */
-    private static final int RADIUS = 1;
+    public static final int RADIUS = 1;
+
+    /**
+     * The radius of the ticket of a computer which moves, such as a turtle. The computer's own chunk and the chunks
+     * around it tick, and the chunks around those are loaded, as with {@code /forceload}.
+     * <p>
+     * A chunk only starts ticking once the chunks around it are loaded. With {@link #RADIUS}, the chunk a turtle moves
+     * into is loaded, but the chunks beyond it aren't: the turtle would stop at each chunk border until they had been
+     * loaded (or generated), and its computer would be shut down if that took too long. With this radius, each chunk
+     * next to the turtle is ticking before the turtle moves into it.
+     */
+    public static final int MOVING_RADIUS = 2;
 
     /**
      * The chunk ticket. This is never saved with the world (see above), so doesn't need to be registered.
@@ -75,8 +99,11 @@ public final class ComputerChunkLoader {
     private final Path file;
     private final Path newFile;
 
-    /** For each dimension, the position of each computer we keep loaded, and the tick after which we forget it. */
-    private final Map<ResourceKey<Level>, Long2LongOpenHashMap> computers = new HashMap<>();
+    /** For each dimension, the position of each computer we keep loaded. */
+    private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<Kept>> computers = new HashMap<>();
+
+    /** Whether {@link #computers} has changed since we last saved it. */
+    private boolean dirty = false;
 
     ComputerChunkLoader(Path file) {
         this.file = file;
@@ -102,9 +129,11 @@ public final class ComputerChunkLoader {
             for (var position : entry.getValue()) {
                 if (position == null || position.length != 3) continue;
 
+                // This only needs to tick the computer's own chunk, so it turns back on. It then keeps itself loaded
+                // with its own radius.
                 var pos = new BlockPos(position[0], position[1], position[2]);
-                positions.put(pos.asLong(), expires);
-                addTicket(level, pos);
+                positions.put(pos.asLong(), new Kept(expires, RADIUS));
+                addTicket(level, pos, RADIUS);
             }
         }
     }
@@ -112,17 +141,58 @@ public final class ComputerChunkLoader {
     /**
      * Keep a computer loaded for a little longer. This should be called every tick while the computer is on.
      *
-     * @param level The level the computer is in.
-     * @param pos   The computer's position.
+     * @param level  The level the computer is in.
+     * @param pos    The computer's position.
+     * @param radius The radius of the computer's ticket, either {@link #RADIUS} or {@link #MOVING_RADIUS}.
      */
-    public void keepLoaded(ServerLevel level, BlockPos pos) {
-        addTicket(level, pos);
+    public void keepLoaded(ServerLevel level, BlockPos pos, int radius) {
+        addTicket(level, pos, radius);
 
+        var expires = level.getServer().getTickCount() + TIMEOUT;
         var positions = computers(level.dimension());
-        var key = pos.asLong();
-        var added = !positions.containsKey(key);
-        positions.put(key, level.getServer().getTickCount() + TIMEOUT);
-        if (added) save();
+        var kept = positions.get(pos.asLong());
+        if (kept == null) {
+            positions.put(pos.asLong(), new Kept(expires, radius));
+            dirty = true;
+        } else {
+            kept.expires = expires;
+            kept.radius = radius;
+        }
+    }
+
+    /**
+     * Move a computer which is kept loaded, such as a turtle which has just moved. Its ticket moves with it.
+     * <p>
+     * The computer's new chunk is kept loaded at once, rather than when the computer next ticks. Its old position is
+     * forgotten, so it isn't looked for there if the server restarts, and its old ticket is removed, so the chunk it
+     * left isn't kept loaded. Computers in the same chunk with the same radius share a ticket though, so if there's
+     * another in the old chunk, the ticket is left for that computer to refresh (or to time out).
+     * <p>
+     * This does nothing if the computer wasn't being kept loaded.
+     *
+     * @param oldLevel The level the computer was in.
+     * @param oldPos   The computer's old position.
+     * @param level    The level the computer is in now.
+     * @param pos      The computer's new position.
+     * @param radius   The radius of the computer's ticket, as passed to {@link #keepLoaded}.
+     */
+    public void move(ServerLevel oldLevel, BlockPos oldPos, ServerLevel level, BlockPos pos, int radius) {
+        if (oldLevel == level && oldPos.equals(pos)) return;
+
+        var oldPositions = computers.get(oldLevel.dimension());
+        if (oldPositions == null) return;
+        var old = oldPositions.get(oldPos.asLong());
+        if (old == null) return;
+
+        // Keep the new chunk loaded before letting go of the old one, so the chunks around both stay loaded.
+        keepLoaded(level, pos, radius);
+        oldPositions.remove(oldPos.asLong());
+        dirty = true;
+
+        var oldChunk = ChunkPos.containing(oldPos);
+        if (oldLevel == level && oldChunk.equals(ChunkPos.containing(pos))) return;
+        if (sharesTicket(oldPositions, oldChunk, old.radius)) return;
+        oldLevel.getChunkSource().removeTicketWithRadius(TICKET, oldChunk, old.radius);
     }
 
     /**
@@ -135,9 +205,8 @@ public final class ComputerChunkLoader {
      */
     public void release(ServerLevel level, BlockPos pos) {
         var positions = computers.get(level.dimension());
-        if (positions == null || !positions.containsKey(pos.asLong())) return;
-        positions.remove(pos.asLong());
-        save();
+        if (positions == null || positions.remove(pos.asLong()) == null) return;
+        dirty = true;
     }
 
     /**
@@ -151,13 +220,13 @@ public final class ComputerChunkLoader {
             var level = server.getLevel(entry.getKey());
             if (level == null) continue;
 
-            var positions = entry.getValue().keySet().iterator();
-            while (positions.hasNext()) {
-                level.getChunkSource().removeTicketWithRadius(TICKET, ChunkPos.containing(BlockPos.of(positions.nextLong())), RADIUS);
+            for (var kept : Long2ObjectMaps.fastIterable(entry.getValue())) {
+                var chunk = ChunkPos.containing(BlockPos.of(kept.getLongKey()));
+                level.getChunkSource().removeTicketWithRadius(TICKET, chunk, kept.getValue().radius);
             }
         }
         computers.clear();
-        save();
+        write();
     }
 
     /**
@@ -173,7 +242,28 @@ public final class ComputerChunkLoader {
     }
 
     /**
-     * Forget computers which have stopped asking to be kept loaded.
+     * Check whether a chunk has the ticket of a computer we keep loaded. The game tests use this.
+     *
+     * @param level  The level the chunk is in.
+     * @param chunk  The chunk.
+     * @param radius The radius of the ticket.
+     * @return Whether the chunk has the ticket.
+     */
+    @VisibleForTesting
+    public static boolean hasTicket(ServerLevel level, ChunkPos chunk, int radius) {
+        var tickets = level.getDataStorage().get(TicketStorage.TYPE);
+        if (tickets == null) return false;
+
+        var ticketLevel = ChunkLevel.byStatus(FullChunkStatus.FULL) - radius;
+        for (var ticket : tickets.getTickets(chunk.pack())) {
+            if (ticket.getType() == TICKET && ticket.getTicketLevel() == ticketLevel) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Forget computers which have stopped asking to be kept loaded, and save the computers we keep loaded if they
+     * changed.
      *
      * @param server The current server.
      */
@@ -181,19 +271,60 @@ public final class ComputerChunkLoader {
         var now = server.getTickCount();
         if (now % PURGE_INTERVAL != 0) return;
 
-        var changed = false;
         for (var positions : computers.values()) {
-            if (positions.long2LongEntrySet().removeIf(entry -> entry.getLongValue() < now)) changed = true;
+            if (positions.values().removeIf(kept -> kept.expires < now)) dirty = true;
         }
-        if (changed) save();
+        save();
     }
 
-    private Long2LongOpenHashMap computers(ResourceKey<Level> dimension) {
-        return computers.computeIfAbsent(dimension, x -> new Long2LongOpenHashMap());
+    /**
+     * Save the computers we keep loaded, if they changed since we last saved them. This is called when the server
+     * stops, as well as every so often while it runs.
+     */
+    public void save() {
+        if (dirty) write();
     }
 
-    private static void addTicket(ServerLevel level, BlockPos pos) {
-        level.getChunkSource().addTicketWithRadius(TICKET, ChunkPos.containing(pos), RADIUS);
+    private Long2ObjectOpenHashMap<Kept> computers(ResourceKey<Level> dimension) {
+        return computers.computeIfAbsent(dimension, x -> new Long2ObjectOpenHashMap<>());
+    }
+
+    /**
+     * Check whether a computer we keep loaded has a ticket in a chunk. Tickets are shared by type and level, so this
+     * includes computers with the same radius.
+     *
+     * @param positions The computers in the chunk's level.
+     * @param chunk     The chunk.
+     * @param radius    The radius of the ticket.
+     * @return Whether any of the computers have the ticket.
+     */
+    private static boolean sharesTicket(Long2ObjectOpenHashMap<Kept> positions, ChunkPos chunk, int radius) {
+        for (var kept : Long2ObjectMaps.fastIterable(positions)) {
+            if (kept.getValue().radius == radius && ChunkPos.pack(BlockPos.of(kept.getLongKey())) == chunk.pack()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addTicket(ServerLevel level, BlockPos pos, int radius) {
+        level.getChunkSource().addTicketWithRadius(TICKET, ChunkPos.containing(pos), radius);
+    }
+
+    /**
+     * A computer we keep loaded.
+     */
+    private static final class Kept {
+        /** The tick after which we forget this computer, unless it asks to be kept loaded again. */
+        long expires;
+
+        /** The radius of the computer's ticket. */
+        int radius;
+
+        Kept(long expires, int radius) {
+            this.expires = expires;
+            this.radius = radius;
+        }
     }
 
     private Map<String, List<int[]>> read() {
@@ -208,7 +339,9 @@ public final class ComputerChunkLoader {
         }
     }
 
-    private void save() {
+    private void write() {
+        dirty = false;
+
         var result = new TreeMap<String, List<int[]>>();
         for (var entry : computers.entrySet()) {
             if (entry.getValue().isEmpty()) continue;

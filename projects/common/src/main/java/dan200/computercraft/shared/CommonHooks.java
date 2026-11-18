@@ -86,6 +86,10 @@ public final class CommonHooks {
     public static void onServerStopping(MinecraftServer server) {
         // Save wired networks while every chunk is still loaded.
         UnloadedWiring.onServerStopping(server);
+
+        // Save where the computers we keep loaded are, as they're only saved every so often.
+        var context = ServerContext.getIfRunning(server);
+        if (context != null) context.chunkLoader().save();
     }
 
     public static void onServerStopped() {

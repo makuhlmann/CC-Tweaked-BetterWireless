@@ -433,8 +433,16 @@ A cell site is only useful if it keeps transmitting while everyone is far away. 
 that: while the computer is on, it keeps its own chunk ticking and the chunks around it loaded (so a modem across a
 chunk border still works). This is lighter than `/forceload`, which ticks a 3×3 area and loads 5×5. The setting is
 saved with the computer, survives reboots, and is cleared with `os.setKeepLoaded(false)`. `os.getKeepLoaded()` reads
-it. Only placed computers can do this; on turtles and pocket computers it is an error. The server can turn it off
-with `allow_keep_loaded` (default `true`).
+it. Placed computers and turtles can do this; on pocket computers it is an error. The server can turn it off with
+`allow_keep_loaded` (default `true`).
+
+A turtle keeps more loaded: its own chunk and the eight around it tick, and the ring around those is loaded, as
+`/forceload` does. A chunk only ticks once all its neighbours are loaded, so with a computer's area, the chunk a turtle
+moves into would be loaded but not ticking until the chunks beyond it had loaded (or been generated): the turtle would
+stop at every chunk border, and be shut down if that took over five seconds. With the larger area, each chunk next to
+the turtle is ticking before it moves in. The area moves with the turtle: when it crosses into another chunk, the new
+chunk is kept loaded at once, and the old chunk's ticket is removed (unless another computer kept loaded is in that
+chunk, as they share it).
 
 It's built on a chunk ticket the computer refreshes every tick. Once the computer turns off, is broken, or clears the
 setting, the ticket times out after five seconds and the chunk unloads as usual, so a computer can't leave a chunk
@@ -442,7 +450,10 @@ loaded forever. Clearing the setting also removes the computer from the restart 
 fails to read all of it (including `/forceload` chunks), so removing the mod would break those. Instead,
 `computercraft/keep_loaded.json` lists the computers being kept loaded, and the server adds tickets for them when it
 starts. The computers then turn back on as their chunks load, and run their startup program. A computer which
-doesn't come back within a minute is forgotten.
+doesn't come back within a minute is forgotten. A moving turtle changes the list with every move, so it's written at
+most once a second, and when the server stops. After a crash the list can be up to a second old, and so miss a
+turtle which moved into another chunk in that second (the world itself is usually older still, as it's only saved
+every few minutes).
 
 ## 6. Limitations and future work
 
@@ -464,7 +475,8 @@ doesn't come back within a minute is forgotten.
   ground's intrusion into the Fresnel zone (about 12dB at 450-800MHz on flat ground). And the profile ignores
   everything within 1.5 blocks of an antenna in the open, so a thin wall right next to one is missed by the over path.
 - **Near a computer kept loaded, only its own chunks have real blocks.** `os.setKeepLoaded` loads the computer's chunk
-  and the eight around it: 16-31 blocks each way, depending on where it stands in its chunk. The model looks at single
+  and the eight around it: 16-31 blocks each way, depending on where it stands in its chunk (32-47 for a turtle, which
+  loads two rings). The model looks at single
   blocks up to `block_radius` (64) from each end, and for walls to reflect off up to 24. Past those chunks, with nobody
   nearby, it has only heights, so a house there reads as solid rock up to its roof: nothing gets through it
   (`built_loss_scale` can't apply, as heights don't tell built from natural), and its walls don't reflect. The path

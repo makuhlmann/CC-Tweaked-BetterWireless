@@ -271,8 +271,9 @@ public class OSAPI implements ILuaAPI {
      * computer which was on when the server stopped is turned back on when it starts. Note that the computer only runs
      * its startup program when it turns back on, so put anything it should keep running in {@code startup.lua}.
      * <p>
-     * Only computers placed in the world can be kept loaded, not turtles or pocket computers, and the server may disable
-     * this entirely.
+     * Computers placed in the world and turtles can be kept loaded, but not pocket computers, and the server may disable
+     * this entirely. A turtle keeps the chunks around it running too, so it keeps going as it moves from chunk to chunk.
+     * The chunks it leaves behind are no longer kept loaded.
      *
      * @param keepLoaded Whether to keep this computer running.
      * @throws LuaException If this computer cannot be kept loaded.

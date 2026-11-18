@@ -13,6 +13,7 @@ import dan200.computercraft.api.lua.ObjectArguments
 import dan200.computercraft.api.turtle.ITurtleUpgrade
 import dan200.computercraft.api.turtle.TurtleSide
 import dan200.computercraft.api.upgrades.UpgradeHandle
+import dan200.computercraft.core.apis.OSAPI
 import dan200.computercraft.core.apis.PeripheralAPI
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.gametest.core.TestHooks
@@ -21,6 +22,8 @@ import dan200.computercraft.impl.UpgradeData
 import dan200.computercraft.mixin.gametest.GameTestHelperAccessor
 import dan200.computercraft.mixin.gametest.GameTestInfoAccessor
 import dan200.computercraft.shared.ModRegistry
+import dan200.computercraft.shared.computer.core.ComputerChunkLoader
+import dan200.computercraft.shared.computer.core.ServerContext
 import dan200.computercraft.shared.media.items.PrintoutData
 import dan200.computercraft.shared.peripheral.modem.wired.CableBlock
 import dan200.computercraft.shared.peripheral.modem.wired.CableModemVariant
@@ -38,6 +41,7 @@ import dan200.computercraft.test.core.computer.LuaTaskContext
 import dan200.computercraft.test.core.computer.getApi
 import dan200.computercraft.test.shared.ItemStackMatcher.isStack
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.core.HolderLookup
 import net.minecraft.core.component.DataComponentPatch
 import net.minecraft.core.component.DataComponents
@@ -52,6 +56,7 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.component.ItemContainerContents
 import net.minecraft.world.item.enchantment.Enchantments
+import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.block.BeehiveBlock
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.ComposterBlock
@@ -663,6 +668,70 @@ class Turtle_Test {
     }
 
     /**
+     * Test a turtle which is kept loaded takes its chunk ticket with it as it moves, so the chunk it started in isn't
+     * kept loaded.
+     *
+     * The structure is 18 blocks long, so the turtle crosses a chunk border along it wherever the test is placed. The
+     * test may be rotated, so we go by the way the turtle faces in the world.
+     */
+    @GameTest(timeoutTicks = Timeouts.SECOND * 20)
+    fun Keep_loaded_moves(helper: GameTestHelper) = helper.sequence {
+        val start = helper.absolutePos(BlockPos(0, 1, 1))
+        val startChunk = ChunkPos.containing(start)
+        var facing = Direction.NORTH
+        val passed = mutableListOf<BlockPos>()
+        var end = start
+
+        thenExecute { facing = helper.getBlockEntity(BlockPos(0, 1, 1), TurtleBlockEntity::class.java).direction }
+        thenOnComputer {
+            val os = getApi<OSAPI>()
+            assertEquals(false, os.getKeepLoaded(), "Turtle should not start out kept loaded")
+            os.setKeepLoaded(true)
+            assertEquals(true, os.getKeepLoaded(), "Turtle should be kept loaded")
+        }
+        thenWaitUntil {
+            if (!helper.chunkLoader.isKeptLoaded(helper.level, start)) helper.abort("Turtle is not kept loaded yet")
+        }
+        thenExecute {
+            assertTrue(
+                ComputerChunkLoader.hasTicket(helper.level, startChunk, ComputerChunkLoader.MOVING_RADIUS),
+                "Turtle's chunk should be kept loaded",
+            )
+        }
+
+        thenOnComputer {
+            while (ChunkPos.containing(end) == startChunk) {
+                turtle.forward().await().assertArrayEquals(true, message = "Turtle moved forward")
+                passed.add(end)
+                end = end.relative(facing)
+            }
+        }
+        thenExecute {
+            // GameTestHelper.relativePos isn't the inverse of absolutePos (it turns unrotated tests around), so look at
+            // the world directly.
+            assertEquals(ModRegistry.Blocks.TURTLE_NORMAL.get(), helper.level.getBlockState(end).block, "Turtle should be at $end")
+
+            val chunkLoader = helper.chunkLoader
+            assertTrue(chunkLoader.isKeptLoaded(helper.level, end), "Turtle should be kept loaded where it is now")
+            for (pos in passed) assertFalse(chunkLoader.isKeptLoaded(helper.level, pos), "Turtle should not be kept loaded at $pos")
+
+            assertTrue(
+                ComputerChunkLoader.hasTicket(helper.level, ChunkPos.containing(end), ComputerChunkLoader.MOVING_RADIUS),
+                "Turtle's new chunk should be kept loaded",
+            )
+            assertFalse(
+                ComputerChunkLoader.hasTicket(helper.level, startChunk, ComputerChunkLoader.MOVING_RADIUS),
+                "Turtle's old chunk should no longer be kept loaded",
+            )
+        }
+
+        thenOnComputer { getApi<OSAPI>().setKeepLoaded(false) }
+        thenWaitUntil {
+            if (helper.chunkLoader.isKeptLoaded(helper.level, end)) helper.abort("Turtle is still kept loaded")
+        }
+    }
+
+    /**
      * Test turtles can push entities.
      */
     @GameTest
@@ -1108,6 +1177,8 @@ class Turtle_Test {
 }
 
 private val LuaTaskContext.turtle get() = getApi<TurtleAPI>()
+
+private val GameTestHelper.chunkLoader get() = ServerContext.get(level.server).chunkLoader()
 
 private suspend fun LuaTaskContext.getTurtleItemDetail(slot: Int = 1, detailed: Boolean = false): Map<String, *> {
     val item = turtle.getItemDetail(context, Optional.of(slot), Optional.of(detailed)).await()

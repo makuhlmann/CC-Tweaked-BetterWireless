@@ -6,7 +6,6 @@ package dan200.computercraft.gametest
 
 import com.mojang.blaze3d.platform.InputConstants
 import dan200.computercraft.api.lua.Coerced
-import dan200.computercraft.api.lua.LuaException
 import dan200.computercraft.client.gui.AbstractComputerScreen
 import dan200.computercraft.core.apis.CryptoAPI
 import dan200.computercraft.core.apis.OSAPI
@@ -16,6 +15,7 @@ import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.shared.ModRegistry
 import dan200.computercraft.shared.computer.blocks.ComputerBlockEntity
+import dan200.computercraft.shared.computer.core.ComputerChunkLoader
 import dan200.computercraft.shared.computer.core.ServerContext
 import dan200.computercraft.shared.computer.enclave.EnclaveAPI
 import dan200.computercraft.test.core.assertArrayEquals
@@ -27,6 +27,7 @@ import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
@@ -36,7 +37,6 @@ import net.minecraft.world.level.storage.TagValueInput
 import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
-import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import java.nio.ByteBuffer
 import java.util.*
@@ -91,7 +91,8 @@ class Computer_Test {
     }
 
     /**
-     * Check placed computers can ask to keep running when nobody is nearby, and that turtles can't.
+     * Check placed computers can ask to keep running when nobody is nearby. Turtles are checked in
+     * [Turtle_Test.Keep_loaded_moves].
      */
     @GameTest
     fun Keep_loaded(context: GameTestHelper) = context.sequence {
@@ -106,15 +107,18 @@ class Computer_Test {
         thenIdle(2)
         thenExecute {
             val chunkLoader = ServerContext.get(context.level.server).chunkLoader()
-            assertTrue(chunkLoader.isKeptLoaded(context.level, context.absolutePos(computer)), "Computer's chunk should be kept loaded")
-        }
-
-        thenOnComputer("turtle") {
-            val error = assertThrows(LuaException::class.java) { getApi<OSAPI>().setKeepLoaded(true) }
-            assertEquals("This computer cannot be kept loaded", error.message)
+            assertTrue(chunkLoader.isKeptLoaded(context.level, context.absolutePos(computer)), "Computer should be kept loaded")
+            assertTrue(
+                ComputerChunkLoader.hasTicket(context.level, ChunkPos.containing(context.absolutePos(computer)), ComputerChunkLoader.RADIUS),
+                "Computer's chunk should be kept loaded",
+            )
         }
 
         thenOnComputer("computer") { getApi<OSAPI>().setKeepLoaded(false) }
+        thenWaitUntil {
+            val chunkLoader = ServerContext.get(context.level.server).chunkLoader()
+            if (chunkLoader.isKeptLoaded(context.level, context.absolutePos(computer))) context.abort("Computer is still kept loaded")
+        }
     }
 
     /**

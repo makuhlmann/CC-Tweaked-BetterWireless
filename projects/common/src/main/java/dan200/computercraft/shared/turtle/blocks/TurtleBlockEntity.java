@@ -15,6 +15,7 @@ import dan200.computercraft.impl.UpgradeData;
 import dan200.computercraft.shared.ModRegistry;
 import dan200.computercraft.shared.computer.blocks.AbstractComputerBlockEntity;
 import dan200.computercraft.shared.computer.blocks.ComputerPeripheral;
+import dan200.computercraft.shared.computer.core.ComputerChunkLoader;
 import dan200.computercraft.shared.computer.core.ComputerFamily;
 import dan200.computercraft.shared.computer.core.ComputerState;
 import dan200.computercraft.shared.computer.core.ServerComputer;
@@ -93,6 +94,8 @@ public class TurtleBlockEntity extends AbstractComputerBlockEntity implements Ba
     protected ServerComputer createComputer(int id) {
         var computer = new ServerComputer((ServerLevel) getLevel(), getBlockPos(), ServerComputer.properties(id, getFamily())
             .label(getLabel())
+            .keepLoaded(keepLoaded)
+            .allowKeepLoaded()
             .terminalSize(new TerminalSize(Config.TURTLE_TERM_WIDTH, Config.TURTLE_TERM_HEIGHT))
             .storageCapacity(storageCapacity)
             .addComponent(ComputerComponents.TURTLE, brain)
@@ -104,6 +107,12 @@ public class TurtleBlockEntity extends AbstractComputerBlockEntity implements Ba
     @Override
     protected void unload() {
         if (!hasMoved()) super.unload();
+    }
+
+    @Override
+    protected int getKeepLoadedRadius() {
+        // Keep the chunks around the turtle ticking, so it doesn't stop at each chunk border.
+        return ComputerChunkLoader.MOVING_RADIUS;
     }
 
     @Override
