@@ -12,11 +12,13 @@ There are two ways to find a name:
  - Names ending in `.local` are asked about by broadcast on every interface, and whoever has the name answers (port
    5353). Services work the same way: every computer offering one answers. This needs no servers at all.
  - Other names are asked of DNS servers (port 53), which answer from a zone file. Servers are found through DHCP, or the
-   `net.dns` setting.
+   `net.dns` setting. A server may serve several zones, and forward questions about names in others to other servers
+   (see [`relay`]).
 
-A question is `{ id = number, name = string, type = "A" or "SRV" }`, and an answer
+A question is `{ id = number, name = string, type = "A" or "SRV", hops? = number }`, and an answer
 `{ id = number, code = "ok" or "not_found" or "refused", records = { { name, type, value, ttl }... } }`. An `"A"` record's
-value is an address, and an `"SRV"` record's is `{ host = string, address = number, port = number }`.
+value is an address, and an `"SRV"` record's is `{ host = string, address = number, port = number }`. `hops` is how
+many times a question has been forwarded already: none, if it isn't there.
 
 @local
 ]]
@@ -31,6 +33,20 @@ local MDNS_PORT = 5353
 
 local DNS_TIMEOUT, MDNS_TIMEOUT = 1.5, 1
 local MAX_TTL = 300
+
+--- How long a DNS server waits for the servers it forwards a question to, in seconds, by how many times the question
+-- has been forwarded already: always less than whoever asked waits, so their answer gets back in time. A question
+-- forwarded more times than this has deadlines for isn't forwarded again.
+local FORWARD_DEADLINES = { [0] = 1.2, 0.8, 0.4 }
+
+--- How long a DNS server waits for any one server it forwards a question to, before asking the next, in seconds.
+local FORWARD_TIMEOUT = 0.6
+
+--- How long a DNS server remembers that a name it forwarded a question about doesn't exist, in seconds.
+local NOT_FOUND_TTL = 10
+
+--- How many forwarded questions a DNS server waits on at once. Beyond that, it refuses questions it would forward.
+local MAX_FORWARDING = 64
 
 --- Normalise a name: lower case, without a trailing dot.
 --
@@ -318,6 +334,18 @@ local function new_server(zone, records, extra)
     return setmetatable({ zone = normalise(zone), records = records, extra = extra }, Server)
 end
 
+--- Find a name within the zone.
+--
+-- @tparam string name The name, such as `"bank.home"`.
+-- @treturn string|nil The name within the zone (`"bank"`, or `"@"` for the zone itself), or `nil` if it isn't in it.
+function Server:within(name)
+    name = normalise(name)
+    if name == self.zone then return "@" end
+    local suffix = "." .. self.zone
+    if name:sub(-#suffix) == suffix then return name:sub(1, -#suffix - 1) end
+    return nil
+end
+
 --- Answer a question.
 --
 -- @param question The question.
@@ -326,15 +354,8 @@ function Server:handle(question)
     if type(question) ~= "table" or type(question.id) ~= "number" or type(question.name) ~= "string" then return nil end
 
     local name = normalise(question.name)
-    local suffix = "." .. self.zone
-    local relative
-    if name == self.zone then
-        relative = "@"
-    elseif name:sub(-#suffix) == suffix then
-        relative = name:sub(1, -#suffix - 1)
-    else
-        return { id = question.id, code = "refused" }
-    end
+    local relative = self:within(name)
+    if not relative then return { id = question.id, code = "refused" } end
 
     if question.type ~= "A" then return { id = question.id, code = "not_found" } end
 
@@ -342,6 +363,165 @@ function Server:handle(question)
     if not addr and self.extra then addr = self.extra()[relative] end
     if not addr then return { id = question.id, code = "not_found" } end
     return { id = question.id, code = "ok", records = { { name = name, type = "A", value = addr, ttl = 60 } } }
+end
+
+local Relay = {}
+Relay.__index = Relay
+
+--[[- Create the logic of a DNS server for several zones, which forwards questions about names in other zones to other
+DNS servers. Sending and receiving is up to the caller: each method returns what to send, as a list of
+`{ client = client, answer = answer }` (an answer for whoever asked) and `{ server = address, question = question }` (a
+question for another server's DNS port).
+
+A name is answered by the most specific zone it's in. Names in none are forwarded: to each server in turn, until one
+answers, or says the name doesn't exist, which is passed back. If every server refuses, or none answers in time, the
+question is refused, so whoever asked tries their next server. Each forwarded question carries how many times it's been
+forwarded, and the deadline for each time is shorter, so a chain of servers answers before the first gives up; one
+forwarded too many times is refused, which also ends loops between servers. Answers are kept for as long as they say
+(names which don't exist, briefly), and refusals never.
+
+@tparam {
+    zones = { table... }, forward = function():{ number... }, clock = function():number, random? = function():number,
+} options The zones (from [`server`]); the servers to forward to (asked for each question, so they may change); a clock in
+seconds; and random question IDs.
+@treturn table The relay.
+]]
+local function new_relay(options)
+    return setmetatable({
+        zones = options.zones, forward = options.forward, clock = options.clock,
+        random = options.random or function() return math.random(1, 0x7FFFFFFF) end,
+        waiting = {}, forwarding = 0, cache = {},
+    }, Relay)
+end
+
+--- Find the zone a name is in: the most specific of those served.
+--
+-- @tparam string name The name.
+-- @treturn table|nil The zone's server, or `nil` if it's in none.
+function Relay:zone_of(name)
+    local best
+    for _, zone in ipairs(self.zones) do
+        if zone:within(name) and (not best or #zone.zone > #best.zone) then best = zone end
+    end
+    return best
+end
+
+local function reply(client, id, code, records)
+    return { client = client, answer = { id = id, code = code, records = records } }
+end
+
+--[[- A question from a client.
+
+@param question The question.
+@param client Whoever asked, given back with the answer.
+@treturn { table... } What to send.
+]]
+function Relay:question(question, client)
+    if type(question) ~= "table" or type(question.id) ~= "number" or type(question.name) ~= "string" then return {} end
+    local name = normalise(question.name)
+    local zone = self:zone_of(name)
+    if zone then return { { client = client, answer = zone:handle(question) } } end
+
+    -- Forwarded more times than there are deadlines for (or nonsense): no further.
+    local hops = question.hops or 0
+    if not FORWARD_DEADLINES[hops] then return { reply(client, question.id, "refused") } end
+
+    local now = self.clock()
+    local key = name .. " " .. tostring(question.type)
+    local cached = self.cache[key]
+    if cached and cached.expires > now then return { reply(client, question.id, cached.code, cached.records) } end
+
+    local servers = self.forward()
+    if not servers[1] or self.forwarding >= MAX_FORWARDING then return { reply(client, question.id, "refused") } end
+
+    self.forwarding = self.forwarding + 1
+    return self:ask_next({
+        client = client, id = question.id, name = name, type = question.type, hops = hops + 1, key = key,
+        servers = servers, server = 0, deadline = now + FORWARD_DEADLINES[hops],
+    }, now)
+end
+
+-- Ask the next server about a forwarded question, or refuse it if there's none, or no time left.
+function Relay:ask_next(forwarded, now)
+    if forwarded.asked then self.waiting[forwarded.asked] = nil end
+    forwarded.server = forwarded.server + 1
+    local server = forwarded.servers[forwarded.server]
+    if not server or now >= forwarded.deadline then
+        self.forwarding = self.forwarding - 1
+        return { reply(forwarded.client, forwarded.id, "refused") }
+    end
+
+    local id = self.random()
+    while self.waiting[id] do id = self.random() end
+    forwarded.asked, forwarded.until_time = id, math.min(now + FORWARD_TIMEOUT, forwarded.deadline)
+    self.waiting[id] = forwarded
+    return { { server = server, question = { id = id, name = forwarded.name, type = forwarded.type, hops = forwarded.hops } } }
+end
+
+-- Keep an answer, for as long as it says (but no longer than MAX_TTL), or a name which doesn't exist, briefly.
+function Relay:keep(key, code, records)
+    local keep = NOT_FOUND_TTL
+    if code == "ok" then
+        if type(records) ~= "table" or not records[1] then return end
+        keep = MAX_TTL
+        for _, record in ipairs(records) do
+            if type(record) ~= "table" then return end
+            keep = math.min(keep, ttl(record))
+        end
+    end
+
+    local now = self.clock()
+    local count = 0
+    for name, entry in pairs(self.cache) do
+        if entry.expires <= now then self.cache[name] = nil else count = count + 1 end
+    end
+    if count >= MAX_CACHE then self.cache = {} end
+    self.cache[key] = { code = code, records = records, expires = now + keep }
+end
+
+--[[- An answer from a server a question was forwarded to.
+
+@param answer The answer.
+@tparam number from Who it's from. Only the server asked may answer.
+@treturn { table... } What to send.
+]]
+function Relay:answer(answer, from)
+    if type(answer) ~= "table" then return {} end
+    local forwarded = self.waiting[answer.id]
+    if not forwarded or forwarded.servers[forwarded.server] ~= from then return {} end
+
+    if answer.code == "ok" or answer.code == "not_found" then
+        self.waiting[answer.id] = nil
+        self.forwarding = self.forwarding - 1
+        local records = answer.code == "ok" and answer.records or nil
+        self:keep(forwarded.key, answer.code, records)
+        return { reply(forwarded.client, forwarded.id, answer.code, records) }
+    end
+
+    -- Refused (or nonsense): another server may know.
+    return self:ask_next(forwarded, self.clock())
+end
+
+--- Give up on servers which haven't answered in time, and ask the next.
+--
+-- @treturn { table... } What to send.
+function Relay:expire()
+    local now, due = self.clock(), {}
+    for _, forwarded in pairs(self.waiting) do
+        if now >= forwarded.until_time then due[#due + 1] = forwarded end
+    end
+    local result = {}
+    for _, forwarded in ipairs(due) do
+        for _, item in ipairs(self:ask_next(forwarded, now)) do result[#result + 1] = item end
+    end
+    return result
+end
+
+--- Whether any forwarded questions are waiting for an answer.
+--
+-- @treturn boolean Whether there are.
+function Relay:busy()
+    return self.forwarding > 0
 end
 
 return {
@@ -354,4 +534,5 @@ return {
     lookup = lookup,
     parse_zone = parse_zone,
     server = new_server,
+    relay = new_relay,
 }

@@ -51,4 +51,58 @@ describe("The dnsd program", function()
         -- What's wrong with the zone file is said once, not for every question.
         expect(result.error):eq("zones/home.txt: Line 2: expected a name and an address\n")
     end)
+
+    -- Run dnsd with some arguments, ask it some questions, and stop it. Gives each answer's address or code, and what
+    -- dnsd printed.
+    local function ask(arguments, names)
+        local answers, result = {}, nil
+        local forward = settings.get("dnsd.forward")
+        settings.set("dnsd.forward", "none")
+        local ok, err = pcall(parallel.waitForAny,
+            function() result = capture("/rom/programs/net/dnsd.lua", table.unpack(arguments)) end,
+            function()
+                local socket = assert(net.udp.open())
+                for i, name in ipairs(names) do
+                    for _ = 1, 20 do
+                        socket:send("127.0.0.1", 53, { id = i, name = name, type = "A" })
+                        local answer = socket:receive(0.2)
+                        if answer then
+                            answers[i] = answer.code == "ok" and answer.records[1].value or answer.code
+                            break
+                        end
+                    end
+                end
+                socket:close()
+                os.queueEvent("terminate")
+                while true do os.pullEventRaw() end
+            end
+        )
+        if forward == nil then settings.unset("dnsd.forward") else settings.set("dnsd.forward", forward) end
+        fs.delete("/zones")
+        fs.delete("/records.txt")
+        if not ok then error(err, 0) end
+        return answers, result
+    end
+
+    it("answers for several zones, each from its own file, and refuses others", function()
+        write("/zones/home.txt", "bank 10.0.0.5\n")
+        write("/zones/shop.txt", "till 10.0.0.7\n")
+        local answers, result = ask({ "run", "home", "shop" }, { "bank.home", "till.shop", "bank.shop", "bank.away" })
+        expect(answers):same { 0x0A000005, 0x0A000007, "not_found", "refused" }
+        expect(result.output):eq("Answering for home and shop.\nPress Ctrl+T to stop.\n")
+    end)
+
+    it("takes a zone's file after it", function()
+        write("/records.txt", "bank 10.0.0.6\n")
+        write("/zones/shop.txt", "till 10.0.0.7\n")
+        local answers = ask({ "run", "home", "records.txt", "shop" }, { "bank.home", "till.shop" })
+        expect(answers):same { 0x0A000006, 0x0A000007 }
+    end)
+
+    it("refuses what doesn't make sense, changing nothing", function()
+        expect(capture("/rom/programs/net/dnsd.lua", "start", "home", "home").error):eq("home is there twice.\n")
+        expect(capture("/rom/programs/net/dnsd.lua", "start", "records.txt").output:sub(1, 7)):eq("Usages:")
+        expect(capture("/rom/programs/net/dnsd.lua", "start", "home", "a.txt", "b.txt").output:sub(1, 7)):eq("Usages:")
+        expect(service.status("dnsd")):eq(nil)
+    end)
 end)

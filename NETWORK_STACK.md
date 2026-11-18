@@ -563,10 +563,20 @@ DNS also runs over datagrams, on port 53.
   - `KEY` (later): a host's public key or certificate (§9)
   - `TXT` (later): free text
 - **Queries and answers:** `{id, name, type}` is answered with `{id, code, records = {{name, type, value, ttl}, ...}}`.
-- **Server (`dnsd`):** answers for one zone, from `/zones/<zone>.txt`, which has one `name address` pair per line (`@`
-  is the zone itself). The file is read for every question, so edits apply at once. Computers which got their address
-  from `dhcpd` on the same computer are found by their hostname too, which gives dynamic DNS for free. Forwarding
-  other zones to an upstream server isn't done yet.
+- **Server (`dnsd`):** answers for one or more zones, each from `/zones/<zone>.txt` (or a file given after the zone),
+  which has one `name address` pair per line (`@` is the zone itself). A name is answered by the most specific zone it's
+  in. Each file is read again when it changes, so edits apply at once. Computers which got their address from `dhcpd` on
+  the same computer are found by their hostname too, in the zone matching `dhcpd.domain` (or the first), which gives
+  dynamic DNS for free. One computer runs one `dnsd`, as it holds port 53.
+- **Forwarding:** `dnsd` forwards questions about names in no zone of its own to the servers in `dnsd.forward`, or else
+  `net.dns` (never itself; `none` forwards nothing), in turn, until one answers or says the name doesn't exist, which is
+  passed back. If every one refuses, or none answers in time, the question is refused, so the client tries its next
+  server, as before. Answers are kept for as long as they say (up to five minutes), names which don't exist for ten
+  seconds, and refusals never. A forwarded question carries `hops`, how many times it's been forwarded; each forward
+  waits less (1.2, 0.8 and 0.4 seconds), inside the client's 1.5, so a chain of servers answers before the first gives
+  up, and one forwarded three times isn't forwarded again, which also ends loops between servers that forward to each
+  other. So a client needs only one DNS server, which knows the others. The logic is `dns.relay`, apart from the
+  sockets, and tested with a fake clock and over a virtual network (a chain of three, and a loop).
 - **Resolver:** built into the stack. It checks addresses, `net.hosts` in settings, its own name and its cache first.
   A name without dots is tried in the search domain (from DHCP or `net.domain`), then as a `.local` name.
 - **`.local` names:** names and services ending in `.local` are asked for by broadcast on every interface. Whoever owns
@@ -836,7 +846,7 @@ handle the events themselves:
 | `ping`, `traceroute` | Test reachability and paths |
 | `nslookup` | Query DNS |
 | `netdump` | Show frames as they arrive, with a simple filter. Mostly for learning and debugging. |
-| `dhcpd`, `dnsd` | DHCP and DNS servers, which run as services |
+| `dhcpd`, `dnsd` | DHCP and DNS servers, which run as services. `dnsd` serves several zones, and forwards names in others |
 | `nc` | Send and receive datagrams or connection messages from the shell |
 | `ncp` | Copy files over a connection |
 | `rsh` | Remote shell over a secure connection, with the remote terminal redirected, or one command |

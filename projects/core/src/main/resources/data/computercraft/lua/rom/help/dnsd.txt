@@ -1,12 +1,18 @@
-dnsd is a DNS server for one zone, such as "home". It answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home). Computers which got their address from dhcpd on the same computer can be found by their hostname too. The zone file is read again whenever it changes.
+dnsd is a DNS server for one or more zones, such as "home". For each, it answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home; "@" is the zone itself, and "#" starts a comment). A name is answered by the most specific zone it's in, so "shop.home" can be a zone of its own. Each zone file is read again whenever it changes.
 
-It runs in the background, as a service (see "help service"), and starts with the computer.
+Computers which got their address from dhcpd on the same computer can be found by their hostname too, in the zone dhcpd gives them (the setting dhcpd.domain), or else the first.
+
+Names in other zones are forwarded to other DNS servers: those in the setting dnsd.forward (separated by commas), or else in net.dns, but never this computer itself. Their answers are kept for as long as they say, and that a name doesn't exist for a few seconds. If none answers, the question is refused, so whoever asked tries their next server. "set dnsd.forward none" forwards nothing. A question is forwarded at most three times along a chain of servers, so servers which forward to each other don't pass it round for ever.
+
+It runs in the background, as a service (see "help service"), and starts with the computer. Only one runs on a computer.
 
 Clients find the server through DHCP (set dhcpd.dns and dhcpd.domain), or the settings net.dns and net.domain.
 
 ex:
 "dnsd start home" answers for names ending in .home, from now on. "dnsd home" does the same.
-"dnsd start home records.txt" answers from the file records.txt instead.
+"dnsd start home shop" answers for .home and .shop, each from its own file.
+"dnsd start home records.txt shop" answers for .home from the file records.txt instead (a zone's file follows it, and is a path or a .txt file).
+"set dnsd.forward 10.0.0.2" forwards names in other zones to 10.0.0.2.
 "dnsd stop" stops it, and it doesn't start with the computer.
 "dnsd start" starts it again, as it was.
 "dnsd status" says how it's doing, and what it's printed.
