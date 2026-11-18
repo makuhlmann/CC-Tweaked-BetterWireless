@@ -444,6 +444,13 @@ function Tower:control(message, link)
             local sealed = context.sealer:seal({ sms = sms })
             if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
         end
+    elseif op == "dns" and is_id(message.teid) then
+        -- The DNS servers and domain our phones are given changed.
+        local context = link.by_teid[message.teid]
+        if context and context.active then
+            local sealed = context.sealer:seal({ dns = { servers = message.servers, domain = message.domain } })
+            if sealed then self:to_phone(context.phone, { op = "data", sealed = sealed }) end
+        end
     elseif op == "sms_sent" and is_id(message.teid) then
         -- The core has a message the phone sent (or won't take it).
         local context = link.by_teid[message.teid]

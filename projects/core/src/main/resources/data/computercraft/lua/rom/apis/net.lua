@@ -16,8 +16,8 @@ addresses are set with the `ifconfig` program, or with [`net.setAddress`]. `ifco
 `net.<interface>.address` (an address such as `"10.0.0.1/24"`, `"dhcp"` or `"none"`).
 
 Every computer has a hostname (the `net.hostname` setting, or its label) and answers to `<hostname>.local`. Other names
-are looked up in the `net.hosts` setting, then asked of DNS servers (the `dnsd` program), found through DHCP or the
-`net.dns` setting.
+are looked up in the `net.hosts` setting, then asked of DNS servers (the `dnsd` program): those in the `net.dns`
+setting, then those from DHCP, then those a phone's cellular network gives it.
 
 Computers on different networks reach each other through routers: computers with several interfaces and
 `net.forwarding` on. Hosts send everything they can't reach directly to their gateway (from DHCP, or the `net.gateway`
@@ -447,6 +447,15 @@ local function resolver_options()
             for _, server in ipairs(lease.dns) do servers[#servers + 1] = server end
             domain = domain or lease.domain
         end
+    end
+    -- And those a cellular network gives its phone, last.
+    local cellular_dns = cellular_api and cellular_api.phone_dns()
+    if cellular_dns then
+        for _, server in ipairs(cellular_dns.servers or {}) do
+            local addr = address.parse(server)
+            if addr then servers[#servers + 1] = addr end
+        end
+        domain = domain or cellular_dns.domain
     end
 
     local hosts = {}
@@ -1566,7 +1575,7 @@ cell = {
     listening for cells), `"activating"`, `"searching"`, `"attaching"`, `"attached"` or `"rejected"`); `network`, the
     SIM's own; `subscriber` (`id` and
     `number`, and `full`, the number other networks' phones reach it at, once it has attached, if its network has a
-    number prefix); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
+    number prefix; and `dns`, the DNS `servers` and `domain` its network gives it, if any); `cell`, the cell it's using; `address`; `cells`, the cells it may use which it hears, strongest first, each
     with `id` and `signal`; `networks`, the names of the networks around; why it was rejected or activation failed
     (`rejected`, `activation_error`);
 
@@ -2006,7 +2015,8 @@ cell = {
     with this computer's fingerprint, to show whoever can allow it. Unless it returns `false`, this function then waits
     until the core allows this computer, refuses it, or gives up (after ten minutes). Without it, there's no waiting.
     @treturn[1] table The manager, with a method for each thing a core can be asked (`status`, `log`, `add`, `remove`,
-    `set`, `allow`, `deny`, `carry`, `uncarry`, `rename`, `stop`, `restart`), `request` for anything else, and `close`.
+    `set`, `allow`, `deny`, `carry`, `uncarry`, `rename`, `beacon`, `dns`, `stop`, `restart`), `request` for anything
+    else, and `close`.
     Its `network` field is the network's name.
     @treturn[2] nil If the core can't be managed from here.
     @treturn[2] string Why not.

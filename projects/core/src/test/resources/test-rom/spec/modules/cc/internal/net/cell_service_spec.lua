@@ -141,7 +141,7 @@ describe("Cellular services", function()
                     stack = stack, crypto = crypto, network = options.network, prefix = options.prefix, operator = operator,
                     signing = signing_public, subscribers = options.subscribers, codes = options.codes,
                     secret = crypto.random(32), epoch = now, on_event = options.on_event, number_prefix = options.number_prefix,
-                    former = options.former,
+                    former = options.former, dns = options.dns, domain = options.domain,
                 }
             end,
             signing = signing_public, sign = function(data) return crypto.sign(signing_private, data) end,
@@ -556,6 +556,62 @@ describe("Cellular services", function()
             expect(env.service.subscribers[sim]):eq(nil)
             expect(read_table(fs.combine(DIR, "subscribers"))):same {}
             expect(read_table(fs.combine(DIR, "codes"))):same {}
+        end)
+
+        it("gives phones the DNS servers and domain it's told, and keeps them", function()
+            -- What the file says is checked: anyone may have edited it.
+            local env = setup { config = {
+                network = "ACME", prefix = "10.64.0.0/16", dns = { "10.64.0.1", "10.64.0.1" }, domain = "Not a domain",
+            }, }
+            expect(env.service.core.dns):same { "10.64.0.1" }
+            expect(env.service.core.domain):eq(nil)
+
+            run(env.net, { env.service }, { function()
+                local admin = env.admin()
+                expect(ask(admin, { op = "dns" })):same { servers = { "10.64.0.1" } }
+                local status = ask(admin, { op = "status" })
+                expect({ status.dns, status.domain }):same { { "10.64.0.1" } }
+
+                expect(ask(admin, { op = "dns", servers = { "10.0.0.53", "10.64.0.1" }, domain = "ACME.Example." }))
+                    :same { servers = { "10.0.0.53", "10.64.0.1" }, domain = "acme.example" }
+                expect(env.service.core.dns):same { "10.0.0.53", "10.64.0.1" }
+                expect(env.service.core.domain):eq("acme.example")
+                expect(env.service.lines[#env.service.lines].text)
+                    :eq("Phones now look names up with 10.0.0.53, 10.64.0.1, in acme.example")
+
+                -- Nothing which isn't an address of a server, or a domain, is taken; and nothing changes.
+                local servers_error = ("DNS servers are up to %d addresses, such as 10.64.0.1"):format(common.MAX_DNS)
+                local domain_error = "A domain is names of letters, digits and dashes, separated by dots, such as acme"
+                for _, servers in ipairs {
+                    {}, { "127.0.0.1" }, { "0.0.0.0" }, { "255.255.255.255" }, { "10.0.0.0/8" }, { "www.acme" },
+                    { 10 }, { "1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5" }, "10.0.0.53", true, 5,
+                } do
+                    expect(ask(admin, { op = "dns", servers = servers })):same { error = servers_error }
+                end
+                for _, domain in ipairs { "", "a..b", "a b", ".", "x" .. ("y"):rep(64), 5, true, {} } do
+                    expect(ask(admin, { op = "dns", domain = domain })):same { error = domain_error }
+                end
+                expect(ask(admin, { op = "dns", servers = { "10.0.0.54" }, domain = "a b" })):same { error = domain_error }
+                expect(ask(admin, { op = "dns" })):same { servers = { "10.0.0.53", "10.64.0.1" }, domain = "acme.example" }
+
+                -- Either may be left as it is, or taken away.
+                expect(ask(admin, { op = "dns", servers = false })):same { servers = {}, domain = "acme.example" }
+                expect(env.service.core.dns):eq(nil)
+                expect(ask(admin, { op = "dns", servers = { "10.0.0.53" } })):same { servers = { "10.0.0.53" }, domain = "acme.example" }
+                expect(ask(admin, { op = "dns", domain = false })):same { servers = { "10.0.0.53" } }
+                expect(env.service.core.domain):eq(nil)
+                expect(ask(admin, { op = "dns", domain = "acme" })):same { servers = { "10.0.0.53" }, domain = "acme" }
+                admin:close()
+            end, })
+
+            -- It's kept, and the core gets it as it starts again.
+            local config = read_table(fs.combine(DIR, "config"))
+            expect({ config.dns, config.domain }):same { { "10.0.0.53" }, "acme" }
+            env.service:stop()
+            env.listening = false
+            local again = assert(core_service.new(env.options))
+            expect({ again.core.dns, again.core.domain }):same { { "10.0.0.53" }, "acme" }
+            again:stop()
         end)
 
         it("gives subscribers a network of their own, and takes it away", function()

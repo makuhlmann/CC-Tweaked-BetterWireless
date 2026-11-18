@@ -135,6 +135,12 @@ local function status_lines(status)
     ))
     local carriers = status.spectrum or {}
     say(carriers[1] and "Carriers: " .. table.concat(carriers, ", ") or "No carriers: cells stay off the air.")
+    -- What phones look names up with, if the network gives them anything.
+    local dns = status.dns or {}
+    if dns[1] or status.domain then
+        say(("DNS for phones: %s%s"):format(dns[1] and table.concat(dns, ", ") or "none",
+            status.domain and ", domain " .. status.domain or ""))
+    end
     local cells = {}
     for _, cell in ipairs(status.cells) do cells[#cells + 1] = "#" .. cell.id end
     say(#cells > 0 and "Cells: " .. table.concat(cells, ", ") or "No cells connected.")
@@ -905,6 +911,11 @@ local function run(options)
                         tail = { { ("every %s seconds"):format(tostring(status.interval)), colours.lightGrey } },
                     },
                     { text = "Number prefix", tail = { { status.number_prefix or "none", colours.lightGrey } }, id = "numbers" },
+                    {
+                        text = "DNS servers", id = "dns",
+                        tail = { { (status.dns or {})[1] and table.concat(status.dns, " ") or "none", colours.lightGrey } },
+                    },
+                    { text = "Domain", tail = { { status.domain or "none", colours.lightGrey } }, id = "domain" },
                 }
             end,
             choose = function(item)
@@ -942,6 +953,31 @@ local function run(options)
                             local reply, err = request({ op = "beacon", interval = interval })
                             if not reply then return tostring(err) end
                             say(("System information: every %s seconds."):format(tostring(reply.interval)))
+                            return nil
+                        end,
+                    }
+                elseif item.id == "dns" then
+                    menu.input_screen {
+                        title = "DNS servers for phones", label = "Servers:", value = table.concat(status.dns or {}, ", "),
+                        note = ("Up to %d addresses, separated by commas. None, if empty."):format(common.MAX_DNS),
+                        check = function(text)
+                            local servers = {}
+                            for word in text:gmatch("[^,%s]+") do servers[#servers + 1] = word end
+                            local reply, err = request({ op = "dns", servers = servers[1] and servers or false })
+                            if not reply then return tostring(err) end
+                            say(reply.servers[1] and "Phones look names up with " .. table.concat(reply.servers, ", ") .. "."
+                                or "Phones aren't given DNS servers.")
+                            return nil
+                        end,
+                    }
+                elseif item.id == "domain" then
+                    menu.input_screen {
+                        title = "Domain for phones", label = "Domain:", value = status.domain or "", max = 64,
+                        note = "Names without dots are looked up in it, such as acme. None, if empty.",
+                        check = function(text)
+                            local reply, err = request({ op = "dns", domain = text ~= "" and text or false })
+                            if not reply then return tostring(err) end
+                            say(reply.domain and ("Phones look names up in %s."):format(reply.domain) or "Phones aren't given a domain.")
                             return nil
                         end,
                     }

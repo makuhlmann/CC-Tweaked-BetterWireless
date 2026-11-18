@@ -181,14 +181,15 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number,
     bands? = table, services? = { string... }, standby? = { boolean... }, override? = { boolean... },
+    dns? = { string... }, domain? = string,
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
 cells send system information; the band each cell asks to be on, by its index (or a list of bands and carriers, for a
 computer with a cell on each: `towers[i].towers` has each cell's tower, by the cell's ID, and `towers[i].tower` the
 first's); each cell's service, by its index (`"sms"` for one which only carries messages); and whether each cell stands
-by, off the air, until `setup.confirm_cell` confirms its bands, by its index; and whether each may be on carriers its
-networks don't have.
+by, off the air, until `setup.confirm_cell` confirms its bands, by its index; whether each may be on carriers its
+networks don't have; and the DNS servers and domain its core gives phones.
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -298,7 +299,7 @@ local function operator(cell_positions, options)
     end
     files.write_table(fs.combine(dir, "config"), {
         network = name, prefix = prefix, number_prefix = options.numbers, spectrum = spectrum,
-        beacon_interval = options.interval or 1,
+        beacon_interval = options.interval or 1, dns = options.dns, domain = options.domain,
     })
     files.write_table(fs.combine(dir, "cells"), allowed)
 
@@ -312,7 +313,7 @@ local function operator(cell_positions, options)
                     stack = core_stack, crypto = crypto, network = core_options.network, prefix = core_options.prefix,
                     operator = operator_key, signing = signing_public, subscribers = core_options.subscribers,
                     codes = core_options.codes, secret = secret, epoch = now, number_prefix = core_options.number_prefix,
-                    former = core_options.former,
+                    former = core_options.former, dns = core_options.dns, domain = core_options.domain,
                     on_event = function(...)
                         events[#events + 1] = { ... }
                         return core_options.on_event(...)

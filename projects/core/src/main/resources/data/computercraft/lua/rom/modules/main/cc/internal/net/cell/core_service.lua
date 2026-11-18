@@ -138,9 +138,13 @@ local function new(options)
     if not listener then return nil, "Cannot listen for cells: " .. tostring(err) end
 
     if config.number_prefix ~= nil and not is_number_prefix(config.number_prefix) then config.number_prefix = nil end
+    -- What the file says of DNS, if it makes sense: anyone may have edited it.
+    config.dns = common.read_dns(config.dns)
+    if not common.is_domain(config.domain) then config.domain = nil end
     local ok, core = pcall(options.start_core, {
         network = config.network, prefix = config.prefix, subscribers = self.subscribers, codes = self.codes,
-        number_prefix = config.number_prefix, on_event = function(...) self:event(...) end,
+        number_prefix = config.number_prefix, dns = config.dns, domain = config.domain,
+        on_event = function(...) self:event(...) end,
         -- The names the network had before it was renamed, which phones may not have heard of yet.
         former = common.former_names(config.former, config.network),
     })
@@ -1074,6 +1078,7 @@ function requests.status(self)
         network = self.config.network, prefix = self.config.prefix, messages = #self.core.messages, codes = 0,
         cells = {}, allowed = {}, waiting = {}, subscribers = {}, networks = {},
         number_prefix = self.config.number_prefix, interval = self:beacon_interval(),
+        dns = self.config.dns or {}, domain = self.config.domain,
     }
     local spectrum, ours = self:spectrum(), {}
     result.spectrum = {}
@@ -1510,6 +1515,45 @@ function requests.beacon(self, request, by)
         self:log(("Cells now send system information every %s seconds%s"):format(request.interval, self:by(by)))
     end
     return { interval = self:beacon_interval() }
+end
+
+--[[- See or set the DNS servers and domain this network's phones are given, to look names up with. `servers` is a list
+of addresses, or `false` for none; `domain` a domain, or `false` for none; either left out stays as it is. Phones
+attached now hear of a change at once.
+]]
+function requests.dns(self, request, by)
+    local servers, domain = self.config.dns, self.config.domain
+    if request.servers ~= nil then
+        if request.servers == false then
+            servers = nil
+        else
+            servers = common.read_dns(request.servers)
+            if not servers then
+                return { error = ("DNS servers are up to %d addresses, such as 10.64.0.1"):format(common.MAX_DNS) }
+            end
+        end
+    end
+    if request.domain ~= nil then
+        if request.domain == false then
+            domain = nil
+        else
+            domain = type(request.domain) == "string" and request.domain:lower():gsub("%.$", "") or nil
+            if not common.is_domain(domain) then
+                return { error = "A domain is names of letters, digits and dashes, separated by dots, such as acme" }
+            end
+        end
+    end
+
+    if request.servers ~= nil or request.domain ~= nil then
+        self:set_config("dns", servers)
+        self:set_config("domain", domain)
+        self.core:set_dns(servers, domain)
+        self:log(("Phones now look names up with %s%s%s"):format(
+            servers and table.concat(servers, ", ") or "no DNS server of this network's",
+            domain and (", in " .. domain) or "", self:by(by)
+        ))
+    end
+    return { servers = servers or {}, domain = domain }
 end
 
 --- Make an activation code for a subscriber.

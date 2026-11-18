@@ -417,6 +417,12 @@ the design above:
   it's from a phone doesn't replace the phone's own, and at most 64 activations in all, for 30 seconds each.
 - **Addresses** are kept for the core's lifetime: a phone which attaches again gets the same one. Restarting the core
   gives phones new addresses, which ends their connections.
+- **DNS.** The core may give phones up to four DNS servers and a domain (`cellcore dns 10.64.0.1`,
+  `cellcore domain acme`), in the attach reply, sealed to the phone with the rest of it. A change reaches phones
+  attached now through their cells, as a sealed control message (as an SMS does), and visitors through their host's
+  core; a phone which is roaming at a host which doesn't pass it on hears of it when it next attaches. The phone checks
+  what it's given as the core does, and uses it after `net.dns` and DHCP's servers, and only while it's attached at a
+  cell which carries packets (not at an SMS-only one).
 - **The core and cells run in the background process,** as the phone does, so the computer stays free, and they start
   with it. `cellcore setup` (or `cellcore start`) and `celld add <core>` (or `celld start`) start them and remember
   to; `cellcore stop` and `celld stop` stop them. A cell keeps its cores and settings (`/.cell/cell`), and `celld`

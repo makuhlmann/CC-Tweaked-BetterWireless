@@ -34,6 +34,8 @@ local function usage()
     print(name .. " rename <network>")
     print(name .. " spectrum [<carrier>...|none]")
     print(name .. " beacon [seconds]")
+    print(name .. " dns [<server>[,<server>...]|none]")
+    print(name .. " domain [<domain>|none]")
     print(name .. " remote <core> [command...]")
 end
 
@@ -98,7 +100,7 @@ end
 
 local known = {
     status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1, networks = 1,
-    network = 1, numbers = 1, rename = 1, spectrum = 1, beacon = 1, stop = 1, restart = 1,
+    network = 1, numbers = 1, rename = 1, spectrum = 1, beacon = 1, dns = 1, domain = 1, stop = 1, restart = 1,
     -- As older versions had them: they show or change agreements with other networks, as 'network' does.
     roaming = 1, carry = 1, uncarry = 1, partner = 1, peers = 1, peer = 1, unpeer = 1,
 }
@@ -509,6 +511,46 @@ function commands.beacon(seconds)
     if seconds and not interval then return usage() end
     local reply = request({ op = "beacon", interval = interval })
     print(("Cells send system information every %s seconds."):format(reply.interval))
+end
+
+-- See or set the DNS servers this network's phones are given: one or more addresses, separated by commas or spaces,
+-- or "none".
+function commands.dns(...)
+    local list = {}
+    for _, word in ipairs({ ... }) do
+        for each in word:gmatch("[^,%s]+") do list[#list + 1] = each end
+    end
+    local reply
+    if #list == 1 and list[1] == "none" then
+        reply = request({ op = "dns", servers = false })
+    elseif list[1] then
+        reply = request({ op = "dns", servers = list })
+    else
+        reply = request({ op = "dns" })
+    end
+    if reply.servers[1] then
+        print(("Phones look names up with %s."):format(table.concat(reply.servers, ", ")))
+    else
+        print("Phones aren't given DNS servers.")
+    end
+    if list[1] then print("Attached phones hear of it at once.") end
+end
+
+-- See or set the domain this network's phones look names without dots up in, or "none".
+function commands.domain(value, extra)
+    if extra then return usage() end
+    local reply
+    if value == "none" then
+        reply = request({ op = "dns", domain = false })
+    else
+        reply = request({ op = "dns", domain = value })
+    end
+    if reply.domain then
+        print(("Phones look names without dots up in %s."):format(reply.domain))
+    else
+        print("Phones aren't given a domain.")
+    end
+    if value then print("Attached phones hear of it at once.") end
 end
 
 function commands.log()

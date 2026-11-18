@@ -106,7 +106,7 @@ local to_hex = require "cc.internal.net.files".hex.encode
     operator = { public = string, exchange = function(public:string):string }, signing = string,
     prefix = string, subscribers = table, secret? = string, tunnel_key? = function(cell:number):string,
     codes? = table, epoch = function():number, number_prefix? = string, former? = { string... },
-    on_event? = function(event:string, ...:any),
+    dns? = { string... }, domain? = string, on_event? = function(event:string, ...:any),
 } options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name
 (and, with `former`, those it had before it was renamed);
 the operator's X25519 key, and its Ed25519 signing key's public half (which phones check cells' certificates with); the
@@ -114,7 +114,8 @@ operator's network for phones' addresses (such as `"10.64.0.0/16"`), whose first
 subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys (or a
 function giving a cell's tunnel key, so the secret can stay in the enclave); activation codes, by their first group, as
 `add_code` makes them; the time, as `os.epoch("utc")` gives; the network's number prefix, which other networks'
-phones reach ours by, if it has one; and a function told about attaches, handovers and so on, for logging and saving.
+phones reach ours by, if it has one; the DNS servers and domain its phones are given, if any (see `Core:set_dns`);
+and a function told about attaches, handovers and so on, for logging and saving.
 @treturn table The core.
 ]]
 local function new(options)
@@ -147,6 +148,8 @@ local function new(options)
         -- its number prefix and the connections to its core, if any); and messages for them which their cores haven't
         -- taken yet, by the ID we gave them.
         number_prefix = options.number_prefix, peers = {}, held = {}, held_count = 0, held_from = {},
+        -- The DNS servers and domain phones are given, as they attach and when they change.
+        dns = common.read_dns(options.dns), domain = common.is_domain(options.domain) and options.domain or nil,
     }, Core)
 
     -- The gateway: everything for phones goes down their tunnels.
@@ -411,6 +414,26 @@ function Core:update_routes()
                 network = network, prefix = prefix, gateway = session.address, interface = "cellular",
                 source = kind == "range" and "subscriber-range" or "subscriber",
             }
+        end
+    end
+end
+
+--[[- Set the DNS servers and domain this network's phones are given, to look names up with. Phones are given them as
+they attach, and those attached now are told at once, through their cells (and those roaming, through the cells of
+the network they're at, if its core passes it on: otherwise they hear when they next attach).
+
+@tparam { string... }|nil servers The servers' addresses (see `common.read_dns`), or `nil` for none.
+@tparam string|nil domain The domain (see `common.is_domain`), or `nil` for none.
+]]
+function Core:set_dns(servers, domain)
+    self.dns = common.read_dns(servers)
+    self.domain = common.is_domain(domain) and domain or nil
+    -- All of it, every time: what isn't there now isn't kept from before. A message each, as each may wait to be sent.
+    for _, session in pairs(self.sessions) do
+        if session.teid and session.cell then
+            self:send(session.cell, {
+                op = "dns", teid = session.teid, servers = self.dns or false, domain = self.domain or false,
+            })
         end
     end
 end
@@ -1055,10 +1078,12 @@ function Core:attach(tower, phone, message, visited_cell)
     -- can read this, and only we could have written it.
     -- And its own network, if it's a router with one behind it, which we route to it.
     local network, prefix, kind = routed_of(subscriber)
+    -- And the DNS servers and domain to look names up with, if this network gives any.
     local reply = handshake:write(codec.encode({
         v = common.VERSION, id = subscriber.id, number = subscriber.number, partners = self:partner_list(),
         numbers = self.number_prefix, network = self.network,
         routed = network and { kind = kind, network = ("%s/%d"):format(address.format(network), prefix) } or nil,
+        dns = self.dns, domain = self.domain,
     }))
     if not reply then return end
     local _, receive = handshake:split()
@@ -1474,6 +1499,12 @@ function Core:partner_control(network, message)
             self:send(visitor.cell, { op = "sms", teid = visitor.teid, id = message.id, from = message.from, text = message.text })
         elseif op == "sms_sent" then
             self:send(visitor.cell, { op = "sms_sent", teid = visitor.teid, id = message.id, ok = message.ok, error = message.error })
+        elseif op == "dns" then
+            -- Only what could be DNS servers and a domain: it's passed on to the phone, which checks it too.
+            self:send(visitor.cell, {
+                op = "dns", teid = visitor.teid, servers = common.read_dns(message.servers) or false,
+                domain = common.is_domain(message.domain) and message.domain or false,
+            })
         end
     end
 end

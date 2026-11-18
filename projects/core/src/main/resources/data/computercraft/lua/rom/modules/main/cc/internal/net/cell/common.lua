@@ -10,6 +10,7 @@
 @local
 ]]
 
+local address = require "cc.net.address"
 local codec = require "cc.net.codec"
 local bands = require "cc.internal.net.bands"
 local certificate = require "cc.internal.net.certificate"
@@ -156,6 +157,45 @@ end
 -- @treturn boolean Whether it's a name.
 local function is_network(value)
     return type(value) == "string" and #value >= 1 and #value <= 32 and value:find("^[%w%-]+$") ~= nil
+end
+
+--- How many DNS servers a network may give its phones.
+local MAX_DNS = 4
+
+--[[- Read the DNS servers a network gives its phones: from its administrator, its core's file, or its core.
+
+@param value The servers: a list of up to 4 addresses, as text, such as `{ "10.64.0.1" }`.
+@treturn { string... }|nil The servers, each written the usual way and once only, or nil if they don't make sense (an
+address with a prefix, or one no computer has, such as 0.0.0.0, the broadcast address or this computer's own).
+]]
+local function read_dns(value)
+    if type(value) ~= "table" or value[1] == nil or #value > MAX_DNS then return nil end
+    local result, seen = {}, {}
+    for i = 1, #value do
+        local text = value[i]
+        if type(text) ~= "string" or #text > 15 then return nil end
+        local addr, prefix = address.parse(text)
+        if not addr or prefix or addr == 0 or addr == 0xFFFFFFFF or address.is_loopback(addr) then return nil end
+        local formatted = address.format(addr)
+        if not seen[formatted] then
+            seen[formatted] = true
+            result[#result + 1] = formatted
+        end
+    end
+    return result
+end
+
+--- Whether a value could be a network's DNS domain, which its phones look names without dots up in: names of lower
+-- case letters, digits and dashes, separated by dots, up to 64 characters in all.
+--
+-- @param value The value.
+-- @treturn boolean Whether it could be.
+local function is_domain(value)
+    if type(value) ~= "string" or #value < 1 or #value > 64 then return false end
+    for label in (value .. "."):gmatch("([^%.]*)%.") do
+        if not label:find("^[%l%d%-]+$") then return false end
+    end
+    return true
 end
 
 --- How many names a network had before the one it has now are remembered, by its core and by other networks' cores.
@@ -598,6 +638,9 @@ return {
     is_id = is_id,
     is_network = is_network,
     is_number_prefix = is_number_prefix,
+    MAX_DNS = MAX_DNS,
+    read_dns = read_dns,
+    is_domain = is_domain,
     is_path = is_path,
     is_interval = is_interval,
     is_uplink = is_uplink,

@@ -329,6 +329,14 @@ elseif command == "status" and #args == 1 then
     if info.subscriber then print(("Number:   %s (%s)"):format(tostring(info.subscriber.number), tostring(info.subscriber.id))) end
     if info.subscriber and info.subscriber.full then print(("          %s from other networks"):format(info.subscriber.full)) end
     if info.address then print("Address:  " .. info.address) end
+    -- The DNS servers and domain our network gives us.
+    local dns = info.subscriber and info.subscriber.dns
+    if dns and info.state == "attached" then
+        local parts = {}
+        if dns.servers then parts[1] = table.concat(dns.servers, ", ") end
+        if dns.domain then parts[#parts + 1] = "domain " .. dns.domain end
+        print("DNS:      " .. table.concat(parts, ", "))
+    end
     -- A router's own network, which its network routes to it.
     local routed = info.subscriber and info.subscriber.routed
     if routed then

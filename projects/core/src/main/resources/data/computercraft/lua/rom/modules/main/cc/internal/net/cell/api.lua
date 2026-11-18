@@ -332,6 +332,7 @@ local function new_core(options)
         stack = stack, crypto = crypto, network = options.network, former = options.former, prefix = options.prefix,
         operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
         signing = signing, subscribers = options.subscribers, codes = options.codes, number_prefix = options.number_prefix,
+        dns = options.dns, domain = options.domain,
         tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
         epoch = function() return os.epoch("utc") end, on_event = options.on_event,
     }
@@ -721,6 +722,20 @@ end
 function Manager:beacon(interval)
     expect(1, interval, "number", "nil")
     return self:request({ op = "beacon", interval = interval })
+end
+
+--[[- See or set the DNS servers and domain the network's phones are given, to look names up with. Phones attached now
+hear of a change at once.
+
+@tparam { string... }|false|nil servers The servers' addresses; `false` for none; or `nil` to leave them as they are.
+@tparam string|false|nil domain The domain; `false` for none; or `nil` to leave it as it is.
+@treturn table|nil `servers` (a list, maybe empty) and `domain` (if there is one), or `nil` if it couldn't be changed.
+@treturn string|nil Why not.
+]]
+function Manager:dns(servers, domain)
+    expect(1, servers, "table", "boolean", "nil")
+    expect(2, domain, "string", "boolean", "nil")
+    return self:request({ op = "dns", servers = servers, domain = domain })
 end
 
 --- Exchange messages with another network's phones, by connecting to that network's core, which must allow it. This
@@ -1415,6 +1430,17 @@ function api.stopCore()
     end
 end
 
+--[[- The DNS servers and domain the phone's network gives it, for looking names up: while it's attached at a cell
+which carries packets, as there's no reaching a server otherwise.
+
+@treturn { servers? = { string... }, domain? = string }|nil The servers and domain, or nil if there are none to use.
+]]
+local function phone_dns()
+    local phone = phone_instance
+    if not phone or phone.state ~= "attached" or not phone.subscriber or phone:messages_only() then return nil end
+    return phone.subscriber.dns
+end
+
 --[[- Pass an event to the services which run in the background process. One may stop itself, or start another.
 
 @param ... The event.
@@ -1442,7 +1468,7 @@ local function new(context)
     check_timeout = context.check_timeout
     return {
         api = api, start_phone = start_phone, start_cellular = start_cellular, resume = resume,
-        restore_interfaces = restore_interfaces,
+        restore_interfaces = restore_interfaces, phone_dns = phone_dns,
     }
 end
 

@@ -948,6 +948,23 @@ describe("The menus of celld and cellcore", function()
                 status.interval = message.interval
                 return { interval = message.interval }
             end
+            function answers.dns(message)
+                if type(message.servers) == "table" then
+                    for _, server in ipairs(message.servers) do
+                        if not server:match("^%d+%.%d+%.%d+%.%d+$") then return nil, "DNS servers are up to 4 addresses, such as 10.64.0.1" end
+                    end
+                    status.dns = message.servers
+                elseif message.servers == false then
+                    status.dns = {}
+                end
+                if type(message.domain) == "string" then
+                    if not message.domain:match("^[%l%d%-%.]+$") then return nil, "A domain is names of letters, digits and dashes" end
+                    status.domain = message.domain
+                elseif message.domain == false then
+                    status.domain = nil
+                end
+                return { servers = status.dns or {}, domain = status.domain }
+            end
             function answers.stop()
                 core.down = "Connection refused"
                 return { ok = true }
@@ -1431,6 +1448,43 @@ describe("The menus of celld and cellcore", function()
             end)
         end)
 
+        it("changes the DNS servers and domain the network's phones are given", function()
+            local core = fake_core()
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Network settings")
+                    expect(select(2, app.find("DNS servers"))):str_match("^DNS servers +none$")
+                    expect(select(2, app.find("Domain"))):str_match("^Domain +none$")
+
+                    app.choose("DNS servers")
+                    app.enter("www.acme")
+                    expect(app.says("DNS servers are up to 4 addresses, such as 10.64.0.1")):eq(true)
+                    app.enter("10.0.0.53, 10.0.0.54")
+                    expect(core.asked[2]):same { op = "dns", servers = { "10.0.0.53", "10.0.0.54" } }
+                    expect(app.chosen()):str_match("^DNS servers +10.0.0.53 10.0.0.54$")
+                    expect(app.says("Phones look names up with 10.0.0.53, 10.0.0.54.")):eq(true)
+
+                    app.choose("Domain")
+                    app.enter("Not a domain")
+                    expect(app.says("A domain is names of letters, digits and dashes")):eq(true)
+                    app.enter("acme")
+                    expect(core.asked[4]):same { op = "dns", domain = "acme" }
+                    expect(app.chosen()):str_match("^Domain +acme$")
+                    expect(app.says("Phones look names up in acme.")):eq(true)
+
+                    -- Nothing at all takes them away.
+                    app.choose("DNS servers")
+                    app.enter("")
+                    expect(core.asked[5]):same { op = "dns", servers = false }
+                    expect(app.chosen()):str_match("^DNS servers +none$")
+                    app.choose("Domain")
+                    app.enter("")
+                    expect(core.asked[6]):same { op = "dns", domain = false }
+                    expect(app.chosen()):str_match("^Domain +none$")
+                end)
+            end)
+        end)
+
         it("shows the cells which are off the air, and why", function()
             local core = fake_core()
             core.status.standby = {
@@ -1671,6 +1725,29 @@ describe("The menus of celld and cellcore", function()
                 core.status.standby = { { id = 15, key = K13, address = "10.0.0.15", since = 0, unplaced = { "b7" }, reason = "ACME has no carriers yet" } }
                 expect(capture("cellcore", "status").output)
                     :str_match("^Core of ACME, phones in 10.64.0.0/16\nNo carriers: cells stay off the air%.\nCells: #11\nCells with no carrier: #15\n")
+            end)
+        end)
+
+        it("says and sets the DNS servers and domain the network's phones are given", function()
+            local core = fake_core()
+            configured(true, function()
+                expect(capture("cellcore", "dns").output):eq("Phones aren't given DNS servers.\n")
+                expect(capture("cellcore", "dns", "10.0.0.53,10.0.0.54", "10.0.0.55").output)
+                    :eq("Phones look names up with 10.0.0.53, 10.0.0.54, 10.0.0.55.\nAttached phones hear of it at once.\n")
+                expect(capture("cellcore", "domain").output):eq("Phones aren't given a domain.\n")
+                expect(capture("cellcore", "domain", "acme").output)
+                    :eq("Phones look names without dots up in acme.\nAttached phones hear of it at once.\n")
+                expect(capture("cellcore", "status").output)
+                    :str_match("\nCarriers: b20/1\nDNS for phones: 10.0.0.53, 10.0.0.54, 10.0.0.55, domain acme\n")
+                expect(capture("cellcore", "dns", "none").output)
+                    :eq("Phones aren't given DNS servers.\nAttached phones hear of it at once.\n")
+                expect(capture("cellcore", "domain", "none").output)
+                    :eq("Phones aren't given a domain.\nAttached phones hear of it at once.\n")
+                expect(capture("cellcore", "status").output):str_match("\nCarriers: b20/1\nCells: #11\n")
+                expect(core.asked):same {
+                    { op = "dns" }, { op = "dns", servers = { "10.0.0.53", "10.0.0.54", "10.0.0.55" } }, { op = "dns" },
+                    { op = "dns", domain = "acme" }, { op = "dns", servers = false }, { op = "dns", domain = false },
+                }
             end)
         end)
     end)

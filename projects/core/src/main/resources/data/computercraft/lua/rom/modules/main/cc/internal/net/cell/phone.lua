@@ -780,6 +780,14 @@ function Phone:radio(src, message, signal, distance)
     if handle and src == here.cell then handle(self, here, message, signal, distance) end
 end
 
+-- The DNS servers and domain our network gives us, if what it says makes sense: nil if it gives neither.
+local function read_dns(servers, domain)
+    servers = common.read_dns(servers)
+    domain = common.is_domain(domain) and domain or nil
+    if not servers and not domain then return nil end
+    return { servers = servers, domain = domain }
+end
+
 function from_cell.attaching.attach_reply(self, here, message)
     if not here.handshake then return end
     local handshake = here.handshake:clone()
@@ -800,6 +808,8 @@ function from_cell.attaching.attach_reply(self, here, message)
         and #routed.network <= 18 and routed.network:find("^%d+%.%d+%.%d+%.%d+/%d+$") then
         self.subscriber.routed = { kind = routed.kind, network = routed.network }
     end
+    -- The DNS servers and domain our network gives us, to look names up with.
+    self.subscriber.dns = read_dns(info.dns, info.domain)
     -- Other networks' phones reach ours at our network's number prefix followed by our number.
     if type(info.numbers) == "string" and #info.numbers <= 8 and info.numbers:find("^%d+$") and type(info.number) == "string" then
         self.subscriber.full = info.numbers .. info.number
@@ -859,6 +869,9 @@ function from_cell.attached.data(self, here, message, signal, distance)
             self.seen_messages:add(id)
             self.on_message(value.sms.from:sub(1, 32), value.sms.text:sub(1, 1000))
         end
+    elseif type(value.dns) == "table" then
+        -- Our network changed the DNS servers and domain it gives us.
+        if self.subscriber then self.subscriber.dns = read_dns(value.dns.servers, value.dns.domain) end
     elseif type(value.sms_sent) == "table" then
         -- The network has one of our messages (or won't take it).
         local reply = value.sms_sent
