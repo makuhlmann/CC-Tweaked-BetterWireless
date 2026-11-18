@@ -30,6 +30,11 @@ instead, which goes further through walls and over hills.
 An interface on the other band of the same modem can be added by setting `net.<name>:low.address` (or
 `net.<name>:high.address`).
 
+For a link of their own, radios can instead share one channel: set `net.<name>.channel` to the same channel on each
+(a channel's number is its frequency in units of 100kHz, so channel 1450 is 145MHz). Every computer on it sends and
+listens on that channel. Channels from 300 to 65532 can be used, except those in the cellular bands. Like the band, it
+takes effect when the computer starts.
+
 Programs talk with datagrams ([`net.udp`]), single messages which may be lost, or connections ([`net.tcp`]), which
 deliver messages in order and exactly once, resending any which are lost. [`net.stream`] reads and writes bytes over a
 connection, like a file.
@@ -62,7 +67,8 @@ local CONNECT_TIMEOUT = 5
 local HANDSHAKE_TIMEOUT = 5
 
 
-local stack, address, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, trust_store, running
+local stack, address, bands, dhcp, dns, rip, connections, streams, secure_connections, certificates, links, trust_store
+local running
 local rip_instance, rip_config
 local add_modem, apply_routing, make_cellular, env_require
 -- The cellular part of the API (see `cc.internal.net.cell.api`), made once the stack is loaded.
@@ -91,6 +97,7 @@ local function load()
     env.require, env.package = dofile("rom/modules/main/cc/require.lua").make(env, "/")
     env_require = env.require
     address = env.require("cc.net.address")
+    bands = env.require("cc.internal.net.bands")
     dhcp = env.require("cc.internal.net.dhcp")
     dns = env.require("cc.internal.net.dns")
     rip = env.require("cc.internal.net.rip")
@@ -388,11 +395,20 @@ local function setup_modem(name)
     local kind = ok and ender and "ender" or "wireless"
 
     local primary = settings.get("net." .. name .. ".band") == "low" and "low" or "high"
-    add_interface(name, name, kind, primary)
+    -- A channel of its own instead, if it's set to one which can be used. One which can't is said, and the modem uses
+    -- its band: failing here would take the modem's other interfaces (a phone's, say) with it.
+    local plan, channel = primary, settings.get("net." .. name .. ".channel")
+    if channel ~= nil then
+        local usable, why = bands.check_link_channel(channel)
+        if usable then plan = channel else log_error(("Bad channel for %s: %s"):format(name, why)) end
+    end
+    add_interface(name, name, kind, plan)
 
     local other = primary == "low" and "high" or "low"
     if settings.get("net." .. name .. ":" .. other .. ".address") ~= nil then
-        add_interface(name .. ":" .. other, name, kind, other)
+        -- Which may want a channel the first already has.
+        local ok, err = pcall(add_interface, name .. ":" .. other, name, kind, other)
+        if not ok then log_error(("Cannot add %s:%s: %s"):format(name, other, tostring(err))) end
     end
 end
 
@@ -550,15 +566,16 @@ end
 --[[- Get this computer's network interfaces.
 
 @treturn { {
-    name = string, kind = string, band = string, address? = string, prefix? = number, config = string,
-    dhcp? = string, lease? = number, link_local = boolean,
+    name = string, kind = string, band = string, channel? = number, address? = string, prefix? = number,
+    config = string, dhcp? = string, lease? = number, link_local = boolean,
     duplicate = boolean, id = number, unicast = number, broadcast = number, neighbours = number,
     frames_in = number, frames_out = number, dropped = number
 }... } Each interface:
 
  - `name`: The interface's name, which is usually the modem's peripheral name.
  - `kind`: `"wired"`, `"wireless"` or `"ender"`.
- - `band`: `"high"` or `"low"`. Only meaningful for wireless modems.
+ - `band`: `"high"` or `"low"`, or `"channel"` for a channel of its own. Only meaningful for wireless modems.
+ - `channel`: The channel of its own, if it has one (from the `net.<name>.channel` setting).
  - `address`, `prefix`: The interface's address and prefix length, if it has one.
  - `config`: How the address is set: `"dhcp"`, `"static"` or `"none"`.
  - `dhcp`: For DHCP, what the client is doing: `"discovering"`, `"requesting"`, `"bound"`, `"renewing"` or

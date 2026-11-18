@@ -106,6 +106,28 @@ describe("cc.internal.net.stack", function()
         expect(one.interfaces.air.stats.dropped):eq(2)
     end)
 
+    it("shares one channel on interfaces with a channel of their own", function()
+        local net = network()
+        local a, b, elsewhere = net.stack(1), net.stack(2), net.stack(3)
+        for _, stack in ipairs { a, b } do
+            expect(stack:add_interface("air", "air", "wireless", 1450)):matches {
+                band = "channel", channel = 1450, unicast = 1450, broadcast = 1450, reply = 1450,
+            }
+        end
+        elsewhere:add_interface("air", "air", "wireless", 1451)
+        a:set_address("air", ip("10.0.0.1"), 24)
+        b:set_address("air", ip("10.0.0.2"), 24)
+        elsewhere:set_address("air", ip("10.0.0.3"), 24)
+        net.advance(10)
+
+        -- Broadcasts (finding each other's addresses) and frames for one computer both go on the one channel.
+        expect(net.ping(a, ip("10.0.0.2"))):matches { done = true }
+        expect(net.ping(b, ip("10.0.0.1"))):matches { done = true }
+        -- A computer on another channel hears none of it.
+        expect(net.received[elsewhere]):eq(nil)
+        expect(a:interface_info()[1]):matches { band = "channel", channel = 1450, listen = { 1450 } }
+    end)
+
     it("doesn't hand other computers frames which aren't for them", function()
         local net = network()
         local a = net.add(1, "10.0.0.1/24")

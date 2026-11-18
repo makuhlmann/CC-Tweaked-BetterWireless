@@ -3,6 +3,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 local address = require "cc.net.address"
+local bands = require "cc.internal.net.bands"
 
 local args = { ... }
 
@@ -14,6 +15,7 @@ local function usage()
     print(name .. " <interface> dhcp")
     print(name .. " <interface> none")
     print(name .. " <interface> band <low|high>")
+    print(name .. " <interface> channel <channel|none>")
     print(name .. " <interface> psk <passphrase|none>")
 end
 
@@ -63,10 +65,17 @@ if #args == 0 then
     print("Hostname: " .. net.getHostname())
     for _, interface in ipairs(interfaces) do
         local kind = interface.kind
-        if kind == "wireless" or kind == "ender" then kind = ("%s, %s band"):format(kind, interface.band) end
+        if interface.channel then
+            kind = ("%s, channel %d"):format(kind, interface.channel)
+        elseif kind == "wireless" or kind == "ender" then
+            kind = ("%s, %s band"):format(kind, interface.band)
+        end
         heading(("%s (%s)"):format(interface.name, kind))
         print("  " .. describe(interface))
-        if interface.unicast then
+        if interface.channel then
+            local channel = interface.channel
+            print(("  ID %d, sharing channel %d (%gMHz)"):format(interface.id, channel, bands.frequency(channel)))
+        elseif interface.unicast then
             print(("  ID %d, channels %d and %d"):format(interface.id, interface.unicast, interface.broadcast))
         else
             print("  A virtual link, with no modem of its own")
@@ -103,6 +112,46 @@ if value == "band" then
 
     save("net." .. name .. ".band", band ~= "high" and band or nil)
     print(("%s will use the %s band when the computer restarts."):format(name, band))
+    if settings.get("net." .. name .. ".channel") ~= nil then
+        local program = arg[0] or fs.getName(shell.getRunningProgram())
+        print(("It's set to a channel of its own, though, which it uses instead: \"%s %s channel none\" to stop.")
+            :format(program, name))
+    end
+    return
+end
+
+if value == "channel" then
+    local text = args[3]
+    if not text or args[4] then
+        usage()
+        return
+    end
+
+    local interface = find(name)
+    if not interface or (interface.kind ~= "wireless" and interface.kind ~= "ender") then
+        printError("Only wireless and ender modems can have a channel of their own.")
+        return
+    end
+    if interface.modem ~= name then
+        printError(("Only a modem's own interface can: %s here."):format(interface.modem))
+        return
+    end
+
+    if text == "none" then
+        save("net." .. name .. ".channel", nil)
+        print(("%s will use its band when the computer restarts."):format(name))
+        return
+    end
+
+    local channel = tonumber(text)
+    local usable, why = bands.check_link_channel(channel)
+    if not usable then
+        printError(why)
+        return
+    end
+    save("net." .. name .. ".channel", channel)
+    print(("%s will share channel %d (%gMHz) when the computer restarts. Every computer on the link needs the same one.")
+        :format(name, channel, bands.frequency(channel)))
     return
 end
 

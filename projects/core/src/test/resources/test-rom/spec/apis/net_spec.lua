@@ -115,10 +115,11 @@ describe("The net library", function()
     end)
 
     describe("addresses", function()
-        --[[ Run a function with a wired modem which is only pretend: what's sent on it is kept, in `sent`, and goes
-        nowhere. The network stack sees it come before the function runs, and go afterwards. ]]
-        local function with_modem(fn)
-            local name, sent = "net_spec_modem", {}
+        --[[ Run a function with a wired (or, if `wireless`, wireless) modem which is only pretend: what's sent on it is
+        kept, in `sent`, with the channels it went on in `channels`, and goes nowhere. The network stack sees it come
+        before the function runs, and go afterwards. ]]
+        local function with_modem(fn, wireless)
+            local name, sent, channels = "net_spec_modem", {}, {}
             local has_type, call = peripheral.hasType, peripheral.call
             stub(peripheral, "hasType", function(side, kind)
                 if side == name then return kind == "modem" end
@@ -126,8 +127,11 @@ describe("The net library", function()
             end)
             stub(peripheral, "call", function(side, method, ...)
                 if side == name then
-                    if method == "transmit" then sent[#sent + 1] = select(3, ...) end
-                    return method ~= "isWireless" and nil or false
+                    if method == "transmit" then
+                        sent[#sent + 1] = select(3, ...)
+                        channels[#channels + 1] = ...
+                    end
+                    return method == "isWireless" and wireless == true
                 end
                 return call(side, method, ...)
             end)
@@ -136,7 +140,7 @@ describe("The net library", function()
             local _, up, what
             repeat _, up, what = os.pullEvent("net_interface") until up == name and what == "up"
 
-            local ok, err = pcall(fn, name, sent)
+            local ok, err = pcall(fn, name, sent, channels)
 
             -- Take the pretend modem away again, and let the network stack see it go.
             os.queueEvent("peripheral_detach", name)
@@ -179,6 +183,41 @@ describe("The net library", function()
                 os.queueEvent("net_spec_marker")
                 expect(os.pullEvent()):eq("net_spec_marker")
             end)
+        end)
+
+        it("are announced on a radio's channel of its own, if it's set to one which can be used", function()
+            local SETTING = "net.net_spec_modem.channel"
+            local function interface(name)
+                for _, info in ipairs(net.interfaces()) do
+                    if info.name == name then return info end
+                end
+            end
+
+            local ok, err = pcall(function()
+                settings.set(SETTING, 1450)
+                with_modem(function(name, _, channels)
+                    expect(interface(name)):matches { kind = "wireless", band = "channel", channel = 1450, listen = { 1450 } }
+                    net.setAddress(name, "10.123.0.5/24")
+                    expect(#channels > 0):eq(true)
+                    for _, channel in ipairs(channels) do expect(channel):eq(1450) end
+                end, true)
+
+                -- One in a cellular band can't be: the radio uses its band, and says why.
+                settings.set(SETTING, 7935)
+                with_modem(function(name)
+                    expect(interface(name)):matches { band = "high", listen = { 24000 } }
+                    expect(interface(name).channel):eq(nil)
+                    local said = false
+                    for _, message in ipairs(net.getErrors()) do
+                        if message == "Bad channel for net_spec_modem: Channel 7935 (793.5MHz) is in cellular band b20 (800MHz), which phones and cells need" then
+                            said = true
+                        end
+                    end
+                    expect(said):eq(true)
+                end, true)
+            end)
+            settings.unset(SETTING)
+            if not ok then error(err, 0) end
         end)
 
         it("are sent encrypted on an interface with a passphrase, and not without", function()

@@ -69,7 +69,8 @@ local EPHEMERAL_FIRST = udp.EPHEMERAL_FIRST
 -- bands are low (VHF, 136-174MHz, channels 1360-1739), for range, and high (2.4GHz, channels 24000-24834). Each band's
 -- first channel is its broadcast channel, and computers' unicast channels are the rest, by ID. Wired modems use the
 -- high band plan, though bands mean nothing to them. Ender modems are radios, with both bands, like wireless ones.
--- Other interfaces (a cellular network's, say) bring their own channels.
+-- An interface may instead have a channel of its own, which every computer on it shares. Other interfaces (a cellular
+-- network's, say) bring their own channels.
 local channels = bands.stack_channels
 
 --[[- The channels an interface on one of the stack's own bands uses: it listens on its unicast channel and the
@@ -84,6 +85,19 @@ local function stack_plan(id, band)
     return {
         band = band, unicast = unicast, broadcast = broadcast, reply = unicast, listen = { unicast, broadcast },
         to = function(dst) return (channels(dst, band)) end,
+    }
+end
+
+--[[- The channels an interface on a channel of its own uses: every computer on it sends and listens on that one
+channel, broadcasts included. Frames say who they're for, so the rest ignore those which aren't for them.
+
+@tparam number channel The channel.
+@treturn table The plan, as [`Stack:add_interface`] takes it.
+]]
+local function channel_plan(channel)
+    return {
+        band = "channel", channel = channel, unicast = channel, broadcast = channel, reply = channel,
+        listen = { channel }, to = function() return channel end,
     }
 end
 
@@ -186,18 +200,21 @@ uplink and listen on the downlink.
 @tparam string name The interface's name.
 @tparam string modem The modem's peripheral name.
 @tparam string kind `"wired"`, `"wireless"` or `"ender"`.
-@tparam string|{
+@tparam string|number|{
     band = string, listen = { number... }, broadcast? = number, reply = number,
-    to = function(id:number):number|nil, unicast? = number, id? = number,
-} plan `"low"` or `"high"` for one of the stack's own bands (wired modems always use the high band's). Or a plan: the
-band's name, for people to read; the channels to listen on; the channel broadcasts go on, if any; the channel to ask
-for replies on; a function which gives the channel to send to a computer on (or `nil` if it can't be reached);
-if the interface has one, its own unicast channel, to show; and an ID of the interface's own, if its frames aren't
-from and to the computer's (a computer's further cells each have one).
+    to = function(id:number):number|nil, unicast? = number, id? = number, channel? = number,
+} plan `"low"` or `"high"` for one of the stack's own bands (wired modems always use the high band's), or a number
+for a channel of the interface's own, which every computer on it shares. Or a plan: the band's name, for people to
+read; the channels to listen on; the channel broadcasts go on, if any; the channel to ask for replies on; a function
+which gives the channel to send to a computer on (or `nil` if it can't be reached); if the interface has one, its own
+unicast channel, to show; an ID of the interface's own, if its frames aren't from and to the computer's (a computer's
+further cells each have one); and the channel, if it's a channel of its own.
 @treturn table The interface. The stack opens its channels on the modem, through the `open` option it was made with.
 ]]
 function Stack:add_interface(name, modem, kind, plan)
-    if type(plan) ~= "table" then
+    if type(plan) == "number" then
+        plan = channel_plan(plan)
+    elseif type(plan) ~= "table" then
         if kind ~= "wireless" and kind ~= "ender" then plan = "high" end
         plan = stack_plan(self.id, plan)
     end
@@ -208,7 +225,7 @@ function Stack:add_interface(name, modem, kind, plan)
     end
 
     local interface = {
-        name = name, modem = modem, kind = kind, band = plan.band, id = plan.id,
+        name = name, modem = modem, kind = kind, band = plan.band, id = plan.id, channel = plan.channel,
         unicast = plan.unicast, broadcast = plan.broadcast, reply = plan.reply, to = plan.to, listen = {},
         neighbours = {}, waiting = {}, neighbour_count = 0, waiting_count = 0,
         stats = { frames_in = 0, frames_out = 0, dropped = 0 },
@@ -1186,6 +1203,7 @@ function Stack:interface_info()
         table.sort(listen)
         result[#result + 1] = {
             name = interface.name, modem = interface.modem, kind = interface.kind, band = interface.band,
+            channel = interface.channel,
             id = interface.id or self.id, unicast = interface.unicast, broadcast = interface.broadcast, listen = listen,
             address = interface.address and address.format(interface.address),
             prefix = interface.prefix, duplicate = interface.duplicate, neighbours = neighbours,

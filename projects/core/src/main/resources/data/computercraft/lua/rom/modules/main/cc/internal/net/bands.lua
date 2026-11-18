@@ -18,6 +18,9 @@ There are two kinds of band:
    (450MHz), 28 (700), 20 (800), 8 (900), 3 (1800), 1 (2100) and 7 (2600), with their real frequencies. In band 20,
    the uplink is above the downlink.
 
+An interface can also have a channel of its own, outside the cellular bands, which every computer on it sends and
+listens on (see [`check_link_channel`]).
+
 Cells announce themselves on beacon channels which lie on a raster: the middle of each 5MHz block of a band's downlink,
 counted from its start (as 5G's synchronisation raster is coarser than its channel raster). There are 61 across all
 the cellular bands, so a phone can listen to every one at once, within a modem's limit of 128 open channels.
@@ -204,6 +207,36 @@ local function parse_carrier(text)
     return channels and channels[tonumber(index)]
 end
 
+-- The channels a link of its own may use (see `check_link_channel`): from 30MHz, the lowest frequency the radio
+-- model works at (a lower channel would be sent at 30MHz anyway), up to the last one before rednet's and GPS's
+-- (65533-65535), whose frequencies are fixed.
+local FIRST_LINK_CHANNEL, LAST_LINK_CHANNEL = 300, 65532
+
+--[[- Check that a channel can carry a link of its own: an interface which every computer on it sends and listens on.
+
+Channels in the cellular bands can't: phones listen on every beacon channel, and cells on their uplinks, so a link
+there would take channels a phone or cell on the same modem needs, and its broadcasts would reach every phone around.
+The stack's own bands are fine: a computer whose channel it is just ignores frames which aren't for it.
+
+@tparam number channel The channel.
+@treturn boolean|nil `true` if it can be used.
+@treturn string|nil Why not.
+]]
+local function check_link_channel(channel)
+    if type(channel) ~= "number" or channel % 1 ~= 0 or channel < FIRST_LINK_CHANNEL or channel > LAST_LINK_CHANNEL then
+        return nil, ("A channel is a whole number from %d to %d (%gMHz to %gMHz)"):format(
+            FIRST_LINK_CHANNEL, LAST_LINK_CHANNEL, frequency(FIRST_LINK_CHANNEL), frequency(LAST_LINK_CHANNEL)
+        )
+    end
+    local name, part = of(channel)
+    if part == "uplink" or part == "downlink" then
+        return nil, ("Channel %d (%gMHz) is in cellular band %s (%sMHz), which phones and cells need"):format(
+            channel, frequency(channel), name, BY_NAME[name].label
+        )
+    end
+    return true
+end
+
 --- A computer's channels on one of the network stack's own bands.
 --
 -- @tparam number id The computer's ID.
@@ -229,5 +262,6 @@ return {
     carrier = carrier,
     carrier_name = carrier_name,
     parse_carrier = parse_carrier,
+    check_link_channel = check_link_channel,
     stack_channels = stack_channels,
 }
