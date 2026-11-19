@@ -141,6 +141,12 @@ local function status_lines(status)
         say(("DNS for phones: %s%s"):format(dns[1] and table.concat(dns, ", ") or "none",
             status.domain and ", domain " .. status.domain or ""))
     end
+    -- Where phones' names are registered, if anywhere.
+    local hostnames = status.hostnames
+    if hostnames and hostnames.server then
+        say(hostnames.registering and ("Phones' names: %s, at %s"):format(hostnames.registering, hostnames.server)
+            or ("Phones' names: not registered at %s, with no zone (set one, or the domain)"):format(hostnames.server))
+    end
     local cells = {}
     for _, cell in ipairs(status.cells) do cells[#cells + 1] = "#" .. cell.id end
     say(#cells > 0 and "Cells: " .. table.concat(cells, ", ") or "No cells connected.")
@@ -896,7 +902,7 @@ local function run(options)
             title = title_of("Network settings"),
             items = function()
                 if not refresh() then return {} end
-                local carriers = status.spectrum or {}
+                local carriers, hostnames = status.spectrum or {}, status.hostnames or {}
                 return {
                     { text = "Name", tail = { { tostring(status.network), colours.lightGrey } }, id = "name" },
                     {
@@ -916,10 +922,20 @@ local function run(options)
                         tail = { { (status.dns or {})[1] and table.concat(status.dns, " ") or "none", colours.lightGrey } },
                     },
                     { text = "Domain", tail = { { status.domain or "none", colours.lightGrey } }, id = "domain" },
+                    {
+                        text = "Names at", id = "names_server",
+                        tail = { { hostnames.server or "none", colours.lightGrey } },
+                    },
+                    {
+                        text = "Names zone", id = "names_zone",
+                        tail = { { hostnames.zone or (status.domain and "domain" or "none"), colours.lightGrey } },
+                    },
+                    { text = "Names key", tail = { { hostnames.key and "set" or "none", colours.lightGrey } }, id = "names_key" },
                 }
             end,
             choose = function(item)
                 if not status then return nil end
+                local hostnames = status.hostnames or {}
                 if item.id == "spectrum" then
                     carriers_screen()
                 elseif item.id == "name" then
@@ -981,6 +997,31 @@ local function run(options)
                             return nil
                         end,
                     }
+                elseif item.id == "names_server" or item.id == "names_zone" or item.id == "names_key" then
+                    local field = item.id:sub(7)
+                    local screens = {
+                        server = {
+                            title = "Register phones' names at", label = "Server:", value = hostnames.server or "",
+                            note = "A DNS server (dnsd) which lets this core set names. None, if empty.",
+                        },
+                        zone = {
+                            title = "Zone for phones' names", label = "Zone:", value = hostnames.zone or "",
+                            note = "Such as acme. The domain phones are given, if empty.",
+                        },
+                        key = {
+                            title = "Key for phones' names", label = "Key:", value = "",
+                            note = "The key dnsd asks for (its key setting). None, if empty.",
+                        },
+                    }
+                    local screen = screens[field]
+                    screen.check = function(text)
+                        local reply, err = request({ op = "hostnames", [field] = text ~= "" and text or false })
+                        if not reply then return tostring(err) end
+                        say(reply.server and ("Phones' names: at %s, in %s."):format(reply.server, reply.zone or reply.domain or "no zone")
+                            or "Phones' names aren't registered.")
+                        return nil
+                    end
+                    menu.input_screen(screen)
                 elseif item.id == "numbers" then
                     menu.input_screen {
                         title = "Number prefix", label = "Prefix:", value = status.number_prefix or "", max = 8,

@@ -738,6 +738,25 @@ function Manager:dns(servers, domain)
     return self:request({ op = "dns", servers = servers, domain = domain })
 end
 
+--[[- See or set where the network's phones' names are registered: at a DNS server (`dnsd`) which lets the core set
+names, in a zone (by default, the domain phones are given). A phone's name is its subscriber's ID, such as
+`acme-0042`.
+
+@tparam string|false|nil server The server's address; `false` to register no names; or `nil` to leave it as it is.
+@tparam string|false|nil zone The zone; `false` for the domain phones are given; or `nil` to leave it as it is.
+@tparam string|false|nil key The secret the server asks updates to be signed with; `false` for none; or `nil` to leave
+it as it is.
+@treturn table|nil `server`, `zone` and `domain` (if there are), and whether there's a `key`; or `nil` if it couldn't be
+changed.
+@treturn string|nil Why not.
+]]
+function Manager:hostnames(server, zone, key)
+    expect(1, server, "string", "boolean", "nil")
+    expect(2, zone, "string", "boolean", "nil")
+    expect(3, key, "string", "boolean", "nil")
+    return self:request({ op = "hostnames", server = server, zone = zone, key = key })
+end
+
 --- Exchange messages with another network's phones, by connecting to that network's core, which must allow it. This
 -- is apart from roaming. Both networks need a number prefix.
 --

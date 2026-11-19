@@ -4,6 +4,7 @@
 
 describe("The dnsd program", function()
     local capture = require "test_helpers".capture_program
+    local dns = require "cc.internal.net.dns"
 
     local function write(path, text)
         local file = fs.open(path, "w")
@@ -11,28 +12,38 @@ describe("The dnsd program", function()
         file.close()
     end
 
-    it("answers from its zone file and DHCP's leases, passing by what it can't read", function()
-        write("/zones/home.txt", "bank 10.0.0.5\nnonsense\n")
-        write("/.dhcpd/top", textutils.serialise({
-            { hostname = "laptop", address = 0x0A000064, expires = os.epoch("utc") / 1000 + 600 },
-            -- Changed by hand: no expiry, and no name.
-            { hostname = "broken", address = 0x0A000065 },
-            { address = 0x0A000066, expires = os.epoch("utc") / 1000 + 600 },
-        }))
-        -- A folder where a file of leases would be.
-        fs.makeDir("/.dhcpd/folder")
+    local function read(path)
+        local file = fs.open(path, "r")
+        if not file then return nil end
+        local text = file.readAll()
+        file.close()
+        return text
+    end
 
+    local function ip(text) return (require "cc.net.address".parse(text)) end
+
+    --[[ Run dnsd with its files as given (or none), send it some messages from this computer (a question, given by
+    its name, or an update), and stop it. Gives each answer (a question's address or code, an update's code), and what
+    dnsd printed. The files are deleted afterwards. ]]
+    local function run(files, messages, arguments)
+        for path, text in pairs(files) do write(path, text) end
         local answers, result = {}, nil
         local ok, err = pcall(parallel.waitForAny,
-            function() result = capture("/rom/programs/net/dnsd.lua", "run", "home") end,
+            function() result = capture("/rom/programs/net/dnsd.lua", table.unpack(arguments or { "run" })) end,
             function()
                 local socket = assert(net.udp.open())
-                for i, name in ipairs { "bank.home", "laptop.home", "broken.home", "bank.home", "bank.home" } do
+                for i, message in ipairs(messages) do
+                    if type(message) == "string" then message = { name = message, type = "A" } end
+                    if type(message) == "function" then message = message() end
+                    -- An update keeps its own ID, which it's signed with.
+                    message.id = message.id or i
                     for _ = 1, 20 do
-                        socket:send("127.0.0.1", 53, { id = i, name = name, type = "A" })
+                        socket:send("127.0.0.1", 53, message)
+                        -- Only the answer to this message: one sent again may have been answered twice.
                         local answer = socket:receive(0.2)
+                        while answer and answer.id ~= message.id do answer = socket:receive(0.2) end
                         if answer then
-                            answers[i] = answer.code == "ok" and answer.records[1].value or answer.code
+                            answers[i] = answer.code == "ok" and answer.records and answer.records[1].value or answer.code
                             break
                         end
                     end
@@ -43,66 +54,118 @@ describe("The dnsd program", function()
                 while true do os.pullEventRaw() end
             end
         )
-        fs.delete("/zones")
-        fs.delete("/.dhcpd")
-        if not ok then error(err, 0) end
-
-        expect(answers):same { 0x0A000005, 0x0A000064, "not_found", 0x0A000005, 0x0A000005 }
-        -- What's wrong with the zone file is said once, not for every question.
-        expect(result.error):eq("zones/home.txt: Line 2: expected a name and an address\n")
-    end)
-
-    -- Run dnsd with some arguments, ask it some questions, and stop it. Gives each answer's address or code, and what
-    -- dnsd printed.
-    local function ask(arguments, names)
-        local answers, result = {}, nil
-        local forward = settings.get("dnsd.forward")
-        settings.set("dnsd.forward", "none")
-        local ok, err = pcall(parallel.waitForAny,
-            function() result = capture("/rom/programs/net/dnsd.lua", table.unpack(arguments)) end,
-            function()
-                local socket = assert(net.udp.open())
-                for i, name in ipairs(names) do
-                    for _ = 1, 20 do
-                        socket:send("127.0.0.1", 53, { id = i, name = name, type = "A" })
-                        local answer = socket:receive(0.2)
-                        if answer then
-                            answers[i] = answer.code == "ok" and answer.records[1].value or answer.code
-                            break
-                        end
-                    end
-                end
-                socket:close()
-                os.queueEvent("terminate")
-                while true do os.pullEventRaw() end
-            end
-        )
-        if forward == nil then settings.unset("dnsd.forward") else settings.set("dnsd.forward", forward) end
+        local leases = read("/etc/dnsd.leases")
+        fs.delete("/etc")
         fs.delete("/zones")
         fs.delete("/records.txt")
         if not ok then error(err, 0) end
-        return answers, result
+        return answers, result, leases
     end
 
-    it("answers for several zones, each from its own file, and refuses others", function()
-        write("/zones/home.txt", "bank 10.0.0.5\n")
-        write("/zones/shop.txt", "till 10.0.0.7\n")
-        local answers, result = ask({ "run", "home", "shop" }, { "bank.home", "till.shop", "bank.shop", "bank.away" })
-        expect(answers):same { 0x0A000005, 0x0A000007, "not_found", "refused" }
+    it("answers from its zones file and zones' own files, passing by what it can't read", function()
+        local answers, result = run({
+            ["/etc/dnsd.conf"] = "zone home\nzone shop /zones/shop.zone\n",
+            ["/etc/dnsd.zones"] = "[home]\nbank 10.0.0.5\nnonsense\n[elsewhere]\nx 10.0.0.1\n",
+            ["/zones/shop.zone"] = "till 10.0.0.7\n",
+        }, { "bank.home", "till.shop", "bank.shop", "bank.away", "bank.home" })
+        expect(answers):same { ip("10.0.0.5"), ip("10.0.0.7"), "not_found", "refused", ip("10.0.0.5") }
         expect(result.output):eq("Answering for home and shop.\nPress Ctrl+T to stop.\n")
+        -- What's wrong with the zones file is said once, not for every question.
+        expect(result.error):eq(
+            "/etc/dnsd.zones: Line 3: expected a name and an address\n/etc/dnsd.zones: dnsd doesn't answer for elsewhere\n"
+        )
     end)
 
-    it("takes a zone's file after it", function()
-        write("/records.txt", "bank 10.0.0.6\n")
-        write("/zones/shop.txt", "till 10.0.0.7\n")
-        local answers = ask({ "run", "home", "records.txt", "shop" }, { "bank.home", "till.shop" })
-        expect(answers):same { 0x0A000006, 0x0A000007 }
+    it("lets this computer set and delete names in its zones, and keeps them", function()
+        local function update(fields)
+            return function()
+                fields.zone, fields.owner = "home", "computer 12"
+                return dns.update_message(fields, nil, os.epoch("utc"))
+            end
+        end
+        local answers, result, leases = run({
+            ["/etc/dnsd.conf"] = "zone home\n",
+            ["/etc/dnsd.zones"] = "[home]\nbank 10.0.0.5\n",
+        }, {
+            update { name = "laptop", address = ip("10.0.0.100"), lifetime = 60 }, "laptop.home",
+            update { name = "bank", address = ip("10.0.0.100"), lifetime = 60 }, "bank.home",
+            update { name = "pc", address = ip("10.0.0.101"), lifetime = 60 },
+            update { name = "laptop" }, "laptop.home",
+        })
+        expect(answers):same {
+            "ok", ip("10.0.0.100"), "taken", ip("10.0.0.5"), "ok", "ok", "not_found",
+        }
+        expect(result.output):str_match("Set laptop%.home to 10%.0%.0%.100 %(computer 12, from 127%.0%.0%.1%)\n")
+        expect(result.output):str_match("Refused an update from 127%.0%.0%.1: bank%.home is in the zone's file\n")
+        expect(result.output):str_match("Deleted laptop%.home %(computer 12, from 127%.0%.0%.1%)\n")
+        -- What's left is kept for next time.
+        local kept = textutils.unserialise(leases)
+        expect({ kept["pc.home"].address, kept["laptop.home"] }):same { "10.0.0.101", nil }
     end)
 
-    it("refuses what doesn't make sense, changing nothing", function()
-        expect(capture("/rom/programs/net/dnsd.lua", "start", "home", "home").error):eq("home is there twice.\n")
-        expect(capture("/rom/programs/net/dnsd.lua", "start", "records.txt").output:sub(1, 7)):eq("Usages:")
-        expect(capture("/rom/programs/net/dnsd.lua", "start", "home", "a.txt", "b.txt").output:sub(1, 7)):eq("Usages:")
+    it("answers for names it was told before it started again", function()
+        local answers = run({
+            ["/etc/dnsd.conf"] = "zone home\n",
+            ["/etc/dnsd.leases"] = textutils.serialise {
+                ["pc.home"] = { zone = "home", name = "pc", address = "10.0.0.101", expires = os.epoch("utc") / 1000 + 60, owner = "computer 12" },
+                ["old.home"] = { zone = "home", name = "old", address = "10.0.0.102", expires = os.epoch("utc") / 1000 - 1, owner = "computer 13" },
+            },
+        }, { "pc.home", "old.home" })
+        expect(answers):same { ip("10.0.0.101"), "not_found" }
+    end)
+
+    it("takes only signed updates when it has a key", function()
+        local function update(secret)
+            return function()
+                return dns.update_message(
+                    { zone = "home", name = "pc", address = ip("10.0.0.100"), lifetime = 60, owner = "computer 12" },
+                    secret, os.epoch("utc"))
+            end
+        end
+        local answers, result = run({ ["/etc/dnsd.conf"] = "zone home\nkey s3cret\n" }, {
+            update(nil), update("wrong"), "pc.home", update("s3cret"), "pc.home",
+        })
+        expect(answers):same { "refused", "refused", "not_found", "ok", ip("10.0.0.100") }
+        expect(result.output):str_match("Updates must be signed with the key%.\n")
+    end)
+
+    it("won't start until its settings make sense", function()
+        write("/etc/dnsd.conf", "zone home\nbogus 1\nforward home 10.0.0.9\n")
+        local result = capture("/rom/programs/net/dnsd.lua", "run")
+        fs.delete("/etc")
+        expect(result.error):eq(
+            "/etc/dnsd.conf: Line 2: there's no setting called bogus\n/etc/dnsd.conf: Line 3: home is there twice\n"
+            .. "dnsd won't start until its settings make sense.\n"
+        )
+    end)
+
+    it("writes its files the first time, from how it was started before", function()
+        local forward = settings.get("dnsd.forward")
+        settings.set("dnsd.forward", "10.0.0.2, 10.0.0.3")
+        fs.delete("/etc")
+        local conf_text, zones_text
+        local answers, result = run({ ["/records.txt"] = "bank 10.0.0.6\n" }, {
+            function()
+                conf_text, zones_text = read("/etc/dnsd.conf"), read("/etc/dnsd.zones")
+                return { name = "bank.home", type = "A" }
+            end,
+        }, { "run", "home", "/records.txt", "shop" })
+        local after = settings.get("dnsd.forward")
+        if forward == nil then settings.unset("dnsd.forward") else settings.set("dnsd.forward", forward) end
+
+        expect(answers):same { ip("10.0.0.6") }
+        expect(after):eq(nil)
+        expect(conf_text):str_match("\nzone home /records%.txt\nzone shop\n")
+        expect(conf_text):str_match("\nupstream 10%.0%.0%.2 10%.0%.0%.3\n")
+        expect(zones_text):str_match("\n%[shop%]\n")
+        expect(result.output):str_match("^Moved dnsd's settings to /etc/dnsd%.conf%.\n")
+        expect(result.output):str_match("Answering for home and shop%.\nAsking 10%.0%.0%.2 and 10%.0%.0%.3 about other names%.\n")
+    end)
+
+    it("says how it's used", function()
+        expect(capture("/rom/programs/net/dnsd.lua", "start", "home").output:sub(1, 7)):eq("Usages:")
+        expect(capture("/rom/programs/net/dnsd.lua").output:sub(1, 7)):eq("Usages:")
         expect(service.status("dnsd")):eq(nil)
+        expect(fs.exists("/etc/dnsd.conf")):eq(false)
     end)
 end)

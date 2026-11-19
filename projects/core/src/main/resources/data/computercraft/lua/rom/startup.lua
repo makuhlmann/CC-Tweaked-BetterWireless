@@ -136,7 +136,7 @@ shell.setCompletionFunction("rom/programs/http/pastebin.lua", completion.build(
 shell.setCompletionFunction("rom/programs/rednet/chat.lua", completion.build({ completion.choice, { "host ", "join " } }))
 local cellcore_commands = {
     "status", "log", "add ", "subscribers", "remove ", "set ", "cells", "allow ", "deny ", "networks", "network ",
-    "numbers ", "rename ", "spectrum ", "beacon ", "dns ", "domain ", "restart", "roaming", "carry ", "uncarry ", "partner ",
+    "numbers ", "rename ", "spectrum ", "beacon ", "dns ", "domain ", "hostnames ", "restart", "roaming", "carry ", "uncarry ", "partner ",
     "peers", "peer ", "unpeer ",
 }
 shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, index, text, previous)
@@ -208,17 +208,10 @@ shell.setCompletionFunction("rom/programs/service.lua", function(shell, index, t
         return completion.programWithArgs(shell, text, previous, 4)
     end
 end)
-local daemon_commands = { "start", "stop", "status", "run" }
+-- dnsd and dhcpd take their settings from /etc.
+local daemon_commands = { "start", "stop", "restart", "status", "run" }
 shell.setCompletionFunction("rom/programs/net/dnsd.lua", completion.build({ completion.choice, daemon_commands }))
-shell.setCompletionFunction("rom/programs/net/dhcpd.lua", function(shell, index, text, previous)
-    if index == 1 then
-        return completion.choice(shell, text, previous, { "start ", "stop", "status", "run " })
-    elseif index == 2 and (previous[2] == "start" or previous[2] == "run") then
-        local names, ok, interfaces = {}, pcall(net.interfaces)
-        for _, interface in ipairs(ok and interfaces or {}) do names[#names + 1] = interface.name end
-        return completion.choice(shell, text, previous, names)
-    end
-end)
+shell.setCompletionFunction("rom/programs/net/dhcpd.lua", completion.build({ completion.choice, daemon_commands }))
 local rshd_commands = { "start", "stop", "status", "run", "password", "keys", "allow ", "deny " }
 shell.setCompletionFunction("rom/programs/net/rshd.lua", completion.build({ completion.choice, rshd_commands }))
 shell.setCompletionFunction("rom/programs/command/exec.lua", completion.build(completion.command))

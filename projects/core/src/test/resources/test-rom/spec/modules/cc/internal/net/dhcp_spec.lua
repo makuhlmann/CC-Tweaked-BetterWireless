@@ -182,5 +182,52 @@ describe("cc.internal.net.dhcp", function()
             -- The offer was withdrawn, so someone else can have that address.
             expect(discover(s, 6).address):eq(ip("10.0.0.100"))
         end)
+
+        it("gives computers their fixed addresses, and nobody else", function()
+            local s = server { hosts = { [7] = ip("10.0.0.101"), [8] = ip("10.0.0.50") }, in_use = function() return false end }
+            local function request(client, addr)
+                return s:handle({ op = "request", xid = 1, client = client, server = ip("10.0.0.1"), address = addr })
+            end
+
+            -- Others never get a fixed address, in the range or not, even when they ask for one.
+            for client = 1, 2 do
+                local offer = discover(s, client, ip("10.0.0.101"))
+                expect(offer.address ~= ip("10.0.0.101")):eq(true)
+                expect(request(client, offer.address).op):eq("ack")
+            end
+            expect(discover(s, 3)):eq(nil)
+            expect(request(4, ip("10.0.0.101")).op):eq("nak")
+            expect(request(4, ip("10.0.0.50")).op):eq("nak")
+
+            -- Each fixed computer gets its own, outside the range too, and nothing else.
+            expect(discover(s, 7, ip("10.0.0.100")).address):eq(ip("10.0.0.101"))
+            expect(request(7, ip("10.0.0.100")).op):eq("nak")
+            expect(request(7, ip("10.0.0.101")).op):eq("ack")
+            expect(discover(s, 8).address):eq(ip("10.0.0.50"))
+            expect(request(8, ip("10.0.0.50")).op):eq("ack")
+            expect(s.leases[8].address):eq(ip("10.0.0.50"))
+
+            -- It may say another computer has it, and gives it back.
+            local _, changed = s:handle({ op = "decline", xid = 1, client = 8, server = ip("10.0.0.1"), address = ip("10.0.0.50") })
+            expect(changed):eq(true)
+            expect(s.leases[8]):eq(nil)
+        end)
+
+        it("gives a computer its fixed address over a lease someone had before", function()
+            local s = server()
+            local offer = discover(s, 5)
+            s:handle({ op = "request", xid = 1, client = 5, server = ip("10.0.0.1"), address = offer.address })
+            expect(offer.address):eq(ip("10.0.0.100"))
+
+            -- Then 10.0.0.100 is made computer 9's.
+            s.hosts = { [9] = ip("10.0.0.100") }
+            local reply = s:handle({ op = "request", xid = 1, client = 9, server = ip("10.0.0.1"), address = ip("10.0.0.100") })
+            expect(reply.op):eq("ack")
+            expect({ s.leases[9].address, s.leases[5] }):same { ip("10.0.0.100"), nil }
+            -- Computer 5 moves on when it renews.
+            reply = s:handle({ op = "request", xid = 1, client = 5, server = ip("10.0.0.1"), address = ip("10.0.0.100") })
+            expect(reply.op):eq("nak")
+            expect(discover(s, 5).address):eq(ip("10.0.0.101"))
+        end)
     end)
 end)

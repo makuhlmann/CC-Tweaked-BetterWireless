@@ -137,9 +137,10 @@ with the network turned off too, and `net.host`'s "services" (names for ports) a
   `service` lists them once they're set up (`celld`, `cellcore` and `phone`), and starts and stops them through
   `net.cell`, but keeps no log of theirs.
 
-`dnsd start <zone>`, `dhcpd start <interface>` and `rshd start` add their service, with the command `<program> run ...`,
-which is also what runs one in the foreground, as before. They check what they're given first, so a mistake changes
-nothing; and `dnsd <zone>` is `dnsd start <zone>` unless the zone is called `start`, `stop`, `status` or `run`.
+`dnsd start`, `dhcpd start` and `rshd start` add their service, with the command `<program> run`, which is also what
+runs one in the foreground, as before. `dnsd` and `dhcpd` take their settings from files in `/etc` (see DHCP and DNS
+below), which they write the first time they start, and read as they start: `restart` applies a change. A setting
+which makes no sense stops them, saying which line it's on.
 
 ### Testability
 
@@ -537,12 +538,14 @@ DHCP runs over datagrams, with the server on port 67 and clients on port 68.
 
 The client starts renewing halfway through the lease, trying more often as it runs out, and starts again from
 scratch if it does. `release` gives the address back. The server's lease times use real time (`os.epoch("utc")`), and
-it keeps its leases in `/.dhcpd/<interface>.leases`, so they survive restarts.
+it keeps its leases in `/etc/dhcpd.leases`, so they survive restarts.
 
-- **Server (`dhcpd`):** one address range on one interface (by default `.100` to `.199`). A client gets back the
-  address it had before when it can, which works much like a reservation. Before offering a new address, the server
-  pings it in case a computer with a fixed address is using it. The settings `dhcpd.lease`, `dhcpd.dns`,
-  `dhcpd.domain` and `dhcpd.gateway` are passed on to clients.
+- **Server (`dhcpd`):** one address range on one interface (by default `.100` to `.199`), set in `/etc/dhcpd.conf`
+  (`interface` or `address`, `range`, `lease`, `gateway`, `dns`, `domain`). A client gets back the address it had
+  before when it can, and `host <id> <address>` gives a computer an address of its own, always, which nobody else
+  gets. Before offering a new address, the server pings it in case a computer with a fixed address is using it. With
+  `update-server`, it registers each client's hostname at a DNS server, in `update-zone` (or its domain), for as long
+  as the lease, and deletes it when the lease is given back (see Updates below).
 - **Relays (later):** a router with `net.dhcp.relay` forwards broadcast requests from its networks to a central server,
   adding the address it received them on, so the server knows which pool to use. One server can cover a whole base.
 - **No server:** after three unanswered attempts, about six seconds, the client takes a link-local address (§3). It
@@ -563,14 +566,21 @@ DNS also runs over datagrams, on port 53.
   - `KEY` (later): a host's public key or certificate (§9)
   - `TXT` (later): free text
 - **Queries and answers:** `{id, name, type}` is answered with `{id, code, records = {{name, type, value, ttl}, ...}}`.
-- **Server (`dnsd`):** answers for one or more zones, each from `/zones/<zone>.txt` (or a file given after the zone),
-  which has one `name address` pair per line (`@` is the zone itself). A name is answered by the most specific zone it's
-  in. Each file is read again when it changes, so edits apply at once. Computers which got their address from `dhcpd` on
-  the same computer are found by their hostname too, in the zone matching `dhcpd.domain` (or the first), which gives
-  dynamic DNS for free. One computer runs one `dnsd`, as it holds port 53.
-- **Forwarding:** `dnsd` forwards questions about names in no zone of its own to the servers in `dnsd.forward`, or else
-  `net.dns` (never itself; `none` forwards nothing), in turn, until one answers or says the name doesn't exist, which is
-  passed back. If every one refuses, or none answers in time, the question is refused, so the client tries its next
+- **Server (`dnsd`):** answers for the zones in `/etc/dnsd.conf` (`zone home`), each from its `[home]` part of
+  `/etc/dnsd.zones`, or a file of its own (`zone shop.home /zones/shop.zone`), with one `name address` pair per line
+  (`@` is the zone itself). A name is answered by the most specific zone it's in. Each file is read again when it
+  changes, so edits apply at once. One computer runs one `dnsd`, as it holds port 53.
+- **Updates:** `{ op = "update", id, zone, name, address?, lifetime?, owner }` on port 53 sets a name in one of the
+  zones (or deletes it, without an address), as `dhcpd` does for its clients and `cellcore` for its phones. Only this
+  computer and those `allow-update` names may; with a `key`, an update must also be signed (an HMAC of everything in
+  it, with the time, which must be within a minute of the server's; one which is sent again is refused), as anyone on
+  a link without a passphrase can send from any address. A name in a zone's file can't be set, nor one another
+  `owner` (such as `computer 12`) has, until it's deleted or expires. Names are kept in `/etc/dnsd.leases`. The logic is
+  `dns.handle_update` and `dns.names`, and the sender's `dns.updater`, which sends each name's latest change, one at a
+  time.
+- **Forwarding:** `dnsd` asks the servers of a zone in `forward corp 10.1.0.53` about names in it, and those in
+  `upstream` about names in no zone here (never itself; `net.dns` isn't used, and without `upstream` they aren't
+  found), in turn, until one answers or says the name doesn't exist, which is passed back. If every one refuses, or none answers in time, the question is refused, so the client tries its next
   server, as before. Answers are kept for as long as they say (up to five minutes), names which don't exist for ten
   seconds, and refusals never. A forwarded question carries `hops`, how many times it's been forwarded; each forward
   waits less (1.2, 0.8 and 0.4 seconds), inside the client's 1.5, so a chain of servers answers before the first gives
@@ -846,7 +856,7 @@ handle the events themselves:
 | `ping`, `traceroute` | Test reachability and paths |
 | `nslookup` | Query DNS |
 | `netdump` | Show frames as they arrive, with a simple filter. Mostly for learning and debugging. |
-| `dhcpd`, `dnsd` | DHCP and DNS servers, which run as services. `dnsd` serves several zones, and forwards names in others |
+| `dhcpd`, `dnsd` | DHCP and DNS servers, which run as services, set up in `/etc`. `dnsd` serves several zones, forwards names in others, and takes updates of names from `dhcpd` and `cellcore` |
 | `nc` | Send and receive datagrams or connection messages from the shell |
 | `ncp` | Copy files over a connection |
 | `rsh` | Remote shell over a secure connection, with the remote terminal redirected, or one command |

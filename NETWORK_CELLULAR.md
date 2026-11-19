@@ -423,6 +423,11 @@ the design above:
   core; a phone which is roaming at a host which doesn't pass it on hears of it when it next attaches. The phone checks
   what it's given as the core does, and uses it after `net.dns` and DHCP's servers, and only while it's attached at a
   cell which carries packets (not at an SMS-only one).
+- **Phones' names.** With `cellcore hostnames 10.0.0.53`, the core registers each attached phone at that DNS server
+  (`dnsd`, which must allow it), as its subscriber's ID (`acme-0042`), in the zone given or else the domain, for an
+  hour, and again every half hour while the core runs. The name isn't the computer's own hostname, which anyone could
+  set to another's. A subscriber who's removed (or whose phone is detached) loses the name. Updates are signed with
+  `cellcore hostnames key`, if the server asks for one. The core's service does this, with `dns.updater`.
 - **The core and cells run in the background process,** as the phone does, so the computer stays free, and they start
   with it. `cellcore setup` (or `cellcore start`) and `celld add <core>` (or `celld start`) start them and remember
   to; `cellcore stop` and `celld stop` stop them. A cell keeps its cores and settings (`/.cell/cell`), and `celld`

@@ -310,19 +310,20 @@ Server.__index = Server
 
 @tparam {
     address = number, prefix = number, first = number, last = number, lease = number,
-    dns? = { number... }, domain? = string, gateway? = number,
+    dns? = { number... }, domain? = string, gateway? = number, hosts? = { [number] = number },
     clock = function():number, leases? = table, in_use? = function(address:number):boolean,
 } options The server's own address and prefix length; the range of addresses to hand out; the lease time in seconds;
-what to tell clients about DNS servers, their domain and gateway; a clock in seconds, which should be real time so
-leases survive restarts; the leases from last time; and a way to check an address isn't already used by a computer with
-a fixed address.
+what to tell clients about DNS servers, their domain and gateway; fixed addresses, by computer ID (each computer
+always gets its own, which may be outside the range, and nobody else does); a clock in seconds, which should be real
+time so leases survive restarts; the leases from last time; and a way to check an address isn't already used by a
+computer with a fixed address it set itself.
 @treturn table The server.
 ]]
 local function new_server(options)
     return setmetatable({
         address = options.address, prefix = options.prefix, first = options.first, last = options.last,
         lease_time = options.lease, dns = options.dns or {}, domain = options.domain, gateway = options.gateway,
-        clock = options.clock, in_use = options.in_use,
+        hosts = options.hosts or {}, clock = options.clock, in_use = options.in_use,
         leases = options.leases or {}, offers = {}, declined = {},
     }, Server)
 end
@@ -334,6 +335,10 @@ end
 -- @treturn { [number] = true } The addresses.
 function Server:used(client)
     local now, used = self.clock(), { [self.address] = true }
+    -- Other computers' fixed addresses are theirs, whether they're using them or not.
+    for id, addr in pairs(self.hosts) do
+        if id ~= client then used[addr] = true end
+    end
     for id, lease in pairs(self.leases) do
         if id ~= client and type(lease) == "table" and address.is_valid(lease.address) and type(lease.expires) == "number"
             and lease.expires > now then
@@ -358,6 +363,8 @@ function Server:in_range(addr)
 end
 
 function Server:choose(client, requested)
+    -- A computer with a fixed address gets it, and no other.
+    if self.hosts[client] then return self.hosts[client] end
     local used = self:used(client)
 
     -- Prefer the address a client had before, then the one it asks for, so addresses rarely change.
@@ -408,7 +415,8 @@ function Server:handle(message)
         end
 
         local addr = message.address
-        if not self:in_range(addr) or self:used(client)[addr] then
+        local fixed = self.hosts[client]
+        if (fixed and addr ~= fixed) or (not fixed and (not self:in_range(addr) or self:used(client)[addr])) then
             local text = address.is_valid(addr) and address.format(addr) or "an invalid address"
             return self:reply(message, "nak", nil), false, "Refused " .. text .. " to #" .. client
         end
@@ -428,7 +436,8 @@ function Server:handle(message)
             self.leases[client] = nil
             return nil, true, ("Released %s from #%d"):format(address.format(lease.address), client)
         end
-    elseif message.op == "decline" and message.server == self.address and self:in_range(message.address) then
+    elseif message.op == "decline" and message.server == self.address
+        and (self:in_range(message.address) or message.address == self.hosts[client]) then
         -- The client found another computer already using the address we gave it.
         local addr = message.address
         self.declined[addr] = now + DECLINE_TIME

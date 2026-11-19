@@ -20,10 +20,15 @@ A question is `{ id = number, name = string, type = "A" or "SRV", hops? = number
 value is an address, and an `"SRV"` record's is `{ host = string, address = number, port = number }`. `hops` is how
 many times a question has been forwarded already: none, if it isn't there.
 
+A DNS server may also be told to set or delete a name in one of its zones (see [`update_message`]), as DHCP servers do
+for their clients' names: `{ op = "update", id, zone, name, address?, lifetime?, owner, time?, mac? }`, answered with
+`{ id, code = "ok" or "refused" or "not_found" or "taken" or "invalid", error? = string }`.
+
 @local
 ]]
 
 local address = require "cc.net.address"
+local is_integer = require "cc.internal.net.checks".is_integer
 
 --- The port DNS servers listen on.
 local DNS_PORT = 53
@@ -47,6 +52,21 @@ local NOT_FOUND_TTL = 10
 
 --- How many forwarded questions a DNS server waits on at once. Beyond that, it refuses questions it would forward.
 local MAX_FORWARDING = 64
+
+--- How far a signed update's time may be from the server's, in milliseconds, and so how long its signature is good for.
+local UPDATE_WINDOW = 60000
+
+--- The longest a name set by an update lasts, in seconds, unless it's set again.
+local MAX_LIFETIME = 7 * 24 * 3600
+
+--- How many names a DNS server keeps from updates, at most.
+local MAX_NAMES = 1024
+
+--- How long whoever sends an update waits for each answer, in seconds.
+local UPDATE_TIMEOUT = 2
+
+--- How many times whoever sends an update tries.
+local UPDATE_ATTEMPTS = 3
 
 --- Normalise a name: lower case, without a trailing dot.
 --
@@ -365,6 +385,19 @@ function Server:handle(question)
     return { id = question.id, code = "ok", records = { { name = name, type = "A", value = addr, ttl = 60 } } }
 end
 
+local Forward = { within = Server.within }
+Forward.__index = Forward
+
+--[[- A zone a DNS server asks other servers about, rather than answering for it.
+
+@tparam string zone The zone, such as `"corp"`.
+@tparam { number... } servers The servers to ask, in turn.
+@treturn table The zone, for [`relay`].
+]]
+local function new_forward(zone, servers)
+    return setmetatable({ zone = normalise(zone), servers = servers }, Forward)
+end
+
 local Relay = {}
 Relay.__index = Relay
 
@@ -373,8 +406,9 @@ DNS servers. Sending and receiving is up to the caller: each method returns what
 `{ client = client, answer = answer }` (an answer for whoever asked) and `{ server = address, question = question }` (a
 question for another server's DNS port).
 
-A name is answered by the most specific zone it's in. Names in none are forwarded: to each server in turn, until one
-answers, or says the name doesn't exist, which is passed back. If every server refuses, or none answers in time, the
+A name is answered by the most specific zone it's in. Names in a zone which is forwarded (from [`forward`]) are asked
+of its servers, and names in none of the servers to forward to: each server in turn, until one answers, or says the
+name doesn't exist, which is passed back. If every server refuses, or none answers in time, the
 question is refused, so whoever asked tries their next server. Each forwarded question carries how many times it's been
 forwarded, and the deadline for each time is shorter, so a chain of servers answers before the first gives up; one
 forwarded too many times is refused, which also ends loops between servers. Answers are kept for as long as they say
@@ -382,8 +416,8 @@ forwarded too many times is refused, which also ends loops between servers. Answ
 
 @tparam {
     zones = { table... }, forward = function():{ number... }, clock = function():number, random? = function():number,
-} options The zones (from [`server`]); the servers to forward to (asked for each question, so they may change); a clock in
-seconds; and random question IDs.
+} options The zones (from [`server`], and [`forward`]); the servers to forward other names to (asked for each question,
+so they may change); a clock in seconds; and random question IDs.
 @treturn table The relay.
 ]]
 local function new_relay(options)
@@ -420,7 +454,7 @@ function Relay:question(question, client)
     if type(question) ~= "table" or type(question.id) ~= "number" or type(question.name) ~= "string" then return {} end
     local name = normalise(question.name)
     local zone = self:zone_of(name)
-    if zone then return { { client = client, answer = zone:handle(question) } } end
+    if zone and not zone.servers then return { { client = client, answer = zone:handle(question) } } end
 
     -- Forwarded more times than there are deadlines for (or nonsense): no further.
     local hops = question.hops or 0
@@ -431,7 +465,7 @@ function Relay:question(question, client)
     local cached = self.cache[key]
     if cached and cached.expires > now then return { reply(client, question.id, cached.code, cached.records) } end
 
-    local servers = self.forward()
+    local servers = zone and zone.servers or self.forward()
     if not servers[1] or self.forwarding >= MAX_FORWARDING then return { reply(client, question.id, "refused") } end
 
     self.forwarding = self.forwarding + 1
@@ -524,8 +558,296 @@ function Relay:busy()
     return self.forwarding > 0
 end
 
+-- What an update's signature covers: everything it says, in order.
+local function signed_text(message)
+    local parts = { "dns update" }
+    for i, field in ipairs { "id", "zone", "name", "address", "lifetime", "owner", "time" } do
+        parts[i + 1] = tostring(message[field])
+    end
+    return table.concat(parts, "\n")
+end
+
+local function signature(secret, message)
+    return crypto.hmac(crypto.sha256("dnsd update key " .. secret), signed_text(message))
+end
+
+--[[- Make an update for a DNS server: to set a name in one of its zones to an address, for a while, or to delete it.
+
+Whoever sets a name says who it's for (its `owner`, such as `"computer 12"`): the server won't let anyone else have the
+name until it's deleted, or expires. With a secret, the update is signed, and the time it was made is in it, so it
+can't be sent again much later.
+
+@tparam {
+    zone = string, name = string, address? = number, lifetime? = number, owner = string,
+} fields The zone; the name within it; its address and how long it lasts, in seconds (or neither, to delete it); and who
+it's for.
+@tparam string|nil secret The secret the server asks for, if it does.
+@tparam number epoch The time now, in milliseconds, as `os.epoch("utc")`.
+@treturn table The update.
+]]
+local function update_message(fields, secret, epoch)
+    local message = {
+        op = "update", id = math.random(1, 0x7FFFFFFF), zone = fields.zone, name = fields.name, address = fields.address,
+        lifetime = fields.lifetime, owner = fields.owner, time = epoch,
+    }
+    if secret then message.mac = signature(secret, message) end
+    return message
+end
+
+local Names = {}
+Names.__index = Names
+
+local function is_label(value)
+    return type(value) == "string" and #value >= 1 and #value <= 63 and value:find("^[%l%d%-]+$") ~= nil
+end
+
+local function is_owner(value)
+    return type(value) == "string" and #value >= 1 and #value <= 64
+end
+
+--[[- The names a DNS server was told to set (by DHCP servers, say), which last until they expire, or are deleted.
+
+@param saved What `Names:save` gave last time, which may be anything: what doesn't make sense is dropped.
+@tparam function():number clock The time, in seconds: real time (as `os.epoch("utc") / 1000`), so names outlast restarts.
+@treturn table The names.
+]]
+local function new_names(saved, clock)
+    local self = setmetatable({ entries = {}, count = 0, clock = clock }, Names)
+    for _, entry in pairs(type(saved) == "table" and saved or {}) do
+        local addr = type(entry) == "table" and type(entry.address) == "string" and address.parse(entry.address)
+        if addr and is_label(entry.name) and type(entry.zone) == "string" and type(entry.expires) == "number"
+            and entry.expires == entry.expires and is_owner(entry.owner) and self.count < MAX_NAMES then
+            local full = entry.name .. "." .. entry.zone
+            if not self.entries[full] then self.count = self.count + 1 end
+            self.entries[full] = { zone = entry.zone, name = entry.name, address = addr, expires = entry.expires, owner = entry.owner }
+        end
+    end
+    self:prune()
+    return self
+end
+
+--- Forget names which have expired.
+--
+-- @treturn boolean Whether any were forgotten.
+function Names:prune()
+    local now, changed = self.clock(), false
+    for full, entry in pairs(self.entries) do
+        if entry.expires <= now then
+            self.entries[full], self.count, changed = nil, self.count - 1, true
+        end
+    end
+    return changed
+end
+
+--- The names in a zone, which haven't expired.
+--
+-- @tparam string zone The zone.
+-- @treturn { [string] = number } Each name within the zone, and its address.
+function Names:lookup(zone)
+    local now, result = self.clock(), {}
+    for _, entry in pairs(self.entries) do
+        if entry.zone == zone and entry.expires > now then result[entry.name] = entry.address end
+    end
+    return result
+end
+
+--- What to keep, to read again next time.
+--
+-- @treturn table The names, with their addresses written out.
+function Names:save()
+    local result = {}
+    for full, entry in pairs(self.entries) do
+        result[full] = {
+            zone = entry.zone, name = entry.name, address = address.format(entry.address), expires = entry.expires,
+            owner = entry.owner,
+        }
+    end
+    return result
+end
+
+--[[- Handle an update: set or delete a name in one of a DNS server's zones.
+
+A name in a zone's file can't be set, nor can one another owner has until it's deleted or expires.
+
+@param message The message, which may be anything.
+@tparam {
+    zones = { table... }, names = table, allowed = boolean, key? = string, epoch = number, seen = table, from = string,
+} context The server's zones (from [`server`] and [`forward`]); its names (from [`names`]); whether whoever sent the
+update may; the secret updates must be signed with, if there is one; the time now, in milliseconds; the signatures
+seen lately (kept between updates, so none is used twice); and who sent it, to say so.
+@treturn table|nil The answer, or `nil` if it isn't an update at all.
+@treturn boolean Whether the names changed, and should be saved.
+@treturn string|nil What happened, for the log.
+]]
+local function handle_update(message, context)
+    if type(message) ~= "table" or message.op ~= "update" or not is_integer(message.id, 0, 0x7FFFFFFF) then
+        return nil, false
+    end
+    local function refuse(code, why)
+        return { id = message.id, code = code, error = why }, false,
+            ("Refused an update from %s: %s"):format(context.from, why)
+    end
+    if not context.allowed then return refuse("refused", "it may not update names here") end
+
+    if context.key then
+        local now = context.epoch
+        if type(message.mac) ~= "string" or type(message.time) ~= "number" then return refuse("refused", "it isn't signed") end
+        if not (math.abs(message.time - now) <= UPDATE_WINDOW) then
+            return refuse("refused", "it was signed too long ago, or the clocks differ")
+        end
+        if not crypto.equals(signature(context.key, message), message.mac) then
+            return refuse("refused", "it's signed with another key")
+        end
+        for mac, time in pairs(context.seen) do
+            if time < now - 2 * UPDATE_WINDOW then context.seen[mac] = nil end
+        end
+        if context.seen[message.mac] then return refuse("refused", "it was sent before") end
+        context.seen[message.mac] = now
+    end
+
+    local zone_name = type(message.zone) == "string" and normalise(message.zone) or nil
+    local name = type(message.name) == "string" and message.name:lower() or nil
+    if not is_label(name) or not is_owner(message.owner) then
+        return refuse("invalid", "it needs a name, without dots, and who it's for")
+    end
+    local zone
+    for _, each in ipairs(context.zones) do
+        if each.zone == zone_name and not each.servers then zone = each end
+    end
+    if not zone then return refuse("not_found", ("%s isn't a zone here"):format(tostring(message.zone))) end
+    local full = name .. "." .. zone.zone
+    -- A name which a more specific zone answers for would never be found.
+    for _, each in ipairs(context.zones) do
+        if #each.zone > #zone.zone and each:within(full) then
+            return refuse("taken", ("%s is in the zone %s"):format(full, each.zone))
+        end
+    end
+
+    local names, owner = context.names, message.owner
+    names:prune()
+    local entry = names.entries[full]
+    if entry and entry.owner ~= owner then
+        return refuse("taken", ("%s is %s's"):format(full, entry.owner))
+    end
+
+    if message.address == nil then
+        if not entry then return { id = message.id, code = "ok" }, false end
+        names.entries[full], names.count = nil, names.count - 1
+        return { id = message.id, code = "ok" }, true, ("Deleted %s (%s, from %s)"):format(full, owner, context.from)
+    end
+
+    local addr, lifetime = message.address, message.lifetime
+    if not address.is_valid(addr) or addr == 0 or addr == 0xFFFFFFFF or address.is_loopback(addr)
+        or not is_integer(lifetime, 1, MAX_LIFETIME) then
+        return refuse("invalid", "it needs an address, and how long the name lasts")
+    end
+    if zone.records[name] then return refuse("taken", ("%s is in the zone's file"):format(full)) end
+    if not entry and names.count >= MAX_NAMES then return refuse("refused", "there are too many names") end
+
+    local changed = not entry or entry.address ~= addr
+    if not entry then names.count = names.count + 1 end
+    names.entries[full] = { zone = zone.zone, name = name, address = addr, expires = names.clock() + lifetime, owner = owner }
+    return { id = message.id, code = "ok" }, true,
+        changed and ("Set %s to %s (%s, from %s)"):format(full, address.format(addr), owner, context.from) or nil
+end
+
+local Updater = {}
+Updater.__index = Updater
+
+--[[- Keep names up to date at a DNS server, as a DHCP server does for its clients: each name's latest change is sent,
+one at a time, and what goes wrong is said.
+
+@tparam {
+    send = function(make:function():table, done:function(answer:table|nil, err:string|nil)),
+    zone = string, key? = string, epoch = function():number, log? = function(text:string),
+} options How to send an update and wait for its answer (`make` makes it, afresh for each attempt, and `done` is
+called with the answer, or why there isn't one); the zone the names are in; the secret to sign updates with; a clock
+in milliseconds (as `os.epoch("utc")`); and what to do with what went wrong.
+@treturn table The updater.
+@see stack_sender A way to send updates.
+]]
+local function new_updater(options)
+    return setmetatable({
+        send = options.send, zone = options.zone, key = options.key, epoch = options.epoch,
+        log = options.log or function() end, busy = {}, waiting = {},
+    }, Updater)
+end
+
+function Updater:queue(name, change)
+    if self.busy[name] then
+        self.waiting[name] = change
+        return
+    end
+    self.busy[name] = true
+    local fields = {
+        zone = self.zone, name = name, address = change.address, lifetime = change.lifetime, owner = change.owner,
+    }
+    self.send(function() return update_message(fields, self.key, self.epoch()) end, function(answer, err)
+        local what = ("%s %s.%s"):format(change.address and "set" or "delete", name, self.zone)
+        if type(answer) ~= "table" then
+            self.log(("Couldn't %s: %s"):format(what, tostring(err)))
+        elseif answer.code ~= "ok" then
+            self.log(("The DNS server wouldn't %s: %s"):format(what, tostring(answer.error or answer.code)))
+        end
+        self.busy[name] = nil
+        local after = self.waiting[name]
+        if after then
+            self.waiting[name] = nil
+            self:queue(name, after)
+        end
+    end)
+end
+
+--[[- Set a name to an address.
+
+@tparam string name The name, within the zone (a computer's hostname, say).
+@tparam number addr The address.
+@tparam number lifetime How long it lasts, in seconds, unless it's set again.
+@tparam string owner Who it's for, such as `"computer 12"`.
+]]
+function Updater:set(name, addr, lifetime, owner)
+    self:queue(name, { address = addr, lifetime = math.max(1, math.min(math.floor(lifetime), MAX_LIFETIME)), owner = owner })
+end
+
+--- Delete a name.
+--
+-- @tparam string name The name, within the zone.
+-- @tparam string owner Who it was for.
+function Updater:delete(name, owner)
+    self:queue(name, { owner = owner })
+end
+
+--[[- Send updates from a network stack, to a DNS server, trying a few times: for [`updater`].
+
+@tparam table stack The network stack.
+@tparam number server The server's address.
+@treturn function(make:function():table, done:function) The way to send updates.
+]]
+local function stack_sender(stack, server)
+    return function(make, done)
+        local attempt = 0
+        local function try()
+            attempt = attempt + 1
+            local got
+            ask(stack, server, DNS_PORT, make(), UPDATE_TIMEOUT, function(answer)
+                got = answer
+                return true
+            end, function(err)
+                if got then return done(got) end
+                if attempt < UPDATE_ATTEMPTS then return try() end
+                done(nil, err or "No answer")
+            end)
+        end
+        try()
+    end
+end
+
 return {
     DNS_PORT = DNS_PORT,
+    UPDATE_TIMEOUT = UPDATE_TIMEOUT,
+    UPDATE_ATTEMPTS = UPDATE_ATTEMPTS,
+    UPDATE_WINDOW = UPDATE_WINDOW,
+    MAX_NAMES = MAX_NAMES,
     MDNS_PORT = MDNS_PORT,
     normalise = normalise,
     respond = respond,
@@ -534,5 +856,11 @@ return {
     lookup = lookup,
     parse_zone = parse_zone,
     server = new_server,
+    forward = new_forward,
     relay = new_relay,
+    update_message = update_message,
+    names = new_names,
+    handle_update = handle_update,
+    updater = new_updater,
+    stack_sender = stack_sender,
 }

@@ -485,6 +485,7 @@ function Core:detach(sim)
     self.sessions[sim] = nil
     self:update_paths()
     if session.routed then self:update_routes() end
+    self.on_event("detached", sim)
 end
 
 --- Stop the core: phones lose service, and the gateway's interface and port are freed, so it can be started again.

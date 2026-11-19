@@ -181,7 +181,7 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number,
     bands? = table, services? = { string... }, standby? = { boolean... }, override? = { boolean... },
-    dns? = { string... }, domain? = string,
+    dns? = { string... }, domain? = string, hostnames? = table,
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
@@ -189,7 +189,7 @@ cells send system information; the band each cell asks to be on, by its index (o
 computer with a cell on each: `towers[i].towers` has each cell's tower, by the cell's ID, and `towers[i].tower` the
 first's); each cell's service, by its index (`"sms"` for one which only carries messages); and whether each cell stands
 by, off the air, until `setup.confirm_cell` confirms its bands, by its index; whether each may be on carriers its
-networks don't have; and the DNS servers and domain its core gives phones.
+networks don't have; the DNS servers and domain its core gives phones; and where it registers their names.
 @treturn table The operator.
 ]]
 local function operator(cell_positions, options)
@@ -300,6 +300,7 @@ local function operator(cell_positions, options)
     files.write_table(fs.combine(dir, "config"), {
         network = name, prefix = prefix, number_prefix = options.numbers, spectrum = spectrum,
         beacon_interval = options.interval or 1, dns = options.dns, domain = options.domain,
+        hostnames = options.hostnames,
     })
     files.write_table(fs.combine(dir, "cells"), allowed)
 

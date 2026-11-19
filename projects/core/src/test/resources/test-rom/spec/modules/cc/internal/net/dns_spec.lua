@@ -335,6 +335,277 @@ describe("cc.internal.net.dns", function()
             expect(net.time - started <= 1.5):eq(true)
             expect(net.total_frames() - frames <= 12):eq(true)
         end)
+
+        it("asks a forwarded zone's own servers, and answers a more specific zone of its own", function()
+            local ids = 100
+            local relay = dns.relay {
+                zones = {
+                    dns.server("home", { bank = ip("10.0.0.5") }),
+                    dns.forward("corp", { ip("10.1.0.53"), ip("10.1.0.54") }),
+                    dns.forward("lab.home", { ip("10.2.0.53") }),
+                    dns.server("x.corp", { y = ip("10.0.0.6") }),
+                    dns.forward("nowhere", {}),
+                },
+                forward = function() return { ip("10.0.0.9") } end,
+                clock = function() return 0 end,
+                random = function()
+                    ids = ids + 1
+                    return ids
+                end,
+            }
+            expect(relay:question({ id = 1, name = "mail.corp", type = "A" }, client)):same {
+                { server = ip("10.1.0.53"), question = { id = 101, name = "mail.corp", type = "A", hops = 1 } },
+            }
+            expect(relay:answer({ id = 101, code = "refused" }, ip("10.1.0.53"))):same {
+                { server = ip("10.1.0.54"), question = { id = 102, name = "mail.corp", type = "A", hops = 1 } },
+            }
+            expect(relay:question({ id = 2, name = "pc.lab.home", type = "A" }, client)[1].server):eq(ip("10.2.0.53"))
+            expect(relay:question({ id = 3, name = "y.x.corp", type = "A" }, client)[1].answer.records[1].value)
+                :eq(ip("10.0.0.6"))
+            expect(relay:question({ id = 4, name = "bank.home", type = "A" }, client)[1].answer.records[1].value)
+                :eq(ip("10.0.0.5"))
+            -- Other names go upstream, and a forwarded zone with no servers (only this computer, say) is refused.
+            expect(relay:question({ id = 5, name = "bank.away", type = "A" }, client)[1].server):eq(ip("10.0.0.9"))
+            expect(relay:question({ id = 6, name = "a.nowhere", type = "A" }, client)):same(answer_for(6, "refused"))
+        end)
+    end)
+
+    describe("updates", function()
+        local address = require "cc.net.address"
+
+        --[[ A server for "home" (with "bank" in its file) and "shop.home", which forwards "corp", and takes updates. Gives
+        a function to send it an update (as one allowed to, unless told otherwise), one to make an update, the zones
+        and names, and the time, which can be changed. ]]
+        local function setup(key)
+            local time = { now = 1.7e9 }
+            local names = dns.names({}, function() return time.now end)
+            local zones = {
+                dns.server("home", { bank = ip("10.0.0.5") }, function() return names:lookup("home") end),
+                dns.server("shop.home", {}),
+                dns.forward("corp", { ip("10.1.0.53") }),
+            }
+            local seen = {}
+            local function send(message, allowed)
+                return dns.handle_update(message, {
+                    zones = zones, names = names, allowed = allowed ~= false, key = key, epoch = time.now * 1000,
+                    seen = seen, from = "10.0.0.1",
+                })
+            end
+            local function make(fields, secret, at)
+                fields.zone, fields.owner = fields.zone or "home", fields.owner or "computer 12"
+                return dns.update_message(fields, secret, (at or time.now) * 1000)
+            end
+            local function lookup(name)
+                local answer = zones[1]:handle({ id = 1, name = name, type = "A" })
+                return answer.code == "ok" and answer.records[1].value or answer.code
+            end
+            return send, make, { zones = zones, names = names, time = time, lookup = lookup }
+        end
+
+        local function code(...) return (...).code end
+
+        it("sets names, which are answered until they're deleted or expire", function()
+            local send, make, env = setup()
+            local answer, changed, log = send(make { name = "PC", address = ip("10.0.0.100"), lifetime = 60 })
+            expect({ answer.code, changed, log }):same { "ok", true, "Set pc.home to 10.0.0.100 (computer 12, from 10.0.0.1)" }
+            expect(env.lookup("pc.home")):eq(ip("10.0.0.100"))
+
+            -- Set again, it lasts longer, and isn't logged unless it changed.
+            env.time.now = env.time.now + 50
+            expect({ select(2, send(make { name = "pc", address = ip("10.0.0.100"), lifetime = 60 })) }):same { true }
+            env.time.now = env.time.now + 50
+            expect(env.lookup("pc.home")):eq(ip("10.0.0.100"))
+            local _, _, moved = send(make { name = "pc", address = ip("10.0.0.101"), lifetime = 60 })
+            expect(moved):eq("Set pc.home to 10.0.0.101 (computer 12, from 10.0.0.1)")
+
+            -- Only its owner may delete it.
+            expect(code(send(make { name = "pc", owner = "computer 13" }))):eq("taken")
+            expect({ code(send(make { name = "pc" })), env.lookup("pc.home") }):same { "ok", "not_found" }
+            -- Deleting what isn't there changes nothing.
+            expect({ select(2, send(make { name = "pc" })) }):same { false }
+
+            -- It expires, and then anyone may have it.
+            send(make { name = "laptop", address = ip("10.0.0.102"), lifetime = 30 })
+            env.time.now = env.time.now + 31
+            expect(env.lookup("laptop.home")):eq("not_found")
+            expect(code(send(make { name = "laptop", address = ip("10.0.0.103"), lifetime = 30, owner = "computer 13" })))
+                :eq("ok")
+            expect(env.names.count):eq(1)
+        end)
+
+        it("refuses what it mustn't do, or doesn't make sense, changing nothing", function()
+            local send, make, env = setup()
+            send(make { name = "pc", address = ip("10.0.0.100"), lifetime = 60 })
+            local function refused(message, allowed)
+                local answer, changed, log = send(message, allowed)
+                expect(changed):eq(false)
+                expect(log):type("string")
+                return answer.code, answer.error
+            end
+
+            expect({ refused(make { name = "x", address = ip("10.0.0.9"), lifetime = 60 }, false) })
+                :same { "refused", "it may not update names here" }
+            -- Not a zone of its own, nor a name it could answer.
+            expect(refused(make { zone = "away", name = "x", address = ip("10.0.0.9"), lifetime = 60 })):eq("not_found")
+            expect(refused(make { zone = "corp", name = "x", address = ip("10.0.0.9"), lifetime = 60 })):eq("not_found")
+            expect({ refused(make { name = "shop", address = ip("10.0.0.9"), lifetime = 60 }) })
+                :same { "taken", "shop.home is in the zone shop.home" }
+            expect({ refused(make { name = "bank", address = ip("10.0.0.9"), lifetime = 60 }) })
+                :same { "taken", "bank.home is in the zone's file" }
+            expect({ refused(make { name = "pc", address = ip("10.0.0.9"), lifetime = 60, owner = "computer 13" }) })
+                :same { "taken", "pc.home is computer 12's" }
+            for _, bad in ipairs {
+                { name = "a.b", address = ip("10.0.0.9"), lifetime = 60 },
+                { name = "", address = ip("10.0.0.9"), lifetime = 60 },
+                { name = ("x"):rep(64), address = ip("10.0.0.9"), lifetime = 60 },
+                { name = "x", address = ip("10.0.0.9"), lifetime = 60, owner = "" },
+                { name = "x", address = 0, lifetime = 60 },
+                { name = "x", address = 0xFFFFFFFF, lifetime = 60 },
+                { name = "x", address = ip("127.0.0.1"), lifetime = 60 },
+                { name = "x", address = "10.0.0.9", lifetime = 60 },
+                { name = "x", address = ip("10.0.0.9") },
+                { name = "x", address = ip("10.0.0.9"), lifetime = 0 },
+                { name = "x", address = ip("10.0.0.9"), lifetime = 0.5 },
+                { name = "x", address = ip("10.0.0.9"), lifetime = 8 * 24 * 3600 },
+            } do
+                expect(refused(make(bad))):eq("invalid")
+            end
+            expect(env.lookup("pc.home")):eq(ip("10.0.0.100"))
+            expect(env.names.count):eq(1)
+
+            -- Not updates at all.
+            for _, bad in ipairs { "x", {}, { op = "update" }, { op = "update", id = -1 }, { op = "other", id = 1 } } do
+                expect(send(bad)):eq(nil)
+            end
+        end)
+
+        it("keeps no more than so many names", function()
+            local send, make, env = setup()
+            for i = 1, dns.MAX_NAMES do
+                expect(code(send(make { name = "n" .. i, address = ip("10.0.0.9"), lifetime = 60 }))):eq("ok")
+            end
+            local answer = send(make { name = "more", address = ip("10.0.0.9"), lifetime = 60 })
+            expect({ answer.code, answer.error }):same { "refused", "there are too many names" }
+            -- One already there may still be set again.
+            expect(code(send(make { name = "n1", address = ip("10.0.0.8"), lifetime = 60 }))):eq("ok")
+            expect(env.names.count):eq(dns.MAX_NAMES)
+        end)
+
+        it("takes only updates signed with its key, recently, and once", function()
+            local send, make, env = setup("s3cret")
+            local function why(message) return select(1, send(message)).error end
+            expect(why(make { name = "pc", address = ip("10.0.0.100"), lifetime = 60 })):eq("it isn't signed")
+            expect(why(make({ name = "pc", address = ip("10.0.0.100"), lifetime = 60 }, "wrong")))
+                :eq("it's signed with another key")
+            expect(why(make({ name = "pc", address = ip("10.0.0.100"), lifetime = 60 }, "s3cret", env.time.now - 61)))
+                :eq("it was signed too long ago, or the clocks differ")
+            expect(why(make({ name = "pc", address = ip("10.0.0.100"), lifetime = 60 }, "s3cret", env.time.now + 61)))
+                :eq("it was signed too long ago, or the clocks differ")
+
+            -- A change to what's signed spoils it.
+            local message = make({ name = "pc", address = ip("10.0.0.100"), lifetime = 60 }, "s3cret")
+            local copy = {}
+            for k, v in pairs(message) do copy[k] = v end
+            copy.address = ip("10.0.0.66")
+            expect(why(copy)):eq("it's signed with another key")
+
+            expect(code(send(message))):eq("ok")
+            expect(why(message)):eq("it was sent before")
+            expect(env.lookup("pc.home")):eq(ip("10.0.0.100"))
+
+            -- A server without a key takes signed updates too.
+            local plain_send = setup()
+            expect(code(plain_send(make({ name = "pc", address = ip("10.0.0.100"), lifetime = 60 }, "s3cret")))):eq("ok")
+        end)
+
+        it("keeps names across restarts, and drops what doesn't make sense", function()
+            local send, make, env = setup()
+            send(make { name = "pc", address = ip("10.0.0.100"), lifetime = 60 })
+            send(make { name = "old", address = ip("10.0.0.101"), lifetime = 10 })
+            local saved = env.names:save()
+            expect(saved["pc.home"]):same {
+                zone = "home", name = "pc", address = "10.0.0.100", expires = env.time.now + 60, owner = "computer 12",
+            }
+
+            saved.rubbish, saved[1], saved.bad = "x", { name = "x" }, {
+                zone = "home", name = "a.b", address = "10.0.0.5", expires = env.time.now + 60, owner = "computer 1",
+            }
+            saved.nan = { zone = "home", name = "nan", address = "10.0.0.5", expires = 0 / 0, owner = "computer 1" }
+            saved.addr = { zone = "home", name = "addr", address = "nowhere", expires = env.time.now + 60, owner = "computer 1" }
+            env.time.now = env.time.now + 20
+            local again = dns.names(saved, function() return env.time.now end)
+            expect(again:lookup("home")):same { pc = ip("10.0.0.100") }
+            expect(again.count):eq(1)
+            expect(dns.names("rubbish", function() return 0 end).count):eq(0)
+        end)
+
+        it("sends each name's latest change, one at a time, and says what went wrong", function()
+            local sent, logs = {}, {}
+            local updater = dns.updater {
+                zone = "home", key = "s3cret", epoch = function() return 5000 end,
+                log = function(text) logs[#logs + 1] = text end,
+                send = function(make, done) sent[#sent + 1] = { message = make(), done = done } end,
+            }
+            updater:set("pc", ip("10.0.0.100"), 3600, "computer 12")
+            -- While that's sent, the name changes twice: only the last is sent next.
+            updater:set("pc", ip("10.0.0.101"), 3600, "computer 12")
+            updater:delete("pc", "computer 12")
+            updater:set("laptop", ip("10.0.0.102"), 1e9, "computer 13")
+            expect(#sent):eq(2)
+            expect({ sent[1].message.name, sent[1].message.address, sent[1].message.lifetime, sent[1].message.time })
+                :same { "pc", ip("10.0.0.100"), 3600, 5000 }
+            expect(sent[1].message.mac):type("string")
+            expect({ sent[2].message.name, sent[2].message.lifetime }):same { "laptop", 7 * 24 * 3600 }
+
+            sent[1].done({ id = sent[1].message.id, code = "ok" })
+            expect(#sent):eq(3)
+            expect({ sent[3].message.name, sent[3].message.address, sent[3].message.owner }):same { "pc", nil, "computer 12" }
+            sent[2].done(nil, "Timed out")
+            sent[3].done({ code = "taken", error = "pc.home is computer 9's" })
+            expect(#sent):eq(3)
+            expect(logs):same { "Couldn't set laptop.home: Timed out", "The DNS server wouldn't delete pc.home: pc.home is computer 9's" }
+
+            -- Each try is made afresh.
+            local made = {}
+            dns.updater {
+                zone = "home", epoch = function() return 0 end,
+                send = function(make) made = { make(), make() } end,
+            }:set("pc", ip("10.0.0.100"), 60, "computer 12")
+            expect(made[1].id ~= made[2].id):eq(true)
+        end)
+
+        it("are sent over the network, and tried again when they go unanswered", function()
+            local net = network()
+            local a = computer(net, 1, "10.0.0.1/24", "alpha")
+            local server = net.add(3, "10.0.0.3/24")
+            local names = dns.names({}, function() return net.time end)
+            local zone = dns.server("home", {}, function() return names:lookup("home") end)
+            local received, socket = 0, nil
+            socket = server:udp_open(dns.DNS_PORT, function(message, from, port)
+                local answer
+                if type(message) == "table" and message.op == "update" then
+                    received = received + 1
+                    answer = dns.handle_update(message, {
+                        zones = { zone }, names = names, allowed = true, epoch = 0, seen = {}, from = address.format(from),
+                    })
+                    -- The first answer is lost.
+                    if received == 1 then answer = nil end
+                else
+                    answer = zone:handle(message)
+                end
+                if answer then server:udp_send(socket, from, port, answer) end
+            end)
+            net.run()
+
+            local function make() return dns.update_message({ zone = "home", name = "pc", address = ip("10.0.0.100"), lifetime = 60, owner = "computer 1" }, nil, 0) end
+            local answer = net.await(function(done) dns.stack_sender(a, ip("10.0.0.3"))(make, done) end)
+            expect({ answer.code, received }):same { "ok", 2 }
+            expect(resolve(net, a, "pc.home", { servers = { ip("10.0.0.3") } })):eq(ip("10.0.0.100"))
+
+            -- Nobody there: it gives up after a few tries.
+            local gone, why = net.await(function(done) dns.stack_sender(a, ip("10.0.0.99"))(make, done) end, 20)
+            expect({ gone, type(why) }):same { nil, "string" }
+        end)
     end)
 
     it("reads zone files", function()

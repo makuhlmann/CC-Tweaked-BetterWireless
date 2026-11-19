@@ -36,6 +36,8 @@ local function usage()
     print(name .. " beacon [seconds]")
     print(name .. " dns [<server>[,<server>...]|none]")
     print(name .. " domain [<domain>|none]")
+    print(name .. " hostnames [<server> [zone]|none]")
+    print(name .. " hostnames zone|key <value>|none")
     print(name .. " remote <core> [command...]")
 end
 
@@ -100,7 +102,7 @@ end
 
 local known = {
     status = 1, log = 1, add = 1, subscribers = 1, remove = 1, set = 1, cells = 1, allow = 1, deny = 1, networks = 1,
-    network = 1, numbers = 1, rename = 1, spectrum = 1, beacon = 1, dns = 1, domain = 1, stop = 1, restart = 1,
+    network = 1, numbers = 1, rename = 1, spectrum = 1, beacon = 1, dns = 1, domain = 1, hostnames = 1, stop = 1, restart = 1,
     -- As older versions had them: they show or change agreements with other networks, as 'network' does.
     roaming = 1, carry = 1, uncarry = 1, partner = 1, peers = 1, peer = 1, unpeer = 1,
 }
@@ -551,6 +553,32 @@ function commands.domain(value, extra)
         print("Phones aren't given a domain.")
     end
     if value then print("Attached phones hear of it at once.") end
+end
+
+-- See or set where this network's phones' names are registered: a DNS server, and maybe a zone; or "none".
+function commands.hostnames(first, second, extra)
+    if extra then return usage() end
+    local reply
+    if first == "none" and not second then
+        reply = request({ op = "hostnames", server = false })
+    elseif (first == "zone" or first == "key") and second then
+        reply = request({ op = "hostnames", [first] = second ~= "none" and second or false })
+    elseif first == "zone" or first == "key" then
+        return usage()
+    elseif first then
+        reply = request({ op = "hostnames", server = first, zone = second })
+    else
+        reply = request({ op = "hostnames" })
+    end
+    local zone = reply.zone or reply.domain
+    if reply.server and zone then
+        print(("Phones' names are registered at %s, in %s%s."):format(reply.server, zone, reply.key and ", with a key" or ""))
+        print("A phone's name is its subscriber's ID, such as " .. (zone and "acme-0042." .. zone or "acme-0042") .. ".")
+    elseif reply.server then
+        print(("Phones' names aren't registered at %s: they need a zone (\"%s hostnames zone acme\", or a domain)."):format(reply.server, name))
+    else
+        print("Phones' names aren't registered anywhere.")
+    end
 end
 
 function commands.log()

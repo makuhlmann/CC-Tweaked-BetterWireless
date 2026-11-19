@@ -965,6 +965,20 @@ describe("The menus of celld and cellcore", function()
                 end
                 return { servers = status.dns or {}, domain = status.domain }
             end
+            function answers.hostnames(message)
+                local hostnames = status.hostnames or {}
+                status.hostnames = hostnames
+                if message.server == false then
+                    hostnames.server = nil
+                elseif message.server then
+                    if not message.server:match("^%d+%.%d+%.%d+%.%d+$") then return nil, "The DNS server is an address, such as 10.0.0.53" end
+                    hostnames.server = message.server
+                end
+                if message.zone == false then hostnames.zone = nil elseif message.zone then hostnames.zone = message.zone end
+                if message.key == false then hostnames.key = nil elseif message.key then hostnames.key = true end
+                hostnames.registering = hostnames.server and (hostnames.zone or status.domain) or nil
+                return { server = hostnames.server, zone = hostnames.zone, domain = status.domain, key = hostnames.key == true }
+            end
             function answers.stop()
                 core.down = "Connection refused"
                 return { ok = true }
@@ -1725,6 +1739,65 @@ describe("The menus of celld and cellcore", function()
                 core.status.standby = { { id = 15, key = K13, address = "10.0.0.15", since = 0, unplaced = { "b7" }, reason = "ACME has no carriers yet" } }
                 expect(capture("cellcore", "status").output)
                     :str_match("^Core of ACME, phones in 10.64.0.0/16\nNo carriers: cells stay off the air%.\nCells: #11\nCells with no carrier: #15\n")
+            end)
+        end)
+
+        it("says and sets where the network's phones' names are registered", function()
+            local core = fake_core()
+            configured(true, function()
+                expect(capture("cellcore", "hostnames").output):eq("Phones' names aren't registered anywhere.\n")
+                expect(capture("cellcore", "hostnames", "10.0.0.53").output)
+                    :str_match("^Phones' names aren't registered at 10%.0%.0%.53: they need a zone")
+                expect(capture("cellcore", "hostnames", "zone", "acme").output):eq(
+                    "Phones' names are registered at 10.0.0.53, in acme.\n"
+                    .. "A phone's name is its subscriber's ID, such as acme-0042.acme.\n"
+                )
+                expect(capture("cellcore", "hostnames", "key", "s3cret").output)
+                    :str_match("^Phones' names are registered at 10%.0%.0%.53, in acme, with a key%.\n")
+                expect(capture("cellcore", "status").output):str_match("\nPhones' names: acme, at 10%.0%.0%.53\n")
+                expect(capture("cellcore", "hostnames", "zone").output):str_match("^Usages:")
+                expect(capture("cellcore", "hostnames", "key", "none").output)
+                    :str_match("^Phones' names are registered at 10%.0%.0%.53, in acme%.\n")
+                expect(capture("cellcore", "hostnames", "none").output):eq("Phones' names aren't registered anywhere.\n")
+                expect(core.asked):same {
+                    { op = "hostnames" }, { op = "hostnames", server = "10.0.0.53" }, { op = "hostnames", zone = "acme" },
+                    { op = "hostnames", key = "s3cret" }, { op = "hostnames", key = false }, { op = "hostnames", server = false },
+                }
+            end)
+        end)
+
+        it("changes where the network's phones' names are registered", function()
+            local core = fake_core()
+            configured(true, function()
+                run({ "cellcore" }, {}, function(app)
+                    app.choose("Network settings")
+                    expect(select(2, app.find("Names at"))):str_match("^Names at +none$")
+                    expect(select(2, app.find("Names zone"))):str_match("^Names zone +none$")
+                    expect(select(2, app.find("Names key"))):str_match("^Names key +none$")
+
+                    app.choose("Names at")
+                    app.enter("nowhere")
+                    expect(app.says("The DNS server is an address, such as 10.0.0.53")):eq(true)
+                    app.enter("10.0.0.53")
+                    expect(core.asked[2]):same { op = "hostnames", server = "10.0.0.53" }
+                    expect(app.chosen()):str_match("^Names at +10%.0%.0%.53$")
+                    expect(app.says("Phones' names: at 10.0.0.53, in no zone.")):eq(true)
+
+                    app.choose("Names zone")
+                    app.enter("acme")
+                    expect(core.asked[3]):same { op = "hostnames", zone = "acme" }
+                    expect(app.chosen()):str_match("^Names zone +acme$")
+                    expect(app.says("Phones' names: at 10.0.0.53, in acme.")):eq(true)
+
+                    app.choose("Names key")
+                    app.enter("s3cret")
+                    expect(core.asked[4]):same { op = "hostnames", key = "s3cret" }
+                    expect(app.chosen()):str_match("^Names key +set$")
+                    app.choose("Names key")
+                    app.enter("")
+                    expect(core.asked[5]):same { op = "hostnames", key = false }
+                    expect(app.chosen()):str_match("^Names key +none$")
+                end)
             end)
         end)
 

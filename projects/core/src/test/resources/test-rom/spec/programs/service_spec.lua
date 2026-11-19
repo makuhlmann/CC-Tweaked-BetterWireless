@@ -20,6 +20,7 @@ describe("The service program", function()
         end
         fs.delete(PROGRAM)
         fs.delete("/zones")
+        fs.delete("/etc")
         _G.service_spec_current = nil
         if not ok then error(err, 0) end
     end
@@ -131,16 +132,19 @@ describe("The service program", function()
 
     it("changes nothing when a server's command is mistyped", function()
         with_cleanup(function()
+            -- They take their settings from /etc now, not arguments.
             local result = capture("dhcpd", "start", "nowhere")
-            expect(result.error):eq("nowhere has no address. Give it a fixed one first, for example with ifconfig.\n")
+            expect(result.output:sub(1, 7)):eq("Usages:")
             expect(service.status("dhcpd")):eq(nil)
 
             result = capture("dnsd", "stop", "home")
             expect(result.output:sub(1, 7)):eq("Usages:")
             expect(service.status("dnsd")):eq(nil)
+            expect(fs.exists("/etc")):eq(false)
 
             expect(capture("dnsd", "stop").error):eq("dnsd isn't running here.\n")
-            expect(capture("dnsd", "start").error):eq("dnsd isn't set up here: start it with \"dnsd start <zone>\".\n")
+            expect(capture("dnsd", "status").error):eq("dnsd isn't set up here: start it with \"dnsd start\".\n")
+            expect(capture("dhcpd", "status").error):eq("dhcpd isn't set up here: start it with \"dhcpd start\".\n")
             expect(capture("rshd", "status").error):eq("rshd isn't set up here: start it with \"rshd start\".\n")
         end)
     end)
@@ -158,13 +162,14 @@ describe("The service program", function()
 
     it("runs dnsd in the background, and stops it", function()
         with_cleanup(function()
-            write("/zones/home.txt", "bank 10.0.0.5\n")
-            local result = capture("dnsd", "start", "home")
+            write("/etc/dnsd.conf", "zone home\n")
+            write("/etc/dnsd.zones", "[home]\nbank 10.0.0.5\n")
+            local result = capture("dnsd", "start")
             expect(result.error):eq("")
             expect(result.output):eq(
                 "Answering for home.\ndnsd runs in the background, and starts with the computer. \"dnsd stop\" stops it.\n"
             )
-            expect(service.status("dnsd").command):eq("/rom/programs/net/dnsd.lua run home /zones/home.txt")
+            expect(service.status("dnsd").command):eq("/rom/programs/net/dnsd.lua run")
 
             local socket, answer = assert(net.udp.open()), nil
             for _ = 1, 20 do
@@ -175,14 +180,49 @@ describe("The service program", function()
             socket:close()
             expect(answer and answer.records[1].value):eq(0x0A000005)
 
-            -- Asking for the same again changes nothing.
-            expect(capture("dnsd", "home").output):eq("dnsd is running already.\n")
+            -- Asking for the same again changes nothing, and restarting reads the settings again.
+            expect(capture("dnsd", "start").output):eq("dnsd is running already.\n")
+            write("/etc/dnsd.conf", "zone home\nzone shop\n")
+            expect(capture("dnsd", "restart").output):eq(
+                "Answering for home and shop.\ndnsd runs in the background, and starts with the computer. \"dnsd stop\" stops it.\n"
+            )
 
             result = capture("dnsd", "stop")
             expect(result.output):eq("Stopped dnsd. It doesn't start with the computer now.\n")
             local again = assert(net.udp.open(53))
             again:close()
             expect(capture("dnsd", "stop").output):eq("dnsd wasn't running. It doesn't start with the computer now.\n")
+        end)
+    end)
+
+    it("sets dnsd up the first time it starts, and moves a service started before", function()
+        with_cleanup(function()
+            local result = capture("dnsd", "start")
+            expect(result.output):eq(
+                "Wrote /etc/dnsd.conf: dnsd answers for the zone home. Change it there.\nAnswering for home.\n"
+                .. "dnsd runs in the background, and starts with the computer. \"dnsd stop\" stops it.\n"
+            )
+            expect(fs.exists("/etc/dnsd.zones")):eq(true)
+            service.remove("dnsd")
+            for _ = 1, 50 do
+                if not service.status("dnsd") then break end
+                sleep(0.1)
+            end
+            fs.delete("/etc")
+
+            -- As an older version started it: its files are written from that, and it's started without them.
+            write("/zones/shop.txt", "till 10.0.0.7\n")
+            assert(service.add("dnsd", "/rom/programs/net/dnsd.lua", "run", "shop", "/zones/shop.txt"))
+            for _ = 1, 20 do
+                if fs.exists("/etc/dnsd.conf") then break end
+                sleep(0.1)
+            end
+            local file = fs.open("/etc/dnsd.conf", "r")
+            expect(file.readAll()):str_match("\nzone shop /zones/shop%.txt\n")
+            file.close()
+            result = capture("dnsd", "start")
+            expect(service.status("dnsd").command):eq("/rom/programs/net/dnsd.lua run")
+            expect(result.output):str_match("Answering for shop%.\n")
         end)
     end)
 end)

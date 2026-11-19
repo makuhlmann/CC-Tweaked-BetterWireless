@@ -1,19 +1,24 @@
-dnsd is a DNS server for one or more zones, such as "home". For each, it answers with the names in /zones/<zone>.txt, which has one name and address per line (for example "bank 10.0.0.5", for bank.home; "@" is the zone itself, and "#" starts a comment). A name is answered by the most specific zone it's in, so "shop.home" can be a zone of its own. Each zone file is read again whenever it changes.
+dnsd is a DNS server. It answers for one or more zones, such as "home", asks other DNS servers about names in other zones, and lets DHCP servers (dhcpd) and cellular cores (cellcore) set the names of their clients in its zones. It runs in the background, as a service (see "help service"), and starts with the computer. Only one runs on a computer.
 
-Computers which got their address from dhcpd on the same computer can be found by their hostname too, in the zone dhcpd gives them (the setting dhcpd.domain), or else the first.
+Its settings are in /etc/dnsd.conf, which it writes the first time it starts. Each line is a setting's name, then its values, separated by spaces, and # starts a comment. Changes take effect when it starts again ("dnsd restart"):
+- "zone home" answers for names ending in .home, from the [home] part of /etc/dnsd.zones. "zone shop.home /zones/shop.zone" takes its names from a file of its own instead. A name is answered by the most specific zone it's in.
+- "forward corp 10.1.0.53 10.1.0.54" asks those servers, in turn, about names in the zone corp.
+- "upstream 10.0.0.2 10.0.0.3" asks those servers about names in no zone here. Without it, they aren't found: dnsd doesn't use net.dns. It never asks this computer itself.
+- "allow-update 10.0.0.2 10.0.1.0/24" lets those computers set and delete names in the zones. This computer always may.
+- "key s3cret" makes every update be signed with that secret (dhcpd's update-key, cellcore's hostname key), without spaces or #. Anyone on a link without a passphrase could pretend to be an allowed computer, but can't sign.
+dnsd may have no zones of its own, and only ask other servers.
 
-Names in other zones are forwarded to other DNS servers: those in the setting dnsd.forward (separated by commas), or else in net.dns, but never this computer itself. Their answers are kept for as long as they say, and that a name doesn't exist for a few seconds. If none answers, the question is refused, so whoever asked tries their next server. "set dnsd.forward none" forwards nothing. A question is forwarded at most three times along a chain of servers, so servers which forward to each other don't pass it round for ever.
+/etc/dnsd.zones has a [zone] line before each zone's names, then a name and an address on each line ("bank 10.0.0.5" is bank.home; "@" is the zone itself). A zone's own file has just the names. They're read again whenever they change, so edits apply at once.
 
-It runs in the background, as a service (see "help service"), and starts with the computer. Only one runs on a computer.
+Names set by updates are kept in /etc/dnsd.leases until they expire, or are deleted. A name in a zone's file can't be set, and one set for a computer (or a phone) can't be taken by another until it expires. Answers from other servers are kept for as long as they say, and that a name doesn't exist for a few seconds. If no server answers, the question is refused, so whoever asked tries their next server. A question is forwarded at most three times along a chain of servers, so servers which forward to each other don't pass it round for ever.
 
-Clients find the server through DHCP (set dhcpd.dns and dhcpd.domain), or the settings net.dns and net.domain.
+Clients find the server through DHCP (dhcpd.conf's dns and domain), the settings net.dns and net.domain, or their cellular network.
+
+Before, dnsd took its zones as arguments, and the setting dnsd.forward. The first time it starts, it moves them to /etc/dnsd.conf, and the setting goes.
 
 ex:
-"dnsd start home" answers for names ending in .home, from now on. "dnsd home" does the same.
-"dnsd start home shop" answers for .home and .shop, each from its own file.
-"dnsd start home records.txt shop" answers for .home from the file records.txt instead (a zone's file follows it, and is a path or a .txt file).
-"set dnsd.forward 10.0.0.2" forwards names in other zones to 10.0.0.2.
+"dnsd start" starts it, from now on.
+"dnsd restart" starts it again, with its settings as they are now.
 "dnsd stop" stops it, and it doesn't start with the computer.
-"dnsd start" starts it again, as it was.
 "dnsd status" says how it's doing, and what it's printed.
-"dnsd run home" answers in the foreground instead, until Ctrl+T is pressed.
+"dnsd run" answers in the foreground instead, until Ctrl+T is pressed.

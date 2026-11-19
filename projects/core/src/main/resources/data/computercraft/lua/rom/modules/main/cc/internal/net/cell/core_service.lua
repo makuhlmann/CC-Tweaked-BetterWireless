@@ -39,6 +39,8 @@ local address = require "cc.net.address"
 local bands = require "cc.internal.net.bands"
 local certificate = require "cc.internal.net.certificate"
 local common = require "cc.internal.net.cell.common"
+local dhcp = require "cc.internal.net.dhcp"
+local dns = require "cc.internal.net.dns"
 local files = require "cc.internal.net.files"
 local networks = require "cc.internal.net.cell.networks"
 local tasks = require "cc.internal.net.tasks"
@@ -77,6 +79,35 @@ end
 
 -- How long to wait before connecting again to another network's core, at first and at most, in seconds.
 local FIRST_DELAY, MAX_DELAY = 2, 60
+
+--- How long phones' names last at the DNS server they're registered at, in seconds. They're registered again every
+-- half of that, while the core runs.
+local HOSTNAME_LIFETIME = 3600
+
+-- A secret to sign updates for a DNS server with: as dnsd.conf can hold it.
+local function is_secret(value)
+    return type(value) == "string" and #value >= 1 and #value <= 128 and not value:find("[%s#]")
+end
+
+-- A DNS server's address, as text: one address, not a network, nor nothing or everyone.
+local function server_address(value)
+    if type(value) ~= "string" then return nil end
+    local addr, prefix = address.parse(value)
+    if not addr or prefix or addr == 0 or addr == 0xFFFFFFFF then return nil end
+    return address.format(addr)
+end
+
+-- Where phones' names are registered, from the config file, if it makes sense: anyone may have edited it.
+local function read_hostnames(value)
+    if type(value) ~= "table" then return nil end
+    local result = {
+        server = server_address(value.server),
+        zone = common.is_domain(value.zone) and value.zone or nil,
+        key = is_secret(value.key) and value.key or nil,
+    }
+    if not result.server and not result.zone and not result.key then return nil end
+    return result
+end
 
 local Service = {}
 Service.__index = Service
@@ -141,6 +172,7 @@ local function new(options)
     -- What the file says of DNS, if it makes sense: anyone may have edited it.
     config.dns = common.read_dns(config.dns)
     if not common.is_domain(config.domain) then config.domain = nil end
+    config.hostnames = read_hostnames(config.hostnames)
     local ok, core = pcall(options.start_core, {
         network = config.network, prefix = config.prefix, subscribers = self.subscribers, codes = self.codes,
         number_prefix = config.number_prefix, dns = config.dns, domain = config.domain,
@@ -157,6 +189,17 @@ local function new(options)
     self.tasks = tasks.new(function(task_err) self:log("Error: " .. tostring(task_err)) end)
     self.tasks:spawn(function() self:accept() end)
     self:log(("Started the core of %s, giving phones addresses in %s"):format(config.network, config.prefix))
+
+    -- Phones' names, registered at a DNS server as they attach, and again before they expire.
+    self:start_hostnames()
+    if options.sleep then
+        self.tasks:spawn(function()
+            while true do
+                options.sleep(HOSTNAME_LIFETIME / 2)
+                self:register_all()
+            end
+        end)
+    end
 
     -- Agreements with other networks: from older versions' files the first time, which are left as they were.
     local migrated
@@ -260,6 +303,9 @@ function Service:event(event, ...)
         self:log(("%s attached at cell #%s%s, as %s"):format(
             self:subscriber_name(details[1]), common.cell_label(details[3]), details[4] and " of " .. details[4] or "", details[2]
         ))
+        self:register(details[1], address.parse(tostring(details[2])))
+    elseif event == "detached" then
+        self:unregister(details[1])
     elseif event == "visitor" then
         self:log(("A phone of %s attached at cell #%s"):format(tostring(details[1]), common.cell_label(details[2])))
     elseif event == "handover" then
@@ -1043,15 +1089,7 @@ function Service:serve_admin(connection, key)
         while true do
             local request = connection:receive(ADMIN_TIMEOUT)
             if type(request) ~= "table" then break end
-            local handler = requests[request.op]
-            local ok, reply
-            if handler then
-                ok, reply = pcall(handler, self, request, key)
-                if not ok then reply = { error = tostring(reply) } end
-            else
-                reply = { error = "Unknown request " .. tostring(request.op) }
-            end
-            if not connection:send(reply) then break end
+            if not connection:send(self:request(request, key)) then break end
             -- Asked to stop, or start afresh: once the answer has gone.
             if self.ending then
                 local ending = self.ending
@@ -1064,6 +1102,21 @@ function Service:serve_admin(connection, key)
     end
     self.admins[connection] = nil
     connection:close()
+end
+
+--[[- Answer an administrator's request, as one sent over a connection is answered.
+
+@tparam table request The request, with its `op`.
+@tparam[opt] string by The key of whoever asked, as hexadecimal digits: by default, this computer's.
+@treturn table The reply: what was asked for, or `error`.
+]]
+function Service:request(request, by)
+    by = by or self.options.identity
+    local handler = requests[request.op]
+    if not handler then return { error = "Unknown request " .. tostring(request.op) } end
+    local ok, reply = pcall(handler, self, request, by)
+    if not ok then return { error = tostring(reply) } end
+    return reply
 end
 
 local function by_id(a, b)
@@ -1079,6 +1132,10 @@ function requests.status(self)
         cells = {}, allowed = {}, waiting = {}, subscribers = {}, networks = {},
         number_prefix = self.config.number_prefix, interval = self:beacon_interval(),
         dns = self.config.dns or {}, domain = self.config.domain,
+        hostnames = self.config.hostnames and {
+            server = self.config.hostnames.server, zone = self.config.hostnames.zone,
+            key = self.config.hostnames.key ~= nil, registering = self.hostnames and self.hostnames.zone,
+        },
     }
     local spectrum, ours = self:spectrum(), {}
     result.spectrum = {}
@@ -1552,8 +1609,118 @@ function requests.dns(self, request, by)
             servers and table.concat(servers, ", ") or "no DNS server of this network's",
             domain and (", in " .. domain) or "", self:by(by)
         ))
+        -- Phones' names are registered in the domain, unless they've a zone of their own.
+        local hostnames = self.config.hostnames
+        if hostnames and hostnames.server and not hostnames.zone then self:move_hostnames() end
     end
     return { servers = servers or {}, domain = domain }
+end
+
+--[[- Start registering phones' names at a DNS server (`dnsd`), if the network does, as its settings say now: in their
+zone, or else the domain phones are given. A phone's name is its subscriber's ID, as a hostname (`acme-0042`).
+]]
+function Service:start_hostnames()
+    self.hostnames = nil
+    local settings = self.config.hostnames
+    local zone = settings and settings.server and (settings.zone or self.config.domain)
+    if not zone or not self.core.stack then return end
+    self.hostnames = {
+        zone = zone, names = {},
+        updater = dns.updater {
+            send = dns.stack_sender(self.core.stack, (address.parse(settings.server))), zone = zone, key = settings.key,
+            epoch = self.options.epoch, log = function(text) self:log(text) end,
+        },
+    }
+end
+
+--- Register an attached phone's name, for its address.
+--
+-- @tparam string sim The subscriber's SIM key, as hexadecimal digits.
+-- @tparam number|nil addr The phone's address.
+function Service:register(sim, addr)
+    local hostnames, subscriber = self.hostnames, self.subscribers[sim]
+    local name = subscriber and dhcp.clean_hostname(subscriber.id)
+    if not hostnames or not name or not addr then return end
+    local owner = "subscriber " .. subscriber.id
+    local old = hostnames.names[sim]
+    if old and old.name ~= name then hostnames.updater:delete(old.name, old.owner) end
+    hostnames.names[sim] = { name = name, owner = owner }
+    hostnames.updater:set(name, addr, HOSTNAME_LIFETIME, owner)
+end
+
+--- Delete a phone's name, as it's detached (or its subscriber removed).
+--
+-- @tparam string sim The subscriber's SIM key, as hexadecimal digits.
+function Service:unregister(sim)
+    local old = self.hostnames and self.hostnames.names[sim]
+    if not old then return end
+    self.hostnames.names[sim] = nil
+    self.hostnames.updater:delete(old.name, old.owner)
+end
+
+--- Register every attached phone's name again: they expire otherwise.
+function Service:register_all()
+    for sim, session in pairs(self.core.sessions) do
+        if session.teid and session.address then self:register(sim, session.address) end
+    end
+end
+
+--- Register phones' names where the settings say now, deleting them where they were.
+function Service:move_hostnames()
+    local before = self.hostnames
+    if before then
+        for _, old in pairs(before.names) do before.updater:delete(old.name, old.owner) end
+    end
+    self:start_hostnames()
+    self:register_all()
+end
+
+--[[- See or set where this network's phones' names are registered: at a DNS server (`dnsd`) which lets the core set
+names, in a zone (by default, the domain phones are given), with the key the server asks for. `server` is an address,
+or `false` to register none; `zone` a zone, or `false` for the domain; `key` a secret, or `false` for none; any left
+out stays as it is.
+]]
+function requests.hostnames(self, request, by)
+    local current = self.config.hostnames or {}
+    local server, zone, key = current.server, current.zone, current.key
+    if request.server ~= nil then
+        if request.server == false then
+            server = nil
+        else
+            server = server_address(request.server)
+            if not server then return { error = "The DNS server is an address, such as 10.0.0.53" } end
+        end
+    end
+    if request.zone ~= nil then
+        if request.zone == false then
+            zone = nil
+        else
+            zone = type(request.zone) == "string" and request.zone:lower():gsub("%.$", "") or nil
+            if not common.is_domain(zone) then
+                return { error = "A zone is names of letters, digits and dashes, separated by dots, such as acme" }
+            end
+        end
+    end
+    if request.key ~= nil then
+        if request.key == false then
+            key = nil
+        elseif is_secret(request.key) then
+            key = request.key
+        else
+            return { error = "A key is up to 128 characters, without spaces or #" }
+        end
+    end
+
+    if request.server ~= nil or request.zone ~= nil or request.key ~= nil then
+        local value = { server = server, zone = zone, key = key }
+        self:set_config("hostnames", (server or zone or key) and value or nil)
+        self:move_hostnames()
+        local where = self.hostnames and ("%s, in %s"):format(server, self.hostnames.zone)
+        self:log(("Phones' names are registered %s%s"):format(
+            where and "at " .. where or server and "nowhere: there's no zone for them" or "nowhere", self:by(by)
+        ))
+    end
+    return { server = server, zone = zone, domain = self.config.domain, key = key ~= nil }
 end
 
 --- Make an activation code for a subscriber.

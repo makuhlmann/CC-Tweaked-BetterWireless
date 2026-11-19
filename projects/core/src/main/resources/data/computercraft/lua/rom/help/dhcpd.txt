@@ -1,13 +1,18 @@
-dhcpd is a DHCP server: it hands out addresses to computers on one of its interfaces, which must have a fixed address. Leases are saved, so computers keep their addresses when the server restarts.
+dhcpd is a DHCP server: it hands out addresses to computers on one of its interfaces, which must have a fixed address, and may register their names at a DNS server (dnsd). Leases are saved in /etc/dhcpd.leases, so computers keep their addresses when the server restarts. It runs in the background, as a service (see "help service"), and starts with the computer. What it hands out is in its log.
 
-It runs in the background, as a service (see "help service"), and starts with the computer. What it hands out is in its log.
+Its settings are in /etc/dhcpd.conf, which it writes the first time it starts, for the first interface with a fixed address. Each line is a setting's name, then its values, separated by spaces, and # starts a comment. Changes take effect when it starts again ("dhcpd restart"):
+- "interface top" hands out addresses on the interface top. "address 10.0.0.1" uses the interface with that address instead.
+- "range 100 199" hands out .100 to .199 of the network (the default). "range 10.0.0.50 10.0.0.80" gives the addresses.
+- "lease 3600" makes leases last an hour (30 seconds to a week). Clients renew them halfway through.
+- "gateway 10.0.0.1", "dns 10.0.0.1 10.0.0.2" and "domain home" are passed on to clients.
+- "update-server 10.0.0.1" registers each client's name (its hostname: the net.hostname setting, or its label) at that DNS server, for as long as its lease lasts, in the zone "update-zone home" (or else the domain). "update-key s3cret" signs the updates, if the server asks for a key. The server must let this computer update names (dnsd.conf's allow-update), unless it's this computer.
+- "host 12 10.0.0.50" gives computer 12 the address 10.0.0.50, always, and nobody else. It may be outside the range.
 
-The settings dhcpd.lease (seconds, default 3600), dhcpd.dns (DNS servers, separated by commas), dhcpd.domain and dhcpd.gateway are passed on to clients.
+Before, dhcpd took its interface and range as arguments, and the settings dhcpd.lease, dhcpd.dns, dhcpd.domain and dhcpd.gateway. The first time it starts, it moves them to /etc/dhcpd.conf, with its leases, and the settings go.
 
 ex:
-"dhcpd start top" hands out .100 to .199 of the network on the interface "top", from now on. "dhcpd top" does the same.
-"dhcpd start top 50 80" hands out .50 to .80.
+"dhcpd start" starts it, from now on.
+"dhcpd restart" starts it again, with its settings as they are now.
 "dhcpd stop" stops it, and it doesn't start with the computer.
-"dhcpd start" starts it again, as it was.
 "dhcpd status" says how it's doing, and what it's handed out.
-"dhcpd run top" hands out addresses in the foreground instead, until Ctrl+T is pressed.
+"dhcpd run" hands out addresses in the foreground instead, until Ctrl+T is pressed.

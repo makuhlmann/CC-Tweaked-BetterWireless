@@ -99,6 +99,25 @@ local function add(name, command, how_to_stop)
     started(name, how_to_stop)
 end
 
+--[[- Start a service afresh, running a command (which it's changed to, if it ran another), and say what it printed as
+it started.
+
+@tparam string name The service.
+@tparam { string... } command The program's path, from the root, and its arguments.
+@tparam string how_to_stop The command which stops it, to say so.
+]]
+local function restart(name, command, how_to_stop)
+    local before = service.status(name)
+    if not before or before.command ~= command_line(command) then
+        local ok, err = service.add(name, table.unpack(command))
+        if not ok then error(err, 0) end
+    else
+        local ok, err = service.restart(name)
+        if not ok then error(err, 0) end
+    end
+    started(name, how_to_stop)
+end
+
 --[[- Start a service, and say what it printed as it started.
 
 @tparam string name The service.
@@ -159,6 +178,6 @@ local function state_colour(state)
 end
 
 return {
-    describe = describe, show = show, add = add, start = start, stop = stop, status = status,
+    describe = describe, show = show, add = add, restart = restart, start = start, stop = stop, status = status,
     coloured = coloured, state_colour = state_colour,
 }
