@@ -6,7 +6,7 @@ ex:
 "ifconfig top dhcp" makes "top" ask a DHCP server again.
 "ifconfig top none" gives "top" no address at all.
 "ifconfig top band low" makes a wireless or ender modem use the long-range low band after the computer restarts.
-"ifconfig top channel 1450" puts a wireless or ender modem on a channel of its own after the computer restarts, instead of its band: every computer set to the same channel shares it, as a link of their own. A channel's number is its frequency in units of 100kHz, so 1450 is 145MHz. Channels from 300 to 65532 can be used, except those in the cellular bands.
+"ifconfig top channel 1450" puts a wireless or ender modem on a channel of its own after the computer restarts, instead of its band: every computer set to the same channel shares it, as a link of their own. A channel's number is its frequency in units of 100kHz, so 1450 is 145MHz. Channels from 300 to 65532 can be used. One in a cellular band is the link's on that modem: a phone on it can't hear cells there.
 "ifconfig top channel none" puts it back on its band.
 "ifconfig top psk correct horse" encrypts everything on "top" with the passphrase "correct horse". Every computer on the same network needs the same passphrase, and others can't read or join it. Anyone with the passphrase can read everything, so use secure connections for anything sensitive.
 "ifconfig top psk none" stops encrypting "top".

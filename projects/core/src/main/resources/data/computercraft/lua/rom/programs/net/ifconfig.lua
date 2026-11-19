@@ -152,6 +152,10 @@ if value == "channel" then
     save("net." .. name .. ".channel", channel)
     print(("%s will share channel %d (%gMHz) when the computer restarts. Every computer on the link needs the same one.")
         :format(name, channel, bands.frequency(channel)))
+    local band, part = bands.of(channel)
+    if part == "uplink" or part == "downlink" then
+        print(("It's in cellular band %s: a phone or cell on this modem can't use it."):format(band))
+    end
     return
 end
 

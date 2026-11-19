@@ -288,6 +288,16 @@ function Stack:set_listening(name, list)
     end
 end
 
+--- Which interface listens on a channel of a modem.
+--
+-- @tparam string modem The modem's peripheral name.
+-- @tparam number channel The channel.
+-- @treturn table|nil The interface, or `nil` if none does.
+function Stack:listener(modem, channel)
+    local listening = self.listening[modem]
+    return listening and listening[channel]
+end
+
 --- Whether an interface listens on a channel of a modem.
 --
 -- @tparam string modem The modem's peripheral name.

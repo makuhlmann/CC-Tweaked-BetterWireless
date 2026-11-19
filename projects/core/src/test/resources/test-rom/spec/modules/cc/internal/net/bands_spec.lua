@@ -100,27 +100,14 @@ describe("cc.internal.net.bands", function()
     end)
 
     it("says which channels a link of its own can use", function()
-        for _, channel in ipairs { 300, 1450, 1360, 24000, 65532 } do
+        -- Any band will do, cellular ones too.
+        for _, channel in ipairs { 300, 1450, 1360, 24000, 65532, 7935, 19200 } do
             expect({ bands.check_link_channel(channel) }):same { true }
         end
 
         local range = "A channel is a whole number from 300 to 65532 (30MHz to 6553.2MHz)"
         for _, channel in ipairs { 299, 65533, 65535, 1450.5, -1, 0 / 0, math.huge, "1450" } do
             expect({ bands.check_link_channel(channel) }):same { nil, range }
-        end
-
-        -- Not in the cellular bands, uplinks or downlinks, which phones and cells on the same modem need.
-        expect({ bands.check_link_channel(7935) }):same {
-            nil, "Channel 7935 (793.5MHz) is in cellular band b20 (800MHz), which phones and cells need",
-        }
-        expect({ bands.check_link_channel(19200) }):same {
-            nil, "Channel 19200 (1920MHz) is in cellular band b1 (2100MHz), which phones and cells need",
-        }
-        for _, band in ipairs(bands.cellular()) do
-            for _, range in ipairs { band.uplink, band.downlink } do
-                expect(bands.check_link_channel(range[1])):eq(nil)
-                expect(bands.check_link_channel(range[2])):eq(nil)
-            end
         end
     end)
 

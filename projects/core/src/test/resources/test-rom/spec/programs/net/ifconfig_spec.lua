@@ -59,9 +59,19 @@ describe("The ifconfig program", function()
             }
             expect(setting):eq(1450)
 
+            -- One in a cellular band is the link's on that modem, which it says.
+            result, setting = channel("net_spec_radio", "channel", "7935")
+            expect(result):matches {
+                ok = true, error = "",
+                output = "net_spec_radio will share channel 7935 (793.5MHz) when the computer restarts. Every computer on the link needs the same one.\n" ..
+                    "It's in cellular band b20: a phone or cell on this modem can't use it.\n",
+            }
+            expect(setting):eq(7935)
+            result, setting = channel("net_spec_radio", "channel", "1450")
+            expect(setting):eq(1450)
+
             -- Refusals leave it as it was.
             for _, bad in ipairs {
-                { { "net_spec_radio", "channel", "7935" }, "Channel 7935 (793.5MHz) is in cellular band b20 (800MHz), which phones and cells need\n" },
                 { { "net_spec_radio", "channel", "65535" }, "A channel is a whole number from 300 to 65532 (30MHz to 6553.2MHz)\n" },
                 { { "net_spec_radio", "channel", "fm" }, "A channel is a whole number from 300 to 65532 (30MHz to 6553.2MHz)\n" },
                 { { "net_spec_radio:low", "channel", "1500" }, "Only a modem's own interface can: net_spec_radio here.\n" },

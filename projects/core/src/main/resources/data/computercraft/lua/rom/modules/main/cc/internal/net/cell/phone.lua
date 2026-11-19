@@ -366,6 +366,13 @@ function Phone:update_listening()
     local serving = self.cell and self.uplinks[self.cell]
     if serving then wanted[bands.carrier_of(serving)] = true end
     if self.state == "attached" and self.here.dl then wanted[self.here.dl] = true end
+    -- A channel another interface on the modem has (a link of its own, put there by hand) is that one's: we can't
+    -- hear cells there on this modem.
+    local interface = self.stack.interfaces[INTERFACE]
+    for channel in pairs(wanted) do
+        local other = self.stack:listener(self.modem, channel)
+        if other and other ~= interface then wanted[channel] = nil end
+    end
 
     local changed = false
     for channel in pairs(wanted) do

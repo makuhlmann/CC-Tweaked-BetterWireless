@@ -202,14 +202,14 @@ describe("The net library", function()
                     for _, channel in ipairs(channels) do expect(channel):eq(1450) end
                 end, true)
 
-                -- One in a cellular band can't be: the radio uses its band, and says why.
-                settings.set(SETTING, 7935)
+                -- One which can't be (rednet's): the radio uses its band, and says why.
+                settings.set(SETTING, 65533)
                 with_modem(function(name)
                     expect(interface(name)):matches { band = "high", listen = { 24000 } }
                     expect(interface(name).channel):eq(nil)
                     local said = false
                     for _, message in ipairs(net.getErrors()) do
-                        if message == "Bad channel for net_spec_modem: Channel 7935 (793.5MHz) is in cellular band b20 (800MHz), which phones and cells need" then
+                        if message == "Bad channel for net_spec_modem: A channel is a whole number from 300 to 65532 (30MHz to 6553.2MHz)" then
                             said = true
                         end
                     end

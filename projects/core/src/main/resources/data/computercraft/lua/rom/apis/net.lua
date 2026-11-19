@@ -32,8 +32,9 @@ An interface on the other band of the same modem can be added by setting `net.<n
 
 For a link of their own, radios can instead share one channel: set `net.<name>.channel` to the same channel on each
 (a channel's number is its frequency in units of 100kHz, so channel 1450 is 145MHz). Every computer on it sends and
-listens on that channel. Channels from 300 to 65532 can be used, except those in the cellular bands. Like the band, it
-takes effect when the computer starts.
+listens on that channel. Channels from 300 to 65532 can be used. One in a cellular band is the link's on that modem: a
+phone there can't listen for cells on it, nor a cell use it as its uplink. Like the band, it takes effect when the
+computer starts.
 
 Programs talk with datagrams ([`net.udp`]), single messages which may be lost, or connections ([`net.tcp`]), which
 deliver messages in order and exactly once, resending any which are lost. [`net.stream`] reads and writes bytes over a

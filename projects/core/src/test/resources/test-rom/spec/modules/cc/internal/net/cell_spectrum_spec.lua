@@ -9,6 +9,7 @@ describe("A network's carriers", function()
     local helpers = require "support.net_helpers"
     local bands = require "cc.internal.net.bands"
     local common = require "cc.internal.net.cell.common"
+    local cell_phone = require "cc.internal.net.cell.phone"
     local operator = require "support.cell_network".operator
 
     local ip = helpers.ip
@@ -136,6 +137,32 @@ describe("A network's carriers", function()
         wait_until(net, function() return on(site)["b7/3"] ~= nil end, 10, "Going back on band 7")
         expect(on(site)):same { ["b20/1"] = 11, ["b7/3"] = outside }
         wait_until(net, function() return phone.state == "attached" and phone.cell == outside end, 30, "Attaching again")
+        expect(net.errors):same {}
+    end)
+
+    it("leave a phone deaf on one which a link of its own has on the phone's modem", function()
+        math.randomseed(23)
+        local acme = operator({ 0 }, { carriers = { "b20/1" } })
+        local net = acme.net
+        local B20_1 = bands.parse_carrier("b20/1")
+        wait_until(net, function() return state(acme.towers[1]) == "serving" end, 10, "Going on the air")
+
+        -- A link set by hand to the carrier's beacon channel. It was there first, as when the computer starts: the
+        -- phone comes onto the modem after it.
+        local phone, stack = acme.add_phone(1, 5)
+        stack:remove_interface(cell_phone.INTERFACE)
+        stack:add_interface("link", "air", "wireless", B20_1)
+        phone:set_modem("air", "wireless")
+        local listen = stack.interfaces[cell_phone.INTERFACE].listen
+        expect({ listen[B20_1], listen[B3_1] }):same { nil, true }
+        expect(stack:listener("air", B20_1).name):eq("link")
+        net.advance(10)
+        expect(phone.state):eq("searching")
+
+        -- Once the link has gone, the phone hears its cell there again.
+        stack:remove_interface("link")
+        phone:set_modem("air", "wireless")
+        wait_until(net, function() return phone.state == "attached" end, 20, "Attaching")
         expect(net.errors):same {}
     end)
 
