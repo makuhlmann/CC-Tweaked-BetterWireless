@@ -16,6 +16,7 @@ each line, as a zone's own file has.
 ]]
 
 local address = require "cc.net.address"
+local dns = require "cc.internal.net.dns"
 
 --- Where `dnsd` keeps its settings.
 local DNSD_CONF = "/etc/dnsd.conf"
@@ -199,14 +200,16 @@ local function dnsd(text)
     return config, errors
 end
 
---[[- Read the names in dnsd's zones: a `[zone]` line, then a name (`@` for the zone itself) and an address on each line.
+--[[- Read the names in dnsd's zones: a `[zone]` line, then a name (`@` for the zone itself) and its address on each
+line, or the name it's an alias for (as `dns.parse_record` reads them).
 
 @tparam string text What `/etc/dnsd.zones` says.
-@treturn { [string] = { [string] = number } } Each zone's names, by name within the zone.
+@treturn { [string] = { [string] = number|string } } Each zone's names, by name within the zone, with their addresses
+or the full names they're aliases for.
 @treturn { string... } What's wrong with it, by line.
 ]]
 local function zones(text)
-    local result, errors, current = {}, {}, nil
+    local result, errors, current, current_zone = {}, {}, nil, nil
     local number = 0
     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
         number = number + 1
@@ -216,24 +219,24 @@ local function zones(text)
         if header then
             local zone = zone_of(header)
             if zone then
-                current = result[zone] or {}
+                current, current_zone = result[zone] or {}, zone
                 result[zone] = current
             else
                 current = nil
                 errors[#errors + 1] = ("Line %d: %s isn't a zone"):format(number, header)
             end
         elseif name then
-            local addr, prefix = address.parse(value)
+            local key, record
+            if current then key, record = dns.parse_record(name, value, current_zone) end
             if not current then
                 errors[#errors + 1] = ("Line %d: names come after their zone, such as [home]"):format(number)
-            elseif not addr or prefix then
-                errors[#errors + 1] = ("Line %d: expected a name and an address"):format(number)
+            elseif not key then
+                errors[#errors + 1] = ("Line %d: %s"):format(number, record)
             else
-                local key = name:lower():gsub("%.$", "")
-                current[key] = addr
+                current[key] = record
             end
         elseif line:find("%S") then
-            errors[#errors + 1] = ("Line %d: expected a name and an address"):format(number)
+            errors[#errors + 1] = ("Line %d: expected a name, then its address or the name it's an alias for"):format(number)
         end
     end
     return result, errors
@@ -382,7 +385,8 @@ local function zones_default(zone_names)
     local sections = {}
     for i, zone in ipairs(zone_names) do sections[i] = ("[%s]\n#   printer 10.0.0.5\n"):format(zone) end
     return ([[
-# The names in dnsd's zones: a [zone] line, and then a name and an address on each line. "@" is the zone itself.
+# The names in dnsd's zones: a [zone] line, and then a name and its address on each line. "@" is the zone itself.
+# A name may be an alias for another instead: "www shop" for shop in the same zone, "mail mail.corp" for any other.
 # dnsd reads this file again whenever it changes.
 
 %s]]):format(table.concat(sections, "\n"))

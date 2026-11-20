@@ -1,2 +1,4 @@
 # Used by the network stack's DHCP game test.
 server 10.0.0.1
+# An alias, which the server follows for its clients.
+www server

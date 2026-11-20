@@ -560,6 +560,8 @@ DNS also runs over datagrams, on port 53.
   agree among themselves who runs which top-level name.
 - **Record types:**
   - `A`: name to address
+  - `CNAME`: name to another name, which it's an alias for. A server follows it, and answers with the alias, then the
+    other name's records, so clients need only look for the `A` record.
   - `PTR` (later): address to name
   - `SRV`: service to host and port. It replaces `rednet.host` and `rednet.lookup`: `chat` maps to every computer
     offering chat.
@@ -570,6 +572,13 @@ DNS also runs over datagrams, on port 53.
   `/etc/dnsd.zones`, or a file of its own (`zone shop.home /zones/shop.zone`), with one `name address` pair per line
   (`@` is the zone itself). A name is answered by the most specific zone it's in. Each file is read again when it
   changes, so edits apply at once. One computer runs one `dnsd`, as it holds port 53.
+- **Aliases:** a name in a zone's file may stand for another name instead of an address: `www shop` for `shop` in the
+  same zone (`@` for the zone itself), and `mail mail.corp` (with or without a dot at the end) for a name written in
+  full. `dnsd` follows it wherever it leads: its own zones, names set by updates (so an alias for a DHCP client's name
+  follows its address), or other servers, asked as any other name is; the answer is kept for the name it's for. One
+  which leads round in a circle, or through more than eight aliases, isn't found, and `dnsd` says so as it reads the
+  files. An alias can't be set by an update, as it's in the zone's file. The logic is in `dns.relay`, and
+  `dns.parse_record` reads them.
 - **Updates:** `{ op = "update", id, zone, name, address?, lifetime?, owner }` on port 53 sets a name in one of the
   zones (or deletes it, without an address), as `dhcpd` does for its clients and `cellcore` for its phones. Only this
   computer and those `allow-update` names may; with a `key`, an update must also be signed (an HMAC of everything in

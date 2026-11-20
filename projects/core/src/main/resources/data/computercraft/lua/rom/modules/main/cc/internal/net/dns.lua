@@ -17,8 +17,10 @@ There are two ways to find a name:
 
 A question is `{ id = number, name = string, type = "A" or "SRV", hops? = number }`, and an answer
 `{ id = number, code = "ok" or "not_found" or "refused", records = { { name, type, value, ttl }... } }`. An `"A"` record's
-value is an address, and an `"SRV"` record's is `{ host = string, address = number, port = number }`. `hops` is how
-many times a question has been forwarded already: none, if it isn't there.
+value is an address, and an `"SRV"` record's is `{ host = string, address = number, port = number }`. A name may be an
+alias for another name: its `"CNAME"` record's value is that name, and the records for that name come after it (as many
+as there are, if it's an alias too). `hops` is how many times a question has been forwarded already: none, if it isn't
+there.
 
 A DNS server may also be told to set or delete a name in one of its zones (see [`update_message`]), as DHCP servers do
 for their clients' names: `{ op = "update", id, zone, name, address?, lifetime?, owner, time?, mac? }`, answered with
@@ -47,6 +49,10 @@ local FORWARD_DEADLINES = { [0] = 1.2, 0.8, 0.4 }
 --- How long a DNS server waits for any one server it forwards a question to, before asking the next, in seconds.
 local FORWARD_TIMEOUT = 0.6
 
+--- How many aliases a DNS server follows for one question, at most: a name which is an alias for an alias for another,
+-- more times than this (or round in a circle), isn't found.
+local MAX_ALIASES = 8
+
 --- How long a DNS server remembers that a name it forwarded a question about doesn't exist, in seconds.
 local NOT_FOUND_TTL = 10
 
@@ -74,6 +80,20 @@ local UPDATE_ATTEMPTS = 3
 -- @treturn string The normalised name.
 local function normalise(name)
     return (name:lower():gsub("%.$", ""))
+end
+
+-- Whether text is a name within a zone, as a computer's hostname is: one label.
+local function is_label(value)
+    return type(value) == "string" and #value >= 1 and #value <= 63 and value:find("^[%l%d%-]+$") ~= nil
+end
+
+-- Whether text is a full name: labels, separated by dots.
+local function is_name(value)
+    if type(value) ~= "string" or #value < 1 or #value > 253 then return false end
+    for label in (value .. "."):gmatch("([^%.]*)%.") do
+        if not is_label(label) then return false end
+    end
+    return true
 end
 
 --[[- Answer questions about this computer's `.local` name and services.
@@ -318,23 +338,68 @@ local function lookup(stack, service, timeout, callback)
         function() callback(results) end)
 end
 
---- Parse a zone file: one `name address` pair per line, with `#` starting a comment. `@` means the zone itself.
+--[[- Read a name in a zone, as a zone file has it: the name, then its address, or the name it's an alias for. A name
+without dots is in the same zone (`@` is the zone itself), and a name with dots is written in full, with or without a
+dot at the end.
+
+@tparam string name The name within the zone, such as `"www"`, or `"@"` for the zone itself.
+@tparam string value Its address, or the name it's an alias for, such as `"10.0.0.5"`, `"shop"` or `"mail.corp."`.
+@tparam string zone The zone the name is in, such as `"home"`.
+@treturn[1] string The name within the zone, as it's kept.
+@treturn[1] number|string Its address, or the full name it's an alias for.
+@treturn[2] nil If it can't be read.
+@treturn[2] string Why not.
+]]
+local function parse_record(name, value, zone)
+    zone = normalise(zone)
+    local key = normalise(name)
+    local addr, prefix = address.parse(value)
+    if addr and not prefix then return key, addr end
+    if value:find("^[%d%./]+$") and value:find("[%./]") then return nil, ("%s isn't an address"):format(value) end
+
+    local target
+    if value == "@" then
+        target = zone
+    elseif value:find(".", 1, true) then
+        target = normalise(value)
+    else
+        target = value:lower() .. "." .. zone
+    end
+    if not is_name(target) then return nil, ("%s isn't an address or a name"):format(value) end
+    if target == "local" or target:sub(-6) == ".local" then
+        return nil, ("%s is a .local name, which only the computers on a link answer for"):format(value)
+    end
+    if target == (key == "@" and zone or key .. "." .. zone) then return nil, ("%s is an alias for itself"):format(name) end
+    return key, target
+end
+
+--- The error for a line which isn't a name and what it stands for.
+local BAD_LINE = "expected a name, then its address or the name it's an alias for"
+
+--- Parse a zone file: a name and its address (or the name it's an alias for) on each line, as [`parse_record`] reads
+-- them, with `#` starting a comment.
 --
 -- @tparam string text The file's contents.
--- @treturn { [string] = number } The records.
+-- @tparam string zone The zone it's for.
+-- @treturn { [string] = number|string } The records: each name within the zone, and its address or the full name
+-- it's an alias for.
 -- @treturn { string... } Any lines which couldn't be read.
-local function parse_zone(text)
+local function parse_zone(text, zone)
     local records, errors = {}, {}
     local line_number = 0
     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
         line_number = line_number + 1
         line = line:gsub("#.*", "")
         local name, value = line:match("^%s*(%S+)%s+(%S+)%s*$")
-        local addr = value and address.parse(value)
-        if addr then
-            records[normalise(name)] = addr
+        if name then
+            local key, result = parse_record(name, value, zone)
+            if key then
+                records[key] = result
+            else
+                errors[#errors + 1] = ("Line %d: %s"):format(line_number, result)
+            end
         elseif line:find("%S") then
-            errors[#errors + 1] = ("Line %d: expected a name and an address"):format(line_number)
+            errors[#errors + 1] = ("Line %d: %s"):format(line_number, BAD_LINE)
         end
     end
     return records, errors
@@ -346,7 +411,8 @@ Server.__index = Server
 --[[- Create a DNS server's logic, for one zone. The server itself is up to the caller.
 
 @tparam string zone The zone, such as `"home"`. The server answers for names ending in it.
-@tparam { [string] = number } records Names within the zone (such as `"bank"` for `bank.home`), with their addresses.
+@tparam { [string] = number|string } records Names within the zone (such as `"bank"` for `bank.home`), with their
+addresses, or the full names they're aliases for.
 @tparam[opt] function():{ [string] = number } extra More names, looked up for each question, such as DHCP clients.
 @treturn table The server.
 ]]
@@ -366,7 +432,8 @@ function Server:within(name)
     return nil
 end
 
---- Answer a question.
+--- Answer a question. An alias is answered with the name it's an alias for, alone: following it is up to whoever asked
+-- (see [`relay`]).
 --
 -- @param question The question.
 -- @treturn table|nil The answer, or `nil` if the question wasn't valid.
@@ -379,10 +446,11 @@ function Server:handle(question)
 
     if question.type ~= "A" then return { id = question.id, code = "not_found" } end
 
-    local addr = self.records[relative]
-    if not addr and self.extra then addr = self.extra()[relative] end
-    if not addr then return { id = question.id, code = "not_found" } end
-    return { id = question.id, code = "ok", records = { { name = name, type = "A", value = addr, ttl = 60 } } }
+    local value = self.records[relative]
+    if value == nil and self.extra then value = self.extra()[relative] end
+    if value == nil then return { id = question.id, code = "not_found" } end
+    local kind = type(value) == "string" and "CNAME" or "A"
+    return { id = question.id, code = "ok", records = { { name = name, type = kind, value = value, ttl = 60 } } }
 end
 
 local Forward = { within = Server.within }
@@ -408,7 +476,9 @@ question for another server's DNS port).
 
 A name is answered by the most specific zone it's in. Names in a zone which is forwarded (from [`forward`]) are asked
 of its servers, and names in none of the servers to forward to: each server in turn, until one answers, or says the
-name doesn't exist, which is passed back. If every server refuses, or none answers in time, the
+name doesn't exist, which is passed back. An alias in one of its zones is followed, wherever it leads, and the answer
+says each alias, then the records for the name at the end: an alias for a name which doesn't exist, or for more aliases
+than `MAX_ALIASES` (or round in a circle), isn't found. If every server refuses, or none answers in time, the
 question is refused, so whoever asked tries their next server. Each forwarded question carries how many times it's been
 forwarded, and the deadline for each time is shorter, so a chain of servers answers before the first gives up; one
 forwarded too many times is refused, which also ends loops between servers. Answers are kept for as long as they say
@@ -444,6 +514,15 @@ local function reply(client, id, code, records)
     return { client = client, answer = { id = id, code = code, records = records } }
 end
 
+-- The aliases followed to a name, then its records: new, so what's kept isn't changed.
+local function joined(aliases, records)
+    if not aliases[1] or type(records) ~= "table" then return records end
+    local result = {}
+    for i, record in ipairs(aliases) do result[i] = record end
+    for _, record in ipairs(records) do result[#result + 1] = record end
+    return result
+end
+
 --[[- A question from a client.
 
 @param question The question.
@@ -452,9 +531,27 @@ end
 ]]
 function Relay:question(question, client)
     if type(question) ~= "table" or type(question.id) ~= "number" or type(question.name) ~= "string" then return {} end
-    local name = normalise(question.name)
+    return self:resolve(question, client, normalise(question.name), {})
+end
+
+-- Answer a question about a name, which the aliases followed so far lead to.
+function Relay:resolve(question, client, name, aliases)
     local zone = self:zone_of(name)
-    if zone and not zone.servers then return { { client = client, answer = zone:handle(question) } } end
+    if zone and not zone.servers then
+        local answer = zone:handle({ id = question.id, name = name, type = question.type })
+        local record = answer.code == "ok" and answer.records[1]
+        if not record or record.type ~= "CNAME" then
+            return { reply(client, question.id, answer.code, answer.code == "ok" and joined(aliases, answer.records) or nil) }
+        end
+
+        -- An alias: on to the name it's for, unless that's been followed too far, or comes back round.
+        if #aliases >= MAX_ALIASES then return { reply(client, question.id, "not_found") } end
+        for _, each in ipairs(aliases) do
+            if each.name == record.value then return { reply(client, question.id, "not_found") } end
+        end
+        aliases[#aliases + 1] = record
+        return self:resolve(question, client, record.value, aliases)
+    end
 
     -- Forwarded more times than there are deadlines for (or nonsense): no further.
     local hops = question.hops or 0
@@ -463,7 +560,9 @@ function Relay:question(question, client)
     local now = self.clock()
     local key = name .. " " .. tostring(question.type)
     local cached = self.cache[key]
-    if cached and cached.expires > now then return { reply(client, question.id, cached.code, cached.records) } end
+    if cached and cached.expires > now then
+        return { reply(client, question.id, cached.code, joined(aliases, cached.records)) }
+    end
 
     local servers = zone and zone.servers or self.forward()
     if not servers[1] or self.forwarding >= MAX_FORWARDING then return { reply(client, question.id, "refused") } end
@@ -471,7 +570,7 @@ function Relay:question(question, client)
     self.forwarding = self.forwarding + 1
     return self:ask_next({
         client = client, id = question.id, name = name, type = question.type, hops = hops + 1, key = key,
-        servers = servers, server = 0, deadline = now + FORWARD_DEADLINES[hops],
+        aliases = aliases, servers = servers, server = 0, deadline = now + FORWARD_DEADLINES[hops],
     }, now)
 end
 
@@ -529,7 +628,7 @@ function Relay:answer(answer, from)
         self.forwarding = self.forwarding - 1
         local records = answer.code == "ok" and answer.records or nil
         self:keep(forwarded.key, answer.code, records)
-        return { reply(forwarded.client, forwarded.id, answer.code, records) }
+        return { reply(forwarded.client, forwarded.id, answer.code, joined(forwarded.aliases, records)) }
     end
 
     -- Refused (or nonsense): another server may know.
@@ -556,6 +655,41 @@ end
 -- @treturn boolean Whether there are.
 function Relay:busy()
     return self.forwarding > 0
+end
+
+--[[- Find the aliases in a DNS server's zones which are never found: those which lead round in a circle, or through more
+aliases than `MAX_ALIASES`.
+
+@tparam { table... } zones The zones (from [`server`] and [`forward`]).
+@treturn { string... } What's wrong with each, sorted.
+]]
+local function bad_aliases(zones)
+    local relay, result = new_relay { zones = zones, forward = function() return {} end, clock = function() return 0 end }, {}
+    for _, zone in ipairs(zones) do
+        for name, value in pairs(zone.servers and {} or zone.records) do
+            local full = name == "@" and zone.zone or name .. "." .. zone.zone
+            if type(value) == "string" and relay:zone_of(full) == zone then
+                local seen, count = { [full] = true }, 0
+                while type(value) == "string" do
+                    count = count + 1
+                    if seen[value] then
+                        result[#result + 1] = ("%s isn't found: its aliases go round in a circle"):format(full)
+                        break
+                    elseif count > MAX_ALIASES then
+                        result[#result + 1] = ("%s isn't found: it's an alias for an alias, more than %d times over")
+                            :format(full, MAX_ALIASES)
+                        break
+                    end
+                    seen[value] = true
+                    local owner = relay:zone_of(value)
+                    local relative = owner and not owner.servers and owner:within(value)
+                    value = relative and owner.records[relative]
+                end
+            end
+        end
+    end
+    table.sort(result)
+    return result
 end
 
 -- What an update's signature covers: everything it says, in order.
@@ -596,10 +730,6 @@ end
 
 local Names = {}
 Names.__index = Names
-
-local function is_label(value)
-    return type(value) == "string" and #value >= 1 and #value <= 63 and value:find("^[%l%d%-]+$") ~= nil
-end
 
 local function is_owner(value)
     return type(value) == "string" and #value >= 1 and #value <= 64
@@ -848,16 +978,19 @@ return {
     UPDATE_ATTEMPTS = UPDATE_ATTEMPTS,
     UPDATE_WINDOW = UPDATE_WINDOW,
     MAX_NAMES = MAX_NAMES,
+    MAX_ALIASES = MAX_ALIASES,
     MDNS_PORT = MDNS_PORT,
     normalise = normalise,
     respond = respond,
     ask = ask,
     resolve = resolve,
     lookup = lookup,
+    parse_record = parse_record,
     parse_zone = parse_zone,
     server = new_server,
     forward = new_forward,
     relay = new_relay,
+    bad_aliases = bad_aliases,
     update_message = update_message,
     names = new_names,
     handle_update = handle_update,

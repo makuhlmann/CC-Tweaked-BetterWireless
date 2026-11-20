@@ -87,10 +87,12 @@ end
 local served = {}
 for _, zone in ipairs(config.zones) do served[zone.zone] = true end
 local zones_file = { stamp = false, zones = {} }
+-- Whether a file was read again since aliases were last checked.
+local reread = false
 local function zones_file_records()
     local now = stamp(conf.DNSD_ZONES)
     if now == zones_file.stamp then return zones_file.zones end
-    zones_file.stamp, zones_file.zones = now, {}
+    zones_file.stamp, zones_file.zones, reread = now, {}, true
     local text = now and conf.read(conf.DNSD_ZONES)
     if not text then return zones_file.zones end
     local result, errors = conf.zones(text)
@@ -110,10 +112,10 @@ local function records(zone)
     if not zone.file then return zones_file_records()[zone.zone] or {} end
     local now = stamp(zone.file)
     if now == zone.stamp then return zone.records end
-    zone.stamp, zone.records = now, {}
+    zone.stamp, zone.records, reread = now, {}, true
     local text = now and conf.read(zone.file)
     if not text then return zone.records end
-    local result, errors = dns.parse_zone(text)
+    local result, errors = dns.parse_zone(text, zone.zone)
     for _, err in ipairs(errors) do printError(zone.file .. ": " .. err) end
     zone.records = result
     return result
@@ -153,6 +155,11 @@ local function servers()
     end
     for _, zone in ipairs(config.forward) do
         result[#result + 1] = dns.forward(zone.zone, others(zone.servers))
+    end
+    -- Aliases which are never found are said once, when they're read.
+    if reread then
+        reread = false
+        for _, problem in ipairs(dns.bad_aliases(result)) do printError(problem) end
     end
     return result
 end
@@ -203,6 +210,8 @@ for _, zone in ipairs(config.forward) do
 end
 if config.upstream[1] then print(("Asking %s about other names."):format(formatted(config.upstream))) end
 if config.key then print("Updates must be signed with the key.") end
+-- Read the zones now, so what's wrong with them is said straight away.
+servers()
 if not service.current() then print("Press Ctrl+T to stop.") end
 
 local relay = dns.relay { zones = {}, forward = function() return others(config.upstream) end, clock = os.clock }

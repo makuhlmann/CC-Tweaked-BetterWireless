@@ -10,6 +10,8 @@ dnsd may have no zones of its own, and only ask other servers.
 
 /etc/dnsd.zones has a [zone] line before each zone's names, then a name and an address on each line ("bank 10.0.0.5" is bank.home; "@" is the zone itself). A zone's own file has just the names. They're read again whenever they change, so edits apply at once.
 
+A name may be an alias for another name instead of an address. "www bank" makes www.home an alias for bank.home, in the same zone ("www @" for the zone itself), and "mail mail.corp" for a name written in full, with or without a dot at the end. dnsd follows an alias wherever it leads: to a name in its zones, one set by an update (such as a DHCP client's or a phone's), or one it asks other servers about. Clients see the address at the end. An alias which leads round in a circle, or through more than eight aliases, isn't found, and dnsd says so as it reads the files.
+
 Names set by updates are kept in /etc/dnsd.leases until they expire, or are deleted. A name in a zone's file can't be set, and one set for a computer (or a phone) can't be taken by another until it expires. Answers from other servers are kept for as long as they say, and that a name doesn't exist for a few seconds. If no server answers, the question is refused, so whoever asked tries their next server. A question is forwarded at most three times along a chain of servers, so servers which forward to each other don't pass it round for ever.
 
 Clients find the server through DHCP (dhcpd.conf's dns and domain), the settings net.dns and net.domain, or their cellular network.

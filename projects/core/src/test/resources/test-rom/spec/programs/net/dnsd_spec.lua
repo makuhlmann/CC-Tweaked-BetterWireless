@@ -43,7 +43,12 @@ describe("The dnsd program", function()
                         local answer = socket:receive(0.2)
                         while answer and answer.id ~= message.id do answer = socket:receive(0.2) end
                         if answer then
-                            answers[i] = answer.code == "ok" and answer.records and answer.records[1].value or answer.code
+                            -- The address, after any aliases.
+                            local value
+                            for _, record in ipairs(answer.code == "ok" and answer.records or {}) do
+                                if record.type == "A" then value = record.value end
+                            end
+                            answers[i] = value or answer.code
                             break
                         end
                     end
@@ -72,7 +77,20 @@ describe("The dnsd program", function()
         expect(result.output):eq("Answering for home and shop.\nPress Ctrl+T to stop.\n")
         -- What's wrong with the zones file is said once, not for every question.
         expect(result.error):eq(
-            "/etc/dnsd.zones: Line 3: expected a name and an address\n/etc/dnsd.zones: dnsd doesn't answer for elsewhere\n"
+            "/etc/dnsd.zones: Line 3: expected a name, then its address or the name it's an alias for\n"
+            .. "/etc/dnsd.zones: dnsd doesn't answer for elsewhere\n"
+        )
+    end)
+
+    it("follows aliases, and says which never lead anywhere when it reads them", function()
+        local answers, result = run({
+            ["/etc/dnsd.conf"] = "zone home\nzone shop /zones/shop.zone\n",
+            ["/etc/dnsd.zones"] = "[home]\nbank 10.0.0.5\nwww bank\ntill till.shop\nloop1 loop2\nloop2 loop1\n",
+            ["/zones/shop.zone"] = "till 10.0.0.7\nbank bank.home.\n",
+        }, { "www.home", "till.home", "bank.shop", "loop1.home" })
+        expect(answers):same { ip("10.0.0.5"), ip("10.0.0.7"), ip("10.0.0.5"), "not_found" }
+        expect(result.error):eq(
+            "loop1.home isn't found: its aliases go round in a circle\nloop2.home isn't found: its aliases go round in a circle\n"
         )
     end)
 

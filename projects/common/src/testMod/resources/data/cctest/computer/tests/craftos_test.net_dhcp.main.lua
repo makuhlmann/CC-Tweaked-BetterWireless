@@ -17,6 +17,10 @@ if not mine or not mine:find("^10%.0%.0%.1%d%d/24$") then error("No address from
 local addr, err = net.resolve("server")
 if addr ~= "10.0.0.1" then error("Cannot resolve server: " .. tostring(addr or err), 0) end
 
+-- An alias for it, which the server follows: clients know nothing of aliases.
+addr, err = net.resolve("www")
+if addr ~= "10.0.0.1" then error("Cannot resolve www: " .. tostring(addr or err), 0) end
+
 -- And the DHCP server registered our name in the zone, as it gave us our address.
 local own = mine:match("^[^/]+")
 local name = net.getHostname() .. ".test"

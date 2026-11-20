@@ -370,6 +370,135 @@ describe("cc.internal.net.dns", function()
         end)
     end)
 
+    describe("aliases", function()
+        local client = { "the client" }
+
+        local function answer_for(id, code, records)
+            return { { client = client, answer = { id = id, code = code, records = records } } }
+        end
+
+        local function a(name, addr) return { name = name, type = "A", value = ip(addr), ttl = 60 } end
+        local function cname(name, target) return { name = name, type = "CNAME", value = target, ttl = 60 } end
+
+        --[[ A server for "home" (with names registered there too) and "shop.home", which forwards "corp" to 10.0.0.8,
+        and other names to 10.0.0.9. ]]
+        local function setup(records)
+            local ids, home = 100, {
+                bank = ip("10.0.0.5"), www = "bank.home", cash = "till.shop.home", notebook = "laptop.home",
+                mail = "mail.corp", news = "news.away", gone = "nobody.home", loop1 = "loop2.home", loop2 = "loop1.home",
+            }
+            for name, value in pairs(records or {}) do home[name] = value end
+            local zones = {
+                dns.server("home", home, function() return { laptop = ip("10.0.0.100") } end),
+                dns.server("shop.home", { till = ip("10.0.0.7") }),
+                dns.forward("corp", { ip("10.0.0.8") }),
+            }
+            return dns.relay {
+                zones = zones,
+                forward = function() return { ip("10.0.0.9") } end,
+                clock = function() return 0 end,
+                random = function()
+                    ids = ids + 1
+                    return ids
+                end,
+            }, zones
+        end
+
+        it("are answered by a zone's server with the name they're for", function()
+            local server = dns.server("home", { www = "bank.home" })
+            expect(server:handle({ id = 1, name = "WWW.home", type = "A" })):same {
+                id = 1, code = "ok", records = { cname("www.home", "bank.home") },
+            }
+        end)
+
+        it("are followed to names in its own zones, and names registered there", function()
+            local relay = setup()
+            expect(relay:question({ id = 1, name = "www.home", type = "A" }, client))
+                :same(answer_for(1, "ok", { cname("www.home", "bank.home"), a("bank.home", "10.0.0.5") }))
+            expect(relay:question({ id = 2, name = "cash.home", type = "A" }, client))
+                :same(answer_for(2, "ok", { cname("cash.home", "till.shop.home"), a("till.shop.home", "10.0.0.7") }))
+            expect(relay:question({ id = 3, name = "notebook.home", type = "A" }, client))
+                :same(answer_for(3, "ok", { cname("notebook.home", "laptop.home"), a("laptop.home", "10.0.0.100") }))
+            expect(relay:busy()):eq(false)
+        end)
+
+        it("are followed to other servers, and what they say is kept for the name itself", function()
+            local relay = setup()
+            expect(relay:question({ id = 7, name = "mail.home", type = "A" }, client)):same {
+                { server = ip("10.0.0.8"), question = { id = 101, name = "mail.corp", type = "A", hops = 1 } },
+            }
+            expect(relay:answer({ id = 101, code = "ok", records = { a("mail.corp", "10.1.0.25") } }, ip("10.0.0.8")))
+                :same(answer_for(7, "ok", { cname("mail.home", "mail.corp"), a("mail.corp", "10.1.0.25") }))
+
+            -- Kept: asked again, through the alias or not, it answers itself.
+            expect(relay:question({ id = 8, name = "mail.home", type = "A" }, client))
+                :same(answer_for(8, "ok", { cname("mail.home", "mail.corp"), a("mail.corp", "10.1.0.25") }))
+            expect(relay:question({ id = 9, name = "mail.corp", type = "A" }, client))
+                :same(answer_for(9, "ok", { a("mail.corp", "10.1.0.25") }))
+
+            -- Names in no zone here go upstream, and that one doesn't exist.
+            expect(relay:question({ id = 10, name = "news.home", type = "A" }, client)[1].server):eq(ip("10.0.0.9"))
+            expect(relay:answer({ id = 102, code = "not_found" }, ip("10.0.0.9"))):same(answer_for(10, "not_found"))
+        end)
+
+        it("aren't found when what they're for isn't, nor when they go round in a circle, or on too long", function()
+            local chain = {}
+            for i = 1, dns.MAX_ALIASES do chain["c" .. i] = i == dns.MAX_ALIASES and "bank.home" or ("c%d.home"):format(i + 1) end
+            chain.c0 = "c1.home"
+            local relay = setup(chain)
+            expect(relay:question({ id = 1, name = "gone.home", type = "A" }, client)):same(answer_for(1, "not_found"))
+            expect(relay:question({ id = 2, name = "loop1.home", type = "A" }, client)):same(answer_for(2, "not_found"))
+
+            -- As many as there may be are followed, but no more.
+            local answer = relay:question({ id = 3, name = "c1.home", type = "A" }, client)[1].answer
+            expect({ answer.code, #answer.records, answer.records[#answer.records] })
+                :same { "ok", dns.MAX_ALIASES + 1, a("bank.home", "10.0.0.5") }
+            expect(relay:question({ id = 4, name = "c0.home", type = "A" }, client)):same(answer_for(4, "not_found"))
+            expect(relay:busy()):eq(false)
+
+            -- Which is said, for the names in the zones' files.
+            local _, zones = setup(chain)
+            expect(dns.bad_aliases(zones)):same {
+                ("c0.home isn't found: it's an alias for an alias, more than %d times over"):format(dns.MAX_ALIASES),
+                "loop1.home isn't found: its aliases go round in a circle",
+                "loop2.home isn't found: its aliases go round in a circle",
+            }
+        end)
+
+        it("can't be set by updates", function()
+            local _, zones = setup()
+            local names = dns.names({}, function() return 1.7e9 end)
+            local answer = dns.handle_update(
+                dns.update_message({ zone = "home", name = "www", address = ip("10.0.0.100"), lifetime = 60, owner = "computer 12" }, nil, 0),
+                { zones = zones, names = names, allowed = true, epoch = 0, seen = {}, from = "10.0.0.1" })
+            expect({ answer.code, answer.error }):same { "taken", "www.home is in the zone's file" }
+        end)
+
+        it("are read from zone files, for names in the same zone or written in full", function()
+            local records, errors = dns.parse_zone("www bank\nmail mail.corp.\ntop @\nloop loop\nx 10.0.0.256\n", "Home")
+            expect(records):same { www = "bank.home", mail = "mail.corp", top = "home" }
+            expect(errors):same { "Line 4: loop is an alias for itself", "Line 5: 10.0.0.256 isn't an address" }
+        end)
+
+        it("are found by clients, which know nothing of them", function()
+            local net = network()
+            local a_stack = computer(net, 1, "10.0.0.1/24", "alpha")
+            local relay = dns.relay {
+                zones = { dns.server("home", { bank = ip("10.0.0.5"), www = "bank.home" }) },
+                forward = function() return {} end, clock = function() return 0 end,
+            }
+            local server = net.add(3, "10.0.0.3/24")
+            local socket
+            socket = server:udp_open(dns.DNS_PORT, function(question, from, port)
+                for _, item in ipairs(relay:question(question, { address = from, port = port })) do
+                    server:udp_send(socket, item.client.address, item.client.port, item.answer)
+                end
+            end)
+            expect(resolve(net, a_stack, "www.home", { servers = { ip("10.0.0.3") } })):eq(ip("10.0.0.5"))
+            expect(resolve(net, a_stack, "www", { servers = { ip("10.0.0.3") }, domain = "home" })):eq(ip("10.0.0.5"))
+        end)
+    end)
+
     describe("updates", function()
         local address = require "cc.net.address"
 
@@ -609,8 +738,8 @@ describe("cc.internal.net.dns", function()
     end)
 
     it("reads zone files", function()
-        local records, errors = dns.parse_zone("# My zone\nbank 10.0.0.5\n@ 10.0.0.1 # the server\n\nnonsense\n")
+        local records, errors = dns.parse_zone("# My zone\nbank 10.0.0.5\n@ 10.0.0.1 # the server\n\nnonsense\n", "home")
         expect(records):same { bank = ip("10.0.0.5"), ["@"] = ip("10.0.0.1") }
-        expect(errors):same { "Line 5: expected a name and an address" }
+        expect(errors):same { "Line 5: expected a name, then its address or the name it's an alias for" }
     end)
 end)

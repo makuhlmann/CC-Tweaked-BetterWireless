@@ -108,10 +108,41 @@ nonsense
             "Line 10: not a zone isn't a zone",
             "Line 11: names come after their zone, such as [home]",
             "Line 12: names come after their zone, such as [home]",
-            "Line 13: expected a name and an address",
+            "Line 13: expected a name, then its address or the name it's an alias for",
         }
         expect(select(2, conf.zones("x 10.0.0.1\n"))):same { "Line 1: names come after their zone, such as [home]" }
         expect(conf.zones(conf.zones_default({ "home", "shop" }))):same { home = {}, shop = {} }
+    end)
+
+    it("reads aliases in dnsd's zones, for names in the same zone or written in full", function()
+        local zones, errors = conf.zones [[
+[home]
+www shop
+WWW2 Shop.Corp.
+mail mail.corp
+top @
+1019 10.0.0.9
+pc 1019
+[shop.home]
+@ www.home
+bad 10.0.0.256
+bad a..b
+printer printer.local
+loop loop
+]]
+        expect(zones):same {
+            home = {
+                www = "shop.home", www2 = "shop.corp", mail = "mail.corp", top = "home", ["1019"] = ip("10.0.0.9"),
+                pc = "1019.home",
+            },
+            ["shop.home"] = { ["@"] = "www.home" },
+        }
+        expect(errors):same {
+            "Line 10: 10.0.0.256 isn't an address",
+            "Line 11: a..b isn't an address or a name",
+            "Line 12: printer.local is a .local name, which only the computers on a link answer for",
+            "Line 13: loop is an alias for itself",
+        }
     end)
 
     describe("dhcpd's settings", function()
