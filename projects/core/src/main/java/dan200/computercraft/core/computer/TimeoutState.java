@@ -56,6 +56,20 @@ public abstract class TimeoutState {
     public static final long ABORT_TIMEOUT = TimeUnit.MILLISECONDS.toNanos(1500);
 
     /**
+     * How long one wait on the disk counts towards the timeout, in nanoseconds. Should a wait take longer (the disk
+     * stalls under a backup, say), the rest of it doesn't count: the computer isn't running then, only waiting.
+     *
+     * @see #startBlocking()
+     */
+    public static final long BLOCKING_ALLOWANCE = TimeUnit.MILLISECONDS.toNanos(50);
+
+    /**
+     * The most time that waits on the disk may leave out of the timeout in one run of a computer, in nanoseconds. A
+     * disk that has stopped answering for good still ends in a timeout.
+     */
+    public static final long MAX_BLOCKED = TimeUnit.SECONDS.toNanos(30);
+
+    /**
      * The error message to display when we trigger an abort.
      */
     public static final String ABORT_MESSAGE = "Too long without yielding";
@@ -103,6 +117,22 @@ public abstract class TimeoutState {
      */
     public final boolean isHardAborted() {
         return hardAbort;
+    }
+
+    /**
+     * Say the computer is about to wait on the disk (to open, read, write or close a file, list a directory...).
+     * <p>
+     * Of each wait, only {@link #BLOCKING_ALLOWANCE} counts towards the timeout. A computer that does a lot of file work
+     * at a disk's usual speed still times out, but one whose disk stalls for a few seconds isn't killed for it. Waits
+     * may nest: only the outermost counts. Each call must be followed by {@link #stopBlocking()}.
+     */
+    public void startBlocking() {
+    }
+
+    /**
+     * Say the computer has finished a wait on the disk started with {@link #startBlocking()}.
+     */
+    public void stopBlocking() {
     }
 
     @GuardedBy("this")

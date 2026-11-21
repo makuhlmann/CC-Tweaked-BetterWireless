@@ -4,6 +4,7 @@
 
 package dan200.computercraft.core.computer.computerthread;
 
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import dan200.computercraft.core.computer.TimeoutState;
 
 /**
@@ -37,26 +38,73 @@ public abstract class ManagedTimeoutState extends TimeoutState {
      */
     private long pauseDeadline;
 
+    /**
+     * How many waits on the disk are under way. They may nest, and come from other threads (closing a computer's files
+     * as a disk is ejected).
+     *
+     * @see #startBlocking()
+     */
+    private int blocking;
+
+    /**
+     * When the outermost wait on the disk under way started.
+     */
+    private long blockingStart;
+
+    /**
+     * How much of the waits on the disk which have finished since this computer started running doesn't count towards
+     * its timeout.
+     */
+    private long blocked;
+
     @Override
     public final synchronized void refresh() {
         // Important: The weird arithmetic here is important, as nanoTime may return negative values, and so we
         // need to handle overflow.
         var now = System.nanoTime();
+        // Waits on the disk past their allowance don't count towards the timeout. (Pausing is about sharing the
+        // threads with other computers, so it goes by the time taken.)
+        var counted = now - blockedAt(now);
         var changed = false;
         if (!paused && Long.compareUnsigned(now, pauseDeadline) >= 0 && shouldPause()) { // now >= currentDeadline
             paused = true;
             changed = true;
         }
-        if (!softAbort && Long.compareUnsigned(now, abortDeadline) >= 0) { // now >= currentAbort
+        if (!softAbort && Long.compareUnsigned(counted, abortDeadline) >= 0) { // counted >= currentAbort
             softAbort = true;
             changed = true;
         }
-        if (softAbort && !hardAbort && Long.compareUnsigned(now, abortDeadline + ABORT_TIMEOUT) >= 0) { // now >= currentAbort + ABORT_TIMEOUT.
+        if (softAbort && !hardAbort && Long.compareUnsigned(counted, abortDeadline + ABORT_TIMEOUT) >= 0) { // counted >= currentAbort + ABORT_TIMEOUT.
             hardAbort = true;
             changed = true;
         }
 
         if (changed) updateListeners();
+    }
+
+    @Override
+    public final synchronized void startBlocking() {
+        if (blocking++ == 0) blockingStart = System.nanoTime();
+    }
+
+    @Override
+    public final synchronized void stopBlocking() {
+        if (blocking == 0) return;
+        if (blocking == 1) blocked = blockedAt(System.nanoTime());
+        blocking--;
+    }
+
+    /**
+     * How much time spent waiting on the disk doesn't count towards the timeout, up to now.
+     *
+     * @param now The time now, from {@link System#nanoTime()}.
+     * @return The time left out, in nanoseconds.
+     */
+    @GuardedBy("this")
+    private long blockedAt(long now) {
+        var total = blocked;
+        if (blocking > 0) total += Math.max(0, now - blockingStart - BLOCKING_ALLOWANCE);
+        return Math.min(total, MAX_BLOCKED);
     }
 
     /**
@@ -69,13 +117,15 @@ public abstract class ManagedTimeoutState extends TimeoutState {
     }
 
     /**
-     * Get how long this computer is permitted to run before being aborted.
+     * Get how long this computer is permitted to run before being aborted. Time spent waiting on the disk past its
+     * allowance doesn't count (see {@link #startBlocking()}).
      *
      * @return The remaining time, in nanoseconds.
      * @see ComputerScheduler.Executor#getRemainingTime()
      */
-    public final long getRemainingTime() {
-        return abortDeadline - System.nanoTime();
+    public final synchronized long getRemainingTime() {
+        var now = System.nanoTime();
+        return abortDeadline - (now - blockedAt(now));
     }
 
     /**
@@ -108,6 +158,8 @@ public abstract class ManagedTimeoutState extends TimeoutState {
         startTime = now;
         abortDeadline = now + BASE_TIMEOUT;
         pauseDeadline = now + pauseTimeout;
+        blocked = 0;
+        if (blocking > 0) blockingStart = now;
     }
 
     /**

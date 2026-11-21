@@ -9,7 +9,9 @@ import com.google.common.io.ByteStreams;
 import dan200.computercraft.api.filesystem.Mount;
 import dan200.computercraft.api.filesystem.WritableMount;
 import dan200.computercraft.core.CoreConfig;
+import dan200.computercraft.core.computer.TimeoutState;
 import dan200.computercraft.core.util.IoUtil;
+import org.jspecify.annotations.Nullable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -39,16 +41,67 @@ public class FileSystem {
     private final HashMap<WeakReference<FileSystemWrapper<?>>, SeekableByteChannel> openFiles = new HashMap<>();
     private final ReferenceQueue<FileSystemWrapper<?>> openFileQueue = new ReferenceQueue<>();
 
+    /**
+     * The computer's timeout, told whenever this waits on the disk, or {@code null}.
+     *
+     * @see TimeoutState#startBlocking()
+     */
+    private final @Nullable TimeoutState timeout;
+
     public FileSystem(String rootLabel, Mount rootMount) throws FileSystemException {
+        timeout = null;
         mount(rootLabel, "", rootMount);
     }
 
     public FileSystem(String rootLabel, WritableMount rootMount) throws FileSystemException {
+        this(rootLabel, rootMount, null);
+    }
+
+    /**
+     * Create a computer's file system.
+     *
+     * @param rootLabel The label of the root mount.
+     * @param rootMount The root mount.
+     * @param timeout   The computer's timeout, told whenever the file system waits on the disk, so that a disk which
+     *                  stalls doesn't make the computer time out.
+     * @throws FileSystemException If the root can't be mounted.
+     */
+    public FileSystem(String rootLabel, WritableMount rootMount, @Nullable TimeoutState timeout) throws FileSystemException {
+        this.timeout = timeout;
         mountWritable(rootLabel, "", rootMount);
+    }
+
+    /**
+     * A wait on the disk, ended by closing it.
+     */
+    private interface Blocking extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    private static final Blocking NOT_BLOCKING = () -> {
+    };
+
+    /**
+     * Tell the computer's timeout that we're about to wait on the disk.
+     *
+     * @return The wait, to close once done.
+     */
+    private Blocking blocking() {
+        var timeout = this.timeout;
+        if (timeout == null) return NOT_BLOCKING;
+        timeout.startBlocking();
+        return timeout::stopBlocking;
     }
 
     public void close() {
         // Close all dangling open files
+        try (var _ = blocking()) {
+            closeOpenFiles();
+        }
+    }
+
+    private void closeOpenFiles() {
         synchronized (openFiles) {
             for (Closeable file : openFiles.values()) IoUtil.closeQuietly(file);
             openFiles.clear();
@@ -83,11 +136,16 @@ public class FileSystem {
         var mount = mounts.remove(sanitizePath(path));
         if (mount == null) return;
 
-        cleanup();
-
         // Close any files which belong to this mount - don't want people writing to a disk after it's been ejected!
         // There's no point storing a Mount -> Wrapper[] map, as openFiles is small and unmount isn't called very
         // often.
+        try (var _ = blocking()) {
+            cleanup();
+            closeFilesOf(mount);
+        }
+    }
+
+    private void closeFilesOf(MountWrapper mount) {
         synchronized (openFiles) {
             for (var iterator = openFiles.keySet().iterator(); iterator.hasNext(); ) {
                 var reference = iterator.next();
@@ -142,11 +200,15 @@ public class FileSystem {
     }
 
     public synchronized long getSize(String path) throws FileSystemException {
-        return getMount(sanitizePath(path)).getSize(sanitizePath(path));
+        try (var _ = blocking()) {
+            return getMount(sanitizePath(path)).getSize(sanitizePath(path));
+        }
     }
 
     public synchronized BasicFileAttributes getAttributes(String path) throws FileSystemException {
-        return getMount(sanitizePath(path)).getAttributes(sanitizePath(path));
+        try (var _ = blocking()) {
+            return getMount(sanitizePath(path)).getAttributes(sanitizePath(path));
+        }
     }
 
     public synchronized List<String> list(String path) throws FileSystemException {
@@ -155,7 +217,9 @@ public class FileSystem {
 
         // Gets a list of the files in the mount
         List<String> list = new ArrayList<>();
-        mount.list(path, list);
+        try (var _ = blocking()) {
+            mount.list(path, list);
+        }
 
         // Add any mounts that are mounted at this location
         for (var otherMount : mounts.values()) {
@@ -172,19 +236,25 @@ public class FileSystem {
     public synchronized boolean exists(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        return mount.exists(path);
+        try (var _ = blocking()) {
+            return mount.exists(path);
+        }
     }
 
     public synchronized boolean isDir(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        return mount.isDirectory(path);
+        try (var _ = blocking()) {
+            return mount.isDirectory(path);
+        }
     }
 
     public synchronized boolean isReadOnly(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        return mount.isReadOnly(path);
+        try (var _ = blocking()) {
+            return mount.isReadOnly(path);
+        }
     }
 
     public synchronized String getMountLabel(String path) throws FileSystemException {
@@ -196,13 +266,17 @@ public class FileSystem {
     public synchronized void makeDir(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        mount.makeDirectory(path);
+        try (var _ = blocking()) {
+            mount.makeDirectory(path);
+        }
     }
 
     public synchronized void delete(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        mount.delete(path);
+        try (var _ = blocking()) {
+            mount.delete(path);
+        }
     }
 
     public synchronized void move(String sourcePath, String destPath) throws FileSystemException {
@@ -215,11 +289,13 @@ public class FileSystem {
         if (contains(sourcePath, destPath)) throw new FileSystemException("Can't move a directory inside itself");
 
         var mount = getMount(sourcePath);
-        if (mount == getMount(destPath)) {
-            mount.rename(sourcePath, destPath);
-        } else {
-            copy(sourcePath, destPath);
-            delete(sourcePath);
+        try (var _ = blocking()) {
+            if (mount == getMount(destPath)) {
+                mount.rename(sourcePath, destPath);
+            } else {
+                copy(sourcePath, destPath);
+                delete(sourcePath);
+            }
         }
     }
 
@@ -232,7 +308,9 @@ public class FileSystem {
         if (contains(sourcePath, destPath)) {
             throw new FileSystemException(sourcePath, "Can't copy a directory inside itself");
         }
-        copyRecursive(sourcePath, getMount(sourcePath), destPath, getMount(destPath), 0);
+        try (var _ = blocking()) {
+            copyRecursive(sourcePath, getMount(sourcePath), destPath, getMount(destPath), 0);
+        }
     }
 
     private synchronized void copyRecursive(String sourcePath, MountWrapper sourceMount, String destinationPath, MountWrapper destinationMount, int depth) throws FileSystemException {
@@ -285,6 +363,10 @@ public class FileSystem {
                 throw new FileSystemException("Too many files already open");
             }
 
+            // Reading, writing and closing the file wait on the disk too.
+            var timeout = this.timeout;
+            if (timeout != null) channel = new BlockingChannel(channel, timeout);
+
             var fsWrapper = new FileSystemWrapper<>(this, mount, channel, openFileQueue);
             openFiles.put(fsWrapper.self, channel);
             return fsWrapper;
@@ -298,33 +380,41 @@ public class FileSystem {
     }
 
     public synchronized FileSystemWrapper<SeekableByteChannel> openForRead(String path) throws FileSystemException {
-        cleanup();
+        try (var _ = blocking()) {
+            cleanup();
 
-        path = sanitizePath(path);
-        var mount = getMount(path);
-        var channel = mount.openForRead(path);
-        return openFile(mount, channel);
+            path = sanitizePath(path);
+            var mount = getMount(path);
+            var channel = mount.openForRead(path);
+            return openFile(mount, channel);
+        }
     }
 
     public synchronized FileSystemWrapper<SeekableByteChannel> openForWrite(String path, Set<OpenOption> options) throws FileSystemException {
-        cleanup();
+        try (var _ = blocking()) {
+            cleanup();
 
-        path = sanitizePath(path);
-        var mount = getMount(path);
-        var channel = mount.openForWrite(path, options);
-        return openFile(mount, channel);
+            path = sanitizePath(path);
+            var mount = getMount(path);
+            var channel = mount.openForWrite(path, options);
+            return openFile(mount, channel);
+        }
     }
 
     public synchronized long getFreeSpace(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        return mount.getFreeSpace();
+        try (var _ = blocking()) {
+            return mount.getFreeSpace();
+        }
     }
 
     public synchronized OptionalLong getCapacity(String path) throws FileSystemException {
         path = sanitizePath(path);
         var mount = getMount(path);
-        return mount.getCapacity();
+        try (var _ = blocking()) {
+            return mount.getCapacity();
+        }
     }
 
     private synchronized MountWrapper getMount(String path) throws FileSystemException {

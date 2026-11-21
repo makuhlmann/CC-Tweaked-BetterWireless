@@ -333,7 +333,7 @@ final class ComputerExecutor implements ComputerScheduler.Worker {
                 return null;
             }
 
-            filesystem = new FileSystem("hdd", mount);
+            filesystem = new FileSystem("hdd", mount, executor.timeoutState());
 
             var romMount = getRomMount();
             if (romMount == null) {

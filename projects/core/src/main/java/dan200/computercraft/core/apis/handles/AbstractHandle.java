@@ -8,6 +8,7 @@ import dan200.computercraft.api.lua.Coerced;
 import dan200.computercraft.api.lua.IArguments;
 import dan200.computercraft.api.lua.LuaException;
 import dan200.computercraft.api.lua.LuaFunction;
+import dan200.computercraft.core.filesystem.BlockingChannel;
 import dan200.computercraft.core.filesystem.TrackingCloseable;
 import dan200.computercraft.core.util.IoUtil;
 import org.jspecify.annotations.Nullable;
@@ -312,6 +313,7 @@ public abstract class AbstractHandle {
         try {
             // Technically this is not needed
             if (channel instanceof FileChannel channel) channel.force(false);
+            if (channel instanceof BlockingChannel channel) channel.force(false);
         } catch (IOException e) {
             throw new LuaException(e.getMessage());
         }

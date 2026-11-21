@@ -66,6 +66,31 @@ public class ComputerThreadTest {
         manager.startAndWait(computer);
     }
 
+    /**
+     * A computer whose disk stalls (a backup running, say) isn't killed for it: of a wait on the disk, only the
+     * allowance counts towards the timeout.
+     *
+     * @throws Exception If the computer fails.
+     */
+    @Test
+    public void testWaitOnDiskDoesNotTimeOut() throws Exception {
+        var computer = manager.createWorker((executor, timeout) -> {
+            executor.setRemainingTime(TimeUnit.MILLISECONDS.toNanos(500));
+
+            // Counted, this would be soft aborted after 0.5 s, and interrupted after 3.5 s.
+            timeout.startBlocking();
+            assertDoesNotThrow(() -> Thread.sleep(4_000), "A wait on the disk should not be interrupted");
+            timeout.stopBlocking();
+            assertFalse(timeout.isSoftAborted(), "A wait on the disk should not count towards the timeout");
+
+            // Running on, the time left (less the allowance) still runs out.
+            var delay = ConcurrentHelpers.waitUntil(timeout::isSoftAborted);
+            assertThat("Soft aborted once the time left is used", delay * 1e-9, closeTo(0.45, 0.25));
+        });
+
+        manager.startAndWait(computer);
+    }
+
     @Test
     public void testNoPauseIfNoOtherMachines() throws Exception {
         var computer = manager.createWorker((executor, timeout) -> {
