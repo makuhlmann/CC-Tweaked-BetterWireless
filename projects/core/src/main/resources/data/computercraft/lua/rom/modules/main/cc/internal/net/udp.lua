@@ -33,7 +33,8 @@ Datagrams sent to the socket's port are queued on the socket (at most 32, after 
 straight away, which the stack's own services use.
 
 @tparam[opt] number port The port, or `nil` for any free port from 49152 up.
-@tparam[opt] function(data:any, from:number, port:number, interface:string|nil) handler Called for each datagram.
+@tparam[opt] function(data:any, from:number, port:number, interface:string|nil, to:number) handler Called for each
+datagram, with where it's from, the interface it arrived on, and the address it was sent to.
 @tparam[opt] { size = number, encoded = number } limits How big datagrams sent from the socket may be: as big as
 programs may send, by default. The stack's own tunnels carry programs' messages, so need more room
 ([`cc.internal.net.message`]'s `TUNNEL`).
@@ -76,11 +77,14 @@ end
 @tparam number port The port to send it to.
 @param data The data: nothing, or a value which crosses every kind of link (see [`cc.internal.net.message`]).
 @tparam[opt] string name For broadcasts, the interface to send on.
+@tparam[opt] number source The address to send from, rather than the outgoing interface's: one of this computer's. A
+server on several networks answers from the address it was asked at, as whoever asked expects. Broadcasts, and
+datagrams to this computer itself, are sent from their own addresses whatever it is.
 @treturn[1] true If it was sent.
 @treturn[2] nil If it couldn't be.
 @treturn[2] string Why not.
 ]]
-function Udp:udp_send(socket, dst, port, data, name)
+function Udp:udp_send(socket, dst, port, data, name, source)
     -- A datagram some link on its way can't carry would be lost every time, and nobody told. Say so now instead.
     if data ~= nil then
         local ok, err = net_message.check(data, socket.limits)
@@ -93,7 +97,17 @@ function Udp:udp_send(socket, dst, port, data, name)
         return true
     end
 
-    local ok, err = self:send(dst, "udp", body)
+    local options
+    if source and dst ~= address.BROADCAST and not self:is_local(dst) then
+        local own = false
+        for _, interface in pairs(self.interfaces) do
+            if interface.address == source then own = true end
+        end
+        if not own then return nil, address.format(source) .. " isn't an address of this computer" end
+        options = { src = source }
+    end
+
+    local ok, err = self:send(dst, "udp", body, options)
     if not ok then return nil, err end
     return true
 end
@@ -109,11 +123,11 @@ function Udp:receive_udp(packet, interface)
     end
 
     local name = interface and interface.name
-    if socket.handler then return socket.handler(body.data, packet.src, body.sp, name) end
+    if socket.handler then return socket.handler(body.data, packet.src, body.sp, name, packet.dst) end
 
     local queue = socket.queue
     if #queue >= MAX_QUEUED_DATAGRAMS then return end
-    queue[#queue + 1] = { data = body.data, from = packet.src, port = body.sp, interface = name }
+    queue[#queue + 1] = { data = body.data, from = packet.src, port = body.sp, interface = name, to = packet.dst }
     if #queue == 1 then self.wake("net_datagram", socket.port) end
 end
 

@@ -217,10 +217,19 @@ if not service.current() then print("Press Ctrl+T to stop.") end
 local relay = dns.relay { zones = {}, forward = function() return others(config.upstream) end, clock = os.clock }
 local seen = {}
 
+-- Answers go from the address the question was sent to, as whoever asked expects (another DNS server ignores answers
+-- from anywhere else): on several networks, that may not be the address of the interface they go out on. A question
+-- to a broadcast address is answered from that interface's.
+local function answer_from(to)
+    local addr = type(to) == "string" and address.parse(to)
+    if addr and own_addresses()[addr] then return to end
+    return nil
+end
+
 local function send(items)
     for _, item in ipairs(items) do
         if item.client then
-            socket:send(item.client.address, item.client.port, item.answer)
+            socket:send(item.client.address, item.client.port, item.answer, nil, item.client.source)
         else
             upstream:send(address.format(item.server), dns.DNS_PORT, item.question)
             os.queueEvent("dnsd_forwarded")
@@ -232,7 +241,8 @@ local ok, result = pcall(parallel.waitForAny,
     -- Questions and updates from clients.
     function()
         while true do
-            local message, from, port = socket:receive()
+            local message, from, port, _, to = socket:receive()
+            local source = answer_from(to)
             local zones = servers()
             if type(message) == "table" and message.op == "update" then
                 local answer, changed, log = dns.handle_update(message, {
@@ -241,10 +251,10 @@ local ok, result = pcall(parallel.waitForAny,
                 })
                 if log then print(log) end
                 if changed then save() end
-                if answer then socket:send(from, port, answer) end
+                if answer then socket:send(from, port, answer, nil, source) end
             else
                 relay.zones = zones
-                send(relay:question(message, { address = from, port = port }))
+                send(relay:question(message, { address = from, port = port, source = source }))
             end
         end
     end,

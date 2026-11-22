@@ -379,7 +379,36 @@ describe("cc.internal.net.stack", function()
             net.run()
 
             expect(#server.queue):eq(1)
-            expect(server.queue[1]):same { data = { hello = "world" }, from = ip("10.0.0.1"), port = client.port, interface = "top" }
+            expect(server.queue[1]):same {
+                data = { hello = "world" }, from = ip("10.0.0.1"), port = client.port, interface = "top", to = ip("10.0.0.2"),
+            }
+        end)
+
+        it("say which address they were sent to, and can be answered from it", function()
+            local net = network()
+            local a = net.add(1, "10.0.0.1/24")
+            a:add_route { network = ip("10.1.0.0"), prefix = 24, gateway = ip("10.0.0.2"), source = "static" }
+            -- On two networks, asked at the address on the one further away.
+            local b = net.add(2, "10.0.0.2/24")
+            net.connect(b, "far", "10.1.0.1/24")
+            net.run()
+
+            local server, client = b:udp_open(7000), a:udp_open()
+            expect(a:udp_send(client, ip("10.1.0.1"), 7000, "hi")):eq(true)
+            net.run()
+            local asked = table.remove(server.queue, 1)
+            expect({ asked.from, asked.interface, asked.to }):same { ip("10.0.0.1"), "top", ip("10.1.0.1") }
+
+            -- Answered from the interface it goes out on, unless it's sent from the address asked at.
+            expect(b:udp_send(server, asked.from, asked.port, "plain")):eq(true)
+            expect(b:udp_send(server, asked.from, asked.port, "from there", nil, asked.to)):eq(true)
+            net.run()
+            expect({ client.queue[1].data, client.queue[1].from }):same { "plain", ip("10.0.0.2") }
+            expect({ client.queue[2].data, client.queue[2].from }):same { "from there", ip("10.1.0.1") }
+
+            -- Only from its own addresses.
+            expect({ b:udp_send(server, asked.from, asked.port, "x", nil, ip("10.1.0.9")) })
+                :same { nil, "10.1.0.9 isn't an address of this computer" }
         end)
 
         it("refuse data which some links couldn't carry, and say why", function()

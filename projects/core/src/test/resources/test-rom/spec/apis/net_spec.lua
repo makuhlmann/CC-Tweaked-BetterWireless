@@ -75,11 +75,14 @@ describe("The net library", function()
             expect({ client:send("127.0.0.1", 4323, { reply = print }) }):same { nil, "Can't send a function" }
             expect({ client:send("127.0.0.1", 4323, recursive) }):same { nil, "Can't send a table which contains itself" }
 
+            expect({ client:send("127.0.0.1", 4323, "x", nil, "nowhere") }):same { nil, "nowhere isn't an address" }
+
             expect({ client:send("127.0.0.1", 4323, { hello = "world" }) }):same { true }
-            local data, from, port = server:receive(2)
+            local data, from, port, _, to = server:receive(2)
             expect(data):same { hello = "world" }
             expect(from):eq("127.0.0.1")
             expect(port):eq(client:getPort())
+            expect(to):eq("127.0.0.1")
             -- Nothing else was sent.
             expect(server:receive(0.1)):eq(nil)
             server:close()

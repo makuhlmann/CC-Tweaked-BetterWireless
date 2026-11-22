@@ -26,9 +26,9 @@ describe("cc.internal.net.dns", function()
     local function serve(stack, records)
         local server = dns.server("home", records)
         local socket
-        socket = stack:udp_open(dns.DNS_PORT, function(question, from, port)
+        socket = stack:udp_open(dns.DNS_PORT, function(question, from, port, _, to)
             local answer = server:handle(question)
-            if answer then stack:udp_send(socket, from, port, answer) end
+            if answer then stack:udp_send(socket, from, port, answer, nil, stack:is_local(to) and to or nil) end
         end)
     end
 
@@ -277,7 +277,7 @@ describe("cc.internal.net.dns", function()
             function send(items)
                 for _, item in ipairs(items) do
                     if item.client then
-                        stack:udp_send(socket, item.client.address, item.client.port, item.answer)
+                        stack:udp_send(socket, item.client.address, item.client.port, item.answer, nil, item.client.source)
                     else
                         stack:udp_send(upstream, item.server, dns.DNS_PORT, item.question)
                         if not ticking then
@@ -287,8 +287,9 @@ describe("cc.internal.net.dns", function()
                     end
                 end
             end
-            socket = stack:udp_open(dns.DNS_PORT, function(question, from, port)
-                send(relay:question(question, { address = from, port = port }))
+            -- Answering from the address asked at, as dnsd does.
+            socket = stack:udp_open(dns.DNS_PORT, function(question, from, port, _, to)
+                send(relay:question(question, { address = from, port = port, source = stack:is_local(to) and to or nil }))
             end)
             upstream = stack:udp_open(nil, function(answer, from) send(relay:answer(answer, from)) end)
             return relay
@@ -334,6 +335,21 @@ describe("cc.internal.net.dns", function()
             -- question, three forwards, and a refusal back along each.
             expect(net.time - started <= 1.5):eq(true)
             expect(net.total_frames() - frames <= 12):eq(true)
+        end)
+
+        it("takes answers from a server with several networks, asked at the address on another", function()
+            local net = network()
+            local a = computer(net, 1, "10.0.0.1/24", "alpha")
+            local forwarder = net.add(3, "10.0.0.3/24")
+            forwarder:add_route { network = ip("10.1.0.0"), prefix = 24, gateway = ip("10.0.0.2"), source = "static" }
+            relay_on(forwarder, { dns.server("home", {}), dns.forward("corp", { ip("10.1.0.53") }) }, {})
+            -- The corp server is on both networks: asked at its corp address, it answers from its other.
+            local router = net.add(2, "10.0.0.2/24")
+            net.connect(router, "corp", "10.1.0.53/24")
+            relay_on(router, { dns.server("corp", { mail = ip("10.1.0.25") }) }, {})
+            net.run()
+
+            expect(resolve(net, a, "mail.corp", { servers = { ip("10.0.0.3") } })):eq(ip("10.1.0.25"))
         end)
 
         it("asks a forwarded zone's own servers, and answers a more specific zone of its own", function()

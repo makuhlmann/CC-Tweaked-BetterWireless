@@ -932,20 +932,31 @@ computer on the local network.
 @tparam number port The port to send to.
 @param data The data: the same values a connection's messages may be (see [`net.tcp`]'s `send`), or nothing.
 @tparam[opt] string interface For broadcasts, the only interface to send on.
+@tparam[opt] string source The address to send from, which must be one of this computer's, rather than that of the
+interface it goes out on. A server on several networks answers from the address it was asked at (which `receive`
+gives), as whoever asked expects an answer from there.
 @treturn[1] true If it was sent. Datagrams may still be lost.
 @treturn[2] nil If it couldn't be sent.
 @treturn[2] string Why not, such as `"Network unreachable"` or `"Can't send a function"`.
 ]]
-function Socket:send(target, port, data, interface)
+function Socket:send(target, port, data, interface, source)
     expect(1, target, "string")
     expect(2, port, "number")
     expect(4, interface, "string", "nil")
+    expect(5, source, "string", "nil")
     if self.socket.closed then return nil, "Socket is closed" end
     if not is_port(port) then return nil, PORT_ERROR end
 
+    local src
+    if source then
+        local prefix
+        src, prefix = address.parse(source)
+        if not src or prefix then return nil, source .. " isn't an address" end
+    end
+
     local dst, err = resolve_number(target)
     if not dst then return nil, err end
-    return stack:udp_send(self.socket, dst, port, data, interface)
+    return stack:udp_send(self.socket, dst, port, data, interface, src)
 end
 
 --[[- Wait for a datagram to arrive.
@@ -955,6 +966,7 @@ end
 @treturn[1] string The address it came from.
 @treturn[1] number The port it came from.
 @treturn[1] string The interface it arrived on.
+@treturn[1] string The address it was sent to: one of this computer's, or a broadcast address.
 @treturn[2] nil If nothing arrived in time, or the socket is closed.
 @treturn[2] string Why not: `"Timed out"` or `"Socket is closed"`.
 ]]
@@ -967,7 +979,7 @@ function Socket:receive(timeout)
         local item = table.remove(queue, 1)
         if item then
             if timer then os.cancelTimer(timer) end
-            return item.data, address.format(item.from), item.port, item.interface
+            return item.data, address.format(item.from), item.port, item.interface, address.format(item.to)
         end
         if self.socket.closed then
             if timer then os.cancelTimer(timer) end
