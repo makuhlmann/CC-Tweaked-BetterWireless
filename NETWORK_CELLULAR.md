@@ -202,7 +202,8 @@ the design above:
 
 - **Carriers** (version 4 of the protocols). Cells and phones use LTE's paired bands (NETWORK_STACK.md, Channels): a
   network's cells are on its carriers, 5 MHz blocks of a band, named like `b20/1` (band 20's first, 791–796 MHz down
-  and 832–837 MHz up), up to 8 of them (`cellcore spectrum b20/1 b3/2`, or ticked in the core's menu). A new network has none, and
+  and 832–837 MHz up), as many of the 61 as it holds (`cellcore spectrum b20/1 b3/2`, or ticked in the core's menu): more
+  than any one site serves, as a real network's are, since each site serves only those it asks for, up to 8. A new network has none, and
   its cells are off the air until its administrator chooses some. A cell is on one carrier, which its first core picks when it connects, in the band it asks for
   (`celld set band b3`), whichever of the network's carriers there has fewest cells; with no band asked for, whichever
   of all the network's carriers has fewest cells. A cell which also serves another network keeps its carrier, telling

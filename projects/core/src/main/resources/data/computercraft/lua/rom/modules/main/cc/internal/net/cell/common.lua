@@ -49,9 +49,14 @@ local MIN_INTERVAL = 0.5
 -- few intervals of silence, so a long one would keep them on a dead cell.
 local MAX_INTERVAL = 10
 
---- How many of its network's carriers a cell names in its system information, so phones can listen for that network's
--- cells on them.
+--- How many cells one computer (a cell site) runs at most, each on a carrier of its own: what its antennas serve.
 local MAX_CARRIERS = 8
+
+--[[- How many carriers a network may have: every one there is. A network holds more of the spectrum than any one site
+serves, and each site serves those it asks for. A cell names them all in its system information, so phones can listen
+for that network's cells on them.
+]]
+local MAX_SPECTRUM = #bands.beacon_channels()
 
 -- System information older (or newer) than this, in milliseconds, isn't believed: it may be a recording.
 local SIB_MAX_AGE = 30 * 1000
@@ -261,7 +266,7 @@ end
 -- @param list The list, which may be anything.
 -- @treturn boolean Whether it is.
 local function is_carriers(list)
-    if type(list) ~= "table" or #list > MAX_CARRIERS then return false end
+    if type(list) ~= "table" or #list > MAX_SPECTRUM then return false end
     for k, v in pairs(list) do
         if type(k) ~= "number" or k < 1 or k > #list or k % 1 ~= 0 or not is_id(v) or bands.carrier(v) == nil then
             return false
@@ -624,6 +629,7 @@ return {
     MIN_INTERVAL = MIN_INTERVAL,
     MAX_INTERVAL = MAX_INTERVAL,
     MAX_CARRIERS = MAX_CARRIERS,
+    MAX_SPECTRUM = MAX_SPECTRUM,
     UPLINK = UPLINK,
     DOWNLINK = DOWNLINK,
     MAX_PATH = MAX_PATH,

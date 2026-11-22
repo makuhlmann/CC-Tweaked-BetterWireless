@@ -1519,7 +1519,8 @@ end
 --- Describe the phone.
 --
 -- @treturn table Its state, cell, address and subscriber; the cells it may use which it hears (`cells`); every cell it
--- has heard lately, of any network (`heard`); the networks around; what has happened lately (`events`); whether it's
+-- has heard lately, of any network, each with the carrier it's on and that carrier's band (`heard`); the networks
+-- around; what has happened lately (`events`); whether it's
 -- roaming; the bands it may use, and the cell it's pinned to, if it was told (`bands`, `pinned`); the network it has
 -- been told to use (`selection`); the networks it may roam on (`partners`); and which of
 -- those it treats as home (`equivalent`).
@@ -1543,10 +1544,11 @@ function Phone:info()
         if now - cell.heard <= FORGET then
             for name, entry in pairs(cell.networks) do
                 local age = now - entry.heard
-                local _, band = bands.carrier_of(cell.ul or 0)
+                local carrier, band = bands.carrier_of(cell.ul or 0)
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
-                    band = band, interval = cell.interval, distance = cell.distance, service = cell.service,
+                    band = band, carrier = carrier, interval = cell.interval, distance = cell.distance,
+                    service = cell.service,
                     pos = cell.pos and { cell.pos[1], cell.pos[2], cell.pos[3] },
                     -- Heard lately enough to use.
                     fresh = age <= silence(cell),

@@ -461,14 +461,15 @@ function Service:wait(connection, key, role, id, hello)
 end
 
 --[[- The carriers this network's cells use, by their beacon channels: those its administrator chose (`cellcore
-spectrum`, or the menu). A network has none until some are chosen, and its cells stay off the air until then.
+spectrum`, or the menu). A network has none until some are chosen, and its cells stay off the air until then. It may
+have more than any one site serves: each site's cells go on those it asks for.
 
 @treturn { number... } The carriers.
 ]]
 function Service:spectrum()
     local list = {}
     for _, carrier in ipairs(type(self.config.spectrum) == "table" and self.config.spectrum or {}) do
-        if common.is_id(carrier) and bands.carrier(carrier) and #list < common.MAX_CARRIERS then list[#list + 1] = carrier end
+        if common.is_id(carrier) and bands.carrier(carrier) and #list < common.MAX_SPECTRUM then list[#list + 1] = carrier end
     end
     return list
 end
@@ -1483,8 +1484,8 @@ which waited for a carrier takes it.
 @treturn[2] string Why not.
 ]]
 function Service:set_spectrum(names, by)
-    if type(names) ~= "table" or #names > common.MAX_CARRIERS then
-        return nil, ("A network has up to %d carriers"):format(common.MAX_CARRIERS)
+    if type(names) ~= "table" or #names > common.MAX_SPECTRUM then
+        return nil, ("A network has up to %d carriers"):format(common.MAX_SPECTRUM)
     end
     local list, seen = {}, {}
     for _, name in ipairs(names) do

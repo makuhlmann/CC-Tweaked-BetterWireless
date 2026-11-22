@@ -864,7 +864,7 @@ local function run(options)
         local function spectrum() return status and status.spectrum or {} end
         carrier_menu.pick {
             title = "Carriers",
-            right = function() return ("%d of %d"):format(#spectrum(), common.MAX_CARRIERS) end,
+            right = function() return ("%d of %d"):format(#spectrum(), common.MAX_SPECTRUM) end,
             look = refresh,
             chosen = spectrum,
             toggle = function(name, on)
@@ -892,7 +892,7 @@ local function run(options)
                 if not status then return "Cannot reach the core: " .. tostring(problem), c(colours.red, colours.lightGrey) end
                 if not spectrum()[1] then return "No carriers: cells stay off the air.", c(colours.yellow, colours.lightGrey) end
             end,
-            limit = common.MAX_CARRIERS,
+            limit = common.MAX_SPECTRUM,
             refresh = REFRESH,
         }
     end

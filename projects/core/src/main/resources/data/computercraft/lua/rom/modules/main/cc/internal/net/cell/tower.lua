@@ -304,7 +304,7 @@ function Tower:carriers_of(link)
         if other ~= self and other.links[link.network] then
             local named = false
             for _, carrier in ipairs(carriers) do named = named or carrier == other.carrier end
-            if not named and #carriers < common.MAX_CARRIERS then
+            if not named and #carriers < common.MAX_SPECTRUM then
                 -- A list of our own: the network's is its core's to change.
                 if carriers == link.carriers then carriers = { table.unpack(carriers) } end
                 carriers[#carriers + 1] = other.carrier

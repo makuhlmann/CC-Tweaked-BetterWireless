@@ -153,6 +153,56 @@ describe("Cellular carriers", function()
         expect(acme.towers[1].tower.stopped):eq(nil)
     end)
 
+    it("may have more carriers than any site serves, and puts each site on those it asks for", function()
+        math.randomseed(7)
+        -- Every carrier of bands 20 and 3: more than a site may run cells on.
+        local names = {}
+        for _, band in ipairs { "b20", "b3" } do
+            for i in ipairs(bands.raster(band)) do names[#names + 1] = ("%s/%d"):format(band, i) end
+        end
+        expect(#names > common.MAX_CARRIERS):eq(true)
+        -- A site with a cell in each band, one on a carrier of band 3 it names, and one which doesn't say.
+        local acme = operator({ 0, 20, 40 }, { carriers = names, bands = { { "b20", "b3" }, { "b3/12" } } })
+        local net = acme.net
+        local cells = acme.service.cells
+        wait_until(net, function() return cells[11] and cells[12] and cells[13] end, 10, "Putting the cells on carriers")
+        expect(#acme.service:spectrum()):eq(#names)
+
+        local function carriers_of(id)
+            local result = {}
+            for i, cell in ipairs(cells[id].cells) do result[i] = bands.carrier_name(cell.carrier) end
+            return result
+        end
+        local first, second, third = carriers_of(11), carriers_of(12), carriers_of(13)
+        expect({ #first, first[1]:match("^b%d+"), first[2]:match("^b%d+") }):same { 2, "b20", "b3" }
+        expect(second):same { "b3/12" }
+        expect(#third):eq(1)
+        -- No two of them share a carrier: there are plenty.
+        local seen = {}
+        for _, name in ipairs { first[1], first[2], second[1], third[1] } do
+            expect(seen[name]):describe(name .. " is used twice"):eq(nil)
+            seen[name] = true
+        end
+
+        -- Cells name every one of the network's carriers, and a phone listens for the network on them all.
+        expect(#acme.towers[1].tower.links.ACME.carriers):eq(#names)
+        local phone = acme.add_phone(1, 10)
+        wait_until(net, function() return phone.state == "attached" end, 15, "Attaching")
+        for _, name in ipairs(names) do
+            expect(phone.listening[bands.parse_carrier(name)]):describe("Listening on " .. name):eq(true)
+        end
+
+        -- A network may have every carrier there is, but no more.
+        local all = {}
+        for _, carrier in ipairs(bands.beacon_channels()) do all[#all + 1] = bands.carrier_name(carrier) end
+        expect(acme.service:set_spectrum(all)):eq(true)
+        expect(#acme.service:spectrum()):eq(common.MAX_SPECTRUM)
+        all[#all + 1] = "b20/1"
+        expect({ acme.service:set_spectrum(all) })
+            :same { nil, ("A network has up to %d carriers"):format(common.MAX_SPECTRUM) }
+        expect(net.errors):same {}
+    end)
+
     it("prefers a higher band where it's strong enough, and a lower one where it isn't", function()
         math.randomseed(6)
         -- Cell 11 on band 20 (800MHz) at 0, cell 12 on band 3 (1800MHz) at 20.

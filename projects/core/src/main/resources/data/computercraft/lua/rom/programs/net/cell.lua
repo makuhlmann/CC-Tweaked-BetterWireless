@@ -53,8 +53,8 @@ local STATES = {
 }
 
 -- Everything about the phone's service on one screen, which fits a pocket computer: its state, the cells it hears (of
--- any network), and what has happened lately. It's redrawn every second, and whenever the state changes. Q or
--- Backspace leaves it, as in the menus. This returns false if it was terminated.
+-- any network), the carriers it hears them on, and what has happened lately. It's redrawn every second, and whenever
+-- the state changes. Q or Backspace leaves it, as in the menus. This returns false if it was terminated.
 local function monitor()
     local ok, err = net.cell.listen()
     if not ok then
@@ -89,6 +89,41 @@ local function monitor()
 
     -- How many of four bars a signal gets, as the status bar shows it.
     local bars = require "cc.internal.net.cell.bar".signal_bars
+    local bands = require "cc.internal.net.bands"
+
+    -- The carrier a cell is on, by name (b20/1), or its band if that's all there is to go by.
+    local function carrier_label(cell)
+        return cell.carrier and bands.carrier_name(cell.carrier) or cell.band or "-"
+    end
+
+    --[[ The carriers cells were heard on, lowest first: how many cells are on each, the networks they're of, and the best
+    of them (the strongest heard lately, or of all, if none was). ]]
+    local function carriers_of(heard)
+        local list, by_carrier = {}, {}
+        for _, cell in ipairs(heard) do
+            local carrier = cell.carrier
+            if carrier then
+                local entry = by_carrier[carrier]
+                if not entry then
+                    entry = { carrier = carrier, ids = {}, count = 0, networks = {}, network_count = 0 }
+                    by_carrier[carrier] = entry
+                    list[#list + 1] = entry
+                end
+                if not entry.ids[cell.id] then entry.ids[cell.id], entry.count = true, entry.count + 1 end
+                if not entry.networks[cell.network] then
+                    entry.networks[cell.network], entry.network_count = true, entry.network_count + 1
+                end
+                local best = entry.best
+                local fresh, best_fresh = cell.fresh == true, best ~= nil and best.fresh == true
+                if not best or (fresh and not best_fresh) or (fresh == best_fresh and cell.signal > best.signal) then
+                    entry.best = cell
+                end
+                if cell.serving then entry.serving = true end
+            end
+        end
+        table.sort(list, function(a, b) return a.carrier < b.carrier end)
+        return list
+    end
 
     local function describe(event)
         local kind = event.kind
@@ -170,15 +205,20 @@ local function monitor()
         row("No.", info.subscriber and ("%s (%s)"):format(info.subscriber.number, info.subscriber.id) or "-")
         row("IP", info.address or "-")
         if serving then
-            row("Cell", ("#%s, %d dBm"):format(cell_label(serving.id), round(serving.signal)))
+            row("Cell", ("#%s, %s, %d dBm"):format(cell_label(serving.id), carrier_label(serving), round(serving.signal)))
         elseif shown then
+            -- (Its carrier is in its line below: the strongest cell is the first.)
             row("Cell", ("#%s %s, %d dBm"):format(cell_label(shown.id), tostring(shown.network), round(shown.signal)))
         else
             row("Cell", "-")
         end
 
-        -- Share what's left between the cells and the events, giving either the other's spare lines.
-        local left = h - y - 2
+        -- The carriers get up to a third of what's left. The cells and the events share the rest, giving either the
+        -- other's spare lines.
+        local carriers = carriers_of(heard)
+        local left = h - y - 3
+        local carrier_lines = math.max(1, math.min(#carriers, math.floor(left / 3)))
+        left = left - carrier_lines
         local cell_lines = math.max(1, math.min(#heard, math.max(math.ceil(left / 2), left - #events)))
         local event_lines = left - cell_lines
 
@@ -202,13 +242,39 @@ local function monitor()
                 fg = colours.white
             end
             if not cell.fresh then fg = colours.grey end
-            -- Its band and signal on the right; after its network, SMS if it only carries messages.
-            -- (Its computer's ID: a cell site with several bands has a cell on each, and the band is alongside.)
-            local id, tail = fit("#" .. site_label(cell.id), 5), (" %-3s %4d"):format(tostring(cell.band or "-"), round(cell.signal))
+            -- Its carrier and signal on the right; after its network, SMS if it only carries messages.
+            -- (Its computer's ID: a cell site with several bands has a cell on each, and the carrier is alongside.)
+            local id = fit("#" .. site_label(cell.id), 5)
+            local tail = (" %-5s %4d"):format(carrier_label(cell), round(cell.signal))
             local name_width = math.max(1, w - 7 - #tail)
             local name = tostring(cell.network)
             if cell.service == "sms" then name = fit(name, math.max(1, name_width - 4)):gsub(" +$", "") .. " SMS" end
             line(mark .. id .. " " .. fit(name, name_width) .. tail, fg)
+        end
+
+        -- Each carrier cells were heard on: whose it is, how many cells, and the strongest. ">" is the one in use.
+        line(" Carriers", colours.white, HEADER_BG)
+        right(("%d "):format(#carriers), colours.white, HEADER_BG)
+        if #carriers == 0 then line("None heard", colours.lightGrey) end
+        for i = 1, math.min(#carriers, carrier_lines) do
+            local entry = carriers[i]
+            if i == carrier_lines and #carriers > carrier_lines then
+                line(("  and %d more"):format(#carriers - carrier_lines + 1), colours.lightGrey)
+                break
+            end
+            local mark, fg = " ", colours.white
+            if entry.serving then mark, fg = ">", c(colours.lime) end
+            if not entry.best.fresh then fg = colours.grey end
+            local cells = entry.count == 1 and "1 cell" or entry.count .. " cells"
+            local tail = (" %s %4d"):format(cells, round(entry.best.signal))
+            local whose_width = math.max(1, w - 7 - #tail)
+            -- The strongest cell's network, and how many others share the carrier.
+            local whose = tostring(entry.best.network)
+            if entry.network_count > 1 then
+                local more = ("+%d"):format(entry.network_count - 1)
+                whose = fit(whose, math.max(1, whose_width - #more)):gsub(" +$", "") .. more
+            end
+            line(mark .. fit(bands.carrier_name(entry.carrier), 6) .. fit(whose, whose_width) .. tail, fg)
         end
 
         line(" Events", colours.white, HEADER_BG)

@@ -3,6 +3,9 @@
 -- SPDX-License-Identifier: MPL-2.0
 
 local with_window = require "test_helpers".with_window
+local bands = require "cc.internal.net.bands"
+local b20_1, b3_1, b3_2, b7_1 = bands.parse_carrier("b20/1"), bands.parse_carrier("b3/1"), bands.parse_carrier("b3/2"),
+    bands.parse_carrier("b7/1")
 
 describe("The cell program", function()
     describe("monitor", function()
@@ -38,15 +41,22 @@ describe("The cell program", function()
                 heard = {
                     {
                         id = 12, network = "ACME", signal = -71.6, age = 0.5, fresh = true, verified = true, serving = true,
-                        area = 1, band = "b20",
+                        area = 1, band = "b20", carrier = b20_1,
                     },
-                    { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, serving = false, band = "b3" },
+                    {
+                        id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, serving = false,
+                        band = "b3", carrier = b3_2,
+                    },
+                    -- Without a carrier: a cell always has one, but the band will do, or nothing.
                     { id = 66, network = "ACME", signal = -60, age = 1, fresh = true, verified = false, serving = false },
                     {
                         id = 77, network = "BETA-NETWORK-WITH-A-LONG-NAME", signal = -95, age = 2, fresh = true,
-                        serving = false, band = "b20", service = "sms",
+                        serving = false, band = "b20", carrier = b20_1, service = "sms",
                     },
-                    { id = 13, network = "ACME", signal = -99, age = 10, fresh = false, verified = true, serving = false },
+                    {
+                        id = 13, network = "ACME", signal = -99, age = 10, fresh = false, verified = true, serving = false,
+                        band = "b7", carrier = b7_1,
+                    },
                 },
                 events = {
                     { kind = "attached", cell = 11, time = now - 60000 },
@@ -61,24 +71,28 @@ describe("The cell program", function()
                 "Net  ACME",
                 "No.  0042 (ACME-0042)",
                 "IP   10.64.0.2",
-                "Cell #12, -72 dBm",
+                "Cell #12, b20/1, -72 dBm",
                 " Cells                  5",
-                ">#12   ACME       b20  -72",
-                " #11   ACME       b3   -83",
-                "!#66   ACME       -    -60",
-                " #77   BETA-N SMS b20  -95",
-                " #13   ACME       -    -99",
+                ">#12   ACME     b20/1  -72",
+                " #11   ACME     b3/2   -83",
+                "!#66   ACME     -      -60",
+                " #77   BETA SMS b20/1  -95",
+                " #13   ACME     b7/1   -99",
             }
+            -- Each carrier cells were heard on, lowest first: whose, how many cells, and the strongest.
             expect({ table.unpack(lines, 13, 20) }):same {
+                " Carriers               3",
+                ">b20/1 ACME+1 2 cells  -72",
+                " b3/2  ACME    1 cell  -83",
+                " b7/1  ACME    1 cell  -99",
                 " Events",
                 os.date("%H:%M:%S ", math.floor((now - 5000) / 1000)) .. "Moved #11 > #12",
                 os.date("%H:%M:%S ", math.floor((now - 60000) / 1000)) .. "Attached #11",
-                "", "", "", "",
                 "Press Q to quit",
             }
             if term.isColour() then
-                -- In use, a fake, and one which has gone quiet.
-                expect({ colours[8], colours[10], colours[12] }):same { "5", "e", "7" }
+                -- In use, a fake, and one which has gone quiet; the carrier in use, and one only heard a while ago.
+                expect({ colours[8], colours[10], colours[12], colours[14], colours[16] }):same { "5", "e", "7", "5", "7" }
             end
 
             -- Q quits, and leaves the screen clear.
@@ -88,31 +102,47 @@ describe("The cell program", function()
         it("shares the screen between many cells and events", function()
             local now = os.epoch("utc")
             local info = { state = "searching", network = "ACME", heard = {}, events = {} }
+            -- Each on a carrier of its own: the first twelve, the strongest on the lowest.
+            local carriers = bands.beacon_channels()
             for i = 1, 12 do
-                info.heard[i] = { id = i, network = "ACME", signal = -60 - i, age = 1, fresh = true, verified = true, serving = false }
+                info.heard[i] = {
+                    id = i, network = "ACME", signal = -60 - i, age = 1, fresh = true, verified = true, serving = false,
+                    carrier = carriers[i],
+                }
                 info.events[i] = { kind = "lost", cell = i, time = now }
             end
             local lines = show(info)
             expect(lines[2]):eq("Searching")
             expect(lines[6]):eq("Cell -")
-            -- Twelve lines are left: six each, the last cell's line saying how many more there are.
-            expect(lines[7]):eq(" Cells                 12")
-            expect(lines[12]):eq(" #5    ACME       -    -65")
-            expect(lines[13]):eq("  and 7 more")
-            expect(lines[14]):eq(" Events")
-            expect(lines[15]):str_match("Lost #12$")
-            expect(lines[20]):str_match("Lost #7$")
+            -- Eleven lines are left: three for the carriers, and four each for the cells and the events, the last
+            -- cell's and carrier's lines saying how many more there are.
+            expect({ table.unpack(lines, 7, 16) }):same {
+                " Cells                 12",
+                " #1    ACME     b31/1  -61",
+                " #2    ACME     b28/1  -62",
+                " #3    ACME     b28/2  -63",
+                "  and 9 more",
+                " Carriers              12",
+                " b31/1 ACME    1 cell  -61",
+                " b28/1 ACME    1 cell  -62",
+                "  and 10 more",
+                " Events",
+            }
+            expect(lines[17]):str_match("Lost #12$")
+            expect(lines[20]):str_match("Lost #9$")
         end)
 
         it("works before the phone is activated", function()
             local lines = show({ state = "inactive", heard = {}, events = {} })
-            expect({ table.unpack(lines, 2, 11) }):same {
+            expect({ table.unpack(lines, 2, 13) }):same {
                 "No SIM",
                 "Net  -",
                 "No.  -",
                 "IP   -",
                 "Cell -",
                 " Cells                  0",
+                "None heard",
+                " Carriers               0",
                 "None heard",
                 " Events",
                 "Nothing yet",
@@ -121,21 +151,26 @@ describe("The cell program", function()
         end)
 
         it("shows the strongest cell without a SIM", function()
-            local strongest = { id = 21, network = "BETA", signal = -64.6, age = 0, fresh = true, band = "b3" }
+            local strongest = { id = 21, network = "BETA", signal = -64.6, age = 0, fresh = true, band = "b3", carrier = b3_1 }
             local lines = show {
                 state = "inactive", strongest = strongest,
-                heard = { strongest, { id = 11, network = "ACME", signal = -90, age = 0, fresh = true, band = "b20" } },
+                heard = {
+                    strongest, { id = 11, network = "ACME", signal = -90, age = 0, fresh = true, band = "b20", carrier = b20_1 },
+                },
                 events = {},
             }
-            expect({ table.unpack(lines, 2, 9) }):same {
+            expect({ table.unpack(lines, 2, 12) }):same {
                 "No SIM               ||||",
                 "Net  -",
                 "No.  -",
                 "IP   -",
                 "Cell #21 BETA, -65 dBm",
                 " Cells                  2",
-                " #21   BETA       b3   -65",
-                " #11   ACME       b20  -90",
+                " #21   BETA     b3/1   -65",
+                " #11   ACME     b20/1  -90",
+                " Carriers               2",
+                " b20/1 ACME    1 cell  -90",
+                " b3/1  BETA    1 cell  -65",
             }
         end)
 
@@ -152,8 +187,8 @@ describe("The cell program", function()
             }
             expect(lines[2]):eq("Roaming              |||.")
             expect(lines[3]):eq("Net  ACME (on OTHER)")
-            expect(lines[10]:sub(10)):eq("Home from #31")
-            expect(lines[11]:sub(10)):eq("Roaming #31 OTHER")
+            expect(lines[12]:sub(10)):eq("Home from #31")
+            expect(lines[13]:sub(10)):eq("Roaming #31 OTHER")
         end)
 
         it("keeps running until Q is pressed", function()

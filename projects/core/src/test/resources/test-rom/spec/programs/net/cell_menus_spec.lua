@@ -931,7 +931,7 @@ describe("The menus of celld and cellcore", function()
             end
             function answers.spectrum(message)
                 for _, carrier in ipairs(message.carriers or {}) do
-                    if not carrier:match("^b%d+/%d$") then return nil, "There's no carrier called " .. carrier end
+                    if not carrier:match("^b%d+/%d%d?$") then return nil, "There's no carrier called " .. carrier end
                 end
                 if message.carriers then status.spectrum = message.carriers end
                 return { carriers = status.spectrum }
@@ -1312,7 +1312,7 @@ describe("The menus of celld and cellcore", function()
                     app.choose("Network settings")
                     expect(select(2, app.find("Carriers"))):str_match("^Carriers +b20/1$")
                     app.choose("Carriers")
-                    expect(app.line(1)):str_match("^Carriers +1 of 8$")
+                    expect(app.line(1)):str_match("^Carriers +1 of 61$")
                     -- Every cellular band is there, with what's chosen of it.
                     local rows = {
                         "^b31  450 MHz +%-$", "^b28  700 MHz +%-$", "^b20  800 MHz +/1$", "^b8   900 MHz +%-$",
@@ -1343,7 +1343,7 @@ describe("The menus of celld and cellcore", function()
                     expect(app.chosen()):str_match("^%[ %] b3/4")
                     core.fail = nil
                     app.type("q")
-                    expect(app.line(1)):str_match("^Carriers +2 of 8$")
+                    expect(app.line(1)):str_match("^Carriers +2 of 61$")
                     expect(app.chosen()):str_match("^b3   1800 MHz +/2$")
 
                     -- How many cells are on each carrier is said: here, the one which is to go.
@@ -1366,16 +1366,19 @@ describe("The menus of celld and cellcore", function()
                     app.choose("Network settings")
                     expect(select(2, app.find("Carriers"))):str_match("^Carriers +none$")
                     app.choose("Carriers")
-                    expect(app.line(1)):str_match("^Carriers +0 of 8$")
+                    expect(app.line(1)):str_match("^Carriers +0 of 61$")
                     expect(app.says("No carriers: cells stay off the air.")):eq(true)
-                    -- And no more than eight.
+                    -- More than any one site serves: every carrier of band 7.
                     app.choose("b7 ")
-                    for i = 1, 8 do app.choose("b7/" .. i) end
-                    expect(#core.asked):eq(8)
-                    expect(core.status.spectrum):same { "b7/1", "b7/2", "b7/3", "b7/4", "b7/5", "b7/6", "b7/7", "b7/8" }
-                    app.choose("b7/9")
-                    expect(app.says("At most 8 may be chosen.")):eq(true)
-                    expect(#core.asked):eq(8)
+                    local all = {}
+                    for i = 1, 14 do
+                        app.choose("b7/" .. i)
+                        all[i] = "b7/" .. i
+                    end
+                    expect(#core.asked):eq(14)
+                    expect(core.status.spectrum):same(all)
+                    app.type("q")
+                    expect(app.line(1)):str_match("^Carriers +14 of 61$")
                 end)
             end)
         end)
@@ -1646,7 +1649,7 @@ describe("The menus of celld and cellcore", function()
                     expect(textutils.unserialise(fs.open(CONFIG, "r").readAll())):same { network = "ACME", prefix = "10.70.0.0/16" }
                     expect(core.started):eq(1)
                     -- A new network has no carriers: they're what's shown first.
-                    expect(app.line(1)):str_match("^Carriers +1 of 8$")
+                    expect(app.line(1)):str_match("^Carriers +1 of 61$")
                     app.type("q")
                     expect(app.line(1)):str_match("^Core of ACME")
                     expect(app.says("ACME is running, with phones in 10.70.0.0/16.")):eq(true)
