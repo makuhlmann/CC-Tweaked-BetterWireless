@@ -11,7 +11,6 @@ import dan200.computercraft.core.computer.ComputerSide;
 import dan200.computercraft.core.util.Nullability;
 import dan200.computercraft.impl.AbstractUpgradeHolder;
 import dan200.computercraft.impl.UpgradeData;
-import dan200.computercraft.shared.ModRegistry;
 import dan200.computercraft.shared.computer.core.ServerComputer;
 import dan200.computercraft.shared.network.client.PocketComputerDataMessage;
 import dan200.computercraft.shared.network.server.ServerNetworking;
@@ -49,8 +48,7 @@ public final class PocketBrain implements PocketComputerInternal {
         this.holder = holder;
         this.position = holder.pos();
 
-        upgrades.put(PocketSide.TOP, new UpgradeAccess(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), ComputerSide.TOP));
-        upgrades.put(PocketSide.BACK, new UpgradeAccess(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), ComputerSide.BACK));
+        for (var side : PocketSide.values()) upgrades.put(side, new UpgradeAccess(side.component(), side.computerSide()));
     }
 
     /**
@@ -167,9 +165,12 @@ public final class PocketBrain implements PocketComputerInternal {
     }
 
     public boolean onRightClick(ServerLevel level) {
+        // Offer the click to each upgrade in turn, stopping at the first which handles it.
         for (var holder : upgrades.values()) {
             if (holder.upgrade == null) continue;
-            return holder.upgrade.getUpgrade().onRightClick(holder, holder.upgrade.getHandle(), computer.getPeripheral(holder.side));
+            if (holder.upgrade.getUpgrade().onRightClick(holder, holder.upgrade.getHandle(), computer.getPeripheral(holder.side))) {
+                return true;
+            }
         }
 
         return false;
@@ -189,9 +190,13 @@ public final class PocketBrain implements PocketComputerInternal {
         getUpgradeAccess(side).setUpgrade(upgrade);
     }
 
-    public void setUpgrades(@Nullable UpgradeData<IPocketUpgrade> top, @Nullable UpgradeData<IPocketUpgrade> back) {
-        getUpgradeAccess(PocketSide.TOP).setUpgradeDirect(top);
-        getUpgradeAccess(PocketSide.BACK).setUpgradeDirect(back);
+    /**
+     * Set every upgrade from a pocket computer's item, without writing them back to it.
+     *
+     * @param stack The pocket computer stack.
+     */
+    public void setUpgrades(ItemStack stack) {
+        for (var side : PocketSide.values()) getUpgradeAccess(side).setUpgradeDirect(stack.get(side.component()));
     }
 
     private final class UpgradeAccess implements IPocketAccess {

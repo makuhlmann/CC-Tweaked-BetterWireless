@@ -110,8 +110,21 @@ class Recipe_Test {
         // Check recipes which can be crafted with a pocket computer
         checkUsage(
             "Usage: Pocket computer without upgrades",
-            (pocketUpgrades.listElements().count() * 2).toInt(),
+            (pocketUpgrades.listElements().count() * 4).toInt(),
             ItemStackTemplate(ModRegistry.Items.POCKET_COMPUTER_NORMAL.get()),
+        )
+        checkUsage(
+            "Usage: Pocket computer with one upgrade",
+            (pocketUpgrades.listElements().count() * 3).toInt(),
+            ItemStackTemplate(
+                ModRegistry.Items.POCKET_COMPUTER_NORMAL.get(),
+                DataComponentPatch.builder()
+                    .set(
+                        ModRegistry.DataComponents.LEFT_POCKET_UPGRADE.get(),
+                        PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.SPEAKER.get()))!!,
+                    )
+                    .build(),
+            ),
         )
 
         fun checkRecipe(message: String, size: Int, item: ItemStackTemplate) {
@@ -170,6 +183,22 @@ class Recipe_Test {
                         ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(),
                         PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.SPEAKER.get()))!!,
                     ).build(),
+            ),
+        )
+
+        val pocketSpeaker = PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.SPEAKER.get()))!!
+        val pocketModem = PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.WIRELESS_MODEM_NORMAL.get()))!!
+        checkRecipe(
+            "Recipe: Pocket computer with four upgrades",
+            4,
+            ItemStackTemplate(
+                ModRegistry.Items.POCKET_COMPUTER_NORMAL.get(),
+                DataComponentPatch.builder()
+                    .set(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), pocketSpeaker)
+                    .set(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), pocketModem)
+                    .set(ModRegistry.DataComponents.LEFT_POCKET_UPGRADE.get(), pocketModem)
+                    .set(ModRegistry.DataComponents.RIGHT_POCKET_UPGRADE.get(), pocketSpeaker)
+                    .build(),
             ),
         )
     }

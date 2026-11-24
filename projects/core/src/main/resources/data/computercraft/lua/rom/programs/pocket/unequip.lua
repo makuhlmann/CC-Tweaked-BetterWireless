@@ -22,12 +22,13 @@ local function unequip(fn)
     end
 end
 
+local functions = { top = "unequipTop", back = "unequipBack", left = "unequipLeft", right = "unequipRight" }
+
 local side = ... or "back"
-if side == "top" then
-    unequip(pocket.unequipTop)
-elseif side == "back" then
-    unequip(pocket.unequipBack)
-else
-    printError("Unknown side. Expected 'top' or 'back'.")
+local fn = functions[side]
+if not fn then
+    printError("Unknown side. Expected 'top', 'back', 'left' or 'right'.")
     return
 end
+
+unequip(pocket[fn])

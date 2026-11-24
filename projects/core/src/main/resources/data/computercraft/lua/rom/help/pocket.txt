@@ -1,6 +1,14 @@
 pocket is an API available on pocket computers, which allows modifying its upgrades.
 Functions in the pocket API:
+pocket.equipTop()
 pocket.equipBack()
+pocket.equipLeft()
+pocket.equipRight()
+pocket.unequipTop()
 pocket.unequipBack()
+pocket.unequipLeft()
+pocket.unequipRight()
+
+A pocket computer has four upgrade slots: top, back, left and right. Each upgrade is a peripheral on that side. Upgrades can also be crafted on, by putting them next to the pocket computer: one above goes on the top, one below on the back, and one to the left or right on the opposite side (sides are named from the pocket computer's point of view, as on any computer).
 
 When equipping upgrades, it will search your inventory for a suitable upgrade, starting in the selected slot. If one cannot be found then it will check your offhand.

@@ -24,6 +24,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.ItemStackTemplate;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -109,13 +111,23 @@ public final class UpgradeManager<T extends UpgradeBase> {
      * @return The owning mod id of this item.
      */
     public String getOwner(@Nullable UpgradeData<T> first, @Nullable UpgradeData<T> second) {
-        if (first != null) {
-            var mod = getOwner(first.getUpgradeHolder());
-            if (!mod.equals(ComputerCraftAPI.MOD_ID)) return mod;
-        }
+        var upgrades = new ArrayList<UpgradeData<T>>(2);
+        if (first != null) upgrades.add(first);
+        if (second != null) upgrades.add(second);
+        return getOwner(upgrades);
+    }
 
-        if (second != null) {
-            var mod = getOwner(second.getUpgradeHolder());
+    /**
+     * Determine our "creator mod" from a list of upgrades.
+     * <p>
+     * We attempt to find the first non-vanilla/non-CC upgrade.
+     *
+     * @param upgrades The upgrades, in order.
+     * @return The owning mod id of this item.
+     */
+    public String getOwner(Iterable<UpgradeData<T>> upgrades) {
+        for (var upgrade : upgrades) {
+            var mod = getOwner(upgrade.getUpgradeHolder());
             if (!mod.equals(ComputerCraftAPI.MOD_ID)) return mod;
         }
 
@@ -151,5 +163,38 @@ public final class UpgradeManager<T extends UpgradeBase> {
         } else {
             return Component.translatable(baseString);
         }
+    }
+
+    /**
+     * Name an item with any number of upgrades, such as a pocket computer.
+     * <p>
+     * Each adjective appears once, in the order given, so two speakers make a "Noisy" pocket computer rather than a
+     * "Noisy Noisy" one. One or two adjectives use the {@code .upgraded} and {@code .upgraded_twice} translations; more
+     * are joined with spaces into {@code .upgraded}.
+     *
+     * @param baseString The item's translation key.
+     * @param upgrades   The item's upgrades, in the order their adjectives should appear.
+     * @return The item's name.
+     */
+    public static Component getName(String baseString, List<? extends UpgradeBase> upgrades) {
+        var adjectives = new ArrayList<Component>(upgrades.size());
+        for (var upgrade : upgrades) {
+            var adjective = upgrade.getAdjective();
+            if (!adjectives.contains(adjective)) adjectives.add(adjective);
+        }
+
+        return switch (adjectives.size()) {
+            case 0 -> Component.translatable(baseString);
+            case 1 -> Component.translatable(baseString + ".upgraded", adjectives.getFirst());
+            case 2 -> Component.translatable(baseString + ".upgraded_twice", adjectives.get(0), adjectives.get(1));
+            default -> {
+                var joined = Component.empty();
+                for (var i = 0; i < adjectives.size(); i++) {
+                    if (i > 0) joined.append(" ");
+                    joined.append(adjectives.get(i));
+                }
+                yield Component.translatable(baseString + ".upgraded", joined);
+            }
+        };
     }
 }

@@ -253,6 +253,8 @@ public class ComponentizationFixers {
      * @see UpgradeManager#upgradeDataCodec()
      * @see ModRegistry.DataComponents#TOP_POCKET_UPGRADE
      * @see ModRegistry.DataComponents#BACK_POCKET_UPGRADE
+     * @see ModRegistry.DataComponents#LEFT_POCKET_UPGRADE
+     * @see ModRegistry.DataComponents#RIGHT_POCKET_UPGRADE
      * @see ModRegistry.DataComponents#LEFT_TURTLE_UPGRADE
      * @see ModRegistry.DataComponents#RIGHT_TURTLE_UPGRADE
      */
@@ -266,6 +268,8 @@ public class ComponentizationFixers {
             // Add extra upgrades on later versions. Really this should be done by overriding
             types.put("computercraft:top_pocket_upgrade", upgradeData);
             types.put("computercraft:back_pocket_upgrade", upgradeData);
+            types.put("computercraft:left_pocket_upgrade", upgradeData);
+            types.put("computercraft:right_pocket_upgrade", upgradeData);
         }
 
         types.put("computercraft:left_turtle_upgrade", upgradeData);

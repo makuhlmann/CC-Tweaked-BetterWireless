@@ -8,7 +8,6 @@ import dan200.computercraft.api.ComputerCraftAPI;
 import dan200.computercraft.api.turtle.TurtleSide;
 import dan200.computercraft.shared.ModRegistry;
 import dan200.computercraft.shared.integration.RecipeModHelpers;
-import dan200.computercraft.shared.pocket.core.PocketSide;
 import dan200.computercraft.shared.pocket.items.PocketComputerItem;
 import dan200.computercraft.shared.turtle.items.TurtleItem;
 import mezz.jei.api.IModPlugin;
@@ -86,12 +85,13 @@ public class JEIComputerCraft implements IModPlugin {
     private static final ISubtypeInterpreter<ItemStack> pocketSubtype = (stack, ctx) -> {
         var name = new StringBuilder("pocket:");
 
-        // Add the upgrade to the identifier
-        var top = PocketComputerItem.getUpgradeWithData(stack, PocketSide.TOP);
-        var back = PocketComputerItem.getUpgradeWithData(stack, PocketSide.BACK);
-        if (top != null) name.append(top.getUpgradeHolder().key().identifier());
-        if (top != null && back != null) name.append('|');
-        if (back != null) name.append(back.getUpgradeHolder().key().identifier());
+        // Add the upgrades to the identifier
+        var first = true;
+        for (var upgrade : PocketComputerItem.getUpgradesWithData(stack)) {
+            if (!first) name.append('|');
+            first = false;
+            name.append(upgrade.getUpgradeHolder().key().identifier());
+        }
 
         return name.toString();
     };

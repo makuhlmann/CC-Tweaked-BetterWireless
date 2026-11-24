@@ -420,6 +420,24 @@ public final class ModRegistry {
         );
 
         /**
+         * The left upgrade of a pocket computer.
+         *
+         * @see PocketComputerItem
+         */
+        public static final RegistryEntry<DataComponentType<UpgradeData<IPocketUpgrade>>> LEFT_POCKET_UPGRADE = register("left_pocket_upgrade", b -> b
+            .persistent(PocketUpgrades.instance().upgradeDataCodec()).networkSynchronized(PocketUpgrades.instance().upgradeDataStreamCodec())
+        );
+
+        /**
+         * The right upgrade of a pocket computer.
+         *
+         * @see PocketComputerItem
+         */
+        public static final RegistryEntry<DataComponentType<UpgradeData<IPocketUpgrade>>> RIGHT_POCKET_UPGRADE = register("right_pocket_upgrade", b -> b
+            .persistent(PocketUpgrades.instance().upgradeDataCodec()).networkSynchronized(PocketUpgrades.instance().upgradeDataStreamCodec())
+        );
+
+        /**
          * A reference to the currently running {@link dan200.computercraft.shared.computer.core.ServerComputer}.
          *
          * @see ServerComputerReference

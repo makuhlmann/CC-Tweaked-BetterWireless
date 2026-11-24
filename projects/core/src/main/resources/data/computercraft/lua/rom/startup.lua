@@ -236,10 +236,10 @@ end
 if pocket then
     shell.setCompletionFunction("rom/programs/pocket/equip.lua", completion.build(
         nil,
-        { completion.choice, { "top", "back" } }
+        { completion.choice, { "top", "back", "left", "right" } }
     ))
     shell.setCompletionFunction("rom/programs/pocket/unequip.lua", completion.build(
-        { completion.choice, { "top", "back" } }
+        { completion.choice, { "top", "back", "left", "right" } }
     ))
 end
 

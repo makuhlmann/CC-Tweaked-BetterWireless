@@ -23,6 +23,13 @@ import java.util.Objects;
 /**
  * Control the current pocket computer, adding or removing upgrades.
  * <p>
+ * A pocket computer has four upgrade slots: its top, back, left and right. Each upgrade is attached as a peripheral on
+ * that side. As on any computer, the sides are named from the pocket computer's point of view: looking at its screen,
+ * its left side is on your right. The bottom is not a slot, as a lectern puts the peripheral below it there.
+ * <p>
+ * Upgrades can also be crafted on: put them next to the pocket computer in a crafting grid. One above goes on the top,
+ * one below on the back, and one to the left or right on the opposite side (as with turtles).
+ * <p>
  * This API is only available on pocket computers. As such, you may use its presence to determine what kind of computer
  * you are using:
  *
@@ -69,7 +76,7 @@ public class PocketAPI implements ILuaAPI {
     }
 
     /**
-     * Search the player's inventory for another upgrade, replacing the existing bottom upgrade with that item if found.
+     * Search the player's inventory for another upgrade, replacing the existing top upgrade with that item if found.
      * <p>
      * This inventory search starts from the player's currently selected slot, allowing you to prioritise upgrades.
      *
@@ -81,6 +88,34 @@ public class PocketAPI implements ILuaAPI {
     @LuaFunction(mainThread = true)
     public final Object[] equipTop() {
         return equip(PocketSide.TOP);
+    }
+
+    /**
+     * Search the player's inventory for another upgrade, replacing the existing left upgrade with that item if found.
+     * <p>
+     * This inventory search starts from the player's currently selected slot, allowing you to prioritise upgrades.
+     *
+     * @return The result of equipping.
+     * @cc.treturn boolean If an item was equipped.
+     * @cc.treturn string|nil The reason an item was not equipped.
+     */
+    @LuaFunction(mainThread = true)
+    public final Object[] equipLeft() {
+        return equip(PocketSide.LEFT);
+    }
+
+    /**
+     * Search the player's inventory for another upgrade, replacing the existing right upgrade with that item if found.
+     * <p>
+     * This inventory search starts from the player's currently selected slot, allowing you to prioritise upgrades.
+     *
+     * @return The result of equipping.
+     * @cc.treturn boolean If an item was equipped.
+     * @cc.treturn string|nil The reason an item was not equipped.
+     */
+    @LuaFunction(mainThread = true)
+    public final Object[] equipRight() {
+        return equip(PocketSide.RIGHT);
     }
 
     private Object[] equip(PocketSide side) {
@@ -122,7 +157,7 @@ public class PocketAPI implements ILuaAPI {
     }
 
     /**
-     * Remove the pocket computer's bottom upgrade.
+     * Remove the pocket computer's top upgrade.
      *
      * @return The result of unequipping.
      * @cc.treturn boolean If the upgrade was unequipped.
@@ -132,6 +167,30 @@ public class PocketAPI implements ILuaAPI {
     @LuaFunction(mainThread = true)
     public final Object[] unequipTop() {
         return unequip(PocketSide.TOP);
+    }
+
+    /**
+     * Remove the pocket computer's left upgrade.
+     *
+     * @return The result of unequipping.
+     * @cc.treturn boolean If the upgrade was unequipped.
+     * @cc.treturn string|nil The reason an upgrade was not unequipped.
+     */
+    @LuaFunction(mainThread = true)
+    public final Object[] unequipLeft() {
+        return unequip(PocketSide.LEFT);
+    }
+
+    /**
+     * Remove the pocket computer's right upgrade.
+     *
+     * @return The result of unequipping.
+     * @cc.treturn boolean If the upgrade was unequipped.
+     * @cc.treturn string|nil The reason an upgrade was not unequipped.
+     */
+    @LuaFunction(mainThread = true)
+    public final Object[] unequipRight() {
+        return unequip(PocketSide.RIGHT);
     }
 
     private Object[] unequip(PocketSide side) {

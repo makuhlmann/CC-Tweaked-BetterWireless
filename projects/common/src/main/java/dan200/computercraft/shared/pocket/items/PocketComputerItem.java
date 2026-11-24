@@ -39,6 +39,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 public class PocketComputerItem extends Item {
@@ -147,11 +149,11 @@ public class PocketComputerItem extends Item {
 
     @Override
     public Component getName(ItemStack stack) {
-        return UpgradeManager.getName(getDescriptionId(), getUpgrade(stack, PocketSide.BACK), getUpgrade(stack, PocketSide.TOP));
+        return UpgradeManager.getName(getDescriptionId(), getUpgradesWithData(stack).stream().map(UpgradeData::getUpgrade).toList());
     }
 
     private static String getCreatorModId(ItemStack stack) {
-        return PocketUpgrades.instance().getOwner(getUpgradeWithData(stack, PocketSide.BACK), getUpgradeWithData(stack, PocketSide.TOP));
+        return PocketUpgrades.instance().getOwner(getUpgradesWithData(stack));
     }
 
     @ForgeOverride
@@ -192,7 +194,7 @@ public class PocketComputerItem extends Item {
                 new TerminalSize(ConfigSpec.pocketTermWidth.get(), ConfigSpec.pocketTermHeight.get())
             ))
         );
-        brain.setUpgrades(getUpgradeWithData(stack, PocketSide.TOP), getUpgradeWithData(stack, PocketSide.BACK));
+        brain.setUpgrades(stack);
         var computer = brain.computer();
 
         stack.set(ModRegistry.DataComponents.COMPUTER.get(), new ServerComputerReference(registry.getSessionID(), computer.register()));
@@ -246,7 +248,7 @@ public class PocketComputerItem extends Item {
         // Normally we treat the computer instance as the source of truth, and copy the computer's state back to the
         // item. However, if we've just crafted the computer with an upgrade, we should sync the other way, and update
         // the computer.
-        computer.getBrain().setUpgrades(getUpgradeWithData(stack, PocketSide.TOP), getUpgradeWithData(stack, PocketSide.BACK));
+        computer.getBrain().setUpgrades(stack);
     }
 
     public ComputerFamily getFamily() {
@@ -269,9 +271,21 @@ public class PocketComputerItem extends Item {
     }
 
     public static @Nullable UpgradeData<IPocketUpgrade> getUpgradeWithData(ItemStack stack, PocketSide side) {
-        return stack.get(switch (side) {
-            case TOP -> ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get();
-            case BACK -> ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get();
-        });
+        return stack.get(side.component());
+    }
+
+    /**
+     * Get every upgrade on a pocket computer.
+     *
+     * @param stack The pocket computer stack.
+     * @return The upgrades, in {@link PocketSide} order, skipping empty slots.
+     */
+    public static List<UpgradeData<IPocketUpgrade>> getUpgradesWithData(ItemStack stack) {
+        var upgrades = new ArrayList<UpgradeData<IPocketUpgrade>>(PocketSide.values().length);
+        for (var side : PocketSide.values()) {
+            var upgrade = getUpgradeWithData(stack, side);
+            if (upgrade != null) upgrades.add(upgrade);
+        }
+        return upgrades;
     }
 }

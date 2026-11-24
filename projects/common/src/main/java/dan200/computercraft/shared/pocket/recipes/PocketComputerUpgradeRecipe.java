@@ -8,7 +8,6 @@ import com.mojang.serialization.MapCodec;
 import dan200.computercraft.api.pocket.IPocketUpgrade;
 import dan200.computercraft.impl.PocketUpgrades;
 import dan200.computercraft.impl.UpgradeData;
-import dan200.computercraft.shared.ModRegistry;
 import dan200.computercraft.shared.pocket.core.PocketSide;
 import dan200.computercraft.shared.pocket.items.PocketComputerItem;
 import dan200.computercraft.shared.util.RegistryHelper;
@@ -20,6 +19,9 @@ import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CustomRecipe;
 import net.minecraft.world.item.crafting.RecipeSerializer;
 import net.minecraft.world.level.Level;
+import org.jspecify.annotations.Nullable;
+
+import java.util.EnumMap;
 
 public final class PocketComputerUpgradeRecipe extends CustomRecipe {
     public static final MapCodec<PocketComputerUpgradeRecipe> CODEC = RegistryHelper.retrieveRegistryCodec(IPocketUpgrade.REGISTRY)
@@ -60,38 +62,49 @@ public final class PocketComputerUpgradeRecipe extends CustomRecipe {
 
         if (computer.isEmpty()) return ItemStack.EMPTY;
 
-        // Check for upgrades around the item
-        UpgradeData<IPocketUpgrade> above = null, below = null;
+        // Check for upgrades around the item. The pocket computer faces us, so an upgrade to its left goes on its
+        // right side, and the other way around (as with turtles).
+        var upgrades = new EnumMap<PocketSide, UpgradeData<IPocketUpgrade>>(PocketSide.class);
         for (var y = 0; y < inventory.height(); y++) {
             for (var x = 0; x < inventory.width(); x++) {
                 var item = inventory.getItem(x, y);
                 if (item.isEmpty() || (x == computerX && y == computerY)) continue;
 
-                if (x == computerX && y == computerY - 1) {
-                    above = PocketUpgrades.instance().get(upgradeRegistry, item);
-                    if (above == null) return ItemStack.EMPTY;
-                } else if (x == computerX && y == computerY + 1) {
-                    below = PocketUpgrades.instance().get(upgradeRegistry, item);
-                    if (below == null) return ItemStack.EMPTY;
-                } else {
-                    return ItemStack.EMPTY;
-                }
+                var side = getSide(x - computerX, y - computerY);
+                if (side == null) return ItemStack.EMPTY;
+
+                var upgrade = PocketUpgrades.instance().get(upgradeRegistry, item);
+                if (upgrade == null) return ItemStack.EMPTY;
+
+                // Abort if we've already got an upgrade in that slot.
+                if (PocketComputerItem.getUpgrade(computer, side) != null) return ItemStack.EMPTY;
+
+                upgrades.put(side, upgrade);
             }
         }
 
         // Abort if we have no upgrades
-        if (above == null && below == null) return ItemStack.EMPTY;
-        // Or if we've already got an upgrade in that slot.
-        if ((above != null && PocketComputerItem.getUpgrade(computer, PocketSide.TOP) != null)
-            || (below != null && PocketComputerItem.getUpgrade(computer, PocketSide.BACK) != null)) {
-            return ItemStack.EMPTY;
-        }
+        if (upgrades.isEmpty()) return ItemStack.EMPTY;
 
         // Construct the new stack
         var result = computer.copyWithCount(1);
-        if (above != null) result.set(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), above);
-        if (below != null) result.set(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), below);
+        for (var upgrade : upgrades.entrySet()) result.set(upgrade.getKey().component(), upgrade.getValue());
         return result;
+    }
+
+    /**
+     * Get the slot an upgrade crafted next to the pocket computer goes in.
+     *
+     * @param dx The upgrade's column, relative to the pocket computer.
+     * @param dy The upgrade's row, relative to the pocket computer.
+     * @return The slot, or {@code null} if the upgrade isn't directly next to the pocket computer.
+     */
+    private static @Nullable PocketSide getSide(int dx, int dy) {
+        if (dx == 0 && dy == -1) return PocketSide.TOP;
+        if (dx == 0 && dy == 1) return PocketSide.BACK;
+        if (dx == -1 && dy == 0) return PocketSide.RIGHT;
+        if (dx == 1 && dy == 0) return PocketSide.LEFT;
+        return null;
     }
 
     @Override

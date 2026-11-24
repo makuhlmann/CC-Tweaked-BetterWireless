@@ -6,7 +6,6 @@ package dan200.computercraft.shared.integration.rei;
 
 import dan200.computercraft.api.turtle.TurtleSide;
 import dan200.computercraft.shared.ModRegistry;
-import dan200.computercraft.shared.pocket.core.PocketSide;
 import dan200.computercraft.shared.pocket.items.PocketComputerItem;
 import dan200.computercraft.shared.turtle.items.TurtleItem;
 import me.shedaniel.rei.api.common.entry.comparison.ItemComparatorRegistry;
@@ -33,10 +32,9 @@ public class REIComputerCraft implements REICommonPlugin {
         registry.register((context, stack) -> {
             long hash = 1;
 
-            var top = PocketComputerItem.getUpgradeWithData(stack, PocketSide.TOP);
-            var back = PocketComputerItem.getUpgradeWithData(stack, PocketSide.BACK);
-            if (top != null) hash = hash * 31 + top.getUpgradeHolder().key().identifier().hashCode();
-            if (back != null) hash = hash * 31 + back.getUpgradeHolder().key().identifier().hashCode();
+            for (var upgrade : PocketComputerItem.getUpgradesWithData(stack)) {
+                hash = hash * 31 + upgrade.getUpgradeHolder().key().identifier().hashCode();
+            }
 
             return hash;
         }, ModRegistry.Items.POCKET_COMPUTER_NORMAL.get(), ModRegistry.Items.POCKET_COMPUTER_ADVANCED.get());

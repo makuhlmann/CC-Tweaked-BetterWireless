@@ -125,22 +125,20 @@ public class UpgradeRecipeGenerator<T> {
 
             return Collections.unmodifiableList(recipes);
         } else if (stack.getItem() instanceof PocketComputerItem) {
-            // Suggest possible upgrades which can be applied to this pocket computer
-            var top = PocketComputerItem.getUpgradeWithData(stack, PocketSide.TOP);
-            var back = PocketComputerItem.getUpgradeWithData(stack, PocketSide.BACK);
-            if (top != null && back != null) return List.of();
+            // Suggest possible upgrades which can be applied to this pocket computer, in each empty slot.
+            var emptySides = new ArrayList<PocketSide>(PocketSide.values().length);
+            for (var side : PocketSide.values()) {
+                if (PocketComputerItem.getUpgradeWithData(stack, side) == null) emptySides.add(side);
+            }
+            if (emptySides.isEmpty()) return List.of();
 
             List<T> recipes = new ArrayList<>();
             var ingredient = new InputItem(ItemStackTemplate.fromNonEmptyStack(stack));
             for (var upgrade : pocketUpgrades) {
                 if (upgrade.pocket == null) throw new NullPointerException();
 
-                if (top == null) {
-                    recipes.add(pocket(upgrade.item, ingredient, pocketWith(stack, UpgradeData.ofDefault(upgrade.pocket), back)));
-                }
-
-                if (back == null) {
-                    recipes.add(pocket(ingredient, upgrade.item, pocketWith(stack, top, UpgradeData.ofDefault(upgrade.pocket))));
+                for (var side : emptySides) {
+                    recipes.add(pocket(side, upgrade.item, ingredient, pocketWith(stack, side, UpgradeData.ofDefault(upgrade.pocket))));
                 }
             }
 
@@ -205,21 +203,14 @@ public class UpgradeRecipeGenerator<T> {
         } else if (stack.getItem() instanceof PocketComputerItem) {
             List<T> recipes = new ArrayList<>(0);
 
-            var top = PocketComputerItem.getUpgradeWithData(stack, PocketSide.TOP);
-            var back = PocketComputerItem.getUpgradeWithData(stack, PocketSide.BACK);
+            for (var side : PocketSide.values()) {
+                var upgrade = PocketComputerItem.getUpgradeWithData(stack, side);
+                if (upgrade == null) continue;
 
-            if (top != null) {
                 recipes.add(pocket(
-                    new InputItem(top.getItem()),
-                    new InputItem(pocketWith(stack, back, null)),
-                    ItemStackTemplate.fromNonEmptyStack(stack)
-                ));
-            }
-
-            if (back != null) {
-                recipes.add(pocket(
-                    new InputItem(pocketWith(stack, null, top)),
-                    new InputItem(back.getItem()),
+                    side,
+                    new InputItem(upgrade.getItem()),
+                    new InputItem(pocketWith(stack, side, null)),
                     ItemStackTemplate.fromNonEmptyStack(stack)
                 ));
             }
@@ -237,15 +228,29 @@ public class UpgradeRecipeGenerator<T> {
         return ItemStackTemplate.fromNonEmptyStack(newStack);
     }
 
-    private static ItemStackTemplate pocketWith(ItemStack stack, @Nullable UpgradeData<IPocketUpgrade> top, @Nullable UpgradeData<IPocketUpgrade> back) {
+    private static ItemStackTemplate pocketWith(ItemStack stack, PocketSide side, @Nullable UpgradeData<IPocketUpgrade> upgrade) {
         var newStack = stack.copyWithCount(1);
-        newStack.set(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), top);
-        newStack.set(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), back);
+        newStack.set(side.component(), upgrade);
         return ItemStackTemplate.fromNonEmptyStack(newStack);
     }
 
-    private T pocket(InputItem top, InputItem bottom, ItemStackTemplate result) {
-        return recipeFactory.create(1, 2, List.of(top, bottom), result);
+    /**
+     * A recipe which crafts an upgrade onto one side of a pocket computer.
+     *
+     * @param side    The side the upgrade goes on.
+     * @param upgrade The upgrade item.
+     * @param pocket  The pocket computer being upgraded.
+     * @param result  The upgraded pocket computer.
+     * @return The recipe.
+     */
+    private T pocket(PocketSide side, InputItem upgrade, InputItem pocket, ItemStackTemplate result) {
+        // The pocket computer is facing towards us, so upgrades on its left are crafted on the right.
+        return switch (side) {
+            case TOP -> recipeFactory.create(1, 2, List.of(upgrade, pocket), result);
+            case BACK -> recipeFactory.create(1, 2, List.of(pocket, upgrade), result);
+            case RIGHT -> recipeFactory.create(2, 1, List.of(upgrade, pocket), result);
+            case LEFT -> recipeFactory.create(2, 1, List.of(pocket, upgrade), result);
+        };
     }
 
     private T turtle(InputItem left, InputItem right, ItemStackTemplate result) {
@@ -289,6 +294,7 @@ public class UpgradeRecipeGenerator<T> {
                 for (var pocketSupplier : POCKET_COMPUTERS) {
                     var pocketItem = pocketSupplier.get();
                     recipes.add(pocket(
+                        PocketSide.TOP,
                         item,
                         new InputItem(pocketItem),
                         DataComponentUtil.createTemplate(pocketItem, ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), UpgradeData.ofDefault(pocket))

@@ -16,7 +16,7 @@ import net.minecraft.resources.ResourceKey;
 import org.jspecify.annotations.Nullable;
 
 /**
- * A peripheral which can be equipped to the back side of a pocket computer.
+ * A peripheral which can be equipped to a side (the top, back, left or right) of a pocket computer.
  * <p>
  * Pocket upgrades are defined in two stages. First, one creates a {@link IPocketUpgrade} subclass and corresponding
  * {@link UpgradeType} instance, which are then registered in a Minecraft registry.

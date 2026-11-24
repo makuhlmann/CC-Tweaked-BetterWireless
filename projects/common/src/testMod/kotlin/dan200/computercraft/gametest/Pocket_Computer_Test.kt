@@ -153,10 +153,17 @@ class Pocket_Computer_Test {
      */
     @GameTest(template = Structures.DEFAULT)
     fun Can_upgrades_be_crafted(helper: GameTestHelper) = helper.immediate {
-        fun pocket(top: UpgradeData<IPocketUpgrade>? = null, back: UpgradeData<IPocketUpgrade>? = null): ItemStack {
+        fun pocket(
+            top: UpgradeData<IPocketUpgrade>? = null,
+            back: UpgradeData<IPocketUpgrade>? = null,
+            left: UpgradeData<IPocketUpgrade>? = null,
+            right: UpgradeData<IPocketUpgrade>? = null,
+        ): ItemStack {
             val item = ItemStack(ModRegistry.Items.POCKET_COMPUTER_NORMAL.get())
             item.set(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), top)
             item.set(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), back)
+            item.set(ModRegistry.DataComponents.LEFT_POCKET_UPGRADE.get(), left)
+            item.set(ModRegistry.DataComponents.RIGHT_POCKET_UPGRADE.get(), right)
             return item
         }
 
@@ -203,10 +210,60 @@ class Pocket_Computer_Test {
             isStack(pocket(top = speaker, back = modem)),
         )
 
+        // The pocket computer faces us, so an upgrade crafted to its left goes on its right side, and vice versa.
+        assertThat(
+            "Craft with item to the left",
+            helper.craftItem(
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+                ItemStack(ModRegistry.Items.SPEAKER.get()), pocket(), ItemStack.EMPTY,
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+            ),
+            isStack(pocket(right = speaker)),
+        )
+        assertThat(
+            "Craft with item to the right",
+            helper.craftItem(
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+                ItemStack.EMPTY, pocket(), ItemStack(ModRegistry.Items.SPEAKER.get()),
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+            ),
+            isStack(pocket(left = speaker)),
+        )
+        assertThat(
+            "Craft with four items",
+            helper.craftItem(
+                ItemStack.EMPTY, ItemStack(ModRegistry.Items.SPEAKER.get()), ItemStack.EMPTY,
+                ItemStack(ModRegistry.Items.WIRELESS_MODEM_NORMAL.get()), pocket(), ItemStack(ModRegistry.Items.SPEAKER.get()),
+                ItemStack.EMPTY, ItemStack(ModRegistry.Items.WIRELESS_MODEM_NORMAL.get()), ItemStack.EMPTY,
+            ),
+            isStack(pocket(top = speaker, back = modem, left = speaker, right = modem)),
+        )
+        assertThat(
+            "Maintains upgrades on every side",
+            helper.craftItem(
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+                ItemStack(ModRegistry.Items.SPEAKER.get()), pocket(top = speaker, back = modem, left = modem), ItemStack.EMPTY,
+                ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+            ),
+            isStack(pocket(top = speaker, back = modem, left = modem, right = speaker)),
+        )
+
         // Cannot craft when already have item
         helper.assertNotCraftable(
             ItemStack.EMPTY, ItemStack(ModRegistry.Items.SPEAKER.get()), ItemStack.EMPTY,
             ItemStack.EMPTY, pocket(top = modem), ItemStack.EMPTY,
+            ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+        )
+        helper.assertNotCraftable(
+            ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+            ItemStack.EMPTY, pocket(left = modem), ItemStack(ModRegistry.Items.SPEAKER.get()),
+            ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
+        )
+
+        // Cannot craft with an upgrade in a corner
+        helper.assertNotCraftable(
+            ItemStack(ModRegistry.Items.SPEAKER.get()), ItemStack.EMPTY, ItemStack.EMPTY,
+            ItemStack.EMPTY, pocket(), ItemStack.EMPTY,
             ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY,
         )
 
