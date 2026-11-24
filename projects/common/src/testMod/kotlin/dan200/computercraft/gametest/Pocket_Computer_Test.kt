@@ -9,12 +9,15 @@ import dan200.computercraft.api.lua.Coerced
 import dan200.computercraft.api.pocket.IPocketUpgrade
 import dan200.computercraft.client.pocket.ClientPocketComputers
 import dan200.computercraft.core.apis.TermAPI
+import dan200.computercraft.core.computer.ComputerSide
 import dan200.computercraft.gametest.api.*
 import dan200.computercraft.impl.PocketUpgrades
 import dan200.computercraft.impl.UpgradeData
 import dan200.computercraft.mixin.gametest.GameTestHelperAccessor
 import dan200.computercraft.shared.ModRegistry
 import dan200.computercraft.shared.computer.core.ComputerState
+import dan200.computercraft.shared.pocket.core.PocketHolder
+import dan200.computercraft.shared.pocket.items.PocketComputerItem
 import dan200.computercraft.shared.util.DataComponentUtil
 import dan200.computercraft.shared.util.NonNegativeId
 import dan200.computercraft.test.core.computer.getApi
@@ -27,6 +30,7 @@ import net.minecraft.gametest.framework.GameTestSequence
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.Identifier
 import net.minecraft.resources.ResourceKey
+import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import org.hamcrest.MatcherAssert.assertThat
@@ -145,6 +149,38 @@ class Pocket_Computer_Test {
                     },
                 ),
             )
+        }
+    }
+
+    /**
+     * Checks that a pocket computer's upgrades are attached as peripherals on their own sides, and that its bottom is
+     * left free.
+     */
+    @GameTest(template = Structures.DEFAULT)
+    fun Upgrades_attach_on_every_side(helper: GameTestHelper) = helper.immediate {
+        val registries = helper.level.registryAccess()
+        val speaker = PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.SPEAKER.get()))!!
+        val modem = PocketUpgrades.instance().get(registries, ItemStack(ModRegistry.Items.WIRELESS_MODEM_NORMAL.get()))!!
+
+        val stack = ItemStack(ModRegistry.Items.POCKET_COMPUTER_NORMAL.get())
+        stack.set(ModRegistry.DataComponents.TOP_POCKET_UPGRADE.get(), speaker)
+        stack.set(ModRegistry.DataComponents.BACK_POCKET_UPGRADE.get(), modem)
+        stack.set(ModRegistry.DataComponents.LEFT_POCKET_UPGRADE.get(), speaker)
+        stack.set(ModRegistry.DataComponents.RIGHT_POCKET_UPGRADE.get(), modem)
+
+        val pos = helper.absolutePos(BlockPos(2, 2, 2))
+        val entity = ItemEntity(helper.level, pos.x + 0.5, pos.y + 0.5, pos.z + 0.5, stack)
+        val brain = (stack.item as PocketComputerItem).getOrCreateBrain(PocketHolder.ItemEntityHolder(entity), stack)
+        val computer = brain.computer()
+        try {
+            assertEquals("speaker", computer.getPeripheral(ComputerSide.TOP)?.type, "Top peripheral")
+            assertEquals("modem", computer.getPeripheral(ComputerSide.BACK)?.type, "Back peripheral")
+            assertEquals("speaker", computer.getPeripheral(ComputerSide.LEFT)?.type, "Left peripheral")
+            assertEquals("modem", computer.getPeripheral(ComputerSide.RIGHT)?.type, "Right peripheral")
+            assertEquals(null, computer.getPeripheral(ComputerSide.BOTTOM), "Bottom peripheral")
+            assertEquals(null, computer.getPeripheral(ComputerSide.FRONT), "Front peripheral")
+        } finally {
+            computer.close()
         }
     }
 
