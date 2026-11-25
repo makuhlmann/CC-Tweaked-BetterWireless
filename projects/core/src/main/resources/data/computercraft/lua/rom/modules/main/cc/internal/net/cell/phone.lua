@@ -505,6 +505,8 @@ function Phone:hear(src, message, signal, networks, distance)
         cell.track, cell.distance = nil, nil
     end
     cell.interval, cell.ul, cell.pos, cell.service = message.interval, message.ul, pos, message.service
+    -- Its site's name, for people to read: anyone may say any.
+    cell.name = message.name
     if pos then self:measured(cell, distance, now) end
     -- Each network the cell names, now. One it stops naming (it lost that network's core) goes quiet, and is soon
     -- forgotten.
@@ -1548,7 +1550,7 @@ function Phone:info()
                 heard[#heard + 1] = {
                     id = id, network = name, signal = cell.signal, area = cell.area, load = cell.load, age = age,
                     band = band, carrier = carrier, interval = cell.interval, distance = cell.distance,
-                    service = cell.service,
+                    service = cell.service, name = cell.name,
                     pos = cell.pos and { cell.pos[1], cell.pos[2], cell.pos[3] },
                     -- Heard lately enough to use.
                     fresh = age <= silence(cell),

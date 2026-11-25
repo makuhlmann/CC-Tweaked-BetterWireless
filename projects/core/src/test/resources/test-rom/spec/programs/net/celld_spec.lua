@@ -39,7 +39,7 @@ describe("The celld program", function()
         local calls = setup(serving({ "core.acme" }, { "ACME" }))
         for _, case in ipairs {
             { { "core.acme" }, "There's no command called core.acme. To serve a core's network, use 'celld add <core>'.\n" },
-            { { "set", "pwer", "30" }, "There's no setting called pwer. They're area, band, interval, pos, power, service and override.\n" },
+            { { "set", "pwer", "30" }, "There's no setting called pwer. They're area, band, interval, name, pos, power, service and override.\n" },
             {
                 { "set", "band", "b33" },
                 "There's no cellular band called b33. They're b31 (450MHz), b28 (700MHz), b20 (800MHz), b8 (900MHz), "
@@ -58,7 +58,9 @@ describe("The celld program", function()
             { { "set", "pos", "1", "2", "z" }, "A cell's position is three whole numbers: its computer's x, y and z.\n" },
             { { "set", "area", "3", "4" }, "Usage: celld set area <number>\n" },
             { { "set", "service", "everything" }, "A cell's service is sms (it only carries messages) or full.\n" },
-            { { "unset", "colour" }, "There's no setting called colour. They're area, band, interval, pos, power, service and override.\n" },
+            { { "set", "name" }, "Usage: celld set name <name>\n" },
+            { { "set", "name", "a", "b", "c", "d", "e", "f", "g", "h", "i" }, "Usage: celld set name <name>\n" },
+            { { "unset", "colour" }, "There's no setting called colour. They're area, band, interval, name, pos, power, service and override.\n" },
             { { "remove", "core.acmr" }, "This cell doesn't connect to core.acmr. Its cores are core.acme.\n" },
             { { "add", "CORE.ACME" }, "This cell connects to core.acme already.\n" },
         } do
@@ -120,6 +122,7 @@ describe("The celld program", function()
             { "set", "band", "1800" }, { "set", "band", "B3" }, { "set", "band", "3" }, { "set", "band", "1800MHz" },
             { "set", "area", "4" }, { "set", "interval", "0.5" }, { "set", "pos", "1", "-2", "3" }, { "set", "power", "30" },
             { "set", "service", "sms" }, { "set", "service", "full" }, { "unset", "band" }, { "unset", "pos" },
+            { "set", "name", "HILL-1" }, { "set", "name", "Old", "Mill" }, { "unset", "name" },
         } do
             expect(run(table.unpack(words))):describe(table.concat(words, " ")):matches { ok = true, error = "" }
         end
@@ -128,8 +131,11 @@ describe("The celld program", function()
             { "configure", { band = "b3" } }, { "configure", { area = 4 } }, { "configure", { interval = 0.5 } },
             { "configure", { pos = { 1, -2, 3 } } }, { "configure", { power = 30 } }, { "configure", { service = "sms" } },
             { "configure", { service = false } }, { "configure", { band = false } }, { "configure", { pos = false } },
+            { "configure", { name = "HILL-1" } }, { "configure", { name = "Old Mill" } }, { "configure", { name = false } },
         }
         expect(run("set", "pos", "1", "-2", "3").output):eq("The cell says it's at 1, -2, 3.\n")
+        expect(run("set", "name", "HILL-1").output):eq("The cell says its site is called HILL-1.\n")
+        expect(run("unset", "name").output):eq("The cell no longer says its site's name.\n")
     end)
 
     it("lets a cell use carriers its cores don't offer, saying what that may do", function()
@@ -222,6 +228,7 @@ describe("The celld program", function()
     it("shows how the cell is doing, with its settings", function()
         local info = serving({ "core.acme" }, { "ACME" })
         info.band, info.current_interval, info.pos, info.power, info.service = "b3", 2, { 1, 2, -3 }, 30, "sms"
+        info.name = "Old Mill"
         setup(info)
         expect(run("status")):matches {
             ok = true,
@@ -233,6 +240,7 @@ describe("The celld program", function()
             "  area      3",
             "  band      b3 (1800MHz)",
             "  interval  as its core says (2 seconds)",
+            "  name      Old Mill",
             "  pos       1 2 -3",
             "  power     30 dBm",
             "  service   messages only",
@@ -260,6 +268,7 @@ describe("The celld program", function()
             "  area      3",
             "  band      b20 (800MHz), b3/2, b7 (2600MHz)",
             "  interval  as its core says",
+            "  name      none",
             "  pos       not said",
             "  power     30 dBm (the default)",
             "  service   full",
@@ -275,6 +284,7 @@ describe("The celld program", function()
             "  area      0",
             "  band      any (its core picks)",
             "  interval  4 seconds",
+            "  name      none",
             "  pos       not said",
             "  power     30 dBm (the default)",
             "  service   full",

@@ -65,6 +65,7 @@ describe("Phones, given made-up system information,", function()
                 if cell.pos then assert(common.is_position(cell.pos), "A cell's position isn't one") end
                 if cell.distance ~= nil then assert(finite(cell.distance) and cell.distance >= 0, "A cell's distance") end
                 assert(cell.service == nil or cell.service == "sms", "A cell's service")
+                assert(cell.name == nil or common.is_site_name(cell.name), "A cell's site's name")
             end
             if info.strongest then assert(finite(info.strongest.signal), "The strongest cell's signal") end
             info.unread, info.enabled = 0, true
@@ -93,7 +94,7 @@ describe("Phones, given made-up system information,", function()
 
         local changes = {}
         for _, bad in ipairs(BAD) do
-            for _, field in ipairs { "ul", "interval", "pos", "service", "area", "load", "time" } do
+            for _, field in ipairs { "ul", "interval", "pos", "service", "name", "area", "load", "time" } do
                 changes[#changes + 1] = { what = field .. " " .. bad[1], fields = { [field] = bad[2] } }
             end
             changes[#changes + 1] = { what = "carriers " .. bad[1], part = { carriers = bad[2] } }
@@ -109,6 +110,9 @@ describe("Phones, given made-up system information,", function()
         for _, ul in ipairs { 1.5, -1, 70000, beacon, 1400, 2 ^ 53, 65533 } do also("ul " .. ul, { ul = ul }) end
         for _, interval in ipairs { 0, 0.49, 10.01, -1, "1" } do also("interval " .. interval, { interval = interval }) end
         for _, service in ipairs { "SMS", "full", "", 1 } do also("service " .. tostring(service), { service = service }) end
+        for _, name in ipairs { "", "NINE-CHAR", " HILL", "HILL ", "HI\0LL", "H\195\164GE", ("x"):rep(100), 1 } do
+            also("name " .. #tostring(name), { name = name })
+        end
         local many = {}
         for i = 1, 500 do many[i] = beacon end
         for _, carriers in ipairs {
@@ -119,7 +123,9 @@ describe("Phones, given made-up system information,", function()
         -- And the most a cell may say: everything at its limits.
         local carriers = {}
         for i = 1, 8 do carriers[i] = bands.beacon_channels()[i * 7] end
-        also("limits", { pos = { 2 ^ 31, -2 ^ 31, 0 }, interval = 10, service = "sms", area = 2 ^ 53, load = 1 }, { carriers = carriers })
+        also("limits", {
+            pos = { 2 ^ 31, -2 ^ 31, 0 }, interval = 10, service = "sms", name = "~ 8 ch ~", area = 2 ^ 53, load = 1,
+        }, { carriers = carriers })
         also("smallest", { pos = { -2 ^ 31, 2 ^ 31, -1 }, interval = 0.5, area = -1, load = -1 })
 
         for i, change in ipairs(changes) do

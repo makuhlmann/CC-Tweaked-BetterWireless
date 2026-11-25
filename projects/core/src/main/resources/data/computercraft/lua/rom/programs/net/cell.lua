@@ -222,6 +222,15 @@ local function monitor()
         local cell_lines = math.max(1, math.min(#heard, math.max(math.ceil(left / 2), left - #events)))
         local event_lines = left - cell_lines
 
+        -- Cells' site names, if any cell says one, as wide as the longest: beside their IDs where there's still room for 8
+        -- characters of the network (the mark, ID and spaces take 8 besides the name, the carrier and signal 11), or else
+        -- in their place (on a pocket computer).
+        local named = 0
+        for _, cell in ipairs(heard) do
+            if cell.name then named = math.max(named, #cell.name) end
+        end
+        local beside = named > 0 and w - 8 - named - 11 >= 8
+
         line(" Cells", colours.white, HEADER_BG)
         right(("%d "):format(#heard), colours.white, HEADER_BG)
         if #heard == 0 then line("None heard", colours.lightGrey) end
@@ -244,9 +253,14 @@ local function monitor()
             if not cell.fresh then fg = colours.grey end
             -- Its carrier and signal on the right; after its network, SMS if it only carries messages.
             -- (Its computer's ID: a cell site with several bands has a cell on each, and the carrier is alongside.)
-            local id = fit("#" .. site_label(cell.id), 5)
+            local id = "#" .. site_label(cell.id)
+            if beside then
+                id = fit(id, 5) .. " " .. fit(cell.name or "", named)
+            else
+                id = fit(cell.name or id, math.max(5, named))
+            end
             local tail = (" %-5s %4d"):format(carrier_label(cell), round(cell.signal))
-            local name_width = math.max(1, w - 7 - #tail)
+            local name_width = math.max(1, w - 2 - #id - #tail)
             local name = tostring(cell.network)
             if cell.service == "sms" then name = fit(name, math.max(1, name_width - 4)):gsub(" +$", "") .. " SMS" end
             line(mark .. id .. " " .. fit(name, name_width) .. tail, fg)

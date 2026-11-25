@@ -9,15 +9,16 @@ local b20_1, b3_1, b3_2, b7_1 = bands.parse_carrier("b20/1"), bands.parse_carrie
 
 describe("The cell program", function()
     describe("monitor", function()
-        -- Run the monitor on a pocket computer's screen, and get what it shows after its first drawing.
-        local function show(info, events)
+        -- Run the monitor on a pocket computer's screen (or one as wide as given), and get what it shows after its first
+        -- drawing.
+        local function show(info, events, width)
             if not crypto then stub(_G, "crypto", {}) end
             if not enclave then stub(_G, "enclave", {}) end
             stub(net.cell, "listen", function() return true end)
             stub(net.cell, "info", function() return info end)
 
             local lines, colours, finished = {}, {}, nil
-            with_window(26, 20, function()
+            with_window(width or 26, 20, function()
                 local co = coroutine.create(shell.run)
                 assert(coroutine.resume(co, "/rom/programs/net/cell.lua", "monitor"))
                 assert(coroutine.resume(co, "cell_state", info.state))
@@ -171,6 +172,46 @@ describe("The cell program", function()
                 " Carriers               2",
                 " b20/1 ACME    1 cell  -90",
                 " b3/1  BETA    1 cell  -65",
+            }
+        end)
+
+        it("shows the names cell sites say", function()
+            local heard = {
+                {
+                    id = 12, network = "ACME", signal = -71.6, age = 0.5, fresh = true, verified = true, serving = true,
+                    band = "b20", carrier = b20_1, name = "HILL-1",
+                },
+                { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, band = "b3", carrier = b3_2 },
+                {
+                    id = 77, network = "BETA", signal = -95, age = 2, fresh = true, band = "b20", carrier = b20_1,
+                    service = "sms", name = "Old Mill",
+                },
+            }
+            local info = { state = "attached", network = "ACME", cell = 12, heard = heard, events = {} }
+
+            -- On a pocket computer, in place of the IDs: as wide as the longest name.
+            local lines = show(info)
+            expect({ table.unpack(lines, 7, 10) }):same {
+                " Cells                  3",
+                ">HILL-1   ACME  b20/1  -72",
+                " #11      ACME  b3/2   -83",
+                " Old Mill B SMS b20/1  -95",
+            }
+            heard[3].name = nil
+            lines = show(info)
+            expect({ table.unpack(lines, 8, 10) }):same {
+                ">HILL-1 ACME    b20/1  -72",
+                " #11    ACME    b3/2   -83",
+                " #77    BET SMS b20/1  -95",
+            }
+
+            -- Beside the IDs where there's room.
+            heard[3].name = "Old Mill"
+            lines = show(info, nil, 51)
+            expect({ table.unpack(lines, 8, 10) }):same {
+                (">#12   HILL-1   %-24s b20/1  -72"):format("ACME"),
+                (" #11            %-24s b3/2   -83"):format("ACME"),
+                (" #77   Old Mill %-24s b20/1  -95"):format("BETA SMS"),
             }
         end)
 

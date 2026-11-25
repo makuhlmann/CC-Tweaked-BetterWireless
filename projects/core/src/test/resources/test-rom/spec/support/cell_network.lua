@@ -180,14 +180,15 @@ along a line (computers 11 and up), all on a wired backhaul with a server (compu
 @tparam[opt] {
     join? = table, name? = string, core_id? = number, core_host? = number, cell_base? = number, prefix? = string,
     core_is_cell? = boolean, numbers? = string, carriers? = { string... }, interval? = number,
-    bands? = table, services? = { string... }, standby? = { boolean... }, override? = { boolean... },
-    dns? = { string... }, domain? = string, hostnames? = table,
+    bands? = table, services? = { string... }, names? = { string... }, standby? = { boolean... },
+    override? = { boolean... }, dns? = { string... }, domain? = string, hostnames? = table,
 } options Another operator to share the air, the backhaul and the server with; this network's name; its core's ID
 and the last part of its address; the number its cells' IDs (and addresses) start after; its phones' network; whether
 its first cell is on the core's computer; its number prefix; its carriers, by name (such as `"b20/1"`); how often its
 cells send system information; the band each cell asks to be on, by its index (or a list of bands and carriers, for a
 computer with a cell on each: `towers[i].towers` has each cell's tower, by the cell's ID, and `towers[i].tower` the
-first's); each cell's service, by its index (`"sms"` for one which only carries messages); and whether each cell stands
+first's); each cell's service, by its index (`"sms"` for one which only carries messages); each cell site's name, by
+its index; and whether each cell stands
 by, off the air, until `setup.confirm_cell` confirms its bands, by its index; whether each may be on carriers its
 networks don't have; the DNS servers and domain its core gives phones; and where it registers their names.
 @treturn table The operator.
@@ -285,7 +286,7 @@ local function operator(cell_positions, options)
             band = options.bands and options.bands[i], pos = type(position) == "table" and position or nil,
             standby = options.standby and options.standby[i] or nil,
             override = options.override and options.override[i] or nil,
-            service_kind = options.services and options.services[i],
+            service_kind = options.services and options.services[i], name = options.names and options.names[i],
             sign = function(data) return crypto.sign(cell_private, data) end, shared = {},
             driver = new_driver(net, stack, ("%s's cell #%d"):format(name, id), key, addr),
         }
@@ -351,7 +352,7 @@ local function operator(cell_positions, options)
                     id = welcome.id, sign = entry.sign, epoch = now, can_serve = entry.can_serve,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
                     fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
-                    service = welcome.service,
+                    service = welcome.service, name = welcome.name,
                 }
                 entry.towers[welcome.id] = tower
                 if welcome.id == entry.stack.id then entry.tower = tower end
@@ -366,7 +367,7 @@ local function operator(cell_positions, options)
     local function start_cell(entry, driver, cores, connect_to)
         local service = cell_service.new {
             cores = cores, area = 1, id = entry.id, identity = driver.identity, fingerprint = fingerprint,
-            band = entry.band, pos = entry.pos, service = entry.service_kind, standby = entry.standby,
+            band = entry.band, pos = entry.pos, service = entry.service_kind, name = entry.name, standby = entry.standby,
             override = entry.override, signing = hex(entry.public), start_tower = start_tower(entry), sleep = driver.sleep, wake = driver.poke,
             connect = connect_to or function(text) return dial(driver, text) end,
         }
@@ -390,7 +391,9 @@ local function operator(cell_positions, options)
     function setup.confirm_cell(cell, band)
         local entry = type(cell) == "table" and cell or towers[cell]
         entry.band, entry.standby = band or entry.band, nil
-        entry.service:configure { area = 1, band = entry.band, pos = entry.pos, service = entry.service_kind }
+        entry.service:configure {
+            area = 1, band = entry.band, pos = entry.pos, service = entry.service_kind, name = entry.name,
+        }
         entry.service:go_on_air()
         entry.driver.poke()
     end

@@ -64,7 +64,7 @@ Link.__index = Link
     stack = table, crypto = table, modem = string, kind = string, carrier = number, ul = number, id? = number,
     interval? = number, fixed_interval? = boolean, core_interval? = number, area? = number,
     pos? = { number, number, number },
-    service? = string, sign = function(data:string):string,
+    service? = string, name? = string, sign = function(data:string):string,
     epoch = function():number, can_serve? = function(core:number):boolean,
     network? = string, certificate? = string, core? = number, tunnel_key? = string, control? = function(message:table),
     carriers? = { number... },
@@ -75,7 +75,8 @@ information, in seconds, whether that was set for this cell, so its core can't c
 (to go back to if it's no longer set for this cell); this cell's tracking
 area; where it is (its computer's block position), which it says in its system information so phones can work out
 where they are, if it's given; `"sms"` for a cell which only carries messages (a satellite, say: phones use it only
-when nothing better will do, and it carries none of their packets); a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
+when nothing better will do, and it carries none of their packets); its site's name, which it says in its system
+information for people to read, if it has one; a way to sign with the cell's key; the time, as `os.epoch("utc")` gives; and whether the cell can serve a
 network's phones now, given the address of its core (a relay can't while its own phone has no service, and stops naming
 that network, so its phones move to another cell). It may also be given the first network to serve, as `add_network`
 takes it.
@@ -97,6 +98,7 @@ local function new(options)
         core_interval = common.is_interval(options.core_interval) and options.core_interval or nil,
         pos = common.is_position(options.pos) and { options.pos[1], options.pos[2], options.pos[3] } or nil,
         service = options.service == "sms" and "sms" or nil,
+        name = common.is_site_name(options.name) and options.name or nil,
         can_serve = options.can_serve or function() return true end,
         links = {}, phones = {}, downlinks = {}, early_confirms = recent.new(MAX_EARLY_CONFIRMS, EARLY_CONFIRM_TIME, stack.clock),
         unknown = recent.new(MAX_UNKNOWN, UNKNOWN_INTERVAL, stack.clock), asked = recent.new(MAX_ASKED),
@@ -152,13 +154,15 @@ end
 --[[- Change what the cell says about itself, at once: phones here keep their service, and hear of it in the next
 system information.
 
-@tparam { interval? = number, pos? = { number, number, number }, service? = string } settings How often to send system
-information, in seconds (or `nil`, as the core says); where the cell is (or `nil` not to say); and `"sms"` if it only
-carries messages.
+@tparam {
+    interval? = number, pos? = { number, number, number }, service? = string, name? = string,
+} settings How often to send system information, in seconds (or `nil`, as the core says); where the cell is (or `nil`
+not to say); `"sms"` if it only carries messages; and its site's name (or `nil` for none).
 ]]
 function Tower:configure(settings)
     self.pos = common.is_position(settings.pos) and { settings.pos[1], settings.pos[2], settings.pos[3] } or nil
     self.service = settings.service == "sms" and "sms" or nil
+    self.name = common.is_site_name(settings.name) and settings.name or nil
     local interval, fixed = self.core_interval, false
     if common.is_interval(settings.interval) then interval, fixed = settings.interval, true end
     self.fixed_interval = fixed
@@ -291,7 +295,7 @@ function Tower:beacon()
     for _ in pairs(self.phones) do load = load + 1 end
     self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
-        ul = self.ul, interval = self.interval, pos = self.pos, service = self.service, sign = self.sign,
+        ul = self.ul, interval = self.interval, pos = self.pos, service = self.service, name = self.name, sign = self.sign,
     })
 end
 

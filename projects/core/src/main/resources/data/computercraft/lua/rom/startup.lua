@@ -148,7 +148,7 @@ shell.setCompletionFunction("rom/programs/net/cellcore.lua", function(shell, ind
         return completion.choice(shell, text, previous, cellcore_commands)
     end
 end)
-local celld_settings = { "area", "band", "interval", "pos", "power", "service", "override" }
+local celld_settings = { "area", "band", "interval", "name", "pos", "power", "service", "override" }
 shell.setCompletionFunction("rom/programs/net/celld.lua", function(shell, index, text, previous)
     if index == 1 then
         return completion.choice(shell, text, previous, { "status", "add ", "remove ", "set ", "unset ", "confirm", "start", "stop", "restart" })

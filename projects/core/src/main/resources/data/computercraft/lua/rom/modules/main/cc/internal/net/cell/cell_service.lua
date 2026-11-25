@@ -78,21 +78,23 @@ end
 
 @tparam {
     core? = string, cores? = { string... }, area? = number, band? = string|{ string... }, interval? = number,
-    pos? = { number, number, number }, service? = string, standby? = boolean, override? = boolean, id = number,
+    pos? = { number, number, number }, service? = string, name? = string, standby? = boolean, override? = boolean,
+    id = number,
     identity = string, fingerprint = function(key:string):string, signing = string, connect = function(core:string):table,
     start_tower = function(welcome:table, control:function):table,
     sleep = function(seconds:number), wake = function(),
 } options The core's name or address, or the names or addresses of several (for a cell which serves several
 networks); the cell's tracking area; the cellular band it should be on, if it matters, or a list of bands and carriers
 (`"b20"`, `"b3/2"`) for a cell on each; how often it sends system
-information, if not as its core says; where it says it is, and `"sms"` if it only carries messages; whether it stands
+information, if not as its core says; where it says it is, and `"sms"` if it only carries messages; the site's name,
+which each of its cells says; whether it stands
 by, off the air, until its bands are confirmed (and `go_on_air` is called); whether it may be on carriers its networks
 don't offer; this computer's ID
 and its key (as hexadecimal digits), and a way to get a key's fingerprint; the cell's own Ed25519 key, as hexadecimal
 digits, which each core certifies; a way to connect securely to a core's control port; a way to have the cell serve a
 network, given what its core said (the cell's `id`, `network`, `certificate`, `tunnel_key`, `core`, `area`, the `carrier`
 and `ul` channel the cell is on, the `interval`, whether it was set for this cell (`fixed_interval`) and what the core said
-(`core_interval`), the network's `carriers`, and the cell's `pos` and `service`) and a function to send that core
+(`core_interval`), the network's `carriers`, and the cell's `pos`, `service` and `name`) and a function to send that core
 control messages, which returns something to give the core's messages to (`control`), to stop serving the network with
 (`stop`), and the cell's radio (`tower`, which `configure` changes); a way to wait; and a way to wake tasks waiting for
 something to change. A cell is on one carrier, whichever network it serves: the first core it reaches picks it, and it
@@ -352,7 +354,7 @@ function Service:serve(link, connection)
                 core = connection:getPeer(), area = options.area or 0,
                 carrier = cell.carrier, ul = cell.ul, interval = interval or reply.interval,
                 fixed_interval = interval ~= nil, core_interval = reply.interval, carriers = reply.carriers,
-                pos = options.pos, service = options.service,
+                pos = options.pos, service = options.service, name = options.name,
             }, to_core)
             cells[i] = { id = id, handle = handle }
             handles[id] = handle
@@ -538,26 +540,28 @@ function Service:set_override(override)
     self:review()
 end
 
---[[- Change the cell's settings. What it says about itself (where it is, whether it only carries messages, and how
-often it sends system information) changes on the air at once, and its phones keep their service. The band and area are
-only said to a core when the cell connects to it.
+--[[- Change the cell's settings. What it says about itself (where it is, whether it only carries messages, its site's
+name, and how often it sends system information) changes on the air at once, and its phones keep their service. The
+band and area are only said to a core when the cell connects to it.
 
 @tparam {
     area? = number, band? = string|{ string... }, interval? = number, pos? = { number, number, number },
-    service? = string,
+    service? = string, name? = string,
 } settings Every setting, as `new` takes them: one which is missing is unset.
 ]]
 function Service:configure(settings)
     local options = self.options
     options.area, options.band, options.interval = settings.area, settings.band, settings.interval
-    options.pos, options.service = settings.pos, settings.service
+    options.pos, options.service, options.name = settings.pos, settings.service, settings.name
     local done = {}
     for _, link in ipairs(self.links) do
         for _, cell in ipairs(link.cells or {}) do
             local tower = cell.handle.tower
             if tower and not done[tower] then
                 done[tower] = true
-                tower:configure { interval = options.interval, pos = options.pos, service = options.service }
+                tower:configure {
+                    interval = options.interval, pos = options.pos, service = options.service, name = options.name,
+                }
             end
         end
     end

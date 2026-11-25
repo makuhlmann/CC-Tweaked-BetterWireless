@@ -429,7 +429,20 @@ describe("The menus of celld and cellcore", function()
                 app.choose("service")
                 app.choose("Full")
                 expect(cell.calls[6]):same { "configure", { service = false } }
-                expect(#cell.calls):eq(6)
+
+                -- A site's name, which may have spaces in it.
+                expect(select(2, app.find("name"))):str_match("^name +none$")
+                app.choose("name")
+                expect(app.line(1)):eq("Set the name")
+                app.enter("Old Mill")
+                expect(cell.calls[7]):same { "configure", { name = "Old Mill" } }
+                expect(select(2, app.find("name"))):str_match("^name +Old Mill$")
+                expect(app.says("name: Old Mill.")):eq(true)
+                app.choose("name")
+                expect(app.line(3)):eq("name: Old Mill")
+                app.enter("")
+                expect(cell.calls[8]):same { "configure", { name = false } }
+                expect(#cell.calls):eq(8)
             end)
         end)
 

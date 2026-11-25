@@ -334,7 +334,9 @@ the design above:
   certificate is issued by the core when the cell connects, for the cell's own Ed25519 key (`cell.tower` in its
   enclave), signed by the operator's (`cell.signing`). Version 4 signs the cell's uplink channel, its interval and each
   network's carriers too, and the cell's position if it has one (three whole numbers), and whether the cell only carries
-  messages; a phone ignores system information without a fit uplink channel and interval.
+  messages; a phone ignores system information without a fit uplink channel and interval. Version 6 signs the site's
+  name too, if it has one (`celld set name HILL-1`: 1 to 8 printable characters, not starting or ending with a space),
+  which `cell monitor` shows with the cell. A name says nothing about whose a cell is: anyone can give one any name.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
@@ -434,7 +436,7 @@ the design above:
   to; `cellcore stop` and `celld stop` stop them. A cell keeps its cores and settings (`/.cell/cell`), and `celld`
   changes one at a time (`celld add`, `remove`, `set` and `unset`, through `net.cell.configureCell`), checking it
   first, so a mistake changes nothing. Most changes are made while it runs, without its phones noticing: a core added
-  or removed (the other networks carry on), and where it says it is, its service, interval and power. Its area, and a
+  or removed (the other networks carry on), and where it says it is, its name, service, interval and power. Its area, and a
   band other than the one it's on, are said to each core as it connects, so for those it starts again. It won't go to
   a band none of its networks has a carrier in. `net.run` passes every event to each service after the stack has handled it, and services
   never see `terminate`. A service is a set of coroutines (`cc.internal.net.tasks`) which use connections as programs

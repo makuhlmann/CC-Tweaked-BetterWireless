@@ -75,11 +75,12 @@ connection between two networks' cores, for all they do for each other. Version 
 cellular band): system information says which channel to reach the cell on, how often it's sent, and which carriers
 the cell's network uses. Version 5 lets one computer run cells on several carriers (a site with several bands, say):
 each is a cell of its own to phones, with an ID of its own (see [`carrier_cell`]), so nothing changes on the air, and
-the computer and its core say which of its cells each control message is about. Whoever is newer knows
+the computer and its core say which of its cells each control message is about. Version 6 lets a cell site say its
+name in system information, signed with the rest of the cell's part. Whoever is newer knows
 whether it can still talk to the other, so a computer which hears a newer version only notes it: a phone says the
 network is newer than it is while it can't find a cell it can use, and a core logs it.
 ]]
-local VERSION = 5
+local VERSION = 6
 
 --- Whether another computer says it speaks a newer version than we do.
 --
@@ -342,6 +343,19 @@ local function is_position(pos)
     return pos[4] == nil and next(pos, 3) == nil
 end
 
+--- The most characters a cell site's name may have.
+local MAX_SITE_NAME = 8
+
+--- Whether a value could be a cell site's name, which its cells say in their system information for people to read:
+-- 1 to [`MAX_SITE_NAME`] printable ASCII characters, which don't start or end with a space.
+--
+-- @param value The value, which may be anything.
+-- @treturn boolean Whether it could be.
+local function is_site_name(value)
+    return type(value) == "string" and #value >= 1 and #value <= MAX_SITE_NAME and not value:find("[^ -~]")
+        and not value:find("^ ") and not value:find(" $")
+end
+
 --[[- Check a cell's path: the relays its backhaul goes through, as a list of their IDs. The core may send a cell one
 longer than [`MAX_PATH`], to say it's too far from the core to serve.
 
@@ -360,7 +374,8 @@ end
 local function signed_fields(sib, entry)
     return {
         network = entry.network, cell = sib.cell, area = sib.area, load = sib.load, time = sib.time, path = entry.path,
-        ul = sib.ul, interval = sib.interval, pos = sib.pos, service = sib.service, carriers = entry.carriers,
+        ul = sib.ul, interval = sib.interval, pos = sib.pos, service = sib.service, name = sib.name,
+        carriers = entry.carriers,
     }
 end
 
@@ -370,13 +385,13 @@ key.
 
 @tparam {
     cell = number, area = number, load = number, time = number, sign = function(data:string):string,
-    ul = number, interval = number, pos? = { number, number, number }, service? = string,
+    ul = number, interval = number, pos? = { number, number, number }, service? = string, name? = string,
     networks? = { { network = string, certificate = string, path? = { number... }, carriers? = { number... } }... },
     network? = string, certificate? = string, path? = { number... }, carriers? = { number... },
 } options The cell's ID, tracking area and how busy it is (from 0 to 1); the time, as `os.epoch("utc")` gives; a way
 to sign with the cell's key; the channel phones reach the cell on, and how often it sends system information, in
-seconds; where the cell is, if it says; what it offers phones, if not everything (`"sms"`: only messages); and the
-networks it serves, each with its name, the cell's certificate from its operator, the relays the cell's backhaul to its
+seconds; where the cell is, if it says; what it offers phones, if not everything (`"sms"`: only messages); its site's
+name, if it has one (see [`is_site_name`]); and the networks it serves, each with its name, the cell's certificate from its operator, the relays the cell's backhaul to its
 core goes through, nearest first, if it's a relay, and the carriers that network's cells use, by their beacon channels.
 A cell of one network may give that network's `network`, `certificate`, `path` and `carriers` instead.
 @treturn table The system information.
@@ -387,7 +402,8 @@ local function make_sib(options)
     }
     local sib = {
         op = "sib", v = VERSION, cell = options.cell, area = options.area, load = options.load, time = options.time,
-        ul = options.ul, interval = options.interval, pos = options.pos, service = options.service, networks = {},
+        ul = options.ul, interval = options.interval, pos = options.pos, service = options.service, name = options.name,
+        networks = {},
     }
     for i, entry in ipairs(networks) do
         local path = entry.path and #entry.path > 0 and entry.path or nil
@@ -401,7 +417,7 @@ end
 
 --[[- Read which networks a cell's system information names, without checking any of them: those whose names, paths
 and carriers could be real, up to as many as a cell may serve. The cell's own part (its uplink channel and interval,
-and its position and service if it gives them) must be fit to use too.
+and its position, service and site's name if it gives them) must be fit to use too.
 
 @param sib The system information, which may be anything.
 @tparam number sender The ID of the computer which sent it.
@@ -412,7 +428,7 @@ local function sib_networks(sib, sender)
     if type(sib) ~= "table" or sib.cell ~= sender or type(sib.area) ~= "number" or type(sib.load) ~= "number"
         or type(sib.time) ~= "number" or type(sib.networks) ~= "table" or not is_uplink(sib.ul)
         or not is_interval(sib.interval) or (sib.pos ~= nil and not is_position(sib.pos))
-        or (sib.service ~= nil and sib.service ~= "sms") then
+        or (sib.service ~= nil and sib.service ~= "sms") or (sib.name ~= nil and not is_site_name(sib.name)) then
         return nil
     end
     local result, seen = {}, {}
@@ -655,6 +671,8 @@ return {
     want_carrier = want_carrier,
     match_wants = match_wants,
     is_position = is_position,
+    MAX_SITE_NAME = MAX_SITE_NAME,
+    is_site_name = is_site_name,
     make_code = make_code,
     parse_code = parse_code,
     activation_key = activation_key,

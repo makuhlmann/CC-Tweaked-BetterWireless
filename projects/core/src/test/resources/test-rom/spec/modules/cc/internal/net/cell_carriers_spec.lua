@@ -287,6 +287,11 @@ describe("Cellular carriers", function()
         expect(with("pos", { 1, 64, -20 })):same { good.networks[1] }
         expect(with("pos", { 1, 64 })):eq(nil)
         expect(with("pos", { 1, 64, 0.5 })):eq(nil)
+        -- A cell site's name: 1 to 8 printable characters, not starting or ending with a space.
+        expect(with("name", "Old Mill")):same { good.networks[1] }
+        for _, name in ipairs { "", "NINE-CHAR", " HILL", "HILL ", "HILL\n", "H\195\164GE", 5 } do
+            expect(with("name", name)):describe(tostring(name)):eq(nil)
+        end
 
         -- A network naming carriers which aren't is left out, the others kept.
         local mixed = with("networks", {
@@ -294,5 +299,49 @@ describe("Cellular carriers", function()
             { network = "GAMMA", carriers = { 7985 } },
         })
         expect(mixed):same { { network = "GAMMA", carriers = { 7985 } } }
+    end)
+
+    it("says its site's name, signed with the rest, which phones hear at once", function()
+        math.randomseed(3)
+        -- Cell 11's site has a name, and cell 12's none.
+        local acme = operator({ 0, 20 }, { names = { "Old Mill" } })
+        local net = acme.net
+        local phone = acme.add_phone(1, 5)
+        net.advance(5)
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+        local function names()
+            local result = {}
+            for _, cell in ipairs(phone:info().heard) do result[cell.id] = cell.name or false end
+            return result
+        end
+        expect(names()):same { [11] = "Old Mill", [12] = false }
+
+        -- The name is signed: one changed on the way doesn't check out.
+        local carrier, sibs = acme.towers[1].tower.carrier, {}
+        local listener = net.stack(99)
+        acme.positions[99] = 0
+        listener:add_interface("ears", "air", "wireless", {
+            band = "test", listen = { carrier }, reply = carrier, to = function() return nil end,
+        })
+        listener:on_frame(common.FRAME, function(_, src, body)
+            if type(body) == "table" and body.op == "sib" then sibs[src] = body end
+        end, true)
+        net.advance(2)
+        local sib = sibs[11]
+        expect(sib.name):eq("Old Mill")
+        local options = { network = "ACME", signing = acme.signing_public, now = acme.now(), sender = 11 }
+        expect(common.check_sib(crypto, sib, common.sib_networks(sib, 11)[1], options)):eq(true)
+        sib.name = "Old Mil1"
+        expect({ common.check_sib(crypto, sib, common.sib_networks(sib, 11)[1], options) }):same { nil, "bad signature" }
+
+        -- Renamed (or no longer named) while it runs, it says so at once, and its phones keep their service.
+        acme.towers[1].service:configure { area = 1, name = "HILL-1" }
+        net.advance(2)
+        expect(names()):same { [11] = "HILL-1", [12] = false }
+        acme.towers[1].service:configure { area = 1 }
+        net.advance(2)
+        expect(names()):same { [11] = false, [12] = false }
+        expect({ phone.state, phone.cell }):same { "attached", 11 }
+        expect(net.errors):same {}
     end)
 end)

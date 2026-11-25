@@ -436,6 +436,7 @@ local function cell_settings(config)
         pos = common.is_position(config.pos) and { config.pos[1], config.pos[2], config.pos[3] } or nil,
         power = read_power(config.power),
         service = config.service == "sms" and "sms" or nil,
+        name = common.is_site_name(config.name) and config.name or nil,
         -- Whether the cell may be on carriers its networks don't offer.
         override = config.override == true or nil,
         -- A cell which was only just set up stands by until its bands are confirmed. Older ones never asked.
@@ -455,7 +456,8 @@ local function start_cell_service(config)
     apply_power()
     background.cell = require("cc.internal.net.cell.cell_service").new {
         cores = config.cores, area = config.area, band = config.band, interval = config.interval, pos = config.pos,
-        service = config.service, standby = config.confirmed == false, override = config.override == true,
+        service = config.service, name = config.name, standby = config.confirmed == false,
+        override = config.override == true,
         id = os.getComputerID(), identity = getIdentity(), fingerprint = fingerprint, signing = to_hex(signing),
         connect = function(core) return secure.connect(core, CONTROL_PORT) end,
         start_tower = function(welcome, control)
@@ -471,7 +473,7 @@ local function start_cell_service(config)
                     stack = stack, crypto = crypto, modem = modem, kind = kind, area = welcome.area, id = welcome.id,
                     carrier = welcome.carrier, ul = welcome.ul, interval = welcome.interval,
                     fixed_interval = welcome.fixed_interval, core_interval = welcome.core_interval, pos = welcome.pos,
-                    service = welcome.service,
+                    service = welcome.service, name = welcome.name,
                     sign = function(data) return enclave.sign("cell.tower", data) end,
                     epoch = function() return os.epoch("utc") end,
                     -- A relay reaches a core through this computer's phone, so it can only serve that core's network
@@ -1129,7 +1131,7 @@ function api.transmitPower()
 end
 
 -- A cell's settings, besides its cores, in the order they're checked.
-local CELL_SETTINGS = { "area", "band", "interval", "pos", "power", "service", "override" }
+local CELL_SETTINGS = { "area", "band", "interval", "name", "pos", "power", "service", "override" }
 
 -- What's wrong with a value for one of a cell's settings, if it won't do.
 local function check_setting(key, value)
@@ -1141,6 +1143,12 @@ local function check_setting(key, value)
     elseif key == "interval" then
         if not common.is_interval(value) then
             return ("A cell sends its system information every %g to %g seconds"):format(common.MIN_INTERVAL, common.MAX_INTERVAL)
+        end
+    elseif key == "name" then
+        if not common.is_site_name(value) then
+            return ("A cell site's name is 1 to %d letters, digits, spaces or symbols, which don't start or end with a space"):format(
+                common.MAX_SITE_NAME
+            )
         end
     elseif key == "pos" then
         if not common.is_position(value) then return "A cell's position is three whole numbers: its computer's x, y and z" end
@@ -1223,7 +1231,7 @@ function api.startCell(core, settings)
         local again = table.concat(old.cores, " ") ~= table.concat(cores, " ") or old.area ~= config.area
             or not same_band(old.band, config.band) or old.interval ~= config.interval
             or place(old.pos) ~= place(config.pos) or old.power ~= config.power or old.service ~= config.service
-            or old.override ~= config.override
+            or old.name ~= config.name or old.override ~= config.override
         for _, link in ipairs(background.cell:info().links) do
             if link.state ~= "serving" then again = true end
         end

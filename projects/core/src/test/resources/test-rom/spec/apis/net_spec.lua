@@ -554,7 +554,7 @@ describe("The net library", function()
             local function settings_of(info)
                 return {
                     cores = info.cores, enabled = info.enabled, area = info.area, band = info.band, interval = info.interval,
-                    pos = info.pos, power = info.power, service = info.service,
+                    pos = info.pos, power = info.power, service = info.service, name = info.name,
                 }
             end
 
@@ -565,11 +565,12 @@ describe("The net library", function()
                     expect({ net.cell.configureCell({ pos = { 1, 2, 3 } }) }):same { true, false }
                     expect({ net.cell.configureCell({ band = "B3" }) }):same { true, false }
                     expect({ net.cell.configureCell({ interval = 4, power = 30, service = "sms", area = 2 }) }):same { true, false }
+                    expect({ net.cell.configureCell({ name = "Old Mill" }) }):same { true, false }
                     local info = net.cell.cellInfo()
                     expect(info.state):eq("stopped")
                     expect(settings_of(info)):same {
                         cores = { "core.acme" }, enabled = true, area = 2, band = "b3", interval = 4, pos = { 1, 2, 3 },
-                        power = 30, service = "sms",
+                        power = 30, service = "sms", name = "Old Mill",
                     }
 
                     -- Cores once each, whatever case they're written in.
@@ -581,7 +582,9 @@ describe("The net library", function()
                     net.cell.configureCell({ cores = { "core.acme", "core.beta" } })
 
                     -- Each back as it is when it's not set, and the cores stay.
-                    net.cell.configureCell({ area = false, band = false, interval = false, pos = false, power = false, service = false })
+                    net.cell.configureCell({
+                        area = false, band = false, interval = false, pos = false, power = false, service = false, name = false,
+                    })
                     expect(settings_of(net.cell.cellInfo())):same { cores = { "core.acme", "core.beta" }, enabled = true, area = 0 }
 
                     -- With no cores, there's nothing to start.
@@ -597,6 +600,7 @@ describe("The net library", function()
                     local before = contents()
                     local nine = {}
                     for i = 1, 9 do nine[i] = "core" .. i end
+                    local SITE_NAME = "A cell site's name is 1 to 8 letters, digits, spaces or symbols, which don't start or end with a space"
                     for _, case in ipairs {
                         { { band = "b33" }, "There's no cellular band called b33: they're b31, b28, b20, b8, b3, b1 and b7" },
                         { { band = "low" }, "There's no cellular band called low: they're b31, b28, b20, b8, b3, b1 and b7" },
@@ -607,6 +611,12 @@ describe("The net library", function()
                         { { power = 0 / 0 }, "A cell's power is a number of dBm" },
                         { { power = math.huge }, "A cell's power is a number of dBm" },
                         { { service = "full" }, "A cell's service is \"sms\" (messages only), or everything" },
+                        { { name = "" }, SITE_NAME },
+                        { { name = "NINE-CHAR" }, SITE_NAME },
+                        { { name = " HILL" }, SITE_NAME },
+                        { { name = "HILL " }, SITE_NAME },
+                        { { name = "HILL\n1" }, SITE_NAME },
+                        { { name = "H\195\164GE" }, SITE_NAME },
                         { { area = -1 }, "A cell's area is a whole number, 0 or more" },
                         { { area = 1.5 }, "A cell's area is a whole number, 0 or more" },
                         { { cores = { "core acme" } }, "Core 1 isn't a name or an address" },
@@ -624,6 +634,7 @@ describe("The net library", function()
                     expect.error(net.cell.configureCell, { cores = { 5 } }):eq("bad field 'cores' (core 1 is a number, not a string)")
                     expect.error(net.cell.configureCell, { area = "1" }):eq("bad field 'area' (number or false expected, got string)")
                     expect.error(net.cell.configureCell, { pos = true }):eq("bad field 'pos' (table or false expected, got boolean)")
+                    expect.error(net.cell.configureCell, { name = 5 }):eq("bad field 'name' (string or false expected, got number)")
                     expect(contents()):eq(before)
                 end)
             end)

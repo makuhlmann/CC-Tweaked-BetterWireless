@@ -28,6 +28,8 @@ local SETTINGS = {
     { name = "area", takes = "<number>" },
     { name = "band", takes = "<band>...", most = common.MAX_CARRIERS },
     { name = "interval", takes = "<seconds>" },
+    -- (A name may have spaces in it, so be several words.)
+    { name = "name", takes = "<name>", most = common.MAX_SITE_NAME },
     { name = "pos", takes = "<x> <y> <z>", count = 3 },
     { name = "power", takes = "<dBm>" },
     { name = "service", takes = "sms|full" },
@@ -98,6 +100,9 @@ local function read_value(key, words)
         if text == "on" then return true end
         if text == "off" then return false end
         error("A cell's override is on (it may use carriers its cores don't offer) or off.", 0)
+    elseif key == "name" then
+        -- (Whether it's a name a site may have is `net.cell.configureCell`'s to say.)
+        return table.concat(words, " ")
     elseif key == "pos" then
         local x, y, z = tonumber(words[1]), tonumber(words[2]), tonumber(words[3])
         if not x or not y or not z then error("A cell's position is three whole numbers: its computer's x, y and z.", 0) end
@@ -120,6 +125,7 @@ local function setting_values(info)
         interval = info.interval and ("%g seconds"):format(info.interval)
             or info.current_interval and ("as its core says (%g seconds)"):format(info.current_interval)
             or "as its core says",
+        name = info.name or "none",
         pos = info.pos and ("%d %d %d"):format(info.pos[1], info.pos[2], info.pos[3]) or "not said",
         power = info.power and ("%g dBm"):format(info.power) or ("%g dBm (the default)"):format(info.default_power or 30),
         service = info.service == "sms" and "messages only" or "full",
@@ -227,6 +233,12 @@ local function changed_lines(info, key, value, restarted, name)
         else
             say("The cell sends its system information as often as its core says.")
         end
+    elseif key == "name" then
+        if value then
+            say(("The cell says its site is called %s."):format(value))
+        else
+            say("The cell no longer says its site's name.")
+        end
     elseif key == "pos" then
         if value then
             say(("The cell says it's at %d, %d, %d."):format(value[1], value[2], value[3]))
@@ -332,6 +344,7 @@ end
 local NOTES = {
     area = "A whole number. Empty: 0.",
     interval = "0.5 to 10 seconds. Empty: as its core says.",
+    name = ("Up to %d characters, which phones show. Empty: none."):format(common.MAX_SITE_NAME),
     pos = "x y z. Empty: not said.",
     power = "dBm. Empty: 30, as far as phones can answer.",
 }
@@ -340,6 +353,7 @@ local NOTES = {
 local function typed_value(info, key)
     local value = info[key]
     if value == nil then return "" end
+    if key == "name" then return value end
     if key == "pos" then return ("%d %d %d"):format(value[1], value[2], value[3]) end
     if key == "area" and value == 0 then return "" end
     return ("%g"):format(value)
