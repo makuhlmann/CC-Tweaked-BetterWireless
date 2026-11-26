@@ -76,11 +76,12 @@ cellular band): system information says which channel to reach the cell on, how 
 the cell's network uses. Version 5 lets one computer run cells on several carriers (a site with several bands, say):
 each is a cell of its own to phones, with an ID of its own (see [`carrier_cell`]), so nothing changes on the air, and
 the computer and its core say which of its cells each control message is about. Version 6 lets a cell site say its
-name in system information, signed with the rest of the cell's part. Whoever is newer knows
+name in system information, signed with the rest of the cell's part. Version 7 lets a network's name have spaces and
+punctuation (see [`is_network`]): older phones don't take such a network for one. Whoever is newer knows
 whether it can still talk to the other, so a computer which hears a newer version only notes it: a phone says the
 network is newer than it is while it can't find a cell it can use, and a core logs it.
 ]]
-local VERSION = 6
+local VERSION = 7
 
 --- Whether another computer says it speaks a newer version than we do.
 --
@@ -157,12 +158,39 @@ local function is_number_prefix(value)
     return type(value) == "string" and #value >= 1 and #value <= 8 and not value:find("%D")
 end
 
---- Whether a value could be a network's name: letters, digits and dashes, up to 32 of them.
---
--- @param value The value.
--- @treturn boolean Whether it's a name.
+--- The longest a network's name may be.
+local MAX_NETWORK = 32
+
+--- What a network's name may be, as it's said to whoever gave one which can't be.
+local NETWORK_RULE = 'Network names are up to 32 letters, digits, spaces and punctuation (but not "), and don\'t start or end with a space'
+
+--[[- Whether a value could be a network's name: 1 to [`MAX_NETWORK`] printable ASCII characters (letters, digits,
+spaces and punctuation), which don't start or end with a space. There are no double quotes, which the shell keeps a name
+with spaces together with (`cell network "Old Mill"`).
+
+@param value The value.
+@treturn boolean Whether it's a name.
+]]
 local function is_network(value)
-    return type(value) == "string" and #value >= 1 and #value <= 32 and value:find("^[%w%-]+$") ~= nil
+    return type(value) == "string" and #value >= 1 and #value <= MAX_NETWORK and not value:find('[^ -~]')
+        and not value:find('"', 1, true) and value:byte(1) ~= 32 and value:byte(-1) ~= 32
+end
+
+--[[- Read a network's name, as a phone hears or is given it: the spaces (and other whitespace) at its ends don't count,
+so a cell can't name a network which looks like another, and a name typed with a space too many is still found.
+
+@param value The name, which may be anything.
+@treturn string|nil The name, without spaces at its ends, or `nil` if that isn't a network's name.
+]]
+local function network_name(value)
+    if type(value) ~= "string" then return nil end
+    local first = value:find("%S")
+    if not first then return nil end
+    local last = #value
+    while value:find("^%s", last) do last = last - 1 end
+    if last - first >= MAX_NETWORK then return nil end
+    local name = value:sub(first, last)
+    return is_network(name) and name or nil
 end
 
 --- How many DNS servers a network may give its phones.
@@ -416,7 +444,8 @@ local function make_sib(options)
 end
 
 --[[- Read which networks a cell's system information names, without checking any of them: those whose names, paths
-and carriers could be real, up to as many as a cell may serve. The cell's own part (its uplink channel and interval,
+and carriers could be real, up to as many as a cell may serve (a name is read as [`network_name`] reads it, without
+spaces at its ends). The cell's own part (its uplink channel and interval,
 and its position, service and site's name if it gives them) must be fit to use too.
 
 @param sib The system information, which may be anything.
@@ -435,9 +464,14 @@ local function sib_networks(sib, sender)
     for i = 1, MAX_SIB_NETWORKS do
         local entry = sib.networks[i]
         if entry == nil then break end
-        if type(entry) == "table" and is_network(entry.network) and not seen[entry.network]
+        local name = type(entry) == "table" and network_name(entry.network)
+        if name and not seen[name]
             and (entry.path == nil or is_path(entry.path)) and (entry.carriers == nil or is_carriers(entry.carriers)) then
-            seen[entry.network] = true
+            -- A name with spaces at its ends is taken without them, as its core named it: no core names one so.
+            if name ~= entry.network then
+                entry = { network = name, path = entry.path, carriers = entry.carriers, cert = entry.cert, sig = entry.sig }
+            end
+            seen[name] = true
             result[#result + 1] = entry
         end
     end
@@ -658,7 +692,10 @@ return {
     site_of = site_of,
     cell_label = cell_label,
     is_id = is_id,
+    MAX_NETWORK = MAX_NETWORK,
+    NETWORK_RULE = NETWORK_RULE,
     is_network = is_network,
+    network_name = network_name,
     is_number_prefix = is_number_prefix,
     MAX_DNS = MAX_DNS,
     read_dns = read_dns,

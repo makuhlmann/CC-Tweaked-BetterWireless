@@ -164,11 +164,12 @@ elseif command == "add" then
     watch(core)
 
 elseif command == "remove" then
-    if #args ~= 2 then return usage() end
+    if #args < 2 then return usage() end
     local info = net.cell.cellInfo()
     if not info.cores then error("This cell has no cores.", 0) end
-    -- By the name or address it was added as, or the network it serves.
-    local wanted, found = args[2]:lower(), nil
+    -- By the name or address it was added as, or the network it serves (whose name may have spaces).
+    local given = table.concat(args, " ", 2)
+    local wanted, found = given:lower(), nil
     for _, core in ipairs(info.cores) do
         if core:lower() == wanted then found = core end
     end
@@ -176,7 +177,7 @@ elseif command == "remove" then
         if not found and link.network and link.network:lower() == wanted then found = link.core end
     end
     if not found then
-        error(("This cell doesn't connect to %s. Its cores are %s."):format(args[2], table.concat(info.cores, ", ")), 0)
+        error(("This cell doesn't connect to %s. Its cores are %s."):format(given, table.concat(info.cores, ", ")), 0)
     end
     local cores = {}
     for _, core in ipairs(info.cores) do

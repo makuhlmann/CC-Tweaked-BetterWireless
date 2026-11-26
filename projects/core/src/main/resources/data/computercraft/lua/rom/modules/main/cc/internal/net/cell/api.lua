@@ -691,7 +691,8 @@ end
 -- name from their operator's cells (or as they next attach), and other networks' cores keep their agreements, as they
 -- know this core by its key. The names it had are remembered, so phones which were away still attach.
 --
--- @tparam string network The new name: letters, digits and dashes, up to 32 of them.
+-- @tparam string network The new name: up to 32 letters, digits, spaces and punctuation (but not `"`), which don't
+-- start or end with a space.
 -- @treturn[1] table The `network`, and the name it had (`was`).
 -- @treturn[2] nil If it couldn't be renamed.
 -- @treturn[2] string Why not.
@@ -879,6 +880,10 @@ end
 function api.activate(network, code)
     require_crypto()
     load()
+    -- Spaces at the name's ends don't count, as they don't in names phones hear.
+    local name = common.network_name(network)
+    if not name then return nil, common.NETWORK_RULE end
+    network = name
     if phone_instance and phone_instance.state ~= "inactive" and phone_instance.state ~= "rejected" then
         phone_instance:stop()
         phone_instance = nil
@@ -1036,9 +1041,11 @@ end
 
 function api.setNetwork(name)
     load()
-    if name == "auto" then name = nil end
-    if name and (#name > 32 or not name:find("^[%w%-]+$")) then
-        return nil, "Network names are letters, digits and dashes, up to 32 of them"
+    -- Spaces at the name's ends don't count, as they don't in names phones hear.
+    if name ~= nil then
+        name = common.network_name(name)
+        if not name then return nil, common.NETWORK_RULE end
+        if name == "auto" then name = nil end
     end
     local chosen = read_table(PHONE_FILE)
     chosen.network = name

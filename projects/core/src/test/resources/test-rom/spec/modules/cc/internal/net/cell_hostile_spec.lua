@@ -66,6 +66,7 @@ describe("Phones, given made-up system information,", function()
                 if cell.distance ~= nil then assert(finite(cell.distance) and cell.distance >= 0, "A cell's distance") end
                 assert(cell.service == nil or cell.service == "sms", "A cell's service")
                 assert(cell.name == nil or common.is_site_name(cell.name), "A cell's site's name")
+                assert(common.is_network(cell.network), "A cell's network's name")
             end
             if info.strongest then assert(finite(info.strongest.signal), "The strongest cell's signal") end
             info.unread, info.enabled = 0, true
@@ -112,6 +113,13 @@ describe("Phones, given made-up system information,", function()
         for _, service in ipairs { "SMS", "full", "", 1 } do also("service " .. tostring(service), { service = service }) end
         for _, name in ipairs { "", "NINE-CHAR", " HILL", "HILL ", "HI\0LL", "H\195\164GE", ("x"):rep(100), 1 } do
             also("name " .. #tostring(name), { name = name })
+        end
+        -- Networks' names which aren't, or are only once the spaces at their ends are taken off.
+        for _, network in ipairs {
+            "", "   ", " EVIL", "EVIL ", "\tEVIL\n", "EV\0IL", 'EV"IL', ("E"):rep(33), " " .. ("E"):rep(32) .. " ",
+            "H\195\164GE", ("x"):rep(10000), (" "):rep(10000) .. "EVIL", 5,
+        } do
+            also("network " .. #tostring(network), nil, { network = network })
         end
         local many = {}
         for i = 1, 500 do many[i] = beacon end

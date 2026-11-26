@@ -293,6 +293,18 @@ describe("Cellular carriers", function()
             expect(with("name", name)):describe(tostring(name)):eq(nil)
         end
 
+        -- A network's name: up to 32 printable characters but ", read without the spaces at its ends.
+        expect(with("networks", { { network = "Old Mill Co., Ltd." } })):same { { network = "Old Mill Co., Ltd." } }
+        expect(with("networks", { { network = "  ACME \t", carriers = { 7935 }, cert = "c", sig = "s" } }))
+            :same { { network = "ACME", carriers = { 7935 }, cert = "c", sig = "s" } }
+        expect(with("networks", { { network = " " .. ("A"):rep(32) .. " " } })):same { { network = ("A"):rep(32) } }
+        for _, network in ipairs { "", "   ", 'A "B"', "A\0B", "A\tB", ("A"):rep(33), "H\195\164GE", 5 } do
+            expect(with("networks", { { network = network } })):describe(tostring(network)):same {}
+        end
+        -- Names which are the same without their spaces are one network: the first.
+        expect(with("networks", { { network = "ACME ", sig = "a" }, { network = "ACME", sig = "b" } }))
+            :same { { network = "ACME", sig = "a" } }
+
         -- A network naming carriers which aren't is left out, the others kept.
         local mixed = with("networks", {
             { network = "ACME", carriers = { 7936 } }, { network = "BETA", carriers = { 1, 2, 3, 4, 5, 6, 7, 8, 9 } },
@@ -333,6 +345,13 @@ describe("Cellular carriers", function()
         expect(common.check_sib(crypto, sib, common.sib_networks(sib, 11)[1], options)):eq(true)
         sib.name = "Old Mil1"
         expect({ common.check_sib(crypto, sib, common.sib_networks(sib, 11)[1], options) }):same { nil, "bad signature" }
+        sib.name = "Old Mill"
+        -- Spaces put at the ends of the network's name on the way are taken off again: it's the name its core signed.
+        sib.networks[1].network = " ACME "
+        local entry = common.sib_networks(sib, 11)[1]
+        expect(entry.network):eq("ACME")
+        expect(common.check_sib(crypto, sib, entry, options)):eq(true)
+        expect(sib.networks[1].network):eq(" ACME ")
 
         -- Renamed (or no longer named) while it runs, it says so at once, and its phones keep their service.
         acme.towers[1].service:configure { area = 1, name = "HILL-1" }

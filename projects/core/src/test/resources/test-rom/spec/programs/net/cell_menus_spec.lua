@@ -4,6 +4,7 @@
 
 local with_window = require "test_helpers".with_window
 local capture = require "test_helpers".capture_program
+local common = require "cc.internal.net.cell.common"
 
 --[[ The menus `celld` and `cellcore` open when they're run with nothing asked of them: what they show, and that what's
 chosen in them asks `net.cell` (or the core) for just what the programs' commands do. ]]
@@ -950,7 +951,7 @@ describe("The menus of celld and cellcore", function()
                 return { carriers = status.spectrum }
             end
             function answers.rename(message)
-                if not message.network:match("^[%w%-]+$") then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
+                if not common.is_network(message.network) then return nil, common.NETWORK_RULE end
                 if message.network == "BETA" then return nil, "There's an agreement with a network called BETA" end
                 local was = status.network
                 status.network = message.network
@@ -1268,8 +1269,8 @@ describe("The menus of celld and cellcore", function()
                     app.choose("Add a network")
                     app.enter("ACME")
                     expect(app.says("That's this network.")):eq(true)
-                    app.enter("not a name")
-                    expect(app.says("Network names are letters, digits and dashes")):eq(true)
+                    app.enter('not "a" name')
+                    expect(app.says("Network names are up to 32 letters, digits, spaces and punctuation")):eq(true)
                     app.enter("BETA")
                     expect(app.line(1)):str_match("^BETA +ACME$")
                     expect(app.says("No agreement yet")):eq(true)
@@ -1411,8 +1412,8 @@ describe("The menus of celld and cellcore", function()
                     expect(core.asked):same {}
 
                     app.choose("Name")
-                    app.enter("not a name")
-                    expect(app.says("Network names are letters, digits and dashes")):eq(true)
+                    app.enter('not "a" name')
+                    expect(app.says("Network names are up to 32 letters, digits, spaces and punctuation")):eq(true)
                     -- It says what renaming does, and may be thought better of.
                     app.enter("ZETA")
                     expect(app.line(1)):eq("Rename to ZETA")
@@ -1650,8 +1651,8 @@ describe("The menus of celld and cellcore", function()
                     expect(app.says("This computer isn't a network's core.")):eq(true)
                     expect(core.connects):eq(0)
                     app.choose("Set up a network")
-                    app.enter("not a name")
-                    expect(app.says("Network names are letters, digits and dashes")):eq(true)
+                    app.enter('not "a" name')
+                    expect(app.says("Network names are up to 32 letters, digits, spaces and punctuation")):eq(true)
                     app.enter("ACME")
                     expect(app.line(1)):eq("Set up ACME")
                     expect(app.line(3)):eq("Addresses: 10.64.0.0/16")

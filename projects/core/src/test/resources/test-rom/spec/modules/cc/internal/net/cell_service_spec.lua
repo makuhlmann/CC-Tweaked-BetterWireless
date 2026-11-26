@@ -731,9 +731,11 @@ describe("Cellular services", function()
                 expect(ask(first, { op = "rename", network = "ZETA" })):same { error = "This core can't be started again from here" }
                 env.options.restart = function() restarts = restarts + 1 end
                 expect(ask(first, { op = "rename", network = "ACME" })):same { error = "The network is called ACME already" }
-                expect(ask(first, { op = "rename", network = "not a name" }).error)
-                    :eq("Network names are letters, digits and dashes, up to 32 of them")
-                expect(ask(first, { op = "rename" }).error):eq("Network names are letters, digits and dashes, up to 32 of them")
+                -- A name may have spaces and punctuation, but not at its ends (nor quotes).
+                for _, bad in ipairs { " ZETA", "ZETA ", 'Z "ETA"', "ZE\tTA", ("Z"):rep(33) } do
+                    expect(ask(first, { op = "rename", network = bad }).error):eq(common.NETWORK_RULE)
+                end
+                expect(ask(first, { op = "rename" }).error):eq(common.NETWORK_RULE)
                 env.service.networks.BETA = { carry = false, roam = false, messages = false }
                 expect(ask(first, { op = "rename", network = "BETA" })):same { error = "There's an agreement with a network called BETA" }
                 expect({ read_table(config_file).network, read_table(config_file).former, restarts }):same { "ACME", nil, 0 }
@@ -747,16 +749,16 @@ describe("Cellular services", function()
                 expect(env.service.lines[#env.service.lines].text):str_match("^This network is called ZETA now, not ACME")
 
                 -- The newest four names it had are kept, each once: and never the one it has.
-                for _, name in ipairs { "ETA", "THETA", "IOTA", "KAPPA" } do
+                for _, name in ipairs { "ETA", "THETA", "Iota Mobile, Inc.", "KAPPA" } do
                     expect(ask(admin(), { op = "rename", network = name }).was):ne(nil)
                 end
-                expect(read_table(config_file).former):same { "ZETA", "ETA", "THETA", "IOTA" }
+                expect(read_table(config_file).former):same { "ZETA", "ETA", "THETA", "Iota Mobile, Inc." }
                 expect(ask(admin(), { op = "rename", network = "ETA" })):matches { network = "ETA", was = "KAPPA" }
-                expect(read_table(config_file).former):same { "ZETA", "THETA", "IOTA", "KAPPA" }
+                expect(read_table(config_file).former):same { "ZETA", "THETA", "Iota Mobile, Inc.", "KAPPA" }
                 wait_until(function() return restarts == 6 end)
             end, })
             -- Started afresh, the core answers phones by any of them.
-            expect(common.former_names({ "A", "B", "not a name", "B", 5, "C", "D", "E" }, "C")):same { "A", "B", "D", "E" }
+            expect(common.former_names({ "A", "B", " NOT ", "B", 5, "C", "D", "E" }, "C")):same { "A", "B", "D", "E" }
             expect(common.former_names("ACME")):same {}
         end)
 
@@ -950,7 +952,7 @@ describe("Cellular services", function()
         it("makes another network's core say which network it is, before it waits to be allowed", function()
             local env = setup()
             run(env.net, { env.service }, { function()
-                for _, network in ipairs { false, "", "two words", ("X"):rep(33), 51 } do
+                for _, network in ipairs { false, "", " BETA", "BETA ", 'say "BETA"', ("X"):rep(33), 51 } do
                     expect(hello(env.connect(new_key()), "network", 51, { network = network or nil })):same {
                         error = "Another network's core must say which network it is.",
                     }
@@ -1340,7 +1342,7 @@ describe("Cellular services", function()
                     expect(acme.service.core:partner_called("DELTA")):eq(nil)
 
                     -- And the other way: GAMMA's core connects to ACME's as OMEGA's.
-                    beta.service.config.network, beta.service.config.former = "OMEGA", { "BETA", "GAMMA", "ACME", "no good" }
+                    beta.service.config.network, beta.service.config.former = "OMEGA", { "BETA", "GAMMA", "ACME", "no good " }
                     acme.service.networks.GAMMA.core = nil
                     acme.service:agreement_changed("GAMMA")
                     wait_until(function() return acme.service.links.GAMMA == nil end)
@@ -1378,7 +1380,10 @@ describe("Cellular services", function()
                     expect(beta.service.networks.GAMMA.key):eq(nil)
 
                     expect(ask(beta_admin, { op = "network", network = "BETA", carry = true }).error):eq("That's this network")
-                    expect(ask(beta_admin, { op = "network", network = "no spaces", carry = true }).error):ne(nil)
+                    expect(ask(beta_admin, { op = "network", network = " DELTA", carry = true }).error):eq(common.NETWORK_RULE)
+                    -- A name with spaces and punctuation gets as far as the core it's given.
+                    expect(ask(beta_admin, { op = "network", network = "Delta Mobile, Inc.", core = "" }).error)
+                        :eq("Expected the name or address of the other network's core")
                     expect(ask(beta_admin, { op = "network", network = "ACME", core = "" }).error)
                         :eq("Expected the name or address of the other network's core")
                     expect(ask(beta_admin, { op = "network", network = "ACME", roam = "always" }).error)
@@ -1536,7 +1541,8 @@ describe("Cellular services", function()
             -- What a core says is broadcast every second with the other networks' parts, so a name or certificate
             -- which is far too long would keep the whole cell off the air.
             local unfit = {
-                welcome { network = "BE TA", certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = " BETA", certificate = "b", tunnel_key = ("k"):rep(32) },
+                welcome { network = 'BE"TA', certificate = "b", tunnel_key = ("k"):rep(32) },
                 welcome { network = ("B"):rep(5000), certificate = "b", tunnel_key = ("k"):rep(32) },
                 welcome { network = "", certificate = "b", tunnel_key = ("k"):rep(32) },
                 welcome { network = 7, certificate = "b", tunnel_key = ("k"):rep(32) },
@@ -1842,7 +1848,7 @@ describe("Cellular services", function()
             run(env.net, { env.service }, { function()
                 local core = env.connections[1]
                 core:receive(5)
-                core:send({ v = common.VERSION, network = "not a name", standby = true, carriers = { 7935 } })
+                core:send({ v = common.VERSION, network = "ACME ", standby = true, carriers = { 7935 } })
                 wait_until(function() return env.service:info().state == "refused" end)
                 expect(env.service:info().error):eq("The core's answer can't be used")
             end, }, 300)

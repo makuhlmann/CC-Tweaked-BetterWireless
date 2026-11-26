@@ -564,6 +564,33 @@ describe("The cell program's GUI", function()
             expect((bar.line(info, 7, true))):eq(" ACME  ")
         end)
 
+        it("says SMS before the bars on a cell which only carries messages, and before R when roaming", function()
+            local bar = require "cc.internal.net.cell.bar"
+            local info = {
+                state = "attached", network = "ACME", serving_network = "ACME", signal = -60, messages_only = true, unread = 0,
+            }
+            -- The network's name stands alone.
+            expect((bar.line(info, 26, true))):eq(" ACME          SMS [||||] ")
+            expect((bar.line(info, 26, true, false, "6:05"))):eq(" ACME     6:05 SMS [||||] ")
+
+            info.roaming, info.serving_network = true, "BETA"
+            expect({ bar.line(info, 26, true, false, "6:05") }):same {
+                " BETA   6:05 SMS R [||||] ", "00000000888800000000000000", ("7"):rep(26),
+            }
+            expect((bar.line(info, 16, true))):eq(" B SMS R [||||] ")
+            expect((bar.line(info, 15, true))):eq(" BETA          ")
+            for width = 1, 60 do
+                local text, fg, bg = bar.line(info, width, true, false, "18:45")
+                expect({ #text, #fg, #bg }):same { width, width, width }
+            end
+
+            -- Roaming alone, as before; and neither once the phone isn't attached.
+            info.messages_only = nil
+            expect((bar.line(info, 26, true))):eq(" BETA            R [||||] ")
+            info.messages_only, info.state = true, "searching"
+            expect((bar.line(info, 26, true))):eq(" Searching...      [....] ")
+        end)
+
         it("follows the signal", function()
             local phone = fake_phone()
             run(phone, {}, function(app)

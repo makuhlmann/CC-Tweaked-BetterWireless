@@ -803,8 +803,16 @@ describe("The net library", function()
             expect(net.cell.networks()):same {
                 { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },
             }
-            -- Any network may be chosen, even one it knows of no agreement with: the phone tries it.
-            expect({ net.cell.setNetwork("NOT A NAME") }):same { nil, "Network names are letters, digits and dashes, up to 32 of them" }
+            -- Any network may be chosen, even one it knows of no agreement with: the phone tries it. A name may have
+            -- spaces and punctuation; spaces at its ends don't count.
+            local rule = 'Network names are up to 32 letters, digits, spaces and punctuation (but not "), and don\'t start or end with a space'
+            for _, bad in ipairs { 'NOT "A" NAME', "", "   ", ("x"):rep(33), "TAB\tNAME", "H\195\164GE", "auto\0" } do
+                expect({ net.cell.setNetwork(bad) }):same { nil, rule }
+            end
+            expect(net.cell.setNetwork("  Old Mill Co.  ")):eq(true)
+            expect(net.cell.info().selection):eq("Old Mill Co.")
+            expect(net.cell.setNetwork(" auto ")):eq(true)
+            expect(net.cell.info().selection):eq("auto")
             expect(net.cell.setNetwork("BETA")):eq(true)
             expect(net.cell.networks()):same {
                 { name = "ACME", kind = "home", allowed = true, serving = false, selected = false },

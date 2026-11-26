@@ -313,7 +313,8 @@ the design above:
     are for when nothing better will do: a satellite (up high, strong, sending system information every 10 seconds),
     for off-grid or emergency messages. The cell says so in its signed system information, carries its phones'
     messages, and drops their packets both ways; a phone on it has no default route, so programs hear at once that
-    there's no way out, and the status bar shows `SMS` after the network's name (`net.cell.info().messages_only`).
+    there's no way out, and the status bar shows `SMS` before the signal, ahead of any `R` (`SMS R [||..]`;
+    `net.cell.info().messages_only`), and `cell monitor` `[SMS]` after the cell's network.
     Phones rank such cells after full ones: their own network's after their partners' full cells, other networks'
     after every full cell, even of networks they don't know. Just started, a phone waits to have heard every cell
     around before settling on one. On one, it listens for its partners' cells too, and moves off as soon as a full
@@ -337,6 +338,12 @@ the design above:
   messages; a phone ignores system information without a fit uplink channel and interval. Version 6 signs the site's
   name too, if it has one (`celld set name HILL-1`: 1 to 8 printable characters, not starting or ending with a space),
   which `cell monitor` shows with the cell. A name says nothing about whose a cell is: anyone can give one any name.
+  Version 7 lets a network's name be up to 32 printable characters (letters, digits, spaces and punctuation, but no
+  double quotes, which the shell keeps a name with spaces together with), not starting or ending with a space, where it
+  was letters, digits and dashes. Cores refuse a name with spaces at its ends; phones read one without them, in system
+  information and when they're told to use or activate on a network, so a cell can't name a network which only looks
+  like another (it names that network, and isn't signed for it). Older phones don't take a name with spaces or
+  punctuation for a network's, so they say the network is newer than they are.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
@@ -645,7 +652,8 @@ the design above:
   26 columns and usable on any computer, with the keyboard alone or the mouse, in greys where there are no colours.
   - **The status bar** is the screen's top line: the name of the network in use on the left (or what the phone is
     doing: "Searching...", "Connecting...", "No service" after ten seconds of searching), the signal as four bars in
-    brackets on the right (`[||..]`) with an `R` and a space before them when roaming (`R [||..]`), and between them a
+    brackets on the right (`[||..]`) with indicators and a space before them: `SMS` on a cell which only carries
+    messages, then `R` when roaming (`SMS R [||..]`), and between them a
     note such as "1 new msg", or, when there's nothing new, the time of day in the world (as a clock shows it, in
     grey, where there's room beside the name). The bar is dark grey, with colours or without. There's no bar while
     cell service is turned off or the phone has no SIM, and what runs beneath it gets the line back (as a

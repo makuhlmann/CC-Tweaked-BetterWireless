@@ -483,9 +483,10 @@ function commands.numbers(prefix)
     print(("Other networks' phones reach this network's at %s<number>."):format(prefix))
 end
 
--- Rename the network: the core starts afresh under the new name.
-function commands.rename(network, more)
-    if not network or more then return usage() end
+-- Rename the network: the core starts afresh under the new name. A name with spaces may be in quotes, or not.
+function commands.rename(...)
+    local network = table.concat({ ... }, " ")
+    if network == "" then return usage() end
     local reply = request({ op = "rename", network = network })
     print(("%s is called %s now. The core starts afresh: cells join again by themselves, and phones find the network under its new name."):format(
         tostring(reply.was), tostring(reply.network)

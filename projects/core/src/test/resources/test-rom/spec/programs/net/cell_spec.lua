@@ -77,7 +77,7 @@ describe("The cell program", function()
                 ">#12   ACME     b20/1  -72",
                 " #11   ACME     b3/2   -83",
                 "!#66   ACME     -      -60",
-                " #77   BETA SMS b20/1  -95",
+                " #77   BE [SMS] b20/1  -95",
                 " #13   ACME     b7/1   -99",
             }
             -- Each carrier cells were heard on, lowest first: whose, how many cells, and the strongest.
@@ -183,35 +183,36 @@ describe("The cell program", function()
                 },
                 { id = 11, network = "ACME", signal = -83, age = 1, fresh = true, verified = true, band = "b3", carrier = b3_2 },
                 {
-                    id = 77, network = "BETA", signal = -95, age = 2, fresh = true, band = "b20", carrier = b20_1,
-                    service = "sms", name = "Old Mill",
+                    id = 77, network = "Beta Mobile Group Ltd", signal = -95, age = 2, fresh = true, band = "b20",
+                    carrier = b20_1, service = "sms", name = "Old Mill",
                 },
             }
             local info = { state = "attached", network = "ACME", cell = 12, heard = heard, events = {} }
 
-            -- On a pocket computer, in place of the IDs: as wide as the longest name.
+            -- On a pocket computer, in place of the IDs: as wide as the longest name. [SMS] takes the network's place
+            -- where there's no room for both.
             local lines = show(info)
             expect({ table.unpack(lines, 7, 10) }):same {
                 " Cells                  3",
                 ">HILL-1   ACME  b20/1  -72",
                 " #11      ACME  b3/2   -83",
-                " Old Mill B SMS b20/1  -95",
+                " Old Mill [SMS] b20/1  -95",
             }
             heard[3].name = nil
             lines = show(info)
             expect({ table.unpack(lines, 8, 10) }):same {
                 ">HILL-1 ACME    b20/1  -72",
                 " #11    ACME    b3/2   -83",
-                " #77    BET SMS b20/1  -95",
+                " #77    B [SMS] b20/1  -95",
             }
 
-            -- Beside the IDs where there's room.
+            -- Beside the IDs where there's room. A network cut short ends without a space.
             heard[3].name = "Old Mill"
             lines = show(info, nil, 51)
             expect({ table.unpack(lines, 8, 10) }):same {
                 (">#12   HILL-1   %-24s b20/1  -72"):format("ACME"),
                 (" #11            %-24s b3/2   -83"):format("ACME"),
-                (" #77   Old Mill %-24s b20/1  -95"):format("BETA SMS"),
+                (" #77   Old Mill %-24s b20/1  -95"):format("Beta Mobile Group [SMS]"),
             }
         end)
 
@@ -261,7 +262,7 @@ describe("The cell program", function()
             stub(net.cell, "networks", function() return phone.networks or {} end)
             stub(net.cell, "setNetwork", function(name)
                 phone.calls[#phone.calls + 1] = { "setNetwork", name }
-                if name == "NOT-A-NAME!" then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
+                if #name > 32 then return nil, "Network names are up to 32 letters" end
                 return true
             end)
             stub(net.cell, "setEnabled", function(enabled)
@@ -324,10 +325,37 @@ describe("The cell program", function()
                 ok = true, error = "",
                 output = "The phone only uses BETA.\nIt doesn't know whether BETA carries its network's phones, so it tries.\n",
             }
-            expect(capture("/rom/programs/net/cell.lua network NOT-A-NAME!"))
-                :matches { ok = true, output = "", error = "Network names are letters, digits and dashes, up to 32 of them\n" }
+            expect(capture("/rom/programs/net/cell.lua network " .. ("X"):rep(33)))
+                :matches { ok = true, output = "", error = "Network names are up to 32 letters\n" }
+            -- A name with spaces, in quotes or not.
+            expect(capture("/rom/programs/net/cell.lua network Old Mill, Inc."))
+                :matches { ok = true, output = "The phone only uses Old Mill, Inc..\n", error = "" }
+            expect(capture('/rom/programs/net/cell.lua network "Old Mill"'))
+                :matches { ok = true, output = "The phone only uses Old Mill.\n", error = "" }
             expect(phone.calls):same {
-                { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" }, { "setNetwork", "NOT-A-NAME!" },
+                { "setNetwork", "OTHER" }, { "setNetwork", "auto" }, { "setNetwork", "BETA" }, { "setNetwork", ("X"):rep(33) },
+                { "setNetwork", "Old Mill, Inc." }, { "setNetwork", "Old Mill" },
+            }
+        end)
+
+        it("activates on a network whose name has spaces, without quotes", function()
+            local phone = fake_phone()
+            phone.info.state = "inactive"
+            stub(net.cell, "activate", function(network, code)
+                phone.calls[#phone.calls + 1] = { network, code }
+                return nil, "Not now"
+            end)
+            for _, words in ipairs {
+                "ACME 7Q2M-K4XD-9PRB-T6WN-HJ3C", "Old Mill Mobile 7Q2M-K4XD-9PRB-T6WN-HJ3C",
+                "Old Mill 7q2m k4xd 9prb t6wn hj3c", '"Old Mill" 7Q2M-K4XD-9PRB-T6WN-HJ3C', "ACME not a code",
+            } do
+                expect(capture("/rom/programs/net/cell.lua activate " .. words))
+                    :matches { ok = true, output = "", error = "Not now\n" }
+            end
+            expect(phone.calls):same {
+                { "ACME", "7Q2M-K4XD-9PRB-T6WN-HJ3C" }, { "Old Mill Mobile", "7Q2M-K4XD-9PRB-T6WN-HJ3C" },
+                { "Old Mill", "7q2m k4xd 9prb t6wn hj3c" }, { "Old Mill", "7Q2M-K4XD-9PRB-T6WN-HJ3C" },
+                { "ACME", "not a code" },
             }
         end)
 

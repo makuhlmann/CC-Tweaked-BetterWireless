@@ -1322,7 +1322,7 @@ cells (`roam`: `"partner"`, `"home"` or `false`), whether the two exchange messa
 ]]
 function requests.network(self, request, by)
     local network = request.network
-    if not common.is_network(network) then return { error = "Network names are letters, digits and dashes, up to 32 of them" } end
+    if not common.is_network(network) then return { error = common.NETWORK_RULE } end
     if network == self.config.network then return { error = "That's this network" } end
     local agreement = self.networks[network]
 
@@ -1531,7 +1531,7 @@ is kept with those it had before, the newest few, for phones which haven't heard
 ]]
 function Service:rename(name, by)
     local old = self.config.network
-    if not common.is_network(name) then return nil, "Network names are letters, digits and dashes, up to 32 of them" end
+    if not common.is_network(name) then return nil, common.NETWORK_RULE end
     if name == old then return nil, ("The network is called %s already"):format(name) end
     if self.networks[name] then return nil, ("There's an agreement with a network called %s"):format(name) end
     -- The file may have changed since the core started (it says whether the core starts with the computer).

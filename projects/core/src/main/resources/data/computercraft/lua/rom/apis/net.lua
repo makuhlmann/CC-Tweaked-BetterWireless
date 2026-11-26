@@ -1690,7 +1690,7 @@ cell = {
     network yet: it then listens on every carrier for a few seconds, and says there's no cell of it in range. Ask again
     then, as the `cell` program does.
 
-    @tparam string network The network's name, as `net.cell.info().networks` lists them.
+    @tparam string network The network's name, as `net.cell.info().networks` lists them. Spaces at its ends don't count.
     @tparam string code The activation code, such as `"7Q2M-K4XD-9PRB-T6WN-HJ3C"`.
     @treturn[1] true If activation started. `cell_state` events say how it goes: `"searching"` once it worked.
     @treturn[2] nil If it couldn't start.
@@ -1803,7 +1803,8 @@ cell = {
     network: one the phone doesn't know has an agreement with its own, it tries anyway (and keeps trying, if turned
     away), and learns that it's a partner if it is.
 
-    @tparam[opt] string name The network's name, or `nil` (or `"auto"`) to let the phone choose.
+    @tparam[opt] string name The network's name, or `nil` (or `"auto"`) to let the phone choose. Spaces at its ends
+    don't count.
     @treturn[1] true If the choice was made.
     @treturn[2] nil If it couldn't be.
     @treturn[2] string Why not.

@@ -49,8 +49,8 @@ for _ = 1, 20 do
     wait_for("Attaching again", function(now) return now.state == "attached" end, 15)
 end
 if not partner() then error("Never heard of VISIT: " .. textutils.serialise(net.cell.networks()), 0) end
-local refused, why = net.cell.setNetwork("NOT A NAME")
-if refused or why ~= "Network names are letters, digits and dashes, up to 32 of them" then
+local refused, why = net.cell.setNetwork('NOT "A" NAME')
+if refused or why ~= 'Network names are up to 32 letters, digits, spaces and punctuation (but not "), and don\'t start or end with a space' then
     error("Could choose a network which can't be: " .. tostring(why), 0)
 end
 

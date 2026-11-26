@@ -251,7 +251,8 @@ local function monitor()
                 fg = colours.white
             end
             if not cell.fresh then fg = colours.grey end
-            -- Its carrier and signal on the right; after its network, SMS if it only carries messages.
+            -- Its carrier and signal on the right; after its network, [SMS] if it only carries messages (in place of the
+            -- network where there's no room for both).
             -- (Its computer's ID: a cell site with several bands has a cell on each, and the carrier is alongside.)
             local id = "#" .. site_label(cell.id)
             if beside then
@@ -262,7 +263,9 @@ local function monitor()
             local tail = (" %-5s %4d"):format(carrier_label(cell), round(cell.signal))
             local name_width = math.max(1, w - 2 - #id - #tail)
             local name = tostring(cell.network)
-            if cell.service == "sms" then name = fit(name, math.max(1, name_width - 4)):gsub(" +$", "") .. " SMS" end
+            if cell.service == "sms" then
+                name = name_width > 6 and fit(name, name_width - 6):gsub(" +$", "") .. " [SMS]" or "[SMS]"
+            end
             line(mark .. id .. " " .. fit(name, name_width) .. tail, fg)
         end
 
@@ -436,7 +439,16 @@ elseif command == "status" and #args == 1 then
         print("Networks in range: " .. table.concat(info.networks, ", "))
     end
 elseif command == "activate" and #args >= 3 then
-    local network, code = args[2], table.concat(args, " ", 3)
+    -- The code is the fewest words at the end which make one (20 characters, besides spaces and dashes), and the network
+    -- everything before them, so a name with spaces needs no quotes. If none do, the network is the first word.
+    local parse_code, split = require("cc.internal.net.cell.common").parse_code, 3
+    for i = #args, 3, -1 do
+        if parse_code(table.concat(args, " ", i)) then
+            split = i
+            break
+        end
+    end
+    local network, code = table.concat(args, " ", 2, split - 1), table.concat(args, " ", split)
     -- Give the phone a moment to hear which networks are around.
     local info = net.cell.info()
     local deadline = os.clock() + 5
@@ -525,17 +537,19 @@ elseif command == "networks" and #args == 1 then
         local signal = network.signal and ("%4d dBm"):format(math.floor(network.signal + 0.5)) or "       -"
         print(("%s %-12s %-11s %s"):format(network.serving and ">" or " ", network.name, kind, signal))
     end
-elseif command == "network" and #args == 2 then
-    local ok, err = net.cell.setNetwork(args[2])
+elseif command == "network" and #args >= 2 then
+    -- A name with spaces may be in quotes, or not: everything after "network" is the name.
+    local chosen = table.concat(args, " ", 2)
+    local ok, err = net.cell.setNetwork(chosen)
     if not ok then
         printError(err)
-    elseif args[2] == "auto" then
+    elseif chosen == "auto" then
         print("The phone chooses the network.")
     else
-        print(("The phone only uses %s."):format(args[2]))
+        print(("The phone only uses %s."):format(chosen))
         for _, network in ipairs(net.cell.networks()) do
-            if network.name == args[2] and not network.allowed then
-                print(("It doesn't know whether %s carries its network's phones, so it tries."):format(args[2]))
+            if network.name == chosen and not network.allowed then
+                print(("It doesn't know whether %s carries its network's phones, so it tries."):format(chosen))
             end
         end
     end

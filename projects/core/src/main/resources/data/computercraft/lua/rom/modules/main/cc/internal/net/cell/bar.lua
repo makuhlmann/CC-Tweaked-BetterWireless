@@ -55,11 +55,11 @@ local function wanted(info)
 end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
-(`[||..]`), with an `R` before them when roaming (`R [||..]`); and how many messages are new, in the middle, or the
-time when none are. On a
-network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. On a cell which only
-carries messages, `SMS` follows the name. Without a SIM, it says `No SIM`, and the bars are the strongest cell's, of any
-network (`strongest`). On a narrow screen, the name is cut short to leave room for the rest. The bar is dark grey.
+(`[||..]`), with indicators before them: `SMS` on a cell which only carries messages, and `R` when roaming, each with a
+space after it (`SMS R [||..]`); and how many messages are new, in the middle, or the time when none are. On a
+network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. Without a SIM, it
+says `No SIM`, and the bars are the strongest cell's, of any network (`strongest`). On a narrow screen, the name is cut
+short to leave room for the rest. The bar is dark grey.
 
 @tparam table info The phone's state, as `net.cell.info` gives it.
 @tparam number width The screen's width.
@@ -82,8 +82,6 @@ local function line(info, width, colour, quiet, clock)
     if attached then
         -- A network the phone treats as its own goes by its own network's name.
         name = info.roaming and info.serving_network or info.network or info.serving_network or "?"
-        -- A cell which only carries messages, such as a satellite's.
-        if info.messages_only then name = tostring(name) .. " SMS" end
     elseif info.state == "searching" and info.newer then
         -- The cells around speak a newer version than this phone, which may be why it finds none.
         name = "Phone too old"
@@ -101,18 +99,22 @@ local function line(info, width, colour, quiet, clock)
         fg = fg:sub(1, x - 1) .. part_colour:rep(#part) .. fg:sub(x + #part)
     end
 
-    -- An R and a space when roaming, four bars in brackets, then a space. Only a very narrow screen has no room for
-    -- them. Without a SIM, the bars are the strongest cell's.
+    -- The indicators and a space: SMS on a cell which only carries messages (a satellite's, say), then R when roaming.
+    -- Then four bars in brackets, and a space. Only a very narrow screen has no room for them. Without a SIM, the bars
+    -- are the strongest cell's.
     local signal = attached and info.signal or nil
     if not info.network and type(info.strongest) == "table" then signal = info.strongest.signal end
     local count = signal_bars(signal)
-    local roaming = attached and info.roaming == true
-    local right_width = roaming and 9 or 7
+    local marks = {}
+    if attached and info.messages_only == true then marks[#marks + 1] = "SMS" end
+    if attached and info.roaming == true then marks[#marks + 1] = "R" end
+    local mark = table.concat(marks, " ")
+    local right_width = #mark > 0 and #mark + 8 or 7
     local right = width - right_width + 1
     local room = width - 1
     if width >= right_width + 3 then
         room = width - right_width - 2
-        if roaming then put(right, "R", "0") end
+        put(right, mark, "0")
         put(width - 6, "[", "0")
         put(width - 5, ("|"):rep(count), "0")
         put(width - 5 + count, ("."):rep(4 - count), "8")

@@ -143,7 +143,8 @@ describe("cc.internal.net.cell.networks", function()
             networks = textutils.serialise {
                 GOOD = { key = ("AB"):rep(32), core = "10.0.0.1", carry = true, roam = "home", messages = true, prefix = "12" },
                 ODD = { key = "short", core = "not an address!", carry = "yes", roam = "always", prefix = "x", id = -1 },
-                ["bad name"] = { carry = true },
+                [" bad name"] = { carry = true },
+                ['bad "name"'] = { carry = true },
                 OURS = { carry = true },
                 NOTHING = "at all",
             },

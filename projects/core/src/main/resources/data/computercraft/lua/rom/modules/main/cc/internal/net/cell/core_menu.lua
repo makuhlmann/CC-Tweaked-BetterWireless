@@ -222,9 +222,7 @@ end
 @treturn[2] string Why not.
 ]]
 local function setup(network, prefix, numbers)
-    if not network:match("^[%w%-]+$") or #network > 32 then
-        return nil, "Network names are letters, digits and dashes, up to 32 of them."
-    end
+    if not common.is_network(network) then return nil, common.NETWORK_RULE .. "." end
     local addr, length = require("cc.net.address").parse(prefix)
     if not addr or not length or length > 30 then
         return nil, "Expected the network for phones' addresses, such as 10.64.0.0/16."
@@ -842,7 +840,7 @@ local function run(options)
                 local name = menu.input_screen {
                     title = "Add a network", label = "Network:", max = 32,
                     check = function(text)
-                        if not common.is_network(text) then return "Network names are letters, digits and dashes, up to 32 of them." end
+                        if not common.is_network(text) then return common.NETWORK_RULE .. "." end
                         if status and text == status.network then return "That's this network." end
                         return nil
                     end,
@@ -942,10 +940,10 @@ local function run(options)
                     local renamed
                     menu.input_screen {
                         title = "Rename the network", label = "Name:", value = tostring(status.network), max = 32,
-                        note = "Letters, digits and dashes.",
+                        note = "Letters, digits, spaces and punctuation.",
                         check = function(text)
                             if text == status.network then return nil end
-                            if not common.is_network(text) then return "Network names are letters, digits and dashes, up to 32 of them." end
+                            if not common.is_network(text) then return common.NETWORK_RULE .. "." end
                             if not menu.confirm_screen("Rename to " .. text,
                                 "The core starts afresh: cells and phones connect again, under the new name.", "Rename") then
                                 return nil
@@ -1092,9 +1090,9 @@ local function run(options)
     local function setup_screens()
         local network = menu.input_screen {
             title = "Set up a network", label = "Name:", max = 32,
-            note = "The network's name: letters, digits and dashes.",
+            note = "The network's name: letters, digits, spaces and punctuation.",
             check = function(text)
-                if not text:match("^[%w%-]+$") then return "Network names are letters, digits and dashes, up to 32 of them." end
+                if not common.is_network(text) then return common.NETWORK_RULE .. "." end
                 return nil
             end,
         }

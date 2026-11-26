@@ -141,7 +141,7 @@ After phase 6, the cellular layer was tested the same way (`cell_stress_spec.lua
 | Any cell could send a message, or acknowledge one, for any phone, knowing its tunnel's ID. | Only the phone's own cell speaks for it. |
 | Two phones could be given the same tunnel ID, picked at random from 2^31. | IDs in use aren't picked. |
 | A phone remembered the first 32 cells it heard. With 300 made-up cells about, it never listed the real one, so couldn't be activated. | It remembers the 32 strongest. |
-| Phones took any string of up to 64 bytes as a network's name, and show names to people. | Names are letters, digits and dashes, up to 32, as `cellcore setup` allows. |
+| Phones took any string of up to 64 bytes as a network's name, and show names to people. | Names are up to 32 printable characters (no double quotes), as `cellcore setup` allows, and phones take none with spaces at its ends (they read it without them). |
 | Timers due at the same moment ran in no particular order, so control messages queued together could swap. | They run in the order they were set. |
 
 **Left as they are:**
