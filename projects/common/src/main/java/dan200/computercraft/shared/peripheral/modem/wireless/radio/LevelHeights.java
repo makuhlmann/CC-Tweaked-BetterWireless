@@ -29,17 +29,33 @@ import java.util.concurrent.Executor;
 final class LevelHeights {
     private static final Logger LOG = LoggerFactory.getLogger(LevelHeights.class);
 
-    /** The maximum number of chunks to remember. At ~1KiB a chunk, this is ~16MiB per level. */
-    static final int CAPACITY = 16384;
-
     /** How long to remember that we couldn't find a chunk, before trying again. */
     private static final long UNAVAILABLE_MILLIS = 60_000;
+
+    /**
+     * Forgetting a chunk we found out about less than this long ago means the links in use cross more chunks than we
+     * remember, in milliseconds: they'd keep forgetting each other's terrain, and fetching it again.
+     */
+    static final long CHURN_MILLIS = 60_000;
+
+    /** How often to say so, at most, in milliseconds. */
+    private static final long CHURN_WARNING_MILLIS = 10 * 60_000;
 
     /** How many chunks may be fetched at once. */
     static final int MAX_FETCHING = 256;
 
     private final ServerLevel level;
     private final Runnable onFetched;
+
+    /** The maximum number of chunks to remember. At ~1KiB a chunk, 262,144 are ~256MiB. Guarded by {@code this}. */
+    private int capacity;
+
+    /**
+     * How many chunks were forgotten soon after we found out about them, and how many of those we've warned about.
+     * Guarded by {@code this}.
+     */
+    private long churned, churnWarned;
+    private long lastChurnWarning = Long.MIN_VALUE;
 
     /** The heights we know, least recently used first. Guarded by {@code this}. */
     private final Long2ObjectLinkedOpenHashMap<ChunkHeights> heights = new Long2ObjectLinkedOpenHashMap<>(256);
@@ -50,12 +66,34 @@ final class LevelHeights {
     /**
      * Make an empty set of heights.
      *
-     * @param level     The level.
+     * @param level     The level. It's only passed to height sources, and named in warnings.
+     * @param capacity  The maximum number of chunks to remember.
      * @param onFetched Called, on any thread, each time a chunk we fetched arrives.
      */
-    LevelHeights(ServerLevel level, Runnable onFetched) {
+    LevelHeights(ServerLevel level, int capacity, Runnable onFetched) {
         this.level = level;
+        this.capacity = capacity;
         this.onFetched = onFetched;
+    }
+
+    /**
+     * Change how many chunks we remember at most, forgetting the least recently used if there are more.
+     *
+     * @param capacity The maximum number of chunks to remember.
+     */
+    synchronized void setCapacity(int capacity) {
+        this.capacity = capacity;
+        trim();
+    }
+
+    /**
+     * How many chunks were forgotten soon after we found out about them: a sign the links in use cross more chunks than
+     * we may remember.
+     *
+     * @return The number of chunks.
+     */
+    synchronized long churned() {
+        return churned;
     }
 
     synchronized @Nullable ChunkHeights get(long chunk) {
@@ -72,7 +110,33 @@ final class LevelHeights {
         var existing = this.heights.getAndMoveToLast(chunk);
         if (existing != null && existing.isAvailable() && existing.source().ordinal() < heights.source().ordinal()) return;
         this.heights.putAndMoveToLast(chunk, heights);
-        while (this.heights.size() > CAPACITY) this.heights.removeFirst();
+        trim();
+    }
+
+    /**
+     * Forget the least recently used chunks while we have more than we may. If some of them were found out about only
+     * a moment ago, the links in use need more chunks than we may remember: say so, now and then, as their terrain then
+     * goes missing over and over, and they're traced as if there were nothing there.
+     */
+    private synchronized void trim() {
+        if (heights.size() <= capacity) return;
+        var now = System.currentTimeMillis();
+        while (heights.size() > capacity) {
+            if (now - heights.removeFirst().created() < CHURN_MILLIS) churned++;
+        }
+
+        if (churned > churnWarned && now - lastChurnWarning >= CHURN_WARNING_MILLIS) {
+            lastChurnWarning = now;
+            // (No level in tests.)
+            @SuppressWarnings("ConstantValue") var name = level == null ? "a level" : level.dimension().toString();
+            LOG.warn(
+                "Radio links in {} cross more chunks than the {} whose terrain heights are remembered (height_cache_chunks): " +
+                    "{} chunks were forgotten within a minute of being looked up, so links are traced with terrain missing. " +
+                    "Raise height_cache_chunks in the server config.",
+                name, capacity, churned - churnWarned
+            );
+            churnWarned = churned;
+        }
     }
 
     /**

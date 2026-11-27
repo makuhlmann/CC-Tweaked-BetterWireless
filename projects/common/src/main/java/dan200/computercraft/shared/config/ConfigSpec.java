@@ -101,6 +101,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
     public static final ConfigFile.Value<Boolean> radioUseGenerator;
     public static final ConfigFile.Value<Boolean> radioUseDistantHorizons;
+    public static final ConfigFile.Value<Integer> radioHeightCacheChunks;
     public static final ConfigFile.Value<Integer> maxNotesPerTick;
     public static final ConfigFile.Value<Integer> monitorBandwidth;
 
@@ -560,6 +561,15 @@ public final class ConfigSpec {
                 .comment("Read the height of unloaded terrain from Distant Horizons' LODs, if installed.")
                 .define("use_distant_horizons", Config.radioUseDistantHorizons);
 
+            radioHeightCacheChunks = builder
+                .comment("""
+                    How many unloaded chunks' terrain heights to remember in each dimension, at about 1KiB
+                    each. Every long link crosses hundreds of chunks, and the heights of those which have
+                    been forgotten must be looked up again: until they arrive, the link is traced as if
+                    there were nothing there. If the links in use cross more chunks than this, the server
+                    log says so, and they're traced with terrain missing over and over.""")
+                .defineInRange("height_cache_chunks", Config.radioHeightCacheChunks, 1024, 4_194_304);
+
             builder.pop();
 
             builder.pop();
@@ -722,6 +732,7 @@ public final class ConfigSpec {
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();
         Config.radioUseGenerator = radioUseGenerator.get();
         Config.radioUseDistantHorizons = radioUseDistantHorizons.get();
+        Config.radioHeightCacheChunks = radioHeightCacheChunks.get();
 
         // Turtles
         Config.turtlesNeedFuel = turtlesNeedFuel.get();

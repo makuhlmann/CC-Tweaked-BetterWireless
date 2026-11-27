@@ -35,9 +35,15 @@ class LevelHeightsTest {
         }
     }
 
+    private static final int CAPACITY = 4096;
+
     private static LevelHeights newHeights() {
+        return newHeights(CAPACITY);
+    }
+
+    private static LevelHeights newHeights(int capacity) {
         // The level is only passed to sources, which ignore it here.
-        return new LevelHeights(null, () -> {
+        return new LevelHeights(null, capacity, () -> {
         });
     }
 
@@ -45,7 +51,7 @@ class LevelHeightsTest {
     void forgetsTheLeastRecentlyUsed() {
         var cache = newHeights();
         // Chunks along a diagonal, whose boxed keys all have the same hash.
-        for (var i = 0; i < LevelHeights.CAPACITY; i++) cache.put(ChunkPos.pack(i, i), heights(ChunkHeights.Source.DISK));
+        for (var i = 0; i < CAPACITY; i++) cache.put(ChunkPos.pack(i, i), heights(ChunkHeights.Source.DISK));
 
         // Reading the oldest makes it the newest, so the next oldest is forgotten instead.
         assertNotNull(cache.get(ChunkPos.pack(0, 0)));
@@ -55,6 +61,39 @@ class LevelHeightsTest {
         assertNull(cache.get(ChunkPos.pack(1, 1)));
         assertNotNull(cache.get(ChunkPos.pack(2, 2)));
         assertNotNull(cache.get(ChunkPos.pack(-1, -1)));
+    }
+
+    @Test
+    void remembersAsManyAsItsToldTo() {
+        var cache = newHeights(8);
+        for (var i = 0; i < 8; i++) cache.put(ChunkPos.pack(i, 0), heights(ChunkHeights.Source.DISK));
+
+        // Fewer: the least recently used go.
+        cache.setCapacity(4);
+        for (var i = 0; i < 4; i++) assertNull(cache.get(ChunkPos.pack(i, 0)));
+        for (var i = 4; i < 8; i++) assertNotNull(cache.get(ChunkPos.pack(i, 0)));
+
+        // More: there's room for them.
+        cache.setCapacity(16);
+        for (var i = 8; i < 16; i++) cache.put(ChunkPos.pack(i, 0), heights(ChunkHeights.Source.DISK));
+        for (var i = 4; i < 16; i++) assertNotNull(cache.get(ChunkPos.pack(i, 0)));
+    }
+
+    @Test
+    void countsChunksForgottenSoonAfterTheyArrived() {
+        var cache = newHeights(4);
+        var old = System.currentTimeMillis() - LevelHeights.CHURN_MILLIS - 1000;
+        for (var i = 0; i < 4; i++) {
+            cache.put(ChunkPos.pack(i, 0), new ChunkHeights(new short[256], new short[256], ChunkHeights.Source.DISK, old));
+        }
+
+        // Forgetting heights we've had a while is just making room.
+        cache.put(ChunkPos.pack(4, 0), heights(ChunkHeights.Source.DISK));
+        assertEquals(0, cache.churned());
+
+        // But forgetting ones which just arrived means the links in use need more than we remember.
+        for (var i = 5; i < 12; i++) cache.put(ChunkPos.pack(i, 0), heights(ChunkHeights.Source.DISK));
+        assertEquals(4, cache.churned());
     }
 
     @Test

@@ -60,6 +60,7 @@ public final class Config {
     public static int radioLookupTimeoutTicks = 40;
     public static boolean radioUseGenerator = true;
     public static boolean radioUseDistantHorizons = true;
+    public static int radioHeightCacheChunks = 262_144;
     public static int maxNotesPerTick = 8;
     public static int monitorDistance = 65;
     public static long monitorBandwidth = 1_000_000;

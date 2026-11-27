@@ -182,6 +182,8 @@
   "gui.computercraft.config.peripheral.radio.gps_frequency.tooltip": "The frequency of GPS's channel (65534), in MHz.",
   "gui.computercraft.config.peripheral.radio.ground_reflection": "Ground reflection",
   "gui.computercraft.config.peripheral.radio.ground_reflection.tooltip": "Use the two-ray ground reflection model, under which signals close to the ground fade\nmuch faster. This makes the height of a modem matter.",
+  "gui.computercraft.config.peripheral.radio.height_cache_chunks": "Terrain height cache (chunks)",
+  "gui.computercraft.config.peripheral.radio.height_cache_chunks.tooltip": "How many unloaded chunks' terrain heights to remember in each dimension, at about 1KiB\neach. Every long link crosses hundreds of chunks, and the heights of those which have\nbeen forgotten must be looked up again: until they arrive, the link is traced as if\nthere were nothing there. If the links in use cross more chunks than this, the server\nlog says so, and they're traced with terrain missing over and over.",
   "gui.computercraft.config.peripheral.radio.lookup_timeout": "Terrain lookup timeout (ticks)",
   "gui.computercraft.config.peripheral.radio.lookup_timeout.tooltip": "How long to wait for the heights of unloaded chunks before guessing, in ticks.\nMessages crossing unloaded terrain are delayed by at most this long.",
   "gui.computercraft.config.peripheral.radio.material_loss_scale": "Material loss multiplier",

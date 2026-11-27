@@ -331,7 +331,8 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    open sky to skip, are 5-7% slower than before (46µs and 8µs). Turning a path into a loss for a packet takes under
    0.4µs.
 7. Messages are delivered at the next server tick rather than instantly. Messages crossing unknown terrain wait for
-   it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates.
+   it to be looked up (below), for at most `lookup_timeout` ticks (2s), after which the model interpolates (or a link
+   traced with all of its terrain known before keeps that path: see section 4).
 8. The queues are bounded: beyond 65536 pending deliveries or 8192 links waiting to be evaluated, new packets are
    dropped (congestion, like a real network). They're shared by the whole server: a link waiting to be traced waits
    behind every other, whoever's it is.
@@ -347,7 +348,8 @@ the surface (`WORLD_SURFACE`), and a block below the ground counts as rock, one 
 above both as air. The heights come from, in order:
 
 1. **Loaded chunks**, read live.
-2. **Snapshots taken when a chunk unloads** (1KiB per chunk, LRU of 16k chunks per level).
+2. **Snapshots taken when a chunk unloads** (1KiB per chunk; these and the heights looked up below share an LRU of
+   `height_cache_chunks` chunks per level, 262,144 by default, which is about 256MiB when full).
 3. **Heightmaps on disk**, read with `ChunkScanAccess` (the mechanism vanilla uses to check structures in unloaded
    chunks). This reads only the `Status` and `Heightmaps` NBT fields, asynchronously on the chunk IO thread, and never
    loads the chunk. For any chunk that has been generated, this is exact and cheap.
@@ -355,6 +357,19 @@ above both as air. The heights come from, in order:
 5. **The chunk generator** (`ChunkGenerator.getBaseHeight`) on a worker thread, sampled every 4 blocks. This only
    knows about terrain, not trees or buildings, but works for chunks that have never been generated.
 6. Otherwise, **interpolation** between known samples.
+
+**The cache must hold every chunk the links in use cross.** A long link's profile has `profile_samples` (512) points,
+each in its own chunk, plus every chunk near its ends. On a server with 14 cells, 7 relays and a far phone, about 105
+links of 2-20km crossed some 36,000 chunks, when the cache held 16,384: each round of traces forgot heights the next
+needed, and looked them up again. When that takes longer than `lookup_timeout`, the link is traced with the terrain
+missing, which counts as open ground, so a cell 20km away behind a hill (-126dBm) came and went at -88dBm, its free
+space strength, as the hill's heights were forgotten and fetched again. Now:
+- The cache holds 262,144 chunks by default (`height_cache_chunks`), and the server log warns, at most every ten
+  minutes, when heights are forgotten within a minute of being looked up: the links in use need more.
+- **A link keeps its last complete path** (`LinkCache`): once a link has been traced with all of its terrain known, a
+  trace which would be missing some uses that path instead, if it was traced as far as what's waiting needs, and is
+  kept only briefly (as any guess is: 20 ticks), so the link is traced again soon. A link which has never been traced
+  with everything known is traced with what is, as before, so a far phone's first contact doesn't wait.
 
 ### Distant Horizons
 
@@ -440,6 +455,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `move_tolerance` | 16 | How far (blocks) two radios may have moved since their link was traced for a packet between them to go at once with that path, while it's traced again in the background. 0 makes every such packet wait. |
 | `lookup_timeout` | 40 | Maximum ticks to wait for unloaded terrain heights. |
 | `use_generator`, `use_distant_horizons` | `true` | Enable those height sources. |
+| `height_cache_chunks` | 262144 | How many unloaded chunks' heights to remember per dimension (~1KiB each). The log warns when the links in use need more. |
 
 ### Keeping computers running
 

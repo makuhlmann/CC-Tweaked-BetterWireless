@@ -23,7 +23,6 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -82,12 +81,6 @@ public final class RadioPropagationService {
     /** How long before the next tick is due a run between ticks must stop, in nanoseconds. */
     private static final long WAKE_MARGIN_NANOS = 1_000_000;
 
-    /**
-     * How many ticks before a cached link expires a packet over it has it traced again, in the background (but never
-     * more than a quarter of how long it's cached for).
-     */
-    private static final long RENEW_TICKS = 20;
-
     private final ServerThread serverThread;
     private final Queue<Transmission> incoming = new ConcurrentLinkedQueue<>();
 
@@ -101,13 +94,8 @@ public final class RadioPropagationService {
     /** The senders with packets queued, whose next packets queue behind them. */
     private final QueuedSenders queuedSenders = new QueuedSenders();
 
-    /** The links we've traced. This is read on any thread, so must only be used while holding its lock. */
-    private final Map<LinkKey, CachedLink> links = new LinkedHashMap<>(256, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<LinkKey, CachedLink> eldest) {
-            return size() > MAX_CACHED_LINKS;
-        }
-    };
+    /** The links we've traced. This is read on any thread. */
+    private final LinkCache<LinkKey> links = new LinkCache<>(MAX_CACHED_LINKS);
     private final Map<LinkKey, Evaluation> evaluating = new HashMap<>();
     private final RecentLinks recent = new RecentLinks(MAX_CACHED_LINKS);
     private final ArrayDeque<Evaluation> pending = new ArrayDeque<>();
@@ -122,6 +110,9 @@ public final class RadioPropagationService {
 
     /** When the current tick started, from {@link System#nanoTime()}. This is only used on the server thread. */
     private long tickStarted;
+
+    /** How many chunks' heights each level remembers. This is only used on the server thread. */
+    private int heightCacheChunks = settings.heightCacheChunks();
 
     private volatile long lastErrorLog = Long.MIN_VALUE;
 
@@ -310,32 +301,6 @@ public final class RadioPropagationService {
     }
 
     /**
-     * A traced link, which is used until it expires.
-     *
-     * @param path     Its path.
-     * @param traced   The tick it was traced on.
-     * @param expires  The tick it expires on.
-     * @param renewing Whether it's being traced again already, as it was in use when it was about to expire.
-     */
-    private record CachedLink(LinkPath path, long traced, long expires, AtomicBoolean renewing) {
-        CachedLink(LinkPath path, long traced, long expires) {
-            this(path, traced, expires, new AtomicBoolean());
-        }
-
-        /**
-         * Whether to trace the link again now, in the background, as it's in use and expires soon. Only says so once.
-         * This may be called from any thread.
-         *
-         * @param now The current tick.
-         * @return Whether to trace it again.
-         */
-        boolean dueForRenewal(long now) {
-            var margin = Math.min(RENEW_TICKS, (expires - traced) / 4);
-            return expires - now <= margin && renewing.compareAndSet(false, true);
-        }
-    }
-
-    /**
      * A cached link in use which expires soon, to trace again in the background, so packets over it carry on going at
      * once rather than waiting for the server thread when it expires.
      *
@@ -500,15 +465,8 @@ public final class RadioPropagationService {
      * @param now     The current tick.
      * @return The cached link, or {@code null} if it isn't cached, has expired, or wasn't traced far enough.
      */
-    private @Nullable CachedLink cachedLink(LinkKey key, Waiting waiting, long now) {
-        CachedLink cached;
-        synchronized (links) {
-            cached = links.get(key);
-        }
-        // Links are only traced as far as what's waiting for them needs: a path traced for a weaker transmitter
-        // serves a stronger one only if the link was within its budget. Otherwise, it's traced again, further.
-        return cached != null && cached.expires() > now && cached.path().serves(waiting.frequency(), waiting.budget())
-            ? cached : null;
+    private LinkCache.@Nullable CachedLink cachedLink(LinkKey key, Waiting waiting, long now) {
+        return links.get(key, waiting.frequency(), waiting.budget(), now);
     }
 
     /**
@@ -571,6 +529,11 @@ public final class RadioPropagationService {
         settings = RadioSettings.fromConfig();
         // Forget recent links which are too old to use, so modems which are gone aren't held.
         if (tick % Math.max(20, settings.cacheTicks()) == 0) recent.purge(tick - staleTicks());
+        // The config may have been reloaded with another size for the heights we remember.
+        if (settings.heightCacheChunks() != heightCacheChunks) {
+            heightCacheChunks = settings.heightCacheChunks();
+            for (var levelHeights : heights.values()) levelHeights.setCapacity(heightCacheChunks);
+        }
 
         // Links left over carry on between ticks, if the server has time.
         if (process(tickStarted + settings.tickBudgetNanos())) wake();
@@ -824,21 +787,35 @@ public final class RadioPropagationService {
 
         var from = evaluation.from;
         var to = evaluation.to;
-        var path = PropagationModel.trace(from.x, from.y, from.z, to.x, to.y, to.z, evaluation.budget, env, terrain);
 
-        // Links evaluated with incomplete information are only cached briefly, so we try again once we know more.
-        // Links between dimensions are mostly between computers which stay where they are, so are kept for longer.
+        // With some of its terrain missing, a link which was traced with everything known before keeps that path, and
+        // either way it's traced again soon (see LinkCache). Links between dimensions are mostly between computers which
+        // stay where they are, so are kept for longer.
         var cacheTicks = evaluation.crossDimension ? settings.crossCacheTicks() : settings.cacheTicks();
-        if (!complete) cacheTicks = Math.min(cacheTicks, 20);
-        synchronized (links) {
-            links.put(evaluation.key, new CachedLink(path, tick, tick + cacheTicks));
-        }
+        var path = links.settle(
+            evaluation.key, complete, p -> servesAll(p, evaluation), tick, cacheTicks,
+            () -> PropagationModel.trace(from.x, from.y, from.z, to.x, to.y, to.z, evaluation.budget, env, terrain)
+        );
         evaluating.remove(evaluation.key);
         for (var ends : evaluation.ends) {
             recent.record(level, ends.sender(), ends.from(), ends.receiver(), ends.to(), path, tick);
             recent.refreshed(ends.sender(), ends.receiver(), evaluation);
         }
         for (var waiting : evaluation.deliveries) complete(waiting, path);
+        return true;
+    }
+
+    /**
+     * Whether a path serves everything waiting for a link: it was traced as far as each needs.
+     *
+     * @param path       The path.
+     * @param evaluation The link being evaluated.
+     * @return Whether it serves them all.
+     */
+    private static boolean servesAll(LinkPath path, Evaluation evaluation) {
+        for (var waiting : evaluation.deliveries) {
+            if (!path.serves(waiting.frequency(), waiting.budget())) return false;
+        }
         return true;
     }
 
@@ -882,6 +859,6 @@ public final class RadioPropagationService {
 
     private LevelHeights getHeights(ServerLevel level) {
         // Once a chunk's heights arrive, a link waiting for them can be traced, without waiting for the next tick.
-        return heights.computeIfAbsent(level.dimension(), k -> new LevelHeights(level, this::wake));
+        return heights.computeIfAbsent(level.dimension(), k -> new LevelHeights(level, settings.heightCacheChunks(), this::wake));
     }
 }
