@@ -60,7 +60,9 @@ it, every few seconds when nothing else has come from it, and attaches again if 
 new cell until the cell answers. And it sends each message until the network says it has it.
 
 Anyone in range can send a frame which says it's from the phone's cell. Whatever can't be checked (a refusal, or a
-handshake message which doesn't read) never stops the phone waiting for the real answer.
+handshake message which doesn't read) never stops the phone waiting for the real answer. Nor can system information
+with a cell's ID which doesn't check out change what the phone believes of a cell whose did: which channel reaches it,
+how often it sends, where it is, and which networks it serves.
 
 @local
 ]]
@@ -466,31 +468,50 @@ function Phone:event(kind, details)
     if #self.events > MAX_EVENTS then table.remove(self.events, 1) end
 end
 
--- Remember a cell we heard, of any network (or of several: a cell may be shared), and average its signal. Whether its
--- system information checked out is only known for networks whose keys we have.
-function Phone:hear(src, message, signal, networks, distance)
+-- Whether one cell is less worth remembering than another: one whose system information never checked out is worth
+-- less than one whose did, and otherwise the weaker is.
+local function worse(a_checked, a_signal, b_checked, b_signal)
+    if a_checked ~= b_checked then return b_checked end
+    return a_signal < b_signal
+end
+
+--[[ Remember a cell we heard, of any network (or of several: a cell may be shared), and average its signal. Whether its
+system information checked out is only known for networks whose keys we have: if any network's part did (`checked`),
+the cell is believed only when what it sends checks out, from now on (see `radio`). What we heard of it before, which
+anyone could have sent, is forgotten.
+]]
+function Phone:hear(src, message, signal, networks, distance, checked)
     local now = self.stack.clock()
     local cell = self.heard[src]
-    if not cell then
-        -- Anyone can send system information, as from as many cells as they like. When there's no room, the weakest
-        -- cell makes way for a stronger one, so the cells remembered are the ones most worth using.
-        local count, weakest, weakest_signal = 0, nil, nil
+    if cell and checked and not cell.checked then
+        cell = { samples = {}, networks = {} }
+        self.heard[src] = cell
+    elseif not cell then
+        -- Anyone can send system information, as from as many cells as they like. When there's no room, the cell least
+        -- worth remembering makes way for one worth more, so the cells remembered are the ones most worth using, and
+        -- made-up ones never push out those which checked out.
+        local count, weakest, weakest_checked, weakest_signal = 0, nil, nil, nil
         for id, other in pairs(self.heard) do
-            if now - other.heard > FORGET then
+            if now - other.heard > FORGET and id ~= self.cell then
                 self.heard[id] = nil
             else
                 count = count + 1
                 local strength = now - other.heard > silence(other) and -math.huge or other.signal
-                if id ~= self.cell and (not weakest_signal or strength < weakest_signal) then weakest, weakest_signal = id, strength end
+                local other_checked = other.checked == true
+                if id ~= self.cell and (not weakest or worse(other_checked, strength, weakest_checked, weakest_signal)) then
+                    weakest, weakest_checked, weakest_signal = id, other_checked, strength
+                end
             end
         end
         if count >= MAX_HEARD then
-            if not weakest or (type(signal) == "number" and signal or -50) <= weakest_signal then return end
+            local strength = type(signal) == "number" and signal or -50
+            if not weakest or not worse(weakest_checked, weakest_signal, checked == true, strength) then return end
             self.heard[weakest] = nil
         end
         cell = { samples = {}, networks = {} }
         self.heard[src] = cell
     end
+    if checked then cell.checked = true end
     table.insert(cell.samples, type(signal) == "number" and signal or -50)
     if #cell.samples > SAMPLES then table.remove(cell.samples, 1) end
     local total = 0
@@ -633,7 +654,7 @@ function Phone:best(now, fits, others)
     local found, choice = nil, {}
     local function consider(id, network, signal, class, tier)
         choice.id, choice.network, choice.signal, choice.class, choice.tier = id, network, signal, class, tier
-        choice.own, choice.rank = network == own, band_rank(self.heard[id] or self.cells[id])
+        choice.own, choice.rank = network == own, band_rank(self.cells[id] or self.heard[id])
         -- Whether it only carries messages, as its system information says: checked, for cells we may use.
         local cell = self.cells[id] or self.heard[id]
         choice.sms = cell ~= nil and cell.service == "sms"
@@ -727,7 +748,7 @@ function Phone:radio(src, message, signal, distance)
         if not entries then return end
         -- Cells of other networks (or of any network, before we're activated) can't be checked, but we can see what's
         -- around. A cell which claims to serve ours, or a partner's, but doesn't, may be a fake.
-        local now, epoch, networks = self.stack.clock(), self.epoch(), {}
+        local now, epoch, networks, checked = self.stack.clock(), self.epoch(), {}, false
         for i, entry in ipairs(entries) do
             local name = entry.network
             local signing = self.operator and (name == self.operator.network and self.operator.signing or self.partners[name])
@@ -755,13 +776,20 @@ function Phone:radio(src, message, signal, distance)
                     self.newest[signing] = expires
                 end
             end
+            if verified then checked = true end
             -- The certificate is kept, unchecked, for activating: it says which operator the cell claims to be of.
             networks[i] = {
                 network = name, verified = verified, path = entry.path, carriers = entry.carriers,
                 cert = type(entry.cert) == "string" and entry.cert or nil,
             }
         end
-        self:hear(src, message, signal, networks, distance)
+        -- Anyone can send system information with a real cell's ID, saying it's somewhere else, on another channel, sent
+        -- less often, or another network's cell. So a cell whose system information checked out is believed only when
+        -- what it sends does, for as long as we remember it: a real cell of ours names our network (or a partner's) in
+        -- all it sends. One which stops serving every network we can check is heard again once we've forgotten it.
+        local remembered = self.heard[src]
+        if remembered and remembered.checked and not checked then return end
+        self:hear(src, message, signal, networks, distance, checked)
 
         -- The networks we may use the cell through: those whose part checked out, and one we're trying (or using)
         -- before we can check it.

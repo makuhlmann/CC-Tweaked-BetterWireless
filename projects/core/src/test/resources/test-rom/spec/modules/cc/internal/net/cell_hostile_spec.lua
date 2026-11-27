@@ -250,4 +250,92 @@ describe("Phones, given made-up system information,", function()
         expect({ listener:locate() }):same { 22, 64, 30, 0 }
         expect(acme.net.errors):same {}
     end)
+
+    it("believe only what their network's cells sign about them, however often their IDs are used", function()
+        math.randomseed(4)
+        -- Four of ACME's cells, which say where they are, around a phone and a computer without a SIM.
+        local acme = operator { { 0, 80, 0 }, { 60, 100, 0 }, { 0, 60, 60 }, { 60, 90, 60 } }
+        local net = acme.net
+        local phone, stack = acme.add_phone(1, { 20, 64, 30 })
+        local listener = acme.add_phone(2, { 22, 64, 30 }, false, { activated = false })
+        net.advance(5)
+        expect(phone.state):eq("attached")
+        expect({ phone:locate() }):same { 20, 64, 30, 0 }
+        local reach = net.reach
+        net.reach = function(link, sender, receiver)
+            if not sender then return acme.fake_signal or -70 end
+            return reach(link, sender, receiver)
+        end
+        local events = #phone.events
+        local serving = phone.cell
+        local other = serving == 11 and 12 or 11
+
+        -- Where the phone sends a cell's frames, how it ranks it, and what it heard it say: how often, where it is, and
+        -- which networks it serves.
+        local function known(id)
+            local heard = phone.heard[id]
+            local choice = phone:best(net.time, function(way) return way.id == id end)
+            local networks = {}
+            for name in pairs(heard and heard.networks or {}) do networks[#networks + 1] = name end
+            table.sort(networks)
+            return {
+                uplink = phone.uplinks[id], ul = heard and heard.ul, interval = heard and heard.interval,
+                pos = heard and heard.pos, rank = choice and choice.rank, networks = networks,
+            }
+        end
+        local before = { [serving] = known(serving), [other] = known(other) }
+        expect(before[other].rank):eq(bands.get("b20").downlink[1])
+
+        -- Made up as from the phone's cell and another, which said they were on band 3, sent less often, from
+        -- elsewhere: of another network, of ACME without a signature, and of ACME with the cell's certificate and a
+        -- signature which isn't one.
+        local b3 = bands.carrier(bands.parse_carrier("b3/1"))
+        local forged = { ul = b3.uplink[1], interval = 10, pos = { 500, 64, 500 }, name = "FAKE", area = 99 }
+        local cert = phone.heard[serving].networks.ACME.cert
+        for _, part in ipairs { {}, { network = "ACME" }, { network = "ACME", cert = cert, sig = ("\0"):rep(64) } } do
+            for _, id in ipairs { serving, other } do
+                send(acme, phone, sib(acme, id, forged, part))
+                send(acme, listener, sib(acme, id, forged, part))
+            end
+        end
+        net.run()
+        for _, id in ipairs { serving, other } do expect(known(id)):describe("Cell " .. id):same(before[id]) end
+        -- So its frames still reach its cell, and it still knows where it is.
+        expect(helpers.reaches_server(net, stack)):eq(true)
+        expect({ phone:locate() }):same { 20, 64, 30, 0 }
+        -- Without a SIM, nothing can be checked: it shows what it heard.
+        expect(listener.heard[serving].networks.EVIL ~= nil):eq(true)
+
+        -- However many cells are made up, stronger than the real ones, it still remembers its network's, and still
+        -- believes only what they sign.
+        acme.fake_signal = -40
+        for i = 1, 40 do send(acme, phone, sib(acme, 3000 + i)) end
+        net.run()
+        acme.fake_signal = nil
+        send(acme, phone, sib(acme, other, forged))
+        net.run()
+        expect(count(phone.heard) <= 32):eq(true)
+        expect(known(other)):same(before[other])
+        expect(#phone.events):eq(events)
+
+        -- What the cell signs is taken at once, though: here, that it moved to band 3.
+        local tower = acme.towers[serving - 10]
+        local heard = phone.heard[serving]
+        send(acme, phone, common.make_sib {
+            network = "ACME", certificate = cert, cell = serving, area = heard.area, load = heard.load, time = acme.now(),
+            ul = b3.uplink[1], interval = 2, pos = { 1, 2, 3 }, sign = tower.sign,
+        })
+        net.run()
+        expect(known(serving)):same {
+            uplink = b3.uplink[1], ul = b3.uplink[1], interval = 2, pos = { 1, 2, 3 }, rank = bands.get("b3").downlink[1],
+            networks = { "ACME" },
+        }
+
+        -- And what it signs next, which is where it really is.
+        net.advance(3)
+        expect(known(serving)):same(before[serving])
+        expect(helpers.reaches_server(net, stack)):eq(true)
+        expect(phone.state):eq("attached")
+        expect(acme.net.errors):same {}
+    end)
 end)
