@@ -64,7 +64,7 @@ public final class ServerContext {
     private final ComputerContext context;
     private final MainThread mainThread;
     private final IDAssigner idAssigner;
-    private final WirelessNetwork wirelessNetwork = new WirelessNetwork();
+    private final WirelessNetwork wirelessNetwork;
     private final UnloadedWiring unloadedWiring;
     private final ComputerChunkLoader chunkLoader;
     private final EnclaveStore enclaves;
@@ -83,6 +83,7 @@ public final class ServerContext {
             .http(http)
             .build();
         idAssigner = new IDAssigner(storageDir.resolve("ids.json"));
+        wirelessNetwork = new WirelessNetwork(server);
         chunkLoader = new ComputerChunkLoader(storageDir.resolve("keep_loaded.json"));
         unloadedWiring = new UnloadedWiring(storageDir.resolve("wiring.dat"));
         enclaves = new EnclaveStore(storageDir.resolve("enclave"));

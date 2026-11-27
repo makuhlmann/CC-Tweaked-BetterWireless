@@ -9,6 +9,8 @@ import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.core.util.ThreadUtils;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -30,6 +32,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -37,15 +40,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>
  * Computers transmit on their own threads, but the propagation model needs to read the world, which is only safe on
  * the server thread. Rather than block the computer thread while the server thread does this (which is what made the
- * original implementation so slow), transmissions are queued and then evaluated at the start of the next server tick.
+ * original implementation so slow), transmissions are queued and then evaluated on the server thread: as soon as it has
+ * time between ticks, and at the start of every tick.
  * <ul>
  *     <li>Evaluated links are cached for a few seconds, and are symmetric, so request/reply traffic (rednet, GPS) is
  *     evaluated once.</li>
+ *     <li>A packet over a link which is cached doesn't wait for the server thread at all: it's delivered at once, on the
+ *     thread which sent it, as the original wireless modems did. So packets between radios which stay put arrive at
+ *     once, but for one every few seconds, when their link is traced again. Packets from a sender which has some still
+ *     waiting wait behind them, so a sender's packets arrive in the order it sent them.</li>
  *     <li>A packet between two radios whose link was traced a moment ago, and which have each moved no further than
  *     {@code move_tolerance} since, is delivered at once with that path, while the link where they are now is traced
  *     in the background (see {@link RecentLinks}). So a phone moving about doesn't wait for every block's link to be
  *     traced, nor does a link which is traced again because it was last traced a while ago.</li>
- *     <li>Work is limited to a fixed time budget each tick. Anything left over waits until the next tick.</li>
+ *     <li>Work is limited to a fixed time budget each tick, and each time the server thread has time between ticks
+ *     (but never into the next tick). Anything left over waits until then.</li>
  *     <li>Chunks are never loaded. If a link crosses chunks we know nothing about, we ask the
  *     {@linkplain HeightSource height sources} in the background and evaluate the link once they reply, or guess
  *     after a timeout.</li>
@@ -69,9 +78,20 @@ public final class RadioPropagationService {
     /** The maximum number of links to remember. */
     private static final int MAX_CACHED_LINKS = 1 << 14;
 
+    /** How long before the next tick is due a run between ticks must stop, in nanoseconds. */
+    private static final long WAKE_MARGIN_NANOS = 1_000_000;
+
+    private final ServerThread serverThread;
     private final Queue<Transmission> incoming = new ConcurrentLinkedQueue<>();
     private final AtomicInteger queued = new AtomicInteger();
 
+    /** Whether a run between ticks has been scheduled, and hasn't started yet. */
+    private final AtomicBoolean wakeScheduled = new AtomicBoolean();
+
+    /** The senders with packets queued, whose next packets queue behind them. */
+    private final QueuedSenders queuedSenders = new QueuedSenders();
+
+    /** The links we've traced. This is read on any thread, so must only be used while holding its lock. */
     private final Map<LinkKey, CachedLink> links = new LinkedHashMap<>(256, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<LinkKey, CachedLink> eldest) {
@@ -86,8 +106,67 @@ public final class RadioPropagationService {
 
     /** Written on the server thread, read by computer threads when transmitting. */
     private volatile RadioSettings settings = RadioSettings.fromConfig();
-    private long tick;
-    private long lastErrorLog = Long.MIN_VALUE;
+
+    /** Written on the server thread, read by computer threads to see whether a cached link has expired. */
+    private volatile long tick;
+
+    /** When the current tick started, from {@link System#nanoTime()}. This is only used on the server thread. */
+    private long tickStarted;
+
+    private volatile long lastErrorLog = Long.MIN_VALUE;
+
+    /**
+     * Run work on the server thread between ticks.
+     */
+    public interface ServerThread {
+        /**
+         * Run something on the server thread, as soon as it has time between ticks. This may be called from any
+         * thread, the server thread too, and never runs the task at once.
+         *
+         * @param task The task.
+         */
+        void schedule(Runnable task);
+
+        /**
+         * How long a tick is meant to take.
+         *
+         * @return The length of a tick, in nanoseconds.
+         */
+        long nanosPerTick();
+
+        /**
+         * The server thread of a Minecraft server.
+         * <p>
+         * Vanilla runs its queued tasks while it waits for the next tick, waking up when one is added. If the server is
+         * behind, so has no time to spare, a task waits until a few ticks have passed (or until the server catches up).
+         *
+         * @param server The server.
+         * @return Its server thread.
+         */
+        static ServerThread of(MinecraftServer server) {
+            return new ServerThread() {
+                @Override
+                public void schedule(Runnable task) {
+                    // Not execute, which runs the task at once on the server thread.
+                    server.schedule(new TickTask(server.getTickCount(), task));
+                }
+
+                @Override
+                public long nanosPerTick() {
+                    return server.tickRateManager().nanosecondsPerTick();
+                }
+            };
+        }
+    }
+
+    /**
+     * Make the service.
+     *
+     * @param serverThread The server thread, which links are traced on.
+     */
+    public RadioPropagationService(ServerThread serverThread) {
+        this.serverThread = serverThread;
+    }
 
     /**
      * A packet waiting to be delivered.
@@ -126,12 +205,48 @@ public final class RadioPropagationService {
         double budget();
     }
 
+    /**
+     * A packet for one receiver.
+     *
+     * @param packet     The packet.
+     * @param receiver   The receiver.
+     * @param distance   How far the packet travels, for the receiver's {@code modem_message}.
+     * @param thundering Whether it's thundering, which makes signals weaker.
+     * @param frequency  The frequency it was sent at, in MHz.
+     * @param power      The power it was sent with, in dBm.
+     * @param batch      The other deliveries of the same transmission, if it was queued (see {@link Batch}).
+     */
     private record Delivery(
-        Packet packet, PacketReceiver receiver, double distance, boolean thundering, double frequency, double power
+        Packet packet, PacketReceiver receiver, double distance, boolean thundering, double frequency, double power,
+        @Nullable Batch batch
     ) implements Waiting {
         @Override
         public double budget() {
             return power - RadioSettings.sensitivity(receiver);
+        }
+    }
+
+    /**
+     * The deliveries of a transmission which was queued, rather than delivered at once. Until all of them are made (or
+     * dropped), the sender's packets are queued too, so that one over a link which has been cached since can't
+     * overtake them. This is only used on the server thread.
+     */
+    private final class Batch {
+        private final Object sender;
+
+        /** How many deliveries are still to be made, and one more until they've all been made. */
+        private int waiting = 1;
+
+        Batch(Object sender) {
+            this.sender = sender;
+        }
+
+        void add() {
+            waiting++;
+        }
+
+        void done() {
+            if (--waiting == 0) queuedSenders.remove(sender);
         }
     }
 
@@ -265,14 +380,115 @@ public final class RadioPropagationService {
         Packet packet, ServerLevel level, Vec3 origin, List<PacketReceiver> receivers, boolean crossDimension, double frequency, double power
     ) {
         if (receivers.isEmpty()) return;
+        var antenna = RadioAntenna.of(packet.sender(), origin);
+        if (!crossDimension) {
+            receivers = deliverCached(packet, level, origin, antenna, receivers, frequency, power);
+            if (receivers.isEmpty()) return;
+        }
+
         if (queued.addAndGet(receivers.size()) > MAX_QUEUED) {
             // Congestion: drop the packet, much like a real network would.
             queued.addAndGet(-receivers.size());
             return;
         }
-        incoming.add(new Transmission(
-            packet, level, origin, RadioAntenna.of(packet.sender(), origin), receivers, crossDimension, frequency, power
-        ));
+        // The sender's next packets wait behind this one. This must happen before it's queued, so it can't be
+        // delivered (and the sender released) first.
+        if (!crossDimension) queuedSenders.add(packet.sender());
+        incoming.add(new Transmission(packet, level, origin, antenna, receivers, crossDimension, frequency, power));
+        wake();
+    }
+
+    /**
+     * Deliver a packet at once to each receiver whose link to the sender is cached, on the thread which sent it, as the
+     * original wireless modems did. The rest are left for the server thread.
+     * <p>
+     * If the sender has packets queued, this one waits behind them, so a sender's packets arrive in the order it sent
+     * them.
+     *
+     * @param packet    The packet.
+     * @param level     The level it was sent in.
+     * @param origin    Where it was sent from.
+     * @param antenna   Where the sender's antenna is.
+     * @param receivers The receivers which might hear it.
+     * @param frequency The frequency it was sent at, in MHz.
+     * @param power     The power it was sent with, in dBm.
+     * @return The receivers it wasn't delivered to, which must be queued.
+     */
+    private List<PacketReceiver> deliverCached(
+        Packet packet, ServerLevel level, Vec3 origin, Vec3 antenna, List<PacketReceiver> receivers, double frequency, double power
+    ) {
+        if (queuedSenders.contains(packet.sender())) return receivers;
+
+        var now = tick;
+        List<PacketReceiver> rest = null;
+        for (var i = 0; i < receivers.size(); i++) {
+            var receiver = receivers.get(i);
+            var position = receiver.getPosition();
+            var delivery = new Delivery(
+                packet, receiver, origin.distanceTo(position), level.isThundering(), frequency, power, null
+            );
+            var path = receiver.getLevel() == level
+                ? cachedPath(LinkKey.of(level, antenna, RadioAntenna.of(receiver, position)), delivery, now)
+                : null;
+
+            if (path != null) {
+                deliver(delivery, path.evaluate(frequency));
+            } else {
+                if (rest == null) rest = new ArrayList<>(receivers.size() - i);
+                rest.add(receiver);
+            }
+        }
+        return rest == null ? List.of() : rest;
+    }
+
+    /**
+     * Find a cached link which serves something waiting for it. This may be called from any thread.
+     *
+     * @param key     The link.
+     * @param waiting What's waiting for it.
+     * @param now     The current tick.
+     * @return The link's path, or {@code null} if it isn't cached, has expired, or wasn't traced far enough.
+     */
+    private @Nullable LinkPath cachedPath(LinkKey key, Waiting waiting, long now) {
+        CachedLink cached;
+        synchronized (links) {
+            cached = links.get(key);
+        }
+        // Links are only traced as far as what's waiting for them needs: a path traced for a weaker transmitter
+        // serves a stronger one only if the link was within its budget. Otherwise, it's traced again, further.
+        return cached != null && cached.expires() > now && cached.path().serves(waiting.frequency(), waiting.budget())
+            ? cached.path() : null;
+    }
+
+    /**
+     * Run {@link #process} on the server thread as soon as it has time between ticks, unless that's already scheduled.
+     * This may be called from any thread.
+     */
+    private void wake() {
+        if (wakeScheduled.compareAndSet(false, true)) serverThread.schedule(this::onWake);
+    }
+
+    private void onWake() {
+        wakeScheduled.set(false);
+        var budget = wakeBudget(System.nanoTime(), settings.tickBudgetNanos(), tickStarted, serverThread.nanosPerTick());
+        // Out of time, but there's more to do: carry on once the server has time again. If the next tick is due by
+        // then, the next run has no time at all, and the work waits for the tick.
+        if (budget > 0 && process(System.nanoTime() + budget)) wake();
+    }
+
+    /**
+     * Work out how long a run between ticks may take: the tick budget, but stopping a little before the next tick is
+     * due. If the server is behind, the next tick is due already, and there's no time at all.
+     *
+     * @param now          The time now, from {@link System#nanoTime()}.
+     * @param budget       The tick budget, in nanoseconds.
+     * @param tickStarted  When the current tick started, from {@link System#nanoTime()}.
+     * @param nanosPerTick How long a tick is meant to take, in nanoseconds.
+     * @return How long the run may take, in nanoseconds. This is zero or less if it mustn't run.
+     */
+    static long wakeBudget(long now, long budget, long tickStarted, long nanosPerTick) {
+        var untilNextTick = tickStarted + nanosPerTick - WAKE_MARGIN_NANOS - now;
+        return Math.min(budget, untilNextTick);
     }
 
     /**
@@ -295,43 +511,58 @@ public final class RadioPropagationService {
     }
 
     /**
-     * Evaluate queued links and deliver packets. This must be called on the server thread.
+     * Evaluate queued links and deliver packets. This must be called on the server thread, at the start of each tick.
      */
+    @SuppressWarnings("NonAtomicVolatileUpdate") // Only the server thread writes it.
     public void tick() {
         tick++;
+        tickStarted = System.nanoTime();
         settings = RadioSettings.fromConfig();
-        var deadline = System.nanoTime() + settings.tickBudgetNanos();
         // Forget recent links which are too old to use, so modems which are gone aren't held.
         if (tick % Math.max(20, settings.cacheTicks()) == 0) recent.purge(tick - staleTicks());
 
+        // Links left over carry on between ticks, if the server has time.
+        if (process(tickStarted + settings.tickBudgetNanos())) wake();
+    }
+
+    /**
+     * Deliver queued packets, and evaluate queued links until a deadline. This must be called on the server thread.
+     *
+     * @param deadline When to stop evaluating links, from {@link System#nanoTime()}.
+     * @return Whether it stopped at the deadline, with links it hadn't looked at yet.
+     */
+    private boolean process(long deadline) {
         // Turn transmissions into evaluations, delivering immediately if we've seen this link recently.
         Transmission transmission;
         while ((transmission = incoming.poll()) != null) {
             queued.addAndGet(-transmission.receivers().size());
+            if (transmission.crossDimension()) {
+                for (var receiver : transmission.receivers()) queueCrossDimension(transmission, receiver);
+                continue;
+            }
+
             var level = transmission.level();
             var thundering = level.isThundering();
             var from = transmission.antenna();
-
+            var batch = new Batch(transmission.packet().sender());
             for (var receiver : transmission.receivers()) {
-                if (transmission.crossDimension()) {
-                    queueCrossDimension(transmission, receiver);
-                    continue;
-                }
-
                 if (receiver.getLevel() != level) continue;
                 var position = receiver.getPosition();
                 var to = RadioAntenna.of(receiver, position);
                 var delivery = new Delivery(
                     transmission.packet(), receiver, transmission.origin().distanceTo(position), thundering,
-                    transmission.frequency(), transmission.power()
+                    transmission.frequency(), transmission.power(), batch
                 );
+                batch.add();
                 request(level, from, to, delivery, false);
             }
+            batch.done();
         }
 
         // Then evaluate as many links as we have time for.
         var count = pending.size();
-        for (var i = 0; i < count && System.nanoTime() < deadline; i++) {
+        for (var i = 0; i < count; i++) {
+            if (System.nanoTime() >= deadline) return true;
             var evaluation = pending.poll();
             if (evaluation == null) break;
 
@@ -339,7 +570,7 @@ public final class RadioPropagationService {
             try {
                 done = tryEvaluate(evaluation);
             } catch (RuntimeException e) {
-                // This runs as part of the server tick, so must never throw. Drop the link instead.
+                // This runs on the server thread, so must never throw. Drop the link instead.
                 logError("Failed to evaluate radio link", e);
                 evaluating.remove(evaluation.key);
                 for (var ends : evaluation.ends) recent.refreshed(ends.sender(), ends.receiver(), evaluation);
@@ -348,6 +579,7 @@ public final class RadioPropagationService {
             }
             if (!done) pending.add(evaluation);
         }
+        return false;
     }
 
     /**
@@ -362,11 +594,9 @@ public final class RadioPropagationService {
      */
     private void request(ServerLevel level, Vec3 from, Vec3 to, Waiting waiting, boolean crossDimension) {
         var key = LinkKey.of(level, from, to);
-        var cached = links.get(key);
-        // Links are only traced as far as what's waiting for them needs: a path traced for a weaker transmitter
-        // serves a stronger one only if the link was within its budget. Otherwise, it's traced again, further.
-        if (cached != null && cached.expires() > tick && cached.path().serves(waiting.frequency(), waiting.budget())) {
-            complete(waiting, cached.path());
+        var cached = cachedPath(key, waiting, tick);
+        if (cached != null) {
+            complete(waiting, cached);
             return;
         }
 
@@ -461,6 +691,9 @@ public final class RadioPropagationService {
     private void complete(Waiting waiting, @Nullable LinkPath path) {
         if (waiting instanceof Delivery delivery) {
             if (path != null) deliver(delivery, path.evaluate(delivery.frequency()));
+            // Only once it's delivered, so the sender's next packet can't overtake it.
+            var batch = delivery.batch();
+            if (batch != null) batch.done();
         } else if (waiting instanceof CrossDelivery delivery) {
             if (path != null) delivery.loss = Math.min(delivery.loss, path.evaluate(delivery.frequency).loss());
             if (--delivery.waiting == 0) deliverCrossDimension(delivery);
@@ -536,7 +769,9 @@ public final class RadioPropagationService {
         // Links between dimensions are mostly between computers which stay where they are, so are kept for longer.
         var cacheTicks = evaluation.crossDimension ? settings.crossCacheTicks() : settings.cacheTicks();
         if (!complete) cacheTicks = Math.min(cacheTicks, 20);
-        links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
+        synchronized (links) {
+            links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
+        }
         evaluating.remove(evaluation.key);
         for (var ends : evaluation.ends) {
             recent.record(level, ends.sender(), ends.from(), ends.receiver(), ends.to(), path, tick);
@@ -585,6 +820,7 @@ public final class RadioPropagationService {
     }
 
     private LevelHeights getHeights(ServerLevel level) {
-        return heights.computeIfAbsent(level.dimension(), k -> new LevelHeights(level));
+        // Once a chunk's heights arrive, a link waiting for them can be traced, without waiting for the next tick.
+        return heights.computeIfAbsent(level.dimension(), k -> new LevelHeights(level, this::wake));
     }
 }

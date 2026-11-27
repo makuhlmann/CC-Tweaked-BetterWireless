@@ -258,6 +258,73 @@ class Modem_Test {
     }
 
     /**
+     * A packet over a link which was traced a moment ago is delivered at once, on the thread which sent it, while one
+     * over a new link waits for the server thread. A sender's packets wait behind any it has still waiting, so they
+     * arrive in the order it sent them.
+     */
+    @GameTest(template = Structures.DEFAULT, timeoutTicks = Timeouts.SECOND * 15)
+    fun Cached_links_deliver_at_once(helper: GameTestHelper) = helper.sequence {
+        class Sender(private val level: Level, private val position: Vec3) : PacketSender {
+            override fun getLevel(): Level = level
+            override fun getPosition(): Vec3 = position
+            override fun getSenderID(): String = "test"
+            override fun getTransmitPower(): Double = Config.radioTransmitPower
+        }
+
+        class Receiver(private val level: Level, private val position: Vec3, private val from: Sender) : PacketReceiver {
+            val heard = CopyOnWriteArrayList<Any?>()
+            override fun getLevel(): Level = level
+            override fun getPosition(): Vec3 = position
+            override fun getRange(): Double = 0.0
+            override fun isInterdimensional(): Boolean = false
+
+            // Other tests' computers are on the air too: only this test's packets count.
+            private fun hear(packet: Packet) {
+                if (packet.sender === from) heard.add(packet.payload)
+            }
+
+            override fun receiveSameDimension(packet: Packet, distance: Double) = hear(packet)
+            override fun receiveSameDimension(packet: Packet, distance: Double, signalStrength: Double) = hear(packet)
+            override fun receiveDifferentDimension(packet: Packet) = Unit
+        }
+
+        val network = ComputerCraftAPI.getWirelessNetwork(helper.level.server)
+        fun at(x: Int, z: Int) = Vec3.atCenterOf(helper.absolutePos(BlockPos(x, 3, z)))
+        val sender = Sender(helper.level, at(1, 1))
+        val near = Receiver(helper.level, at(3, 3), sender)
+        val other = Receiver(helper.level, at(4, 1), sender)
+        fun send(message: String) = network.transmitSameDimension(Packet(1500, 1500, message, sender), 64.0)
+
+        thenExecute {
+            network.addReceiver(near)
+            send("first")
+            assertEquals(listOf<Any?>(), near.heard, "A new link waits for the server thread")
+        }
+        thenWaitUntil { if (near.heard.isEmpty()) helper.fail("Nothing heard yet") }
+        thenExecute {
+            send("second")
+            assertEquals(listOf<Any?>("first", "second"), near.heard, "A link traced a moment ago goes at once")
+
+            // The new receiver's link waits, while the first's goes at once.
+            network.addReceiver(other)
+            send("third")
+            assertEquals(listOf<Any?>("first", "second", "third"), near.heard)
+            assertEquals(listOf<Any?>(), other.heard)
+
+            // Now the sender has a packet waiting, so this one waits behind it, even where its link is cached.
+            send("fourth")
+            assertEquals(listOf<Any?>("first", "second", "third"), near.heard, "Packets wait behind those still waiting")
+        }
+        thenWaitUntil { if (near.heard.size < 4 || other.heard.size < 2) helper.fail("Not everything heard yet") }
+        thenExecute {
+            network.removeReceiver(near)
+            network.removeReceiver(other)
+            assertEquals(listOf<Any?>("first", "second", "third", "fourth"), near.heard)
+            assertEquals(listOf<Any?>("third", "fourth"), other.heard)
+        }
+    }
+
+    /**
      * Sends a 2.4GHz message between two computers set into a thick stone ceiling, with their modems hanging
      * underneath. The computers are buried, but the modems can see each other, so the message should get through.
      */

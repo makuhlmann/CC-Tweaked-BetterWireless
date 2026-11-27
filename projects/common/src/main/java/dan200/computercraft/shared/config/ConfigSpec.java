@@ -525,7 +525,9 @@ public final class ConfigSpec {
                 .defineInRange("nether_unknown_fill", Config.radioCeilingUnknownFill, 0, 1);
 
             radioTickBudgetMicros = builder
-                .comment("How long the server may spend evaluating radio links each tick, in microseconds.")
+                .comment("""
+                    How long the server may spend evaluating radio links each tick, and each time it has time
+                    to spare between ticks, in microseconds.""")
                 .defineInRange("tick_budget", Config.radioTickBudgetMicros, 100, 50_000);
 
             radioCacheTicks = builder

@@ -991,11 +991,12 @@ function Stack:receive_icmp(packet)
                 local duplicate = series.answered[seq] == true
                 series.answered[seq] = true
                 self:echo_heard(message.id, {
-                    seq = seq, rtt = self.clock() - sent, ttl = packet.ttl, from = packet.src, duplicate = duplicate,
+                    seq = seq, rtt = self:round_trip(series.sent_at[seq]), ttl = packet.ttl, from = packet.src,
+                    duplicate = duplicate,
                 })
             end
         elseif echo and not echo.done then
-            echo.done, echo.rtt, echo.ttl, echo.from = true, self.clock() - echo.sent, packet.ttl, packet.src
+            echo.done, echo.rtt, echo.ttl, echo.from = true, self:round_trip(echo.sent_at), packet.ttl, packet.src
             self.wake("net_echo", message.id)
         end
     elseif message.type == "unreachable" or message.type == "time_exceeded" then
@@ -1095,9 +1096,15 @@ function Stack:add_echo(echo)
         if now - other.sent > ECHO_LIFETIME then self.echoes[id] = nil end
     end
     self.next_echo = self.next_echo + 1
-    echo.sent = now
+    echo.sent, echo.sent_at = now, self.epoch()
     self.echoes[self.next_echo] = echo
     return self.next_echo
+end
+
+-- How long ago an echo request was sent, in seconds. This uses the epoch, in milliseconds, rather than the clock,
+-- which only counts whole ticks: a reply which comes in the same tick would take no time at all.
+function Stack:round_trip(sent_at)
+    return math.max(0, self.epoch() - sent_at) / 1000
 end
 
 --[[- Start a series of echo requests, as `ping` sends. Each [`Stack:echo_next`] sends the next, with the next sequence
@@ -1109,7 +1116,7 @@ series which sends nothing for a minute ends too.
 @treturn number The series' ID.
 ]]
 function Stack:echo_series()
-    return self:add_echo({ series = { next = 0, sent = {}, answered = {}, replies = {} } })
+    return self:add_echo({ series = { next = 0, sent = {}, sent_at = {}, answered = {}, replies = {} } })
 end
 
 --[[- Send the next echo request of a series.
@@ -1130,15 +1137,17 @@ function Stack:echo_next(id, dst, ttl)
     local now = self.clock()
     echo.sent = now
     for seq, sent in pairs(series.sent) do
-        if now - sent > ECHO_LIFETIME then series.sent[seq], series.answered[seq] = nil, nil end
+        if now - sent > ECHO_LIFETIME then
+            series.sent[seq], series.sent_at[seq], series.answered[seq] = nil, nil, nil
+        end
     end
 
     series.next = series.next + 1
     local seq = series.next
-    series.sent[seq] = now
+    series.sent[seq], series.sent_at[seq] = now, self.epoch()
     local ok, err = self:send(dst, "icmp", { type = "echo", id = id, seq = seq }, { ttl = ttl })
     if not ok then
-        series.sent[seq] = nil
+        series.sent[seq], series.sent_at[seq] = nil, nil
         return seq, err
     end
     return seq

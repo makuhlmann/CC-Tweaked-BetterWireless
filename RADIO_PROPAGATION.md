@@ -260,11 +260,18 @@ lightning, which is modelled as `storm_noise` (6dB, roughly halving range) added
 The rule is: **nothing reads the world off the server thread, and nothing ever loads a chunk.**
 
 1. `WirelessNetwork.transmitSameDimension` (on the computer thread) only filters receivers: same level, listening on
-   the channel, and not ruled out by free-space loss alone (which is a lower bound on any real path loss). It queues
-   the packet and returns immediately.
-2. At the start of each server tick, `RadioPropagationService` traces queued links on the server thread, reading
-   loaded chunks directly through `getChunkNow` and chunk sections (no cross-thread hops, no loading). Work is capped
-   at `tick_budget` (2ms) per tick; leftovers wait for the next tick. Each trace is one voxel walk along the ray
+   the channel, and not ruled out by free-space loss alone (which is a lower bound on any real path loss). Receivers
+   whose link to the sender is cached (step 4) get the packet at once, still on the computer thread, as with the
+   original modems. The rest are queued, and the server thread is woken to deliver them, and the call returns
+   immediately. While a sender has packets queued, its next packets are queued behind them, even over cached links, so a
+   sender's packets arrive in the order it sent them.
+2. As soon as the server thread has time between ticks, and at the start of each server tick, `RadioPropagationService`
+   traces queued links on the server thread, reading loaded chunks directly through `getChunkNow` and chunk sections (no
+   cross-thread hops, no loading). Vanilla runs queued tasks while it waits for the next tick, waking when one is added,
+   so with time to spare a packet over a new link is delivered within a millisecond or two, as is one whose terrain
+   heights just arrived. A server which is behind has no time between ticks, and packets wait for the next tick. Work is
+   capped at `tick_budget` (2ms) per tick, and per run between ticks, which also stops a millisecond before the next
+   tick is due; leftovers wait. Each trace is one voxel walk along the ray
    (which stops once the signal is lost at every frequency), a `block_radius` walk at each end to find where the
    signal leaves any enclosure, and a `profile_samples`-point profile. A rough micro-benchmark puts one link at ~15µs
    for 1km, ~30µs for 4km and ~85µs at 16km, measured before tracing became independent of the frequency (below).
@@ -383,8 +390,10 @@ oracle for the whole planet, and would be the best possible height source here. 
 ## 5. Lua and configuration
 
 `modem_message` gains a seventh argument for messages received by radio: the signal strength in dBm (for instance
-`-72.5`). Messages arrive down to about -100dBm. Wired and ender modem messages are unchanged. Messages are delivered
-at the next server tick rather than immediately.
+`-72.5`). Messages arrive down to about -100dBm. Wired and ender modem messages are unchanged. Messages over a link
+traced in the last few seconds are delivered immediately. Others are delivered as soon as the server has time, or at
+the next server tick if it's busy. `ping` and `traceroute` time replies with `os.epoch("utc")`, as `os.clock` only
+counts whole ticks.
 
 Wireless modems (and pocket computers' and turtles' modems) gain `setTransmitPower(power)`, which sets the power in
 dBm, reduced to the device's limit (or, given nothing, goes back to the default), and returns what it was set to; and

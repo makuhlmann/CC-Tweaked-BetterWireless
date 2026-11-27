@@ -11,6 +11,7 @@ import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioPropagationService;
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioSettings;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
 
@@ -23,7 +24,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class WirelessNetwork implements PacketNetwork {
     private final Set<PacketReceiver> receivers = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private final RadioPropagationService propagation = new RadioPropagationService();
+    private final RadioPropagationService propagation;
+
+    public WirelessNetwork(MinecraftServer server) {
+        propagation = new RadioPropagationService(RadioPropagationService.ServerThread.of(server));
+    }
 
     @Override
     public void addReceiver(PacketReceiver receiver) {
@@ -125,7 +130,8 @@ public class WirelessNetwork implements PacketNetwork {
     }
 
     /**
-     * Deliver any queued packets. This should be called at the start of every server tick.
+     * Deliver any queued packets. This should be called at the start of every server tick. Packets are also delivered
+     * between ticks, when the server has time.
      */
     public void tick() {
         propagation.tick();

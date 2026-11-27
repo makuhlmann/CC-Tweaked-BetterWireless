@@ -219,7 +219,7 @@
   "gui.computercraft.config.peripheral.radio.storm_noise": "Thunderstorm noise (dB)",
   "gui.computercraft.config.peripheral.radio.storm_noise.tooltip": "How much noise thunderstorms add, in dB. Every 6dB roughly halves the range.",
   "gui.computercraft.config.peripheral.radio.tick_budget": "Tick budget (microseconds)",
-  "gui.computercraft.config.peripheral.radio.tick_budget.tooltip": "How long the server may spend evaluating radio links each tick, in microseconds.",
+  "gui.computercraft.config.peripheral.radio.tick_budget.tooltip": "How long the server may spend evaluating radio links each tick, and each time it has time\nto spare between ticks, in microseconds.",
   "gui.computercraft.config.peripheral.radio.tooltip": "Simulate radio propagation for wireless modems. Rather than having a fixed range, signals are\nattenuated by distance, terrain and the blocks they pass through. When disabled, the modem_range\noptions above are used instead.",
   "gui.computercraft.config.peripheral.radio.transmit_power": "Transmit power (dBm)",
   "gui.computercraft.config.peripheral.radio.transmit_power.tooltip": "The power placed computers' wireless modems transmit with, unless a program sets\nanother, in dBm. A channel's number is its frequency in units of 100kHz (channel 1500\nis 150MHz), and two modems on flat, open ground hear each other up to 1024 blocks\napart at this default. Raising modems up increases their range, while hills and walls\nreduce it.",

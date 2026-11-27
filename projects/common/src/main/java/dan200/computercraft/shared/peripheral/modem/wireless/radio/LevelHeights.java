@@ -39,6 +39,7 @@ final class LevelHeights {
     static final int MAX_FETCHING = 256;
 
     private final ServerLevel level;
+    private final Runnable onFetched;
 
     /** The heights we know, least recently used first. Guarded by {@code this}. */
     private final Long2ObjectLinkedOpenHashMap<ChunkHeights> heights = new Long2ObjectLinkedOpenHashMap<>(256);
@@ -46,8 +47,15 @@ final class LevelHeights {
     /** The chunks we're fetching. Guarded by {@code this}. */
     private final LongOpenHashSet fetching = new LongOpenHashSet();
 
-    LevelHeights(ServerLevel level) {
+    /**
+     * Make an empty set of heights.
+     *
+     * @param level     The level.
+     * @param onFetched Called, on any thread, each time a chunk we fetched arrives.
+     */
+    LevelHeights(ServerLevel level, Runnable onFetched) {
         this.level = level;
+        this.onFetched = onFetched;
     }
 
     synchronized @Nullable ChunkHeights get(long chunk) {
@@ -86,6 +94,7 @@ final class LevelHeights {
         fetch(sources, 0, ChunkPos.getX(chunk), ChunkPos.getZ(chunk), worker).whenComplete((result, error) -> {
             if (error != null) LOG.warn("Failed to find heights for chunk {}", ChunkPos.unpack(chunk), error);
             fetched(chunk, result == null ? ChunkHeights.unavailable() : result);
+            onFetched.run();
         });
         return true;
     }

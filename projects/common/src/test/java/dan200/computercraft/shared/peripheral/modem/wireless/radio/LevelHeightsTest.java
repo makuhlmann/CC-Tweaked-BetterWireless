@@ -37,7 +37,8 @@ class LevelHeightsTest {
 
     private static LevelHeights newHeights() {
         // The level is only passed to sources, which ignore it here.
-        return new LevelHeights(null);
+        return new LevelHeights(null, () -> {
+        });
     }
 
     @Test
