@@ -301,25 +301,43 @@ class Modem_Test {
             assertEquals(listOf<Any?>(), near.heard, "A new link waits for the server thread")
         }
         thenWaitUntil { if (near.heard.isEmpty()) helper.fail("Nothing heard yet") }
-        thenExecute {
+
+        // What each receiver had heard after each packet below.
+        val seen = mutableListOf<List<Any?>>()
+        thenWaitUntil {
+            // Other tests' receivers may be in range too, and while one's link is new, the sender's packets wait behind
+            // the one queued for it. Two packets in a row going at once say nothing is queued, and every link is
+            // cached, for the rest of this tick: the cache goes by ticks.
+            val before = near.heard.size
+            send("probe")
+            send("probe")
+            if (near.heard.size != before + 2) helper.fail("The sender still has packets waiting")
+
+            near.heard.clear()
             send("second")
-            assertEquals(listOf<Any?>("first", "second"), near.heard, "A link traced a moment ago goes at once")
+            seen.add(near.heard.toList())
 
             // The new receiver's link waits, while the first's goes at once.
             network.addReceiver(other)
             send("third")
-            assertEquals(listOf<Any?>("first", "second", "third"), near.heard)
-            assertEquals(listOf<Any?>(), other.heard)
+            seen.add(near.heard.toList())
+            seen.add(other.heard.toList())
 
             // Now the sender has a packet waiting, so this one waits behind it, even where its link is cached.
             send("fourth")
-            assertEquals(listOf<Any?>("first", "second", "third"), near.heard, "Packets wait behind those still waiting")
+            seen.add(near.heard.toList())
         }
-        thenWaitUntil { if (near.heard.size < 4 || other.heard.size < 2) helper.fail("Not everything heard yet") }
+        thenExecute {
+            assertEquals(listOf<Any?>("second"), seen[0], "A link traced a moment ago goes at once")
+            assertEquals(listOf<Any?>("second", "third"), seen[1])
+            assertEquals(listOf<Any?>(), seen[2], "A new link waits")
+            assertEquals(listOf<Any?>("second", "third"), seen[3], "Packets wait behind those still waiting")
+        }
+        thenWaitUntil { if (near.heard.size < 3 || other.heard.size < 2) helper.fail("Not everything heard yet") }
         thenExecute {
             network.removeReceiver(near)
             network.removeReceiver(other)
-            assertEquals(listOf<Any?>("first", "second", "third", "fourth"), near.heard)
+            assertEquals(listOf<Any?>("second", "third", "fourth"), near.heard)
             assertEquals(listOf<Any?>("third", "fourth"), other.heard)
         }
     }

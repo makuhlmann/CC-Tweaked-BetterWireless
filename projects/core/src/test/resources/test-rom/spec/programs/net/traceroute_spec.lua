@@ -13,7 +13,9 @@ describe("The traceroute program", function()
     end)
 
     it("finds the way to this computer", function()
-        expect(capture("/rom/programs/net/traceroute.lua", "127.0.0.1", "3"))
-            :matches { ok = true, error = "", output = "Route to 127.0.0.1 (127.0.0.1)\n 1  127.0.0.1  0 ms\n" }
+        local result = capture("/rom/programs/net/traceroute.lua", "127.0.0.1", "3")
+        expect(result):matches { ok = true, error = "" }
+        -- Times are real milliseconds, so even this may take one.
+        expect(result.output):str_match("^Route to 127%.0%.0%.1 %(127%.0%.0%.1%)\n 1  127%.0%.0%.1  [01] ms\n$")
     end)
 end)
