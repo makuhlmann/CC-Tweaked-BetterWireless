@@ -289,7 +289,12 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    stationary computers, and the two directions of a link whose uplink and downlink use different frequencies.
    Concurrent requests for the same link share one trace, as far as the strongest of them needs. A path traced for a
    weaker transmitter is traced again for a stronger one, unless the link was within the weaker one's budget (its
-   loss is then exact whatever the budget).
+   loss is then exact whatever the budget). **A link in use doesn't expire:** a packet over a cached path in its last
+   second (at most a quarter of its lifetime) still goes at once, and has the link traced again in the background
+   (once), which caches it afresh. Before, the first packet after a link expired went to the server thread, which
+   reuses the old path at once (step 5) but only once it has finished its tick: a ping over a cell and two relays
+   had a spike of about 10ms every 5 seconds for each of its links. A link in constant use is now traced every 4
+   seconds rather than 5; one which isn't used in its last second still expires.
 5. **Radios which move don't wait.** As paths are cached by block, every block a phone moves into is a link which
    hasn't been traced, and on a long link tracing takes a while: a 40km link which closes took about 1ms (half a
    tick's budget), measured offline and warm, with heights only for the chunks its profile samples, as a server has;

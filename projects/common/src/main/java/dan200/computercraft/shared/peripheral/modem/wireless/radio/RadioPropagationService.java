@@ -46,9 +46,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *     <li>Evaluated links are cached for a few seconds, and are symmetric, so request/reply traffic (rednet, GPS) is
  *     evaluated once.</li>
  *     <li>A packet over a link which is cached doesn't wait for the server thread at all: it's delivered at once, on the
- *     thread which sent it, as the original wireless modems did. So packets between radios which stay put arrive at
- *     once, but for one every few seconds, when their link is traced again. Packets from a sender which has some still
- *     waiting wait behind them, so a sender's packets arrive in the order it sent them.</li>
+ *     thread which sent it, as the original wireless modems did. A link in use is traced again in the background shortly
+ *     before it expires, so packets between radios which stay put keep arriving at once: only a link which hasn't been
+ *     used for a while has to wait for the server thread. Packets from a sender which has some still waiting wait
+ *     behind them, so a sender's packets arrive in the order it sent them.</li>
  *     <li>A packet between two radios whose link was traced a moment ago, and which have each moved no further than
  *     {@code move_tolerance} since, is delivered at once with that path, while the link where they are now is traced
  *     in the background (see {@link RecentLinks}). So a phone moving about doesn't wait for every block's link to be
@@ -81,8 +82,17 @@ public final class RadioPropagationService {
     /** How long before the next tick is due a run between ticks must stop, in nanoseconds. */
     private static final long WAKE_MARGIN_NANOS = 1_000_000;
 
+    /**
+     * How many ticks before a cached link expires a packet over it has it traced again, in the background (but never
+     * more than a quarter of how long it's cached for).
+     */
+    private static final long RENEW_TICKS = 20;
+
     private final ServerThread serverThread;
     private final Queue<Transmission> incoming = new ConcurrentLinkedQueue<>();
+
+    /** Cached links in use which expire soon, to trace again on the server thread. */
+    private final Queue<Renewal> renewals = new ConcurrentLinkedQueue<>();
     private final AtomicInteger queued = new AtomicInteger();
 
     /** Whether a run between ticks has been scheduled, and hasn't started yet. */
@@ -299,7 +309,42 @@ public final class RadioPropagationService {
         }
     }
 
-    private record CachedLink(LinkPath path, long expires) {
+    /**
+     * A traced link, which is used until it expires.
+     *
+     * @param path     Its path.
+     * @param traced   The tick it was traced on.
+     * @param expires  The tick it expires on.
+     * @param renewing Whether it's being traced again already, as it was in use when it was about to expire.
+     */
+    private record CachedLink(LinkPath path, long traced, long expires, AtomicBoolean renewing) {
+        CachedLink(LinkPath path, long traced, long expires) {
+            this(path, traced, expires, new AtomicBoolean());
+        }
+
+        /**
+         * Whether to trace the link again now, in the background, as it's in use and expires soon. Only says so once.
+         * This may be called from any thread.
+         *
+         * @param now The current tick.
+         * @return Whether to trace it again.
+         */
+        boolean dueForRenewal(long now) {
+            var margin = Math.min(RENEW_TICKS, (expires - traced) / 4);
+            return expires - now <= margin && renewing.compareAndSet(false, true);
+        }
+    }
+
+    /**
+     * A cached link in use which expires soon, to trace again in the background, so packets over it carry on going at
+     * once rather than waiting for the server thread when it expires.
+     *
+     * @param level  The level it's in.
+     * @param key    The link.
+     * @param ends   The two radios it's in use between.
+     * @param budget How far to trace it.
+     */
+    private record Renewal(ServerLevel level, LinkKey key, Ends ends, double budget) {
     }
 
     /**
@@ -427,16 +472,22 @@ public final class RadioPropagationService {
             var delivery = new Delivery(
                 packet, receiver, origin.distanceTo(position), level.isThundering(), frequency, power, null
             );
-            var path = receiver.getLevel() == level
-                ? cachedPath(LinkKey.of(level, antenna, RadioAntenna.of(receiver, position)), delivery, now)
-                : null;
-
-            if (path != null) {
-                deliver(delivery, path.evaluate(frequency));
-            } else {
-                if (rest == null) rest = new ArrayList<>(receivers.size() - i);
-                rest.add(receiver);
+            if (receiver.getLevel() == level) {
+                var to = RadioAntenna.of(receiver, position);
+                var key = LinkKey.of(level, antenna, to);
+                var cached = cachedLink(key, delivery, now);
+                if (cached != null) {
+                    deliver(delivery, cached.path().evaluate(frequency));
+                    // It expires soon: trace it again in the background, so the next packet needn't wait for that.
+                    if (cached.dueForRenewal(now)) {
+                        renewals.add(new Renewal(level, key, new Ends(packet.sender(), antenna, receiver, to), delivery.budget()));
+                    }
+                    continue;
+                }
             }
+
+            if (rest == null) rest = new ArrayList<>(receivers.size() - i);
+            rest.add(receiver);
         }
         return rest == null ? List.of() : rest;
     }
@@ -447,9 +498,9 @@ public final class RadioPropagationService {
      * @param key     The link.
      * @param waiting What's waiting for it.
      * @param now     The current tick.
-     * @return The link's path, or {@code null} if it isn't cached, has expired, or wasn't traced far enough.
+     * @return The cached link, or {@code null} if it isn't cached, has expired, or wasn't traced far enough.
      */
-    private @Nullable LinkPath cachedPath(LinkKey key, Waiting waiting, long now) {
+    private @Nullable CachedLink cachedLink(LinkKey key, Waiting waiting, long now) {
         CachedLink cached;
         synchronized (links) {
             cached = links.get(key);
@@ -457,7 +508,7 @@ public final class RadioPropagationService {
         // Links are only traced as far as what's waiting for them needs: a path traced for a weaker transmitter
         // serves a stronger one only if the link was within its budget. Otherwise, it's traced again, further.
         return cached != null && cached.expires() > now && cached.path().serves(waiting.frequency(), waiting.budget())
-            ? cached.path() : null;
+            ? cached : null;
     }
 
     /**
@@ -532,6 +583,12 @@ public final class RadioPropagationService {
      * @return Whether it stopped at the deadline, with links it hadn't looked at yet.
      */
     private boolean process(long deadline) {
+        // Links in use which expire soon are traced again, in the background.
+        Renewal renewal;
+        while ((renewal = renewals.poll()) != null) {
+            refresh(renewal.level(), renewal.key(), renewal.ends(), renewal.budget());
+        }
+
         // Turn transmissions into evaluations, delivering immediately if we've seen this link recently.
         Transmission transmission;
         while ((transmission = incoming.poll()) != null) {
@@ -594,9 +651,13 @@ public final class RadioPropagationService {
      */
     private void request(ServerLevel level, Vec3 from, Vec3 to, Waiting waiting, boolean crossDimension) {
         var key = LinkKey.of(level, from, to);
-        var cached = cachedPath(key, waiting, tick);
+        var cached = cachedLink(key, waiting, tick);
         if (cached != null) {
-            complete(waiting, cached);
+            complete(waiting, cached.path());
+            // As in deliverCached. A link for a packet from another dimension is cached for longer, and isn't renewed.
+            if (waiting instanceof Delivery delivery && cached.dueForRenewal(tick)) {
+                refresh(level, key, new Ends(delivery.packet().sender(), from, delivery.receiver(), to), delivery.budget());
+            }
             return;
         }
 
@@ -770,7 +831,7 @@ public final class RadioPropagationService {
         var cacheTicks = evaluation.crossDimension ? settings.crossCacheTicks() : settings.cacheTicks();
         if (!complete) cacheTicks = Math.min(cacheTicks, 20);
         synchronized (links) {
-            links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
+            links.put(evaluation.key, new CachedLink(path, tick, tick + cacheTicks));
         }
         evaluating.remove(evaluation.key);
         for (var ends : evaluation.ends) {

@@ -343,6 +343,75 @@ class Modem_Test {
     }
 
     /**
+     * A link in use is traced again in the background before its cached path expires, so packets between two radios
+     * which stay put keep going at once, rather than one every few seconds waiting for the server thread.
+     */
+    @GameTest(template = Structures.DEFAULT, timeoutTicks = Timeouts.SECOND * 20)
+    fun Links_in_use_stay_cached(helper: GameTestHelper) = helper.sequence {
+        // In the End's void, where no other test's radios are: a new link to one of those would hold this test's
+        // packets up while it's traced.
+        val end = helper.level.server.getLevel(Level.END) ?: throw IllegalStateException("There's no End")
+        val chunkX = 504 shr 4
+        val chunkZ = 504 shr 4
+
+        class Sender : PacketSender {
+            override fun getLevel(): Level = end
+            override fun getPosition(): Vec3 = Vec3(504.5, 100.5, 504.5)
+            override fun getSenderID(): String = "test"
+            override fun getTransmitPower(): Double = Config.radioTransmitPower
+        }
+
+        class Receiver(private val from: Sender) : PacketReceiver {
+            val heard = CopyOnWriteArrayList<Any?>()
+            override fun getLevel(): Level = end
+            override fun getPosition(): Vec3 = Vec3(506.5, 100.5, 504.5)
+            override fun getRange(): Double = 0.0
+            override fun isInterdimensional(): Boolean = false
+
+            private fun hear(packet: Packet) {
+                if (packet.sender === from) heard.add(packet.payload)
+            }
+
+            override fun receiveSameDimension(packet: Packet, distance: Double) = hear(packet)
+            override fun receiveSameDimension(packet: Packet, distance: Double, signalStrength: Double) = hear(packet)
+            override fun receiveDifferentDimension(packet: Packet) = Unit
+        }
+
+        val network = ComputerCraftAPI.getWirelessNetwork(helper.level.server)
+        val sender = Sender()
+        val receiver = Receiver(sender)
+
+        // Send a packet, and say whether it arrived at once.
+        fun send(message: String): Boolean {
+            val before = receiver.heard.size
+            network.transmitSameDimension(Packet(31337, 31337, message, sender), 64.0)
+            return receiver.heard.size == before + 1
+        }
+
+        thenExecute {
+            // The chunk's terrain is known while it's loaded, so its links are cached for as long as links are.
+            end.setChunkForced(chunkX, chunkZ, true)
+            network.addReceiver(receiver)
+            send("first")
+        }
+        // Once the link has been traced, packets over it go at once.
+        thenWaitUntil { if (!send("probe")) helper.fail("The link hasn't been traced yet") }
+
+        // For longer than a cached path lasts, a packet every few ticks.
+        val late = mutableListOf<Int>()
+        val sends = (minOf(Config.radioCacheTicks, 200) + 40) / 4
+        for (i in 1..sends) {
+            thenIdle(4)
+            thenExecute { if (!send("packet $i")) late.add(i) }
+        }
+        thenExecute {
+            network.removeReceiver(receiver)
+            end.setChunkForced(chunkX, chunkZ, false)
+            assertEquals(listOf<Int>(), late, "Packets which waited for the server thread")
+        }
+    }
+
+    /**
      * Sends a 2.4GHz message between two computers set into a thick stone ceiling, with their modems hanging
      * underneath. The computers are buried, but the modems can see each other, so the message should get through.
      */
