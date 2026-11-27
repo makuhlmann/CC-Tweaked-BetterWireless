@@ -147,6 +147,7 @@ class MissingChunksTest {
         assertTrue(cache.update(missing));
     }
 
+    // A short link, whose samples fall in every chunk it crosses, so the columns near the ends add nothing.
     @Test
     void chunksBetweenTwoPointsAreInOrder() {
         var from = new Vec3(8, 64, 8);

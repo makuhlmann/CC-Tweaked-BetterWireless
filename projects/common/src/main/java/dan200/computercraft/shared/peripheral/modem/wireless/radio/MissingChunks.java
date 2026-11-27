@@ -38,7 +38,8 @@ final class MissingChunks {
      * @param from The position of one end.
      * @param to   The position of the other.
      * @param env  The environment, which says how many samples the profile has.
-     * @return The chunks, in order from {@code from}.
+     * @return The chunks the profile's samples fall in, in order from {@code from}, and then any more near each end
+     * (on a long link, samples are chunks apart, but every column near the ends is looked at).
      */
     static MissingChunks between(Vec3 from, Vec3 to, RadioEnvironment env) {
         var seen = new LongOpenHashSet();
