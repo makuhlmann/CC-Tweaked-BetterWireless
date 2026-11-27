@@ -61,6 +61,13 @@ local MAX_SPECTRUM = #bands.beacon_channels()
 -- System information older (or newer) than this, in milliseconds, isn't believed: it may be a recording.
 local SIB_MAX_AGE = 30 * 1000
 
+--[[- How long a cell may send the same signed system information, in milliseconds, while nothing in it but the time
+would change. Signing costs the cell, and checking the signature costs every phone which hears it, every time: a phone
+needn't check what it checked before (see [`check_sib`]), so a cell signs again only once something changes, or once
+what it signed is this old. Even then, with the longest interval between sending it, it's never near `SIB_MAX_AGE`.
+]]
+local SIB_RESIGN = 10 * 1000
+
 --- How many networks one cell may serve (and name in its system information): several operators may share a cell.
 local MAX_SIB_NETWORKS = 8
 
@@ -422,9 +429,13 @@ seconds; where the cell is, if it says; what it offers phones, if not everything
 name, if it has one (see [`is_site_name`]); and the networks it serves, each with its name, the cell's certificate from its operator, the relays the cell's backhaul to its
 core goes through, nearest first, if it's a relay, and the carriers that network's cells use, by their beacon channels.
 A cell of one network may give that network's `network`, `certificate`, `path` and `carriers` instead.
+@tparam[opt] table last What this gave last time, as its second result: if the system information would say the same
+again, apart from the time, and what was signed then isn't [`SIB_RESIGN`] old, that's given again, as it was, without
+signing anything.
 @treturn table The system information.
+@treturn table What to give this next time, as `last`.
 ]]
-local function make_sib(options)
+local function make_sib(options, last)
     local networks = options.networks or {
         { network = options.network, certificate = options.certificate, path = options.path, carriers = options.carriers },
     }
@@ -436,11 +447,23 @@ local function make_sib(options)
     for i, entry in ipairs(networks) do
         local path = entry.path and #entry.path > 0 and entry.path or nil
         local carriers = entry.carriers and #entry.carriers > 0 and entry.carriers or nil
-        local part = { network = entry.network, path = path, carriers = carriers, cert = entry.certificate }
-        part.sig = options.sign(SIB_PREFIX .. codec.encode(signed_fields(sib, part)))
-        sib.networks[i] = part
+        sib.networks[i] = { network = entry.network, path = path, carriers = carriers, cert = entry.certificate }
     end
-    return sib
+
+    -- Everything that's signed but the time, which is the same while nothing else changes.
+    local time = sib.time
+    sib.time = nil
+    local same = codec.encode(sib)
+    sib.time = time
+    if last and last.same == same and type(time) == "number" and type(last.sib.time) == "number"
+        and time >= last.sib.time and time - last.sib.time < SIB_RESIGN then
+        return last.sib, last
+    end
+
+    for _, part in ipairs(sib.networks) do
+        part.sig = options.sign(SIB_PREFIX .. codec.encode(signed_fields(sib, part)))
+    end
+    return sib, { sib = sib, same = same }
 end
 
 --[[- Read which networks a cell's system information names, without checking any of them: those whose names, paths
@@ -487,7 +510,9 @@ end
     network = string, signing = string, now = number, sender = number, certificates? = table,
 } options The network we want; its operator's Ed25519 key; the time; the ID of the computer which sent it; and
 certificates which checked out before, to check again only once they've expired (a cell sends the same one every
-second, and checking it is one of the two signatures to check).
+second, and checking it is one of the two signatures to check), each with the system information last signed under it
+which checked out: a cell sends that again, as it was, until something in it changes (see [`make_sib`]), and exactly
+the same bytes, signed the same, needn't be checked again. Anything else, even only a later time, is checked.
 @treturn[1] true If it's good.
 @treturn[1] number When the cell's certificate expires: one issued later expires later.
 @treturn[2] nil If it isn't.
@@ -512,6 +537,7 @@ local function check_sib(crypto, sib, entry, options)
     if known and known.expires > options.now then
         signer, expires = known.key, known.expires
     else
+        known = nil
         local cert = certificate.decode(entry.cert)
         if not cert then return nil, "no certificate" end
         local name = cell_name(options.network, options.sender)
@@ -524,13 +550,15 @@ local function check_sib(crypto, sib, entry, options)
             -- Only so many: a phone hears a few dozen cells at most, so this many is someone making them up.
             if certificates.count >= MAX_CERTIFICATES then certificates.checked, certificates.count = {}, 0 end
             if not certificates.checked[cache_key] then certificates.count = certificates.count + 1 end
-            certificates.checked[cache_key] = { key = cert.key, expires = cert.expires }
+            known = { key = cert.key, expires = cert.expires }
+            certificates.checked[cache_key] = known
         end
     end
 
-    if not crypto.verify(signer, SIB_PREFIX .. codec.encode(signed_fields(sib, entry)), entry.sig) then
-        return nil, "bad signature"
-    end
+    local signed = SIB_PREFIX .. codec.encode(signed_fields(sib, entry))
+    if known and known.sig == entry.sig and known.signed == signed then return true, expires end
+    if not crypto.verify(signer, signed, entry.sig) then return nil, "bad signature" end
+    if known then known.sig, known.signed = entry.sig, signed end
     return true, expires
 end
 
@@ -713,6 +741,7 @@ return {
     make_code = make_code,
     parse_code = parse_code,
     activation_key = activation_key,
+    SIB_RESIGN = SIB_RESIGN,
     make_sib = make_sib,
     sib_networks = sib_networks,
     check_sib = check_sib,

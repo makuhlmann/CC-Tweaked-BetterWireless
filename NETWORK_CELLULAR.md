@@ -344,6 +344,15 @@ the design above:
   information and when they're told to use or activate on a network, so a cell can't name a network which only looks
   like another (it names that network, and isn't signed for it). Older phones don't take a name with spaces or
   punctuation for a network's, so they say the network is newer than they are.
+- **Signing and checking system information less often:** a phone used to check every cell's signature each time it
+  heard it, which on a busy server was most of what computers spent on cryptography. A cell now sends the same signed
+  system information, byte for byte, until something in it other than the time changes (its load, a certificate, a
+  path, carriers, its settings) or what it signed is 10 seconds old (`SIB_RESIGN`). A phone keeps, with each
+  certificate that checked out, the last system information which checked out under it, and skips the signature check
+  only for exactly the same bytes with exactly the same signature. Anything else, even only a later time or another
+  load, is checked as before, so this lets no one say anything a cell didn't sign. A recording is still believed for 30
+  seconds after it was signed, as before; and since a cell's last system information before it stops may now be up
+  to 10 seconds old, a recording of it is believed for up to 10 seconds less than before.
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both

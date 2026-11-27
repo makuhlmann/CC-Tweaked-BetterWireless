@@ -7,9 +7,10 @@
 > [!DANGER]
 > This is an internal module and SHOULD NOT be used in your own code. Use the `celld` program instead.
 
-A cell broadcasts signed system information every few seconds, relays phones' attach handshakes to the core, and
-carries their packets: sealed with the key it shares with each phone over the radio, and sealed tunnels to the gateway
-behind it. When a phone reports a stronger cell, it asks the core to hand the phone over.
+A cell broadcasts signed system information every few seconds (the same signed bytes each time, until something in it
+changes or they're ten seconds old, so phones needn't check them again), relays phones' attach handshakes to the core,
+and carries their packets: sealed with the key it shares with each phone over the radio, and sealed tunnels to the
+gateway behind it. When a phone reports a stronger cell, it asks the core to hand the phone over.
 
 A cell is on a carrier: 5MHz of a cellular band, paired downlink and uplink (see `cc.internal.net.bands`). It sends
 its system information on the carrier's beacon channel, and listens on an uplink channel of its own, which phones
@@ -293,10 +294,14 @@ function Tower:beacon()
     if not networks[1] then return end
     local load = 0
     for _ in pairs(self.phones) do load = load + 1 end
-    self.stack:send_frame(self.interface, -1, common.FRAME, common.make_sib {
+    -- The same as last time, apart from the time, is sent again as it was, unless it was signed a while ago: phones
+    -- needn't check what they've checked before.
+    local sib
+    sib, self.last_sib = common.make_sib({
         cell = self.id, area = self.area, load = math.min(1, load / 32), time = self.epoch(), networks = networks,
         ul = self.ul, interval = self.interval, pos = self.pos, service = self.service, name = self.name, sign = self.sign,
-    })
+    }, self.last_sib)
+    self.stack:send_frame(self.interface, -1, common.FRAME, sib)
 end
 
 -- The carriers to name for a network: its own, as its core said, and those this computer's other cells serve it on, if

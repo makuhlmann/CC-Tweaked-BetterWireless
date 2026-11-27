@@ -120,12 +120,77 @@ describe("Cellular networks", function()
         expect(verified):eq(2)
         expect(check(sib(now + 1000), now + 1000)):eq(true)
         expect(verified):eq(3)
+        -- The same again, as a cell sends it until something in it changes: nothing more to check.
+        expect(check(sib(now + 1000), now + 1500)):eq(true)
+        expect(verified):eq(3)
         -- A signature which doesn't match still doesn't.
         local forged = sib(now + 2000)
         forged.load = 1
         expect({ check(forged, now + 2000) }):same { nil, "bad signature" }
+        expect(verified):eq(4)
+        -- Nor does the signature of the one checked before, with only the time changed.
+        forged = sib(now + 1000)
+        forged.time = now + 2500
+        expect({ check(forged, now + 2500) }):same { nil, "bad signature" }
+        expect(verified):eq(5)
+        -- And the one which checked out still needn't be checked again.
+        expect(check(sib(now + 1000), now + 3000)):eq(true)
+        expect(verified):eq(5)
         -- Once the certificate has expired, it's checked again, and refused.
         expect({ check(sib(now + 61000), now + 61000) }):same { nil, "certificate has expired" }
+    end)
+
+    it("signs system information again only once more than the time changes, or it's old", function()
+        local signed = 0
+        local base = {
+            network = "ACME", cell = 5, area = 1, load = 0, time = 1.7e12, certificate = "c", ul = 8320, interval = 1,
+            path = { 7 }, carriers = { 8300 },
+            sign = function()
+                signed = signed + 1
+                return ("s"):rep(63) .. string.char(signed)
+            end,
+        }
+        local function make(changes, last)
+            local options = {}
+            for key, value in pairs(base) do options[key] = value end
+            for key, value in pairs(changes) do options[key] = value end
+            return common.make_sib(options, last)
+        end
+
+        local first, last = make {}
+        expect(signed):eq(1)
+        -- A moment later, with nothing but the time changed, the same table again, still with the time it was signed.
+        local again, still = make({ time = base.time + 1000 }, last)
+        expect(again):eq(first)
+        expect(still):eq(last)
+        expect(again.time):eq(base.time)
+        expect(signed):eq(1)
+        expect(make({ time = base.time + common.SIB_RESIGN - 1 }, last)):eq(first)
+        expect(signed):eq(1)
+
+        -- Anything else changed is signed afresh.
+        for _, change in ipairs {
+            { load = 1 / 32 }, { area = 2 }, { ul = 8321 }, { interval = 2 }, { pos = { 1, 2, 3 } }, { service = "sms" },
+            { name = "HILL" }, { certificate = "d" }, { path = { 8 } }, { path = {} }, { carriers = { 8350 } },
+            { network = "BETA" }, { cell = 6 },
+        } do
+            change.time = base.time + 2000
+            local before = signed
+            local changed = make(change, last)
+            expect(changed == first):describe(textutils.serialise(change)):eq(false)
+            expect(changed.time):eq(base.time + 2000)
+            expect(signed):describe(textutils.serialise(change)):eq(before + 1)
+        end
+
+        -- And so is the same, once it was signed ten seconds ago, or if the clock went back.
+        local before = signed
+        local renewed, next_last = make({ time = base.time + common.SIB_RESIGN }, last)
+        expect(renewed == first):eq(false)
+        expect(renewed.time):eq(base.time + common.SIB_RESIGN)
+        expect(signed):eq(before + 1)
+        expect(make({ time = base.time + common.SIB_RESIGN + 500 }, next_last)):eq(renewed)
+        expect(make({ time = base.time - 1 }, last) == first):eq(false)
+        expect(signed):eq(before + 2)
     end)
 
     it("ignores cells without a certificate from the operator", function()
