@@ -8,6 +8,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import dan200.computercraft.shared.util.BackgroundFileWriter;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
@@ -34,6 +35,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Keeps computers running when nobody is nearby, for computers which asked to with {@code os.setKeepLoaded}.
@@ -52,6 +54,9 @@ import java.util.*;
  * server starts. The computers then turn themselves back on as their chunks load. The file is written at most once a
  * second (a moving turtle changes it with every move), and when the server stops. If the server crashes, a turtle may
  * have moved since, and its chunk is then not loaded again.
+ * <p>
+ * The file is written on a thread of its own (see {@link BackgroundFileWriter}), as a disk which stalls would otherwise
+ * stop the server, and could get it crashed by the watchdog.
  */
 public final class ComputerChunkLoader {
     private static final Logger LOG = LoggerFactory.getLogger(ComputerChunkLoader.class);
@@ -89,6 +94,9 @@ public final class ComputerChunkLoader {
      */
     public static final int MOVING_RADIUS = 2;
 
+    /** How long to wait for the file to be written when the server stops, in seconds. */
+    private static final int CLOSE_TIMEOUT = 30;
+
     /**
      * The chunk ticket. This is never saved with the world (see above), so doesn't need to be registered.
      */
@@ -98,6 +106,7 @@ public final class ComputerChunkLoader {
 
     private final Path file;
     private final Path newFile;
+    private final BackgroundFileWriter<Map<String, List<int[]>>> writer;
 
     /** For each dimension, the position of each computer we keep loaded. */
     private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<Kept>> computers = new HashMap<>();
@@ -108,6 +117,7 @@ public final class ComputerChunkLoader {
     ComputerChunkLoader(Path file) {
         this.file = file;
         newFile = file.resolveSibling(file.getFileName() + ".new");
+        writer = new BackgroundFileWriter<>(file, this::write);
     }
 
     /**
@@ -226,7 +236,7 @@ public final class ComputerChunkLoader {
             }
         }
         computers.clear();
-        write();
+        save();
     }
 
     /**
@@ -274,15 +284,37 @@ public final class ComputerChunkLoader {
         for (var positions : computers.values()) {
             if (positions.values().removeIf(kept -> kept.expires < now)) dirty = true;
         }
-        save();
+        if (dirty) save();
     }
 
     /**
-     * Save the computers we keep loaded, if they changed since we last saved them. This is called when the server
-     * stops, as well as every so often while it runs.
+     * Save the computers we keep loaded, if they changed since we last saved them, and wait for them to be written. This
+     * is called when the server stops, and nothing is saved after it.
      */
-    public void save() {
-        if (dirty) write();
+    public void close() {
+        if (dirty) save();
+        writer.close(CLOSE_TIMEOUT, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Save the computers we keep loaded. This only takes a copy of them: the file is written on another thread.
+     */
+    private void save() {
+        dirty = false;
+
+        var result = new TreeMap<String, List<int[]>>();
+        for (var entry : computers.entrySet()) {
+            if (entry.getValue().isEmpty()) continue;
+
+            var positions = new ArrayList<int[]>(entry.getValue().size());
+            for (var key : entry.getValue().keySet()) {
+                var pos = BlockPos.of(key);
+                positions.add(new int[]{ pos.getX(), pos.getY(), pos.getZ() });
+            }
+            result.put(entry.getKey().identifier().toString(), positions);
+        }
+
+        writer.write(result);
     }
 
     private Long2ObjectOpenHashMap<Kept> computers(ResourceKey<Level> dimension) {
@@ -339,29 +371,21 @@ public final class ComputerChunkLoader {
         }
     }
 
-    private void write() {
-        dirty = false;
-
-        var result = new TreeMap<String, List<int[]>>();
-        for (var entry : computers.entrySet()) {
-            if (entry.getValue().isEmpty()) continue;
-
-            var positions = new ArrayList<int[]>(entry.getValue().size());
-            for (var key : entry.getValue().keySet()) {
-                var pos = BlockPos.of(key);
-                positions.add(new int[]{ pos.getX(), pos.getY(), pos.getZ() });
-            }
-            result.put(entry.getKey().identifier().toString(), positions);
-        }
-
+    /**
+     * Write the computers we keep loaded to the file. This is called on the {@linkplain #writer writer's} own thread.
+     *
+     * @param result The position of each computer we keep loaded, by dimension.
+     * @return Whether the file was written.
+     */
+    private boolean write(Map<String, List<int[]>> result) {
         // As with IDAssigner, write to a temporary file and then move it over the original, so we're less likely to
         // corrupt it if the game is stopped.
         try {
             Files.createDirectories(Objects.requireNonNull(file.getParent()));
             try (var channel = FileChannel.open(newFile, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-                Writer writer = new BufferedWriter(Channels.newWriter(channel, StandardCharsets.UTF_8));
-                GSON.toJson(result, FILE_TYPE, writer);
-                writer.flush();
+                Writer output = new BufferedWriter(Channels.newWriter(channel, StandardCharsets.UTF_8));
+                GSON.toJson(result, FILE_TYPE, output);
+                output.flush();
                 channel.force(false);
             }
 
@@ -370,8 +394,10 @@ public final class ComputerChunkLoader {
             } catch (AtomicMoveNotSupportedException | UnsupportedOperationException e) {
                 Files.move(newFile, file, StandardCopyOption.REPLACE_EXISTING);
             }
+            return true;
         } catch (IOException e) {
             LOG.error("Cannot save '{}'", file, e);
+            return false;
         }
     }
 }

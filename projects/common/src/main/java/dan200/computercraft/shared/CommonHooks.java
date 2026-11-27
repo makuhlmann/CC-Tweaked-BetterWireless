@@ -87,9 +87,10 @@ public final class CommonHooks {
         // Save wired networks while every chunk is still loaded.
         UnloadedWiring.onServerStopping(server);
 
-        // Save where the computers we keep loaded are, as they're only saved every so often.
+        // Save where the computers we keep loaded are, as they're only saved every so often, and wait for it to be
+        // written, as it's written on a thread of its own.
         var context = ServerContext.getIfRunning(server);
-        if (context != null) context.chunkLoader().save();
+        if (context != null) context.chunkLoader().close();
     }
 
     public static void onServerStopped() {
