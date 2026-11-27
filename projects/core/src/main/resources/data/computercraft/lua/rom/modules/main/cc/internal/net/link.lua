@@ -17,6 +17,10 @@ restarts. Every computer on a server shares that clock, so frames more than a mi
 receiver only needs to remember which recent frames it has seen to refuse replays. A receiver which has just started
 remembers nothing, so it refuses every frame sent before it started.
 
+A computer's interfaces may share a passphrase, and so a key. The nonce only has the computer's ID in it, not the
+interface's, so all of a computer's links count with one counter: two frames sealed in the same millisecond on
+different interfaces must still have different counters.
+
 There's no forward secrecy: anyone who learns the passphrase can read everything sent with it, past and future. Use
 secure connections for anything sensitive.
 
@@ -31,8 +35,9 @@ local ITERATIONS = 4096
 -- Counters per millisecond, and how far from now (in milliseconds) a frame's counter may be.
 local PER_MS = 1024
 local MAX_AGE = 60 * 1000
--- How far behind the newest frame from a computer (in milliseconds) a frame may arrive, out of order.
-local REORDER = 2 * 1000
+-- How far behind the newest frame from a computer (in milliseconds) a frame may arrive, out of order. A radio link can
+-- hold a frame back for about two seconds while terrain is looked up, so this leaves some room.
+local REORDER = 5 * 1000
 local MAX_PEERS = 512
 
 --[[- Turn a passphrase into a link key.
@@ -50,11 +55,13 @@ end
 @tparam table|nil crypto The `crypto` API, or `nil` if there isn't one, in which case nothing can be sent or received.
 @tparam string|nil key The key from [`derive`].
 @tparam function():number epoch The time, in milliseconds, as `os.epoch("utc")` gives.
+@tparam[opt] { value = number } counter The counter, shared by every link of this computer (see above). A link which
+isn't given one counts on its own.
 @treturn table The link.
 ]]
-local function new(crypto, key, epoch)
+local function new(crypto, key, epoch, counter)
     return {
-        crypto = crypto, key = key, epoch = epoch, counter = 0, peers = {}, peer_count = 0,
+        crypto = crypto, key = key, epoch = epoch, counter = counter or { value = 0 }, peers = {}, peer_count = 0,
         started = math.floor(epoch() * PER_MS),
     }
 end
@@ -82,8 +89,8 @@ local function seal(link, src, dst, kind, body, forwarded)
     local ok, plaintext = pcall(codec.encode, { type = kind, body = body, fwd = forwarded or nil })
     if not ok then return nil end
 
-    local counter = math.max(link.counter + 1, math.floor(link.epoch() * PER_MS))
-    link.counter = counter
+    local counter = math.max(link.counter.value + 1, math.floor(link.epoch() * PER_MS))
+    link.counter.value = counter
     return { counter = counter, data = link.crypto.seal(link.key, nonce(src, counter), plaintext, aad(src, dst, counter)) }
 end
 

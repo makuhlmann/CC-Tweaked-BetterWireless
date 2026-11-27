@@ -244,7 +244,7 @@ function Tower:add_network(network, options)
         tower = self, network = network, certificate = options.certificate, core = options.core,
         control_send = options.control, path = {}, by_teid = {},
         carriers = common.is_carriers(options.carriers) and options.carriers or { self.carrier },
-        tunnel = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
+        tunnel = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK, self.epoch),
     }, Link)
     self.links[network] = link
     return link
@@ -339,9 +339,11 @@ function Tower:radio(phone, message)
         if not link then return end
         if op == "attach" then self:ask(phone, link) end
         -- A phone attaching (again) only listens on the beacon channel, not on the channel it had here before. (Anyone
-        -- can send this for the phone, which only costs it its own channel until it next says it's there.)
+        -- can send this for the phone, which only costs it its own channel until it next says it's there.) A frame it
+        -- sent before attaching may still arrive after this, held back on the way, saying it listens there: only
+        -- believe frames sealed from now on.
         local context = self.phones[phone]
-        if context then context.dl_heard = false end
+        if context then context.dl_heard, context.dl_since = false, common.counter_now(self.epoch) end
         link.control_send({
             op = op, phone = phone, handshake = message.handshake, tag = op == "activate" and message.tag or nil,
             network = message.network ~= link.network and message.network or nil,
@@ -357,12 +359,15 @@ function Tower:radio(phone, message)
         -- A phone we've forgotten (we restarted, or the core did) would wait a long time for an answer. Tell it, so
         -- it can check, and attach again. Anyone can send such a frame, so not too often.
         if not context then return self:say_unknown(phone) end
-        local value = context.active and context.sealer:open(message.sealed)
+        local value, sealed_at
+        if context.active then value, sealed_at = context.sealer:open(message.sealed) end
         if type(value) ~= "table" then return end
         local link = context.link
         -- The phone says it's listening on its own downlink channel: send it its frames there from now on. (Its
         -- packets, messages and pings say so too, once it has heard of the channel.)
-        if value.dl ~= nil and value.dl == context.dl then context.dl_heard = true end
+        if value.dl ~= nil and value.dl == context.dl and sealed_at > (context.dl_since or 0) then
+            context.dl_heard = true
+        end
         if type(value.p) == "string" then
             -- A cell which only carries messages carries no packets: its phones have no route for them anyway.
             if self.service == "sms" then return end
@@ -476,7 +481,7 @@ function Tower:control(message, link)
         if old then forget(self, old) end
         local context = {
             phone = message.phone, teid = message.teid, link = link, active = not message.handover,
-            sealer = common.new_sealer(self.crypto, message.key, common.DOWNLINK, common.UPLINK),
+            sealer = common.new_sealer(self.crypto, message.key, common.DOWNLINK, common.UPLINK, self.epoch),
         }
         self.phones[message.phone] = context
         link.by_teid[message.teid] = context

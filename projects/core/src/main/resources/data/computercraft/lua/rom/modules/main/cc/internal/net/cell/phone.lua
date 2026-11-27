@@ -859,7 +859,8 @@ end
 
 function from_cell.attaching.accept(self, here, message)
     if not here.secret then return end
-    local sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, here.cell), common.UPLINK, common.DOWNLINK)
+    local key = common.cell_key(self.crypto, here.secret, here.cell)
+    local sealer = common.new_sealer(self.crypto, key, common.UPLINK, common.DOWNLINK, self.epoch)
     local value = sealer:open(message.sealed)
     if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
         or value.address < 1 or value.address >= 0xFFFFFFFF then
@@ -939,7 +940,8 @@ function from_cell.attached.handover(self, here, message, signal)
     self:update_listening()
     -- Off a cell which only carries messages, we have a route for packets again at once.
     self:update_route()
-    here.sealer = common.new_sealer(self.crypto, common.cell_key(self.crypto, here.secret, target), common.UPLINK, common.DOWNLINK)
+    local key = common.cell_key(self.crypto, here.secret, target)
+    here.sealer = common.new_sealer(self.crypto, key, common.UPLINK, common.DOWNLINK, self.epoch)
     -- The new cell may not hear us the first time, so we say so until it answers.
     self:heard_from_cell(here)
     here.confirming = { tries = 0, last = self.stack.clock() }

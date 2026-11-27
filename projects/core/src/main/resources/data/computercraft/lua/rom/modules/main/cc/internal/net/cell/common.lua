@@ -100,10 +100,14 @@ end
 
 local SIB_PREFIX = "cc-net cell sib 1\0"
 local CELL_KEY_PREFIX = "cc-net cell key 1\0"
-local TUNNEL_KEY_PREFIX = "cc-net tunnel key 1\0"
 
--- How many sealed messages arriving out of order are accepted: the counters within this many of the newest.
-local REPLAY_WINDOW = 64
+-- Sealed messages' counters come from real time: this many per millisecond.
+local PER_MS = 1024
+-- How far from now (in milliseconds) a sealed message's counter may be.
+local MAX_AGE = 60 * 1000
+-- How far behind the newest sealed message (in milliseconds) one may arrive, out of order. A radio link can hold a
+-- message back for about two seconds while terrain is looked up, so this leaves some room.
+local REORDER = 5 * 1000
 
 --- Whether a value is an ID: of a computer, a tunnel or a message. They're whole numbers, and are used as tables' keys,
 -- which NaN can't be.
@@ -621,18 +625,14 @@ local function activation_key(crypto, secret)
     return crypto.sha256("cc-net cell activation 1\0" .. secret)
 end
 
---- The key a cell's tunnels to the gateway are sealed with.
---
--- @tparam table crypto The `crypto` API.
--- @tparam string secret A secret the core keeps.
--- @tparam number cell The cell's ID.
--- @treturn string The key.
-local function tunnel_key(crypto, secret, cell)
-    return crypto.hmac(secret, TUNNEL_KEY_PREFIX .. tostring(cell))
-end
+--[[- Seals and opens messages with a shared key, counting them, and refusing replays. Each direction uses its own
+numbers in the nonce, so the same key can be used both ways.
 
---- Seals and opens messages with a shared key, counting them, and refusing replays. Each direction uses its own
--- numbers in the nonce, so the same key can be used both ways.
+The same key may be used again later: a phone which moves from one cell to another and back shares the same key with
+the first cell both times. So counters come from real time, as `cc.internal.net.link`'s do, rather than starting again
+from one, which would seal different messages with the same nonce. Every computer on a server shares that clock, so a
+sealer also refuses messages sealed well before it was made, which can't be from the other end as it is now.
+]]
 local Sealer = {}
 Sealer.__index = Sealer
 
@@ -642,12 +642,16 @@ Sealer.__index = Sealer
 @tparam string key The key.
 @tparam number out_direction The number for messages we send (such as 1 for uplink).
 @tparam number in_direction The number for messages we receive.
+@tparam function():number epoch The time, in milliseconds, as `os.epoch("utc")` gives.
 @treturn table The sealer.
 ]]
-local function new_sealer(crypto, key, out_direction, in_direction)
+local function new_sealer(crypto, key, out_direction, in_direction, epoch)
     return setmetatable({
-        crypto = crypto, key = key, out_direction = out_direction, in_direction = in_direction,
-        counter = 0, top = -1, seen = {},
+        crypto = crypto, key = key, out_direction = out_direction, in_direction = in_direction, epoch = epoch,
+        counter = 0, top = -1, seen = {}, count = 0,
+        -- The other end may have sealed a message a moment before we were made, and it may have been held back on the
+        -- way. Anything older is from before, and could only be a replay.
+        floor = math.floor(epoch() * PER_MS) - REORDER * PER_MS,
     }, Sealer)
 end
 
@@ -662,37 +666,50 @@ end
 function Sealer:seal(value)
     local ok, plaintext = pcall(codec.encode, value)
     if not ok then return nil end
-    self.counter = self.counter + 1
-    return { ctr = self.counter, ct = self.crypto.seal(self.key, nonce(self.out_direction, self.counter), plaintext) }
+    local counter = math.max(self.counter + 1, math.floor(self.epoch() * PER_MS))
+    self.counter = counter
+    return { ctr = counter, ct = self.crypto.seal(self.key, nonce(self.out_direction, counter), plaintext) }
 end
 
 --- Open a sealed message, unless it was changed, isn't for us, or was seen before.
 --
 -- @param sealed The sealed message, which may be anything.
 -- @return The value, or `nil` if it can't be opened.
+-- @treturn number When it was sealed, as its counter: counters only grow with time, so this says which of two messages
+-- was sealed first.
 function Sealer:open(sealed)
     if type(sealed) ~= "table" or type(sealed.ct) ~= "string" then return nil end
     local counter = sealed.ctr
     if type(counter) ~= "number" or counter % 1 ~= 0 or counter < 1 or counter > 2 ^ 53 then return nil end
-    if counter <= self.top - REPLAY_WINDOW or self.seen[counter] then return nil end
+    if math.abs(counter - self.epoch() * PER_MS) > MAX_AGE * PER_MS or counter < self.floor then return nil end
+    if counter <= self.top - REORDER * PER_MS or self.seen[counter] then return nil end
 
     local plaintext = self.crypto.open(self.key, nonce(self.in_direction, counter), sealed.ct)
     if not plaintext then return nil end
     local value = codec.decode(plaintext)
     if value == nil then return nil end
 
-    self.seen[counter] = true
-    if counter > self.top then
-        self.top = counter
-        self.seen[counter - REPLAY_WINDOW] = nil
-        -- Forget anything too old to matter, now and then.
-        if counter % REPLAY_WINDOW == 0 then
-            for seen in pairs(self.seen) do
-                if seen <= counter - REPLAY_WINDOW then self.seen[seen] = nil end
-            end
+    self.seen[counter], self.count = true, self.count + 1
+    if counter > self.top then self.top = counter end
+    -- Now and then, forget messages too old to be accepted anyway. A busy sender may have many which are still recent:
+    -- then wait for twice as many before looking again, rather than looking at them all for every message.
+    if self.count > (self.limit or 256) then
+        local floor, count = self.top - REORDER * PER_MS, 0
+        for seen in pairs(self.seen) do
+            if seen <= floor then self.seen[seen] = nil else count = count + 1 end
         end
+        self.count, self.limit = count, math.max(256, count * 2)
     end
-    return value
+    return value, counter
+end
+
+--- The counter a message sealed now would have, or one sealed before it. This is compared with what a sealer's `open`
+-- returns, to tell whether a message was sealed before something happened.
+--
+-- @tparam function():number epoch The time, in milliseconds, as `os.epoch("utc")` gives.
+-- @treturn number The counter.
+local function counter_now(epoch)
+    return math.floor(epoch() * PER_MS)
 end
 
 return {
@@ -747,6 +764,6 @@ return {
     check_sib = check_sib,
     new_certificates = new_certificates,
     cell_key = cell_key,
-    tunnel_key = tunnel_key,
+    counter_now = counter_now,
     new_sealer = new_sealer,
 }

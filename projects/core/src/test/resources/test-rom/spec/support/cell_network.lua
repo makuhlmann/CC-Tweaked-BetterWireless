@@ -223,7 +223,7 @@ local function operator(cell_positions, options)
     local operator_key = x25519()
     local signing_private, signing_public = crypto.generateKeyPair("ed25519")
     local now = function() return 1.7e12 + net.time * 1000 end
-    local identity, secret = new_key(), crypto.random(32)
+    local identity = new_key()
     made = made + 1
     local dir = fs.combine(DIR, made .. "-" .. name)
 
@@ -314,7 +314,7 @@ local function operator(cell_positions, options)
                 return cell_core.new {
                     stack = core_stack, crypto = crypto, network = core_options.network, prefix = core_options.prefix,
                     operator = operator_key, signing = signing_public, subscribers = core_options.subscribers,
-                    codes = core_options.codes, secret = secret, epoch = now, number_prefix = core_options.number_prefix,
+                    codes = core_options.codes, epoch = now, number_prefix = core_options.number_prefix,
                     former = core_options.former, dns = core_options.dns, domain = core_options.domain,
                     on_event = function(...)
                         events[#events + 1] = { ... }

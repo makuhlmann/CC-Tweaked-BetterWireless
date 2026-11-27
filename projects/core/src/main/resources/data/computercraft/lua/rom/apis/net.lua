@@ -1224,7 +1224,9 @@ tcp = {
         local ok, result = pcall(function()
             while connection.state == "syn_sent" do
                 local event, arg = os.pullEvent()
-                if event == "timer" and arg == timer then return "Timed out" end
+                -- The network runs after us for each event, so the answer which opened the connection may have come
+                -- in with the event before this one. Only give up on a connection which is still opening.
+                if event == "timer" and arg == timer and connection.state == "syn_sent" then return "Timed out" end
             end
         end)
         os.cancelTimer(timer)
@@ -2020,8 +2022,8 @@ cell = {
     first, with `cellcore setup`. The `cellcore` program manages it while it runs, over the control port. This is for
     the `cellcore` program.
 
-    The operator's keys live in the enclave: `cell.operator` (X25519), `cell.signing` (Ed25519) and `cell.secret`. This
-    computer forwards packets, as phones' packets go through it.
+    The operator's keys live in the enclave: `cell.operator` (X25519) and `cell.signing` (Ed25519). This computer
+    forwards packets, as phones' packets go through it.
 
     @treturn[1] true If it started, or was running already.
     @treturn[2] nil If it couldn't start.

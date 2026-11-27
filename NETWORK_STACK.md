@@ -778,9 +778,12 @@ Secure connections offer the same methods as plain ones, so programs switch by c
   address, so even the first announcement is. Frames which aren't sealed with the key are dropped, as are sealed frames
   on an interface without one.
   - **Counters come from real time:** `os.epoch("utc")` in milliseconds, times 1024. They keep growing across
-    restarts, so a nonce is never reused. Every computer on a server shares that clock, so frames more than a minute
-    from now are refused. Receivers only remember each sender's recent frames (the last two seconds' worth, so frames
-    can arrive a little out of order) to refuse replays. A sender forgotten for lack of room can't have its old frames
+    restarts, so a nonce is never reused. A computer's interfaces count with one counter between them, as the nonce
+    has the computer's ID in it, not the interface's: two interfaces sharing a passphrase would otherwise seal
+    different frames in the same millisecond with the same nonce. Every computer on a server shares that clock, so
+    frames more than a minute from now are refused. Receivers only remember each sender's recent frames (the last five
+    seconds' worth, so frames can arrive out of order, as a radio holds one back for up to about two seconds) to
+    refuse replays. A sender forgotten for lack of room can't have its old frames
     replayed, as they're too old by then. A receiver which has just started (or been given the passphrase) remembers
     nothing, so it refuses every frame from before then.
   - **Failing closed:** an interface with a passphrase but no crypto API sends and accepts nothing, rather than sending

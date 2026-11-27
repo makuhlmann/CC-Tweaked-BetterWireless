@@ -354,6 +354,41 @@ describe("cc.internal.net.tcp", function()
         expect(server.error):eq("Connection reset")
     end)
 
+    it("resets a connection given up on as it opened, even if the reset overtakes the open", function()
+        local net, a, b = pair()
+        local listener = assert(tcp.listen(b, 80))
+        net.latency.top = 0.1
+        local client = tcp.connect(a, ip("10.0.0.2"), 80)
+        -- The client hears the server's answer and acknowledges it (which takes 0.1 seconds to arrive), then gives up.
+        for _ = 1, 40 do
+            if client.state == "established" then break end
+            net.advance(0.05)
+        end
+        expect(client.state):eq("established")
+        local _, server = next(b.tcp.connections)
+        expect(server.state):eq("syn_received")
+        client:abort()
+
+        -- The acknowledgement is held back on the way, and the reset arrives first. (Not for as long as it takes the
+        -- server to send its answer again: the client would answer that with a reset the server believes anyway.)
+        local held = false
+        for i, item in ipairs(net.queue) do
+            local segment = item.frame.body and item.frame.body.body
+            if item.sender == a and type(segment) == "table" and segment.flags == "A" then
+                held = true
+                table.remove(net.queue, i)
+                item.at = item.at + 0.3
+                table.insert(net.queue, item)
+                break
+            end
+        end
+        expect(held):eq(true)
+        net.advance(2)
+        expect(server.state):eq("closed")
+        expect(next(b.tcp.connections)):eq(nil)
+        listener:close()
+    end)
+
     it("clears a half open connection whose other side gave up", function()
         local net, a, b = pair()
         local listener = assert(tcp.listen(b, 80))

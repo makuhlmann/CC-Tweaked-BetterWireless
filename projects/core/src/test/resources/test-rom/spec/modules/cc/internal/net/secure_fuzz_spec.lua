@@ -691,9 +691,11 @@ describe("The security layer, given bad messages,", function()
                 net.inject("top", target.interfaces.top.broadcast, seal(inside, 2, -1, "nd", { op = "who", addr = ip("10.0.0.99") }))
                 net.advance(0.01)
             end
+            -- Those which may still arrive out of order: five seconds' worth (500 here), and up to as many again before
+            -- they're forgotten.
             local seen = 0
             for _ in pairs(state.peers[2].seen) do seen = seen + 1 end
-            expect(seen <= 600):eq(true)
+            expect(seen <= 1100):eq(true)
             check_working(net, target, peer)
         end)
 

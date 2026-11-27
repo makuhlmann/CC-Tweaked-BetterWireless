@@ -140,7 +140,7 @@ describe("Cellular services", function()
                 return cell_core.new {
                     stack = stack, crypto = crypto, network = options.network, prefix = options.prefix, operator = operator,
                     signing = signing_public, subscribers = options.subscribers, codes = options.codes,
-                    secret = crypto.random(32), epoch = now, on_event = options.on_event, number_prefix = options.number_prefix,
+                    epoch = now, on_event = options.on_event, number_prefix = options.number_prefix,
                     former = options.former, dns = options.dns, domain = options.domain,
                 }
             end,

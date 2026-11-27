@@ -320,7 +320,6 @@ end
 local function new_core(options)
     local public = enclave.publicKey("cell.operator") or enclave.generate("cell.operator", "x25519")
     local signing = enclave.publicKey("cell.signing") or enclave.generate("cell.signing", "ed25519")
-    if not enclave.list()["cell.secret"] then enclave.generate("cell.secret", "secret") end
     -- Phones' packets go through this computer. Keep the setting on too, or reloading the network settings (such as
     -- with the route program) would turn forwarding off again.
     if not settings.get("net.forwarding") then
@@ -333,7 +332,6 @@ local function new_core(options)
         operator = { public = public, exchange = function(peer) return enclave.exchange("cell.operator", peer) end },
         signing = signing, subscribers = options.subscribers, codes = options.codes, number_prefix = options.number_prefix,
         dns = options.dns, domain = options.domain,
-        tunnel_key = function(cell) return enclave.hmac("cell.secret", "tunnel key " .. cell) end,
         epoch = function() return os.epoch("utc") end, on_event = options.on_event,
     }
 end

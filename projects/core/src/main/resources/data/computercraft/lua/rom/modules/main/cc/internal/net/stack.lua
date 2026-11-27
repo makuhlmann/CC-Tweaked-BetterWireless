@@ -146,6 +146,9 @@ local function new(options)
         clock = options.clock,
         crypto = options.crypto,
         epoch = options.epoch or function() return options.clock() * 1000 end,
+        -- The counter every encrypted link seals with: a nonce has our ID in it, not the interface's, so two links
+        -- sharing a key must never use the same counter (see `cc.internal.net.link`).
+        link_counter = { value = 0 },
         _transmit = options.transmit,
         _open = options.open,
         _close = options.close,
@@ -514,7 +517,7 @@ function Stack:set_link_key(name, key)
     if key == nil then
         interface.link = nil
     else
-        interface.link = link.new(key and self.crypto, key or nil, self.epoch)
+        interface.link = link.new(key and self.crypto, key or nil, self.epoch, self.link_counter)
     end
 end
 

@@ -122,9 +122,12 @@ From then on, frames between the phone and its cell carry encrypted packets:
 { op = "data", ctr = 812, ct = crypto.seal(cellKey, nonce(direction, ctr), net.codec.encode(packet)) }
 ```
 
-The receiver keeps a 64-entry replay window, as for secure datagrams (NETWORK_STACK.md §9), rather than requiring
-counters to increase: radio frames can arrive out of order, for example when a phone moves while a link is being
-evaluated.
+Counters come from real time, as encrypted links' do (NETWORK_STACK.md): `os.epoch("utc")` in milliseconds, times 1024.
+A phone which moves from one cell to another and back shares the same key with the first cell both times, so counters
+which started again from one would seal different frames with the same nonce. The receiver remembers the last five
+seconds' frames, rather than requiring counters to increase: radio frames can arrive out of order, for example when a
+phone moves while a link is being evaluated. It refuses frames sealed more than five seconds before it was made, which
+are from an earlier stay, and frames more than a minute from now.
 
 ## Getting packets to a moving phone
 
@@ -356,11 +359,14 @@ the design above:
 - **`cell` frames aren't sealed** on interfaces with a passphrase: they protect themselves. System information is
   signed, handshakes are Noise, and everything else is sealed with the key a phone shares with its cell.
 - **Cell keys** are an HMAC of the attach handshake's chaining key and the cell's ID, which the phone and the core both
-  know. Messages between a phone and its cell carry a counter, and the receiver keeps a 64-message replay window.
+  know. Messages between a phone and its cell carry a counter from real time, and the receiver remembers the last five
+  seconds' messages to refuse replays.
 - **Backhaul:** cells reach the core by any route, with a secure connection to port 2123 for control messages. Tunnels
   are datagrams between ports 2152 (the gateway) and 2153 (cells, so a computer can be a cell and the core), sealed
-  with a key per cell from a secret in the core's enclave, with a replay window. Packets travel inside them encoded as
-  bytes. A cell takes tunnel datagrams from any address, as only the core can seal them.
+  with a random key the core makes each time a cell joins and sends it over the secure connection, with a replay
+  window. (It was once derived from the cell's ID, so a cell which reconnected sealed with the same key and counters
+  starting again, and packets from before could be replayed.) Packets travel inside them encoded as bytes. A cell
+  takes tunnel datagrams from any address, as only the core can seal them.
 - **Tunnels need more room** than programs' datagrams, as they carry programs' packets whole, headers and all. A
   program may send 60 KiB (61 KiB encoded), and the tunnel around it adds a few hundred bytes, so the stack's check
   refused (and the cell silently dropped) phones' biggest messages. Datagram sockets now take their own limits, and

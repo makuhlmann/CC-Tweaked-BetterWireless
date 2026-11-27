@@ -112,6 +112,36 @@ describe("cc.internal.net.link", function()
         expect(replies):eq(20)
     end)
 
+    it("never seals two frames with one counter on a computer's interfaces which share a passphrase", function()
+        -- Two interfaces of computer 1, which both seal a frame in the same millisecond.
+        local epoch = function() return 1.7e12 end
+        local counter = { value = 0 }
+        local top, low = link.new(crypto, KEY, epoch, counter), link.new(crypto, KEY, epoch, counter)
+        local first = link.seal(top, 1, -1, "nd", { op = "is", addr = 1 })
+        local second = link.seal(low, 1, -1, "nd", { op = "is", addr = 2 })
+        -- The same counter would mean the same nonce, with the same key, for different frames.
+        expect(first.counter ~= second.counter):eq(true)
+
+        -- Someone hearing both interfaces takes both frames.
+        local receiver = link.new(crypto, KEY, epoch)
+        expect(link.open(receiver, 1, -1, first)):eq("nd")
+        expect(link.open(receiver, 1, -1, second)):eq("nd")
+    end)
+
+    it("takes a frame held back on the way for longer than a radio holds one", function()
+        local now = 1.7e12
+        local epoch = function() return now end
+        local sender, receiver = link.new(crypto, KEY, epoch), link.new(crypto, KEY, epoch)
+        -- A frame waits three seconds for its link to be traced, while the next one goes at once.
+        local held = link.seal(sender, 1, 2, "ip", "held")
+        now = now + 3000
+        local next_frame = link.seal(sender, 1, 2, "ip", "next")
+        expect(select(2, link.open(receiver, 1, 2, next_frame))):eq("next")
+        expect(select(2, link.open(receiver, 1, 2, held))):eq("held")
+        -- Each is only taken once.
+        expect(link.open(receiver, 1, 2, held)):eq(nil)
+    end)
+
     it("carries every datagram a socket takes", function()
         -- Frames are encoded before they're sealed, which not every value a modem can send survives, and radio
         -- messages have a size limit. Sockets refuse what wouldn't get through, so nothing is dropped here.

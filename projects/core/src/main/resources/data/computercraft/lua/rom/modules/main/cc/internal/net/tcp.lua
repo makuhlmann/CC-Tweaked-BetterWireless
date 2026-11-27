@@ -566,8 +566,10 @@ end
 function Connection:abort()
     if self.state == "closed" then return end
     if self.state ~= "syn_sent" then
+        -- The reset acknowledges what we've had, so the other side believes it even while it's still opening: our
+        -- acknowledgement of its open may have been held back on the way, and come after this.
         self.stack:send(self.remote_addr, "tcp", {
-            sp = self.local_port, dp = self.remote_port, flags = "R", seq = self.snd_nxt,
+            sp = self.local_port, dp = self.remote_port, flags = "RA", seq = self.snd_nxt, ack = self.rcv_nxt, win = 0,
         }, { src = self.local_addr })
     end
     self:fail("Connection closed")

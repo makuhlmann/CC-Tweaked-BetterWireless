@@ -104,15 +104,14 @@ local to_hex = require "cc.internal.net.files".hex.encode
 @tparam {
     stack = table, crypto = table, network = string,
     operator = { public = string, exchange = function(public:string):string }, signing = string,
-    prefix = string, subscribers = table, secret? = string, tunnel_key? = function(cell:number):string,
+    prefix = string, subscribers = table,
     codes? = table, epoch = function():number, number_prefix? = string, former? = { string... },
     dns? = { string... }, domain? = string, on_event? = function(event:string, ...:any),
 } options The stack (with forwarding on, so phones' packets reach the network); the `crypto` API; the network's name
 (and, with `former`, those it had before it was renamed);
 the operator's X25519 key, and its Ed25519 signing key's public half (which phones check cells' certificates with); the
 operator's network for phones' addresses (such as `"10.64.0.0/16"`), whose first address the gateway takes; the
-subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; a secret only the core knows, for tunnel keys (or a
-function giving a cell's tunnel key, so the secret can stay in the enclave); activation codes, by their first group, as
+subscribers, by SIM key (hexadecimal) to `{ id, number, barred? }`; activation codes, by their first group, as
 `add_code` makes them; the time, as `os.epoch("utc")` gives; the network's number prefix, which other networks'
 phones reach ours by, if it has one; the DNS servers and domain its phones are given, if any (see `Core:set_dns`);
 and a function told about attaches, handovers and so on, for logging and saving.
@@ -134,8 +133,7 @@ local function new(options)
         -- ones it has had doesn't take a new one for an old one.
         next_message = math.random(1, 0x7FFFFFFF) * 0x100000,
         epoch = options.epoch,
-        make_tunnel_key = options.tunnel_key or function(cell) return common.tunnel_key(options.crypto, options.secret, cell) end,
-        subscribers = options.subscribers, secret = options.secret, on_event = options.on_event or function() end,
+        subscribers = options.subscribers, on_event = options.on_event or function() end,
         network_address = address.network(network_address, prefix), prefix = prefix,
         next_host = 2,
         towers = {}, sessions = {}, by_teid = {}, by_address = {}, pending = {},
@@ -191,14 +189,15 @@ which says which of its own cells each phone is at.
 @tparam number cell_address The cell's address, for its tunnel.
 @tparam function(message:table) send Sends a control message to the cell.
 @tparam[opt] string partner For another network's core, that network's name.
-@treturn string The key for the cell's tunnel.
+@treturn string The key for the cell's tunnel. It's new each time a cell is added, so a cell which reconnects doesn't
+seal different messages with the same key and counter as before, nor can messages from before be replayed to it.
 ]]
 function Core:add_tower(id, cell_address, send, partner)
-    local key = self.make_tunnel_key(id)
+    local key = self.crypto.random(32)
     self.towers[id] = {
         id = id, address = cell_address, send = send, partner = partner,
         port = partner and common.ROAM_TUNNEL_PORT or common.CELL_TUNNEL_PORT,
-        sealer = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK),
+        sealer = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK, self.epoch),
     }
     self:update_paths()
     return key
@@ -1250,7 +1249,7 @@ function Core:add_partner(network, options)
     self:remove_partner(network)
     self.partners[network] = {
         network = network, address = options.address, send = options.send,
-        sealer = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK),
+        sealer = common.new_sealer(self.crypto, options.tunnel_key, common.UPLINK, common.DOWNLINK, self.epoch),
     }
     for _, name in ipairs(common.former_names(options.former, network)) do
         if name ~= self.network then self.partner_aliases[name] = network end

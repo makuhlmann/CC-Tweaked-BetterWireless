@@ -575,6 +575,43 @@ describe("Cellular networks", function()
         expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
     end)
 
+    it("gives a cell a new tunnel key each time it joins", function()
+        -- The same key with counters starting again would seal different packets with the same nonce, and packets
+        -- from before could be replayed.
+        local setup = operator { 0 }
+        setup.net.advance(0.1)
+        local first = setup.core:add_tower(99, ip("10.0.0.99"), function() end)
+        local second = setup.core:add_tower(99, ip("10.0.0.99"), function() end)
+        expect(#first):eq(32)
+        expect(first ~= second):eq(true)
+    end)
+
+    it("answers a phone attaching again on the beacon channel, whatever its earlier frames say when they arrive", function()
+        local setup = operator { 0 }
+        local phone, stack = setup.add_phone(1, 5)
+        setup.net.advance(5)
+        expect(phone.state):eq("attached")
+        local tower = setup.towers[1].tower
+        local context = tower.phones[stack.id]
+        expect(tower:channel_to(stack.id)):eq(context.dl)
+        -- The core is elsewhere: only what the cell does with the phone's frames matters here.
+        tower.links.ACME.control_send = function() end
+
+        -- A frame saying the phone listens on its own channel, held back on the way...
+        local held = phone.here.sealer:seal({ dl = context.dl })
+        setup.net.advance(0.5)
+        -- ...comes after the phone asks to attach again, when it only listens on the beacon channel.
+        tower:radio(stack.id, { op = "attach", network = "ACME", via = "ACME", handshake = "hello" })
+        expect(tower:channel_to(stack.id)):eq(tower.carrier)
+        tower:radio(stack.id, { op = "data", sealed = held })
+        expect(tower:channel_to(stack.id)):eq(tower.carrier)
+
+        -- Someone else may have sent that attach for the phone, which carries on as before: its next frame counts.
+        setup.net.advance(0.1)
+        tower:radio(stack.id, { op = "data", sealed = phone.here.sealer:seal({ dl = context.dl }) })
+        expect(tower:channel_to(stack.id)):eq(context.dl)
+    end)
+
     it("keeps a handed-over phone's confirmation which comes before the core's word", function()
         local setup = operator { 0 }
         -- Once the cell has joined its core.
@@ -583,7 +620,7 @@ describe("Cellular networks", function()
         local sent = {}
         tower.links.ACME.control_send = function(message) sent[#sent + 1] = message end
         local function confirm(phone, key)
-            local sealer = common.new_sealer(crypto, key, common.UPLINK, common.DOWNLINK)
+            local sealer = common.new_sealer(crypto, key, common.UPLINK, common.DOWNLINK, tower.epoch)
             tower:radio(phone, { op = "confirm", sealed = sealer:seal({ confirm = true }) })
         end
 
