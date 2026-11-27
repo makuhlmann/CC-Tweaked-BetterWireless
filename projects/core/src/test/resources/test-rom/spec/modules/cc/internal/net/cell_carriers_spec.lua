@@ -109,12 +109,16 @@ describe("Cellular carriers", function()
         expect(acme.towers[1].tower.interval):eq(2)
         expect(phone.cells[11].interval):eq(2)
 
-        -- The cell goes quiet. Four seconds without it would be enough at one second, but not at two: three
-        -- intervals.
+        -- The cell goes quiet. Two seconds without it would be enough to take it that it had at one second, but not at
+        -- two: one and a half intervals.
         local last = phone.cells[11].networks.ACME.heard
         net.remove(acme.towers[1].stack)
-        wait_until(net, function() return phone.state ~= "attached" end, 20, "Losing the cell")
-        expect(net.time - last >= 6):describe("Gave up after " .. (net.time - last)):eq(true)
+        wait_until(net, function() return phone:info().fading end, 10, "The cell going quiet")
+        expect(net.time - last >= 3):describe("Went quiet after " .. (net.time - last)):eq(true)
+        expect(phone.state):eq("attached")
+        -- With no other cell, the phone waits a while longer for it to come back.
+        wait_until(net, function() return phone.state ~= "attached" end, 30, "Losing the cell")
+        expect(net.time - last >= 20):describe("Gave up after " .. (net.time - last)):eq(true)
     end)
 
     it("sends system information on a network's carriers, as often as its core says", function()

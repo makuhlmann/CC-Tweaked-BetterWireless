@@ -712,6 +712,14 @@ local function counter_now(epoch)
     return math.floor(epoch() * PER_MS)
 end
 
+--- When a message was sealed, from its counter.
+--
+-- @tparam number counter The counter.
+-- @treturn number The time it was sealed, in milliseconds, as `os.epoch("utc")` gives.
+local function counter_time(counter)
+    return math.floor(counter / PER_MS)
+end
+
 return {
     VERSION = VERSION,
     is_newer = is_newer,
@@ -765,5 +773,6 @@ return {
     new_certificates = new_certificates,
     cell_key = cell_key,
     counter_now = counter_now,
+    counter_time = counter_time,
     new_sealer = new_sealer,
 }

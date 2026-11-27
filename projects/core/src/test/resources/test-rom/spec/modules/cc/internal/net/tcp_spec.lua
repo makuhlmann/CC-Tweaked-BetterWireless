@@ -237,6 +237,30 @@ describe("cc.internal.net.tcp", function()
         expect(net.wakes[a].net_closed):eq(1)
     end)
 
+    it("resends at once when told the way is back, rather than when it next would", function()
+        local net, a, b = pair()
+        local listener = assert(tcp.listen(b, 80))
+        local client = tcp.connect(a, ip("10.0.0.2"), 80)
+        net.advance(0.5)
+        local server = assert(listener:accept())
+
+        -- Everything is lost for a while: each resend waits twice as long as the one before.
+        net.loss.top = 1
+        assert(client:send("hello"))
+        net.advance(20)
+        net.loss.top = nil
+        expect(client.state):eq("established")
+
+        -- Connections from other addresses aren't ours to hurry.
+        tcp.kick(a, ip("10.0.0.3"))
+        net.advance(0.5)
+        expect({ server:take() }):same { false, nil }
+
+        tcp.kick(a, ip("10.0.0.1"))
+        net.advance(0.5)
+        expect({ server:take() }):same { true, "hello" }
+    end)
+
     it("notices an idle connection's other side has gone", function()
         local net, a, b = pair()
         local listener = assert(tcp.listen(b, 80))

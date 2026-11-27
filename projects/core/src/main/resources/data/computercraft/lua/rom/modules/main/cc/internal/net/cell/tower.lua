@@ -348,6 +348,13 @@ function Tower:radio(phone, message)
             op = op, phone = phone, handshake = message.handshake, tag = op == "activate" and message.tag or nil,
             network = message.network ~= link.network and message.network or nil,
         })
+    elseif op == "resume" and common.is_network(message.network) and type(message.sealed) == "table" then
+        -- A phone whose cell went quiet asks to carry on through us, without attaching again. Only its network's core
+        -- can open what it sent, and says whether to take it, as for a handover.
+        local link = self:link_for(message.via or message.network)
+        if not link then return end
+        self:ask(phone, link)
+        link.control_send({ op = "resume", phone = phone, sealed = message.sealed })
     elseif op == "attach_complete" and type(message.data) == "string" then
         local link = self:link_for(message.via)
         if link then link.control_send({ op = "attach_complete", phone = phone, data = message.data }) end
@@ -368,6 +375,9 @@ function Tower:radio(phone, message)
         if value.dl ~= nil and value.dl == context.dl and sealed_at > (context.dl_since or 0) then
             context.dl_heard = true
         end
+        -- The phone is back after losing its cell for a while, and says when it last heard from one: its core sends again
+        -- what it sent since.
+        if type(value.resync) == "number" then link.control_send({ op = "replay", teid = context.teid, since = value.resync }) end
         if type(value.p) == "string" then
             -- A cell which only carries messages carries no packets: its phones have no route for them anyway.
             if self.service == "sms" then return end

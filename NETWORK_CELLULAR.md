@@ -290,9 +290,11 @@ the design above:
     as soon as it hears one cell (as LTE's SIB5 does), and says how often it's sent. Cells send it every 2 seconds
     unless the network's core says otherwise (`cellcore beacon 3`, 0.5 to 10 seconds) or the cell does
     (`celld set interval 4`), starting at a random moment so cells which start together don't send together.
-    Phones take a cell to be gone after three intervals of silence (but never less than four seconds), and hand over
-    after a stronger cell has been so for an interval (but never less than two seconds). Anything sealed from a
-    phone's own cell counts as hearing it, and its signal too.
+    A phone takes its cell to have gone quiet after one and a half intervals of silence (but never less than two
+    seconds), and to be gone after three (but never less than four seconds) if another cell will do, or after 20
+    seconds if none will (see *Losing the cell for a while*). It hands over after a stronger cell has been so for an
+    interval (but never less than two seconds). Anything sealed from a phone's own cell counts as hearing it, and its
+    signal too.
   - **Positions.** A cell may say where it is (`celld set pos 120 70 -340`: its computer's block position), in its
     signed system information. A phone keeps how far away each such cell was when it last heard it (the distance a
     modem message has, as GPS uses) and works out where it is from them (`cell locate`, `net.cell.locate()`), with
@@ -433,6 +435,32 @@ the design above:
   address. A cell which gets a sealed frame from a phone it doesn't know says so (`unknown`, at most once a second), and
   the phone then asks every second, and attaches again after three unanswered. Anyone can send `unknown`, so it only
   ever makes the phone ask.
+- **Losing the cell for a while**, behind a hill, say, or when the cell is suddenly out of reach. A phone whose cell
+  has gone quiet stays attached: the status bar keeps the network's name, with no bars (`net.cell.info().fading`;
+  `cell monitor` shows no bars too). Then:
+  - **Resuming.** If it hears another of its own network's cells, well enough that the cell hears it too (8 dB above
+    what's too weak to use), it asks that cell to take it (`resume`). The request is sealed with the key the phone
+    would share with that cell after a handover (worked out from the attach's secret and the cell's ID), with a counter
+    from the clock. The cell passes it to the core, which works out the same key, checks the request, and checks that
+    its counter is newer than the last resume's, so a recording is no use. It then hands the phone to the cell as for a
+    handover, without asking the old cell: the new cell `accept`s the phone, as after an attach, and the phone keeps its
+    address and connections (`handover` in its events). This only works within the phone's own network, as a visited
+    core doesn't know the key. A cell which only carries messages is only tried from another such cell. Each cell is
+    tried once while the phone's cell is quiet, with 3 seconds to answer. A refusal (the core no longer knows the
+    phone) makes the phone attach again at once.
+  - **Waiting.** Otherwise the phone waits for its cell to come back. It waits three intervals (but never less than
+    four seconds) if there's another cell it may attach to, a partner's say, and 20 seconds if there's none. Only then
+    does it count the cell as lost, and search and attach again, keeping its address. The status bar then says so.
+  - **Holding packets.** Meanwhile the phone holds the packets it sends, up to 32, and sends those under 10 seconds
+    old once it has service again: its cell is back, or it resumed, or it attached again. The core keeps the last 32
+    packets it sent each phone (up to 64 KiB), for 10 seconds. Back in service, the phone tells its cell when the
+    last thing it had from it was sealed (`resync`, from the counter, which goes by the clock). The cell asks the core
+    (`replay`) to send again whatever it sent after that, allowing 50 milliseconds for the clocks being apart. The
+    core does this at most once a second, and only for the phone's own cell. A packet may come twice, as one may
+    anyway.
+  - **Connections** are told the way is back. Each one sends its first unacknowledged message at once, and starts its
+    tries afresh. It waits as long as a round trip takes again, not the half a minute its timer may have grown to
+    (it doubles at each try).
 - **Handover's last step** is the phone telling its new cell it has arrived. It repeats that every second until the
   cell acknowledges it, and attaches again after five tries.
 - **What can't be checked can't interrupt.** Until a phone and its cell share a key, a frame which says it's from the

@@ -195,6 +195,8 @@ local function monitor()
         if shown then
             -- Four bars, then a space.
             local count, x = bars(shown.signal), w - 4
+            -- Our cell has gone quiet for now (behind a hill, say).
+            if info.fading and shown == serving then count = 0 end
             at(x, ("|"):rep(count), STATE_COLOURS.attached)
             at(x + count, ("."):rep(4 - count), colours.grey)
         end

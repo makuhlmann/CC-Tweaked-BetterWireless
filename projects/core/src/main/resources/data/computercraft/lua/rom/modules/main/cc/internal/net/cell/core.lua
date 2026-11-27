@@ -90,6 +90,11 @@ local MAX_HELD_EACH = 50
 -- What a phone's message is while another network's core hasn't said whether it has taken it.
 local PENDING = {}
 
+-- Packets sent to each phone lately, to send again once it's back after losing its cell for a while: how many, how many
+-- bytes in all, and for how long, in milliseconds. Those sent a little before the last thing it had are sent again too, in case they were
+-- overtaken (in milliseconds). Phones may only ask so often, in seconds.
+local RECENT_PACKETS, RECENT_BYTES, RECENT_TIME, REPLAY_SLACK, REPLAY_INTERVAL = 32, 64 * 1024, 10 * 1000, 50, 1
+
 local is_id = common.is_id
 
 local Core = {}
@@ -569,6 +574,10 @@ function Core:control(tower_id, message)
         self:sms(tower, message.teid, message.id, message.to, message.text)
     elseif op == "sms_ack" and is_id(message.teid) then
         self:sms_ack(tower, message.teid, message.id)
+    elseif op == "resume" and is_id(message.phone) and type(message.sealed) == "table" then
+        self:resume(tower, message.phone, message.sealed)
+    elseif op == "replay" and is_id(message.teid) and type(message.since) == "number" then
+        self:replay(tower, message.teid, message.since)
     end
 end
 
@@ -1188,12 +1197,75 @@ function Core:path_switch(tower, teid, visited_cell)
     self.on_event("handover", session.sim, old, tower.id)
 end
 
+--[[- A phone whose cell went quiet asks to carry on through another of our cells (`tower`), without attaching again.
+
+What it sent is sealed with the key it shares with that cell, which only it and we can work out, and with a counter
+from the clock. A recording of an earlier one is refused, so it can't move the phone's packets somewhere it isn't. If we
+don't know the phone (we restarted, say), we say so, and it attaches again.
+]]
+function Core:resume(tower, phone, sealed)
+    if tower.partner then return end
+    local session
+    for _, candidate in pairs(self.by_teid) do
+        if candidate.phone == phone then session = candidate break end
+    end
+    if not session or not session.secret then
+        return self:send(tower.id, { op = "reject", phone = phone, reason = "Not attached to " .. self.network })
+    end
+    if self:refuse(phone, tower.id) then return end
+
+    local key = common.cell_key(self.crypto, session.secret, tower.id)
+    local value, counter = common.new_sealer(self.crypto, key, common.DOWNLINK, common.UPLINK, self.epoch):open(sealed)
+    if type(value) ~= "table" or value.resume == nil or counter <= (session.resumed or 0) then return end
+    session.resumed = counter
+
+    -- As for a handover: the new cell takes the phone, with the key it shares with it, and the old one forgets it.
+    local old = session.cell
+    session.cell, session.handover, session.visited_cell = tower.id, nil, nil
+    self:send(tower.id, { op = "context", phone = phone, teid = session.teid, address = session.address, key = key })
+    if old and old ~= tower.id then self:send(old, { op = "release", teid = session.teid }) end
+    self:update_paths()
+    self.on_event("handover", session.sim, old, tower.id)
+end
+
+--[[- A phone is back after losing its cell for a while: send again what we sent it since `since` (as `os.epoch("utc")`
+gives, from when its cell sealed the last thing it had), as that was probably lost. Some of it may arrive twice, which
+the phone's connections cope with.
+]]
+function Core:replay(tower, teid, since)
+    local session = self.by_teid[teid]
+    if not session or session.cell ~= tower.id or not session.recent then return end
+    local now = self.stack.clock()
+    if session.replayed and now - session.replayed < REPLAY_INTERVAL then return end
+    session.replayed = now
+
+    local recent, epoch = session.recent, self.epoch()
+    session.recent = nil
+    for _, item in ipairs(recent) do
+        if item.at >= since - REPLAY_SLACK and epoch - item.at <= RECENT_TIME then self:tunnel_down(session, item.data) end
+    end
+end
+
 -- A packet for a phone: send it down the tunnel to its cell.
 function Core:downlink(packet, next_hop)
     local session = self.by_address[next_hop]
-    local tower = session and session.teid and self.towers[session.cell]
+    if not (session and session.teid and self.towers[session.cell]) then return end
+    return self:tunnel_down(session, codec.encode(packet))
+end
+
+-- Send a phone (`session`'s) a packet (encoded) down the tunnel to its cell. It's kept a while (the last 32, up to 64 KiB,
+-- for 10 seconds), in case the phone has lost its cell: it asks for them again once it's back (see `Core:replay`).
+function Core:tunnel_down(session, data)
+    local tower = self.towers[session.cell]
     if not tower then return end
-    local sealed = tower.sealer:seal({ teid = session.teid, packet = codec.encode(packet) })
+    local recent, at = session.recent or { bytes = 0 }, self.epoch()
+    session.recent = recent
+    recent[#recent + 1] = { at = at, data = data }
+    recent.bytes = recent.bytes + #data
+    while recent[1] and (#recent > RECENT_PACKETS or recent.bytes > RECENT_BYTES or at - recent[1].at > RECENT_TIME) do
+        recent.bytes = recent.bytes - #table.remove(recent, 1).data
+    end
+    local sealed = tower.sealer:seal({ teid = session.teid, packet = data })
     if sealed then
         local ok, err = self.stack:udp_send(self.socket, tower.address, tower.port, sealed)
         if not ok then self.stack.log("Core couldn't tunnel a packet to cell #" .. tower.id .. ": " .. tostring(err)) end

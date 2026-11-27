@@ -293,9 +293,10 @@ describe("Roaming", function()
         net.advance(30)
         expect(phone.cell):eq(21)
 
-        -- Where the chosen network has no cells, there's no service, even with another in range.
+        -- Where the chosen network has no cells, there's no service, even with another in range: once the phone has
+        -- given up waiting for its cell to come back.
         net.remove(beta.towers[1].stack)
-        net.advance(20)
+        net.advance(25)
         expect(phone.state):eq("searching")
         expect(reaches_server(net, stack)):eq(false)
 

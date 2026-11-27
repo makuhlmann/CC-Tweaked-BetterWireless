@@ -494,7 +494,9 @@ connection could send, so sequence numbers never wrap.
   Round trips are measured with `ts` and `echo`, much like TCP's timestamps: the first segment sent straight away in
   answer to one with a `ts` sends it back as `echo`. That's right even when a message was sent twice, or waited at the
   other side for a gap to fill, which working it out from the acknowledgement numbers isn't. After eight retries (about
-  two minutes) the connection resets and the program gets "Timed out". Opening gives up after five.
+  two minutes) the connection resets and the program gets "Timed out". Opening gives up after five. When a phone has
+  service again after losing its cell for a while (`tcp.kick`), its connections resend at once and start their tries
+  afresh, waiting as long as a round trip takes again.
 - **Faster recovery:** a lost message is found before its timeout by duplicate acknowledgements: three of them, or fewer
   when only a few messages are in flight and nothing new can be sent (RFC 5827). It's then resent at once. Until
   everything sent before the loss is acknowledged, each partial acknowledgement resends the next gap (NewReno). Radio

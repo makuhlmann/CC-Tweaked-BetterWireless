@@ -323,7 +323,7 @@ describe("Cellular networks", function()
         expect(event_kinds(phone)[2]):same { kind = "handover", from = 11, to = 13 }
     end)
 
-    it("attaches again through another cell when its cell fails, keeping its address", function()
+    it("carries on through another cell when its cell fails, without attaching again", function()
         math.randomseed(3)
         local setup = operator { 0, 60 }
         local phone, stack = setup.add_phone(1, 20)
@@ -337,10 +337,11 @@ describe("Cellular networks", function()
         expect(phone.cell):eq(12)
         expect(stack.interfaces.cell.address):eq(first_address)
         expect(setup.net.ping(stack, ip("10.0.0.60")).error):eq(nil)
+        -- Our network knows us, so the other cell asks it to take us, as for a handover.
         expect(event_kinds(phone)):same {
-            { kind = "attached", cell = 11 }, { kind = "lost", cell = 11 }, { kind = "attached", cell = 12 },
+            { kind = "attached", cell = 11 }, { kind = "handover", from = 11, to = 12 },
         }
-        -- The failed cell is listed after the ones still heard, until it's forgotten.
+        -- The cell which went quiet is listed after the ones still heard, until it's forgotten.
         local heard = phone:info().heard
         expect({ heard[1].id, heard[1].serving, heard[2].id, heard[2].serving }):same { 12, true, 11, false }
         expect(heard[2].age > 4):eq(true)
@@ -827,8 +828,9 @@ describe("Cellular networks", function()
             -- loses service too, rather than sending packets nowhere. Neither uses the other.
             setup.positions[31] = 150
             setup.net.advance(2)
+            -- Each phone waits a while for its cell to come back first, as there's no other.
             setup.positions[30] = 130
-            wait_until(setup, function() return first.phone.state ~= "attached" and second.phone.state ~= "attached" end)
+            wait_until(setup, function() return first.phone.state ~= "attached" and second.phone.state ~= "attached" end, 60)
             setup.net.advance(5)
             expect(first.tower.can_serve()):eq(false)
             expect(second.tower.can_serve()):eq(false)

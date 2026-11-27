@@ -75,6 +75,7 @@ local common = require "cc.internal.net.cell.common"
 local recent = require "cc.internal.net.recent"
 local core = require "cc.internal.net.cell.core"
 local solver = require "cc.internal.locate"
+local tcp = require "cc.internal.net.tcp"
 local PROLOGUE, ACTIVATE_PROLOGUE = core.PROLOGUE, core.ACTIVATE_PROLOGUE
 
 -- Signals below this, in dBm, are too weak to use.
@@ -123,8 +124,22 @@ local SCAN_TIME = 3
 local FAILED_TIME, MAX_FAILED_TIME = 30, 300
 -- How many cells to try activating through, at most. Each which doesn't answer takes ATTACH_TIMEOUT.
 local MAX_ACTIVATION_CELLS = 8
--- How many intervals a cell may be silent before we give up on it (but never less than SILENCE).
+-- How many intervals a cell may be silent before we give up on it (but never less than SILENCE), when there's another
+-- cell to go to.
 local SILENT_INTERVALS = 3
+-- How many intervals (but never less than FADE, in seconds) our cell may be silent before we take it that we've lost
+-- it for now, behind a hill, say: we show no bars, hold our packets, and move to another cell if there's one.
+local FADE_INTERVALS, FADE = 1.5, 2
+-- How long, in seconds, to wait for a silent cell to come back, when there's no other cell of our network to go to:
+-- going anywhere else isn't possible anyway, and the cell and our network keep us as we were.
+local GRACE = 20
+-- How much stronger than the weakest usable signal, in dB, a cell must be to resume through it while ours is silent.
+-- Phones transmit 7 dB weaker than cells, so one only just heard may not hear us.
+local RESUME_MARGIN = 8
+-- How long to wait for a cell to answer a resume, in seconds, before trying another (or attaching again).
+local RESUME_TIMEOUT = 3
+-- Packets sent while we've no cell to send them through: how many to hold at most, and for how long, in seconds.
+local MAX_HELD, HOLD_TIME = 32, 10
 -- While camped (attached, or listening without a SIM): how often to listen on every carrier, for other networks and new
 -- carriers, and for how long, in seconds; and how long to keep listening on a carrier a network was last heard naming.
 local SCAN_PERIOD, SCAN_WINDOW, CARRIER_MEMORY = 60, 5, 300
@@ -271,6 +286,11 @@ end
 -- How long a cell may be silent before we give up on it: longer for one which sends its system information less often.
 local function silence(cell)
     return math.max(SILENCE, SILENT_INTERVALS * (cell and cell.interval or 0))
+end
+
+-- How long a cell may be silent before we take it it's gone for now.
+local function fade(cell)
+    return math.max(FADE, FADE_INTERVALS * (cell and cell.interval or 0))
 end
 
 -- Whether to listen on a network's carriers while camped: our own, those we treat as home, the one we're using, and
@@ -810,6 +830,20 @@ function Phone:radio(src, message, signal, distance)
         return
     end
 
+    -- The answer from a cell we asked to resume through, while ours is silent. A refusal says our network doesn't
+    -- know us, so we attach again: but anyone can send one, so the real answer still counts if it comes soon.
+    local resuming = self.state == "attached" and self.here.resuming
+    if resuming and src == resuming.cell then
+        if op == "accept" then return self:resumed(self.here, message, signal, distance) end
+        if op == "reject" then
+            local here = self.here
+            self.stack:schedule(REJECT_GRACE, function()
+                if self.here == here and here.resuming == resuming and here.fading then self:forgotten(here) end
+            end)
+            return
+        end
+    end
+
     -- Everything else comes from the cell we're activating or attaching through, or attached to: or says it does. Until
     -- a message has been opened with a key only our cell has, it may be from anyone, and mustn't spoil anything.
     local handlers, here = from_cell[self.state], self.here
@@ -861,7 +895,7 @@ function from_cell.attaching.accept(self, here, message)
     if not here.secret then return end
     local key = common.cell_key(self.crypto, here.secret, here.cell)
     local sealer = common.new_sealer(self.crypto, key, common.UPLINK, common.DOWNLINK, self.epoch)
-    local value = sealer:open(message.sealed)
+    local value, sealed_at = sealer:open(message.sealed)
     if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
         or value.address < 1 or value.address >= 0xFFFFFFFF then
         return
@@ -878,6 +912,10 @@ function from_cell.attaching.accept(self, here, message)
     })
     self:set_downlink(self.here, downlink)
     self:send_waiting()
+    self:service_back(self.here)
+    -- Anything our network sends us from now on we'd ask for again, if we lose the cell before we've had anything else.
+    -- (Not before: we ask for what was sent while we had no cell, above.)
+    self.downlink_since = common.counter_time(sealed_at)
 end
 
 function from_cell.attaching.reject(self, here, message)
@@ -890,8 +928,11 @@ function from_cell.attaching.reject(self, here, message)
 end
 
 function from_cell.attached.data(self, here, message, signal, distance)
-    local value = here.sealer:open(message.sealed)
+    local value, sealed_at = here.sealer:open(message.sealed)
     if type(value) ~= "table" then return end
+    -- When our cell sent the last thing we had from it: anything our network sent us after that may need sending
+    -- again, if we lose the cell (see `service_back`).
+    self.downlink_since = common.counter_time(sealed_at)
     self:heard_from_cell(here, signal, distance)
     -- Our cell says which downlink channel is ours (after a handover, or when we asked whether it knows us).
     if value.dl ~= nil and value.dl ~= here.dl then self:set_downlink(here, value.dl) end
@@ -1416,8 +1457,9 @@ function Phone:update_route()
 end
 
 function Phone:uplink(packet)
-    if self.state ~= "attached" then return end
     local here = self.here
+    -- With no cell to send it through for now, hold it until there is.
+    if self.state ~= "attached" or here.fading then return self:hold(packet) end
     -- Saying which channel we listen on, so the cell sends there even if it had stopped (someone sent an attach in
     -- our name, say).
     local sealed = here.sealer:seal({ p = codec.encode(packet), dl = here.dl })
@@ -1453,15 +1495,41 @@ function Phone:check(here)
     local now = self.stack.clock()
     local serving = self.cells[here.cell]
     local entry = serving and serving.networks[here.via]
-    if not entry or now - entry.heard > silence(serving) or serving.signal < NO_SERVICE then
-        -- Our cell has gone (or stopped serving our network): attach again through another, keeping our address.
-        self:event("lost", { cell = here.cell })
-        self:enter("searching")
-        if serving then
-            serving.networks[here.via] = nil
-            if next(serving.networks) == nil then self.cells[here.cell] = nil end
+    local quiet = entry and now - entry.heard or math.huge
+    -- A cell we asked to take us which hasn't answered in time: we may try another.
+    if here.resuming and now - here.resuming.since >= RESUME_TIMEOUT then here.resuming = nil end
+    if quiet > fade(serving) or serving.signal < NO_SERVICE then
+        -- Our cell has gone quiet (or faint), as it does behind a hill. It and our network keep us as we were for a while,
+        -- so we wait for it to come back, holding our packets, and showing no bars. If another cell of our network will do,
+        -- we resume through that at once, rather than attaching again.
+        if not here.fading then
+            here.fading, here.resume_tried = now, {}
+            self.on_change(self)
         end
-        return self:attach()
+        if here.resuming then return end
+        local target = self:resume_target(here, now)
+        if target then return self:resume(here, target.id, now) end
+
+        -- Give up on it once it's been quiet too long: soon, if there's another cell to attach through (resuming there
+        -- didn't work), and otherwise only after a longer wait, as there's nowhere else to go. One we still hear, but
+        -- too faintly to use, isn't coming back by waiting.
+        local limit = self:best(now, function(choice) return choice.id ~= here.cell end, true) and silence(serving) or GRACE
+        if quiet > limit or (entry and serving.signal < NO_SERVICE) then
+            -- Our cell has gone (or stopped serving our network): attach again through another, keeping our address.
+            self:event("lost", { cell = here.cell })
+            self:enter("searching")
+            if serving then
+                serving.networks[here.via] = nil
+                if next(serving.networks) == nil then self.cells[here.cell] = nil end
+            end
+            return self:attach()
+        end
+        return
+    elseif here.fading then
+        -- It's back, before we gave up on it. A cell we asked to take us may still answer: our network may have moved
+        -- us there already, so we'd go.
+        here.fading, here.resume_tried = nil, nil
+        self:service_back(here)
     end
 
     -- A cell we've moved to may not have heard that we arrived: say so again, until it answers.
@@ -1546,6 +1614,92 @@ function Phone:forgotten(here)
     self:event("lost", { cell = here.cell })
     self:enter("searching")
     return self:attach()
+end
+
+-- The best cell to resume through while ours is silent: one of our own network (whose core knows us), which we hear
+-- now, well enough that it hears us too, and haven't tried since ours went quiet. Not one which only carries messages,
+-- unless ours did: a handover never goes there either.
+function Phone:resume_target(here, now)
+    if not here.secret or here.via ~= self.operator.network or here.confirming then return nil end
+    local serving = self.cells[here.cell]
+    local serving_sms = serving ~= nil and serving.service == "sms"
+    return self:best(now, function(choice)
+        local cell = self.cells[choice.id]
+        local entry = cell and cell.networks[choice.network]
+        return choice.network == here.via and choice.id ~= here.cell and choice.tier ~= FAILED
+            and not here.resume_tried[choice.id] and choice.signal >= NO_SERVICE + RESUME_MARGIN
+            and (not choice.sms or serving_sms) and entry ~= nil and now - entry.heard <= fade(cell)
+    end)
+end
+
+--[[ Ask another cell of our network to take us (`target`), while ours is silent: it passes this to our network's core,
+which knows us, and gives the cell the key we share with it, as for a handover. There's no new handshake, and we keep
+our address.
+
+It's sealed with that key, which only we and our core can work out, with a counter from the clock: a recording of it is
+no use later.
+]]
+function Phone:resume(here, target, now)
+    here.resume_tried[target] = true
+    local key = common.cell_key(self.crypto, here.secret, target)
+    local sealer = common.new_sealer(self.crypto, key, common.UPLINK, common.DOWNLINK, self.epoch)
+    local sealed = sealer:seal({ resume = here.cell })
+    if not sealed then return end
+    here.resuming = { cell = target, sealer = sealer, since = now }
+    -- Its answer comes on its carrier's beacon channel, which we listen on, as we hear our network there.
+    self:to_cell(target, { op = "resume", network = self.operator.network, via = here.via, sealed = sealed })
+end
+
+-- The cell we asked to resume through takes us: carry on through it.
+function Phone:resumed(here, message, signal, distance)
+    local resuming = here.resuming
+    local value, sealed_at = resuming.sealer:open(message.sealed)
+    if type(value) ~= "table" or type(value.address) ~= "number" or value.address % 1 ~= 0
+        or value.address < 1 or value.address >= 0xFFFFFFFF then
+        return
+    end
+    self:event("handover", { from = here.cell, to = resuming.cell })
+    self.failed:remove(resuming.cell)
+    here.cell, self.cell, here.sealer, here.dl = resuming.cell, resuming.cell, resuming.sealer, nil
+    here.resuming, here.fading, here.resume_tried, here.candidate, here.reported = nil, nil, nil, nil, nil
+    if value.address ~= self.address then self:set_address(value.address) end
+    self:update_listening()
+    -- Off a cell which only carries messages, we have a route for packets again at once.
+    self:update_route()
+    self:heard_from_cell(here, signal, distance)
+    self:set_downlink(here, value.dl)
+    self:service_back(here)
+    self.downlink_since = common.counter_time(sealed_at)
+end
+
+--[[ We can reach our network again, after losing our cell for a while (or attaching again): send what we held; ask for
+what was sent to us meanwhile, which our network kept; and have our connections resend what's in flight now, rather
+than when their timers (which wait twice as long each time they run out) next do. ]]
+function Phone:service_back(here)
+    self:send_held()
+    if self.downlink_since and here.sealer then
+        self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ resync = self.downlink_since, dl = here.dl }) })
+    end
+    if self.address then tcp.kick(self.stack, self.address) end
+    self.on_change(self)
+end
+
+-- Hold a packet we can't send yet, as we've no cell to send it through for now.
+function Phone:hold(packet)
+    local held = self.held or {}
+    self.held = held
+    held[#held + 1] = { packet = packet, at = self.stack.clock() }
+    if #held > MAX_HELD then table.remove(held, 1) end
+end
+
+-- Send the packets we held, unless they're too old to be any use.
+function Phone:send_held()
+    local held, now = self.held, self.stack.clock()
+    self.held = nil
+    if not held then return end
+    for _, item in ipairs(held) do
+        if now - item.at <= HOLD_TIME then self:uplink(item.packet) end
+    end
 end
 
 --- Describe the phone.
@@ -1635,6 +1789,8 @@ function Phone:info()
         roaming = self:roaming(), selection = self.selection, partners = partners, equivalent = equivalent,
         bands = allowed, pinned = self.pinned,
         messages_only = self.state == "attached" and self:messages_only() or nil,
+        -- Our cell has gone quiet for now: we show no bars until it's back, or we're through another.
+        fading = self.state == "attached" and self.here.fading ~= nil or nil,
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
         newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,
     }

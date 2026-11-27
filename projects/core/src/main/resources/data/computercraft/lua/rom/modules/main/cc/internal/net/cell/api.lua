@@ -848,6 +848,7 @@ function api.info()
     info.power = read_power(chosen.power)
     info.roaming = info.roaming == true
     info.newer = info.newer == true
+    info.fading = info.fading == true
     info.unread = read_cached("unread", INBOX_FILE, function()
         local unread = 0
         for _, message in ipairs(read_messages()) do

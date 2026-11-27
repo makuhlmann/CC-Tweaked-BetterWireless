@@ -228,6 +228,21 @@ function Connection:retransmit_first()
     end
 end
 
+-- The way to the other side is back, after being cut off for a while: see `kick`.
+function Connection:kick()
+    if self.state == "closed" or self.state == "time_wait" then return end
+    -- Back to waiting as long as a round trip takes, rather than as long as the losses have made it, and to as many
+    -- tries as a new connection has: losing the way for a while is no sign the other side has gone.
+    self.rto = self.srtt and math.max(MIN_RTO, math.min(MAX_RTO, self.srtt + 4 * self.rttvar)) or INITIAL_RTO
+    self.retries = 0
+    if self.snd_una < self.snd_nxt then
+        self:retransmit_first()
+        self:arm_timer()
+    end
+    -- Say where we're up to. With little in flight, one repeated acknowledgement makes the other side resend at once.
+    if self.state == "established" then self:send_ack() end
+end
+
 function Connection:on_timeout()
     if self.snd_una >= self.snd_nxt then
         -- Nothing in flight: the receiver's window is closed, so ask it whether it has room yet.
@@ -829,11 +844,27 @@ local function info(stack)
     return connections, ports
 end
 
+--[[- The way out from one of our addresses is back, after being cut off for a while (a phone which lost its cell, say).
+Have its connections resend what's in flight now, rather than when their timers (which wait twice as long each time
+they run out) next do, and say where each is up to.
+
+@tparam table stack The network stack.
+@tparam number addr The address.
+]]
+local function kick(stack, addr)
+    local tcp = stack.tcp
+    if not tcp then return end
+    for _, connection in pairs(tcp.connections) do
+        if connection.local_addr == addr then connection:kick() end
+    end
+end
+
 return {
     connect = connect,
     listen = listen,
     get = get,
     info = info,
+    kick = kick,
     attach = registry,
     -- Only tests use this.
     WINDOW = WINDOW,

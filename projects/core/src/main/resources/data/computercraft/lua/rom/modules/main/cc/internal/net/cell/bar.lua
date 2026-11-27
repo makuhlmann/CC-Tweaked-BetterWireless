@@ -102,7 +102,8 @@ local function line(info, width, colour, quiet, clock)
     -- The indicators and a space: SMS on a cell which only carries messages (a satellite's, say), then R when roaming.
     -- Then four bars in brackets, and a space. Only a very narrow screen has no room for them. Without a SIM, the bars
     -- are the strongest cell's.
-    local signal = attached and info.signal or nil
+    -- A cell which has gone quiet for now gets no bars: the network's name stays, as the phone isn't searching yet.
+    local signal = attached and not info.fading and info.signal or nil
     if not info.network and type(info.strongest) == "table" then signal = info.strongest.signal end
     local count = signal_bars(signal)
     local marks = {}

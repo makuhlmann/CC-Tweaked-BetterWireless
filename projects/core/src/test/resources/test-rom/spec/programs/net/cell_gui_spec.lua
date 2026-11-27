@@ -464,6 +464,12 @@ describe("The cell program's GUI", function()
             info.state = "attaching"
             expect((bar.line(info, 26, false))):eq(" Connecting...     [....] ")
 
+            -- Its cell has gone quiet for now: the network stays, with no bars, as the phone isn't searching yet.
+            info = { state = "attached", network = "ACME", signal = -65, roaming = true, serving_network = "BETA", unread = 0 }
+            expect((bar.line(info, 26, true))):eq(" BETA            R [||||] ")
+            info.fading = true
+            expect((bar.line(info, 26, true))):eq(" BETA            R [....] ")
+
             -- Without a SIM, listening for cells: the strongest cell's signal.
             info = { state = "inactive", enabled = true, unread = 0, strongest = { id = 11, network = "ACME", signal = -65 } }
             expect((bar.line(info, 26, true))):eq(" No SIM            [||||] ")
