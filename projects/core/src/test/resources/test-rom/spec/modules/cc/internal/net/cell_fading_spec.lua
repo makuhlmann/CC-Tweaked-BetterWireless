@@ -232,6 +232,30 @@ describe("Cellular phones whose cell goes quiet for a while", function()
         expect(to_phone):same { "down 1", "down 2", "down 3" }
     end)
 
+    it("gets what was sent to it after attaching again, too", function()
+        local setup, phone, stack = attached { 0 }
+        local to_server, to_phone = {}, {}
+        local server_socket = assert(setup.server:udp_open(7000, function(message) to_server[#to_server + 1] = message end))
+        local phone_socket = assert(stack:udp_open(7001, function(message) to_phone[#to_phone + 1] = message end))
+        local events = #phone.events
+
+        -- Gone long enough that the phone gives up on its cell, and searches.
+        local back = shadow(setup, stack.id, { phone.cell })
+        setup.net.advance(23)
+        expect(phone.state ~= "attached"):eq(true)
+        assert(stack:udp_send(phone_socket, ip("10.0.0.60"), 7000, "up"))
+        assert(setup.server:udp_send(server_socket, phone.address, 7001, "down"))
+        setup.net.advance(1)
+
+        back()
+        setup.net.advance(7)
+        expect(phone.state):eq("attached")
+        local kinds = kinds_since(phone, events)
+        expect({ kinds.lost, kinds.attached }):same { 1, 1 }
+        expect(to_server):same { "up" }
+        expect(to_phone):same { "down" }
+    end)
+
     it("doesn't send what was held too long to be any use", function()
         local setup, phone, stack = attached { 0 }
         local to_server, to_phone = {}, {}

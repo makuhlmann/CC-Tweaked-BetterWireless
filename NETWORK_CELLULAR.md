@@ -447,7 +447,8 @@ the design above:
     address and connections (`handover` in its events). This only works within the phone's own network, as a visited
     core doesn't know the key. A cell which only carries messages is only tried from another such cell. Each cell is
     tried once while the phone's cell is quiet, with 3 seconds to answer. A refusal (the core no longer knows the
-    phone) makes the phone attach again at once.
+    phone) makes the phone attach again. Anyone can send a refusal, though, so it only counts if no real answer
+    follows within a second.
   - **Waiting.** Otherwise the phone waits for its cell to come back. It waits three intervals (but never less than
     four seconds) if there's another cell it may attach to, a partner's say, and 20 seconds if there's none. Only then
     does it count the cell as lost, and search and attach again, keeping its address. The status bar then says so.
