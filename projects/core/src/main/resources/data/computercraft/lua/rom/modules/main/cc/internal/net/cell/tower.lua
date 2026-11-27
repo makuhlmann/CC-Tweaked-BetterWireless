@@ -376,8 +376,12 @@ function Tower:radio(phone, message)
             context.dl_heard = true
         end
         -- The phone is back after losing its cell for a while, and says when it last heard from one: its core sends again
-        -- what it sent since.
-        if type(value.resync) == "number" then link.control_send({ op = "replay", teid = context.teid, since = value.resync }) end
+        -- what it sent since, until the phone asked (when it sealed this). What came after, it has.
+        if type(value.resync) == "number" then
+            link.control_send({
+                op = "replay", teid = context.teid, since = value.resync, before = common.counter_time(sealed_at),
+            })
+        end
         if type(value.p) == "string" then
             -- A cell which only carries messages carries no packets: its phones have no route for them anyway.
             if self.service == "sms" then return end

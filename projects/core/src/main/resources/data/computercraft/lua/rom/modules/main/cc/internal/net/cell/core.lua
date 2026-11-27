@@ -576,8 +576,9 @@ function Core:control(tower_id, message)
         self:sms_ack(tower, message.teid, message.id)
     elseif op == "resume" and is_id(message.phone) and type(message.sealed) == "table" then
         self:resume(tower, message.phone, message.sealed)
-    elseif op == "replay" and is_id(message.teid) and type(message.since) == "number" then
-        self:replay(tower, message.teid, message.since)
+    elseif op == "replay" and is_id(message.teid) and type(message.since) == "number"
+        and type(message.before) == "number" then
+        self:replay(tower, message.teid, message.since, message.before)
     end
 end
 
@@ -1229,20 +1230,24 @@ function Core:resume(tower, phone, sealed)
 end
 
 --[[- A phone is back after losing its cell for a while: send again what we sent it since `since` (as `os.epoch("utc")`
-gives, from when its cell sealed the last thing it had), as that was probably lost. Some of it may arrive twice, which
-the phone's connections cope with.
+gives, from when its cell sealed the last thing it had), as that was probably lost. Only what we sent before `before`
+(when the phone asked): what came after, such as answers to what it held while it had no cell, reached it. Some may
+arrive twice, which the phone's connections cope with.
+
+What's sent again is kept as it was, so if the phone loses its cell again before it has it, it can ask again.
 ]]
-function Core:replay(tower, teid, since)
+function Core:replay(tower, teid, since, before)
     local session = self.by_teid[teid]
     if not session or session.cell ~= tower.id or not session.recent then return end
     local now = self.stack.clock()
     if session.replayed and now - session.replayed < REPLAY_INTERVAL then return end
     session.replayed = now
 
-    local recent, epoch = session.recent, self.epoch()
-    session.recent = nil
-    for _, item in ipairs(recent) do
-        if item.at >= since - REPLAY_SLACK and epoch - item.at <= RECENT_TIME then self:tunnel_down(session, item.data) end
+    local epoch = self.epoch()
+    for _, item in ipairs(session.recent) do
+        if item.at >= since - REPLAY_SLACK and item.at < before and epoch - item.at <= RECENT_TIME then
+            self:tunnel_down(session, item.data, true)
+        end
     end
 end
 
@@ -1255,15 +1260,18 @@ end
 
 -- Send a phone (`session`'s) a packet (encoded) down the tunnel to its cell. It's kept a while (the last 32, up to 64 KiB,
 -- for 10 seconds), in case the phone has lost its cell: it asks for them again once it's back (see `Core:replay`).
-function Core:tunnel_down(session, data)
+-- Unless it's being sent `again`: it's kept already.
+function Core:tunnel_down(session, data, again)
     local tower = self.towers[session.cell]
     if not tower then return end
-    local recent, at = session.recent or { bytes = 0 }, self.epoch()
-    session.recent = recent
-    recent[#recent + 1] = { at = at, data = data }
-    recent.bytes = recent.bytes + #data
-    while recent[1] and (#recent > RECENT_PACKETS or recent.bytes > RECENT_BYTES or at - recent[1].at > RECENT_TIME) do
-        recent.bytes = recent.bytes - #table.remove(recent, 1).data
+    if not again then
+        local recent, at = session.recent or { bytes = 0 }, self.epoch()
+        session.recent = recent
+        recent[#recent + 1] = { at = at, data = data }
+        recent.bytes = recent.bytes + #data
+        while recent[1] and (#recent > RECENT_PACKETS or recent.bytes > RECENT_BYTES or at - recent[1].at > RECENT_TIME) do
+            recent.bytes = recent.bytes - #table.remove(recent, 1).data
+        end
     end
     local sealed = tower.sealer:seal({ teid = session.teid, packet = data })
     if sealed then

@@ -455,10 +455,12 @@ the design above:
   - **Holding packets.** Meanwhile the phone holds the packets it sends, up to 32, and sends those under 10 seconds
     old once it has service again: its cell is back, or it resumed, or it attached again. The core keeps the last 32
     packets it sent each phone (up to 64 KiB), for 10 seconds. Back in service, the phone tells its cell when the
-    last thing it had from it was sealed (`resync`, from the counter, which goes by the clock). The cell asks the core
-    (`replay`) to send again whatever it sent after that, allowing 50 milliseconds for the clocks being apart. The
-    core does this at most once a second, and only for the phone's own cell. A packet may come twice, as one may
-    anyway.
+    last thing it had from it was sealed (`resync`, from the counter, which goes by the clock), before it sends what
+    it held. The cell asks the core (`replay`) to send again whatever it sent after that (allowing 50 milliseconds for
+    the clocks being apart) and before the phone asked (when it sealed `resync`). What came later reached the phone,
+    such as the answers to what it held, which would otherwise come twice. The core does this at most once a second,
+    and only for the phone's own cell. It keeps what it sends again, in case the phone loses its cell again first.
+    A packet may still come twice, as one may anyway.
   - **Connections** are told the way is back. Each one sends its first unacknowledged message at once, and starts its
     tries afresh. It waits as long as a round trip takes again, not the half a minute its timer may have grown to
     (it doubles at each try).

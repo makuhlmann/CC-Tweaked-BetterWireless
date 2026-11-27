@@ -1672,14 +1672,17 @@ function Phone:resumed(here, message, signal, distance)
     self.downlink_since = common.counter_time(sealed_at)
 end
 
---[[ We can reach our network again, after losing our cell for a while (or attaching again): send what we held; ask for
-what was sent to us meanwhile, which our network kept; and have our connections resend what's in flight now, rather
-than when their timers (which wait twice as long each time they run out) next do. ]]
+--[[ We can reach our network again, after losing our cell for a while (or attaching again): ask for what was sent to
+us meanwhile, which our network kept; send what we held; and have our connections resend what's in flight now, rather
+than when their timers (which wait twice as long each time they run out) next do.
+
+Our network only sends again what it sent before we asked (as our cell says, from when we sealed the asking). So we ask
+first: the answers to what we held come after, and aren't sent twice. ]]
 function Phone:service_back(here)
-    self:send_held()
     if self.downlink_since and here.sealer then
         self:to_cell(here.cell, { op = "data", sealed = here.sealer:seal({ resync = self.downlink_since, dl = here.dl }) })
     end
+    self:send_held()
     if self.address then tcp.kick(self.stack, self.address) end
     self.on_change(self)
 end

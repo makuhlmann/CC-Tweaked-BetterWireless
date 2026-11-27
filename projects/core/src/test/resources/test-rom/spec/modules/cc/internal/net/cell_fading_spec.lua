@@ -232,6 +232,38 @@ describe("Cellular phones whose cell goes quiet for a while", function()
         expect(to_phone):same { "down 1", "down 2", "down 3" }
     end)
 
+    it("gets answers to what it held only once", function()
+        local setup, phone, stack = attached { 0 }
+        local to_phone = {}
+        local server_socket
+        server_socket = assert(setup.server:udp_open(7000, function(message, from, port)
+            assert(setup.server:udp_send(server_socket, from, port, "re: " .. message))
+        end))
+        local phone_socket = assert(stack:udp_open(7001, function(message) to_phone[#to_phone + 1] = message end))
+        -- The core gets the phone's asking for what it missed late: after the answers to what it held.
+        local replay, asked = setup.core.replay, {}
+        setup.core.replay = function(...) asked[#asked + 1] = table.pack(...) end
+
+        local back = shadow(setup, stack.id, { phone.cell })
+        setup.net.advance(3)
+        expect(phone:info().fading):eq(true)
+        for i = 1, 3 do
+            assert(stack:udp_send(phone_socket, ip("10.0.0.60"), 7000, "up " .. i))
+            setup.net.advance(1)
+        end
+        assert(setup.server:udp_send(server_socket, phone.address, 7001, "down"))
+        setup.net.advance(1)
+
+        back()
+        setup.net.advance(3)
+        expect(to_phone):same { "re: up 1", "re: up 2", "re: up 3" }
+        expect(#asked):eq(1)
+        setup.core.replay = replay
+        replay(table.unpack(asked[1], 1, asked[1].n))
+        setup.net.advance(1)
+        expect(to_phone):same { "re: up 1", "re: up 2", "re: up 3", "down" }
+    end)
+
     it("gets what was sent to it after attaching again, too", function()
         local setup, phone, stack = attached { 0 }
         local to_server, to_phone = {}, {}
