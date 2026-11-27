@@ -9,6 +9,7 @@ import com.seibel.distanthorizons.api.enums.worldGeneration.EDhApiLevelType;
 import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataCache;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiWorldProxy;
+import com.seibel.distanthorizons.api.objects.DhApiResult;
 import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
 import dan200.computercraft.core.util.ThreadUtils;
 import net.minecraft.server.level.ServerLevel;
@@ -16,12 +17,16 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jspecify.annotations.Nullable;
 
+import java.lang.ref.WeakReference;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Reads terrain heights from Distant Horizons' level of detail data.
@@ -31,7 +36,8 @@ import java.util.function.Predicate;
  * source of heights for long distance links.
  * <p>
  * The terrain repository is synchronous and may hit DH's database (or even queue LOD generation), so all calls happen
- * on a dedicated thread, and we give up on any request which takes too long.
+ * on a dedicated thread, and we give up on any request which takes too long. A request which was given up on before
+ * its turn came isn't read at all.
  * <p>
  * This class references the DH API directly, and so must only be loaded when DH is installed. Use
  * {@link DistantHorizonsHeights#get()} instead.
@@ -40,12 +46,38 @@ final class DistantHorizonsHeightSource implements HeightSource {
     private static final long TIMEOUT_SECONDS = 2;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(ThreadUtils.lowPriorityFactory("Radio-DistantHorizons"));
+
+    // These are only used on the executor's thread.
     private @Nullable IDhApiTerrainDataCache cache;
+    private final Levels levels = new Levels();
 
     @Override
     public CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Executor worker) {
-        return CompletableFuture.supplyAsync(() -> read(level, chunkX, chunkZ), executor)
-            .completeOnTimeout(null, TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        return supplyUnlessLate(() -> read(level, chunkX, chunkZ), executor, TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Run something on an executor, giving up on it after a while. If we give up before its turn comes, it isn't run
+     * at all: requests queue up behind slow ones, and once they've timed out, nothing is waiting for them.
+     *
+     * @param supplier What to run.
+     * @param executor The executor to run it on.
+     * @param timeout  How long to wait for it.
+     * @param unit     The unit of {@code timeout}.
+     * @param <T>      The type of the result.
+     * @return Its result, or {@code null} if it took too long.
+     */
+    static <T> CompletableFuture<@Nullable T> supplyUnlessLate(Supplier<@Nullable T> supplier, Executor executor, long timeout, TimeUnit unit) {
+        var result = new CompletableFuture<@Nullable T>();
+        executor.execute(() -> {
+            if (result.isDone()) return;
+            try {
+                result.complete(supplier.get());
+            } catch (RuntimeException e) {
+                result.completeExceptionally(e);
+            }
+        });
+        return result.completeOnTimeout(null, timeout, unit);
     }
 
     private @Nullable ChunkHeights read(ServerLevel level, int chunkX, int chunkZ) {
@@ -53,13 +85,22 @@ final class DistantHorizonsHeightSource implements HeightSource {
         var world = DhApi.Delayed.worldProxy;
         if (repo == null || world == null || !world.worldLoaded()) return null;
 
-        var wrapper = findLevel(world, level);
+        var wrapper = levels.find(world, level);
         if (wrapper == null) return null;
 
         var cache = this.cache;
         if (cache == null) this.cache = cache = repo.createSoftCache();
 
-        var result = repo.getAllTerrainDataAtChunkPos(wrapper, chunkX, chunkZ, cache);
+        DhApiResult<DhApiTerrainDataPoint[][][]> result;
+        try {
+            result = repo.getAllTerrainDataAtChunkPos(wrapper, chunkX, chunkZ, cache);
+        } catch (RuntimeException e) {
+            // DH may have unloaded the level since we found it, so look for it again next time.
+            levels.forget(level);
+            throw e;
+        }
+        if (!result.success) levels.forget(level);
+
         var data = result.payload;
         if (!result.success || data == null) return null;
 
@@ -138,10 +179,45 @@ final class DistantHorizonsHeightSource implements HeightSource {
         return minY < 0 && top > maxY + 1 - minY / 2 ? minY : 0;
     }
 
-    private static @Nullable IDhApiLevelWrapper findLevel(IDhApiWorldProxy world, ServerLevel level) {
-        for (var wrapper : world.getAllLoadedLevelWrappers()) {
-            if (wrapper.getLevelType() == EDhApiLevelType.SERVER_LEVEL && wrapper.getWrappedMcObject() == level) return wrapper;
+    /**
+     * DH's wrappers for the levels we read from.
+     * <p>
+     * DH lists its levels by copying them into a new set, which shows up in profiles when we read thousands of chunks,
+     * so we remember the wrapper we found for each level. Both only weakly: this outlives the server in single player.
+     * This isn't thread safe.
+     */
+    static final class Levels {
+        private final Map<Object, WeakReference<IDhApiLevelWrapper>> wrappers = new WeakHashMap<>();
+
+        /**
+         * Find DH's wrapper for a level.
+         *
+         * @param world DH's world.
+         * @param level The level.
+         * @return The wrapper, or {@code null} if DH hasn't loaded the level.
+         */
+        @Nullable IDhApiLevelWrapper find(IDhApiWorldProxy world, Object level) {
+            var known = wrappers.get(level);
+            var wrapper = known == null ? null : known.get();
+            if (wrapper != null && wrapper.getWrappedMcObject() == level) return wrapper;
+
+            for (var candidate : world.getAllLoadedLevelWrappers()) {
+                if (candidate.getLevelType() == EDhApiLevelType.SERVER_LEVEL && candidate.getWrappedMcObject() == level) {
+                    wrappers.put(level, new WeakReference<>(candidate));
+                    return candidate;
+                }
+            }
+            wrappers.remove(level);
+            return null;
         }
-        return null;
+
+        /**
+         * Forget the wrapper for a level, so it's looked for again next time.
+         *
+         * @param level The level.
+         */
+        void forget(Object level) {
+            wrappers.remove(level);
+        }
     }
 }
