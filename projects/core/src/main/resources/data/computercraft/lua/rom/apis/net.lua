@@ -1618,6 +1618,8 @@ cell = {
        for the cell to come back, or carries on through another cell of its network without attaching again: it only
        counts as having lost service (and searches) if neither happens for a while. Show no bars meanwhile.
      - `messages_only`: whether that cell only carries messages (a satellite, say), so there's no route for packets;
+     - `sent_age` and `received_age`: how long ago, in seconds, the phone last sent and received a packet (not what it
+       and its cell say to each other, nor messages), if it has;
      - `roaming`: whether that's another network than the SIM's own (and not one it treats as its own);
      - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
        the phone treats as its own network (it isn't roaming there);

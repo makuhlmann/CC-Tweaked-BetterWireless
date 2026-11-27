@@ -849,6 +849,8 @@ function api.info()
     info.roaming = info.roaming == true
     info.newer = info.newer == true
     info.fading = info.fading == true
+    if type(info.sent_age) ~= "number" then info.sent_age = nil end
+    if type(info.received_age) ~= "number" then info.received_age = nil end
     info.unread = read_cached("unread", INBOX_FILE, function()
         local unread = 0
         for _, message in ipairs(read_messages()) do

@@ -398,7 +398,7 @@ describe("The cell program's GUI", function()
     describe("status bar", function()
         it("shows the network and its signal", function()
             run(fake_phone(), {}, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.bg(1)):eq(("7"):rep(26))
                 -- The bars which aren't lit are dimmer.
                 expect(app.fg(1):sub(20, 25)):eq("000080")
@@ -409,14 +409,14 @@ describe("The cell program's GUI", function()
 
         it("is what \"cell\" alone shows", function()
             run(fake_phone(), { args = {} }, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.line(2)):eq("Phone             No. 0042")
             end)
         end)
 
         it("fills a normal computer's screen", function()
             run(fake_phone(), { width = 51, height = 19 }, function(app)
-                expect(app.line(1)):eq(" ACME" .. (" "):rep(39) .. "[|||.]")
+                expect(app.line(1)):eq(" ACME" .. (" "):rep(36) .. "\25\24 [|||.]")
                 expect(app.bg(1)):eq(("7"):rep(51))
                 expect(app.line(2)):eq("Phone" .. (" "):rep(38) .. "No. 0042")
             end)
@@ -426,15 +426,16 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
             run(phone, { basic = true }, function(app)
-                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+                expect(app.line(1)):eq(" ACME 1 new msg \25\24 [|||.]")
                 expect(app.bg(1)):eq(("7"):rep(26))
-                expect(app.fg(1)):eq(("0"):rep(23) .. "800")
+                -- The arrows are grey: nothing went either way.
+                expect(app.fg(1)):eq(("0"):rep(16) .. "88" .. ("0"):rep(5) .. "800")
                 -- The menu has no colours either.
                 expect(app.fg(2):sub(1, 5)):eq("00000")
             end)
 
             run(phone, { basic = true, width = 51, height = 19 }, function(app)
-                expect(app.line(1)):eq(" ACME" .. (" "):rep(16) .. "1 new msg" .. (" "):rep(14) .. "[|||.]")
+                expect(app.line(1)):eq(" ACME" .. (" "):rep(16) .. "1 new msg" .. (" "):rep(11) .. "\25\24 [|||.]")
                 expect(app.bg(1)):eq(("7"):rep(51))
             end)
         end)
@@ -481,10 +482,10 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.info.roaming, phone.info.serving_network, phone.info.signal = true, "BETA", -95
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" BETA            R [|...]")
+                expect(app.line(1)):eq(" BETA         R \25\24 [|...]")
             end)
             run(phone, { width = 51, height = 19, basic = true }, function(app)
-                expect(app.line(1)):eq(" BETA" .. (" "):rep(37) .. "R [|...]")
+                expect(app.line(1)):eq(" BETA" .. (" "):rep(34) .. "R \25\24 [|...]")
             end)
         end)
 
@@ -492,7 +493,7 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.info.serving_network, phone.info.equivalent = "BETA", { BETA = true }
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
             end)
         end)
 
@@ -500,16 +501,16 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.messages = message_fixture()
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+                expect(app.line(1)):eq(" ACME 1 new msg \25\24 [|||.]")
                 -- The notice stands out.
-                expect(app.fg(1):sub(9, 17)):eq(("4"):rep(9))
+                expect(app.fg(1):sub(7, 15)):eq(("4"):rep(9))
 
                 phone.messages[1].read, phone.messages[4] = false, { n = 4, from = "0100", text = "Hi", time = 0, read = false }
                 app.event("cell_message", "0100", "Hi")
-                expect(app.line(1)):eq(" ACME   3 new msgs [|||.]")
+                expect(app.line(1)):eq(" ACM 3 new msgs \25\24 [|||.]")
             end)
             run(phone, { width = 51, height = 19 }, function(app)
-                expect(app.line(1)):eq(" ACME" .. (" "):rep(15) .. "3 new msgs" .. (" "):rep(14) .. "[|||.]")
+                expect(app.line(1)):eq(" ACME" .. (" "):rep(15) .. "3 new msgs" .. (" "):rep(11) .. "\25\24 [|||.]")
             end)
         end)
 
@@ -522,13 +523,13 @@ describe("The cell program's GUI", function()
                 expect(app.line(1)):eq(" LONG 3 new msgs R [|||.]")
             end)
             run(phone, { width = 51, height = 19 }, function(app)
-                expect(app.line(1)):eq(" LONGNETWORKNAME    3 new msgs" .. (" "):rep(12) .. "R [|||.]")
+                expect(app.line(1)):eq(" LONGNETWORKNAME    3 new msgs" .. (" "):rep(9) .. "R \25\24 [|||.]")
             end)
 
             -- Without a notice, the name has the room.
             phone.messages = {}
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" LONGNETWORKNAME R [|||.]")
+                expect(app.line(1)):eq(" LONGNETWORKN R \25\24 [|||.]")
             end)
         end)
 
@@ -536,15 +537,15 @@ describe("The cell program's GUI", function()
             local phone = fake_phone()
             phone.time = 13.5
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" ACME     13:30    [|||.]")
+                expect(app.line(1)):eq(" ACME     13:30 \25\24 [|||.]")
                 expect(app.fg(1):sub(11, 15)):eq("88888")
                 -- Time passes.
                 phone.time = 6.25
                 app.timers(2)
-                expect(app.line(1)):eq(" ACME      6:15    [|||.]")
+                expect(app.line(1)):eq(" ACME      6:15 \25\24 [|||.]")
                 phone.messages = { { n = 1, from = "0007", text = "Hello", time = os.epoch("utc"), read = false } }
                 app.event("cell_message", "0007", "Hello", 1)
-                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+                expect(app.line(1)):eq(" ACME 1 new msg \25\24 [|||.]")
             end)
         end)
 
@@ -597,13 +598,55 @@ describe("The cell program's GUI", function()
             expect((bar.line(info, 26, true))):eq(" Searching...      [....] ")
         end)
 
+        it("shows arrows for packets, lit while some went that way lately", function()
+            local bar = require "cc.internal.net.cell.bar"
+            local info = {
+                state = "attached", network = "ACME", serving_network = "ACME", signal = -60, address = "10.64.0.2", unread = 0,
+            }
+            -- Down then up, between the indicators and the bars: grey until a packet goes that way.
+            expect({ bar.line(info, 26, true) }):same {
+                " ACME           \25\24 [||||] ", ("0"):rep(16) .. "88" .. ("0"):rep(8), ("7"):rep(26),
+            }
+            local function arrows()
+                local _, fg = bar.line(info, 26, true)
+                return fg:sub(17, 18)
+            end
+            info.received_age = 0.5
+            expect(arrows()):eq("08")
+            info.sent_age = 1.9
+            expect(arrows()):eq("00")
+            -- Until the bar looks again.
+            info.received_age = 2.5
+            expect(arrows()):eq("80")
+
+            -- After R when roaming.
+            info.roaming, info.serving_network = true, "BETA"
+            expect((bar.line(info, 26, true))):eq(" BETA         R \25\24 [||||] ")
+
+            -- Not on a cell which only carries messages, nor without an address, nor while not attached.
+            info.roaming, info.serving_network, info.messages_only = nil, "ACME", true
+            expect((bar.line(info, 26, true))):eq(" ACME          SMS [||||] ")
+            info.messages_only, info.address = nil, nil
+            expect((bar.line(info, 26, true))):eq(" ACME              [||||] ")
+            info.address, info.state = "10.64.0.2", "searching"
+            expect((bar.line(info, 26, true))):eq(" Searching...      [....] ")
+
+            -- On a narrow screen, they make way for new messages, where those wouldn't fit otherwise.
+            info.state, info.unread, info.roaming, info.serving_network = "attached", 3, true, "LONGNETWORKNAME"
+            expect((bar.line(info, 26, true))):eq(" LONG 3 new msgs R [||||] ")
+            expect((bar.line(info, 51, true))):str_match("3 new msgs +R \25\24 %[||||%] $")
+            -- Where they fit, the name makes way instead, as it does for new messages anyway.
+            info.roaming = nil
+            expect((bar.line(info, 26, true))):eq(" ACM 3 new msgs \25\24 [||||] ")
+        end)
+
         it("follows the signal", function()
             local phone = fake_phone()
             run(phone, {}, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 phone.info.signal = -95
                 app.timers(2)
-                expect(app.line(1)):eq(" ACME              [|...]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|...]")
 
                 phone.info.state, phone.info.signal, phone.info.serving_network = "searching", nil, nil
                 app.event("cell_state", "searching")
@@ -679,14 +722,14 @@ describe("The cell program's GUI", function()
             run(fake_phone(), {}, function(app)
                 app.screen.reposition(1, 1, 51, 19)
                 app.event("term_resize")
-                expect(app.line(1)):eq(" ACME" .. (" "):rep(39) .. "[|||.]")
+                expect(app.line(1)):eq(" ACME" .. (" "):rep(36) .. "\25\24 [|||.]")
                 expect(app.bg(1)):eq(("7"):rep(51))
                 expect(app.line(2)):eq("Phone" .. (" "):rep(38) .. "No. 0042")
                 expect(app.line(19)):eq("Enter: choose  Q: quit")
 
                 app.screen.reposition(1, 1, 26, 20)
                 app.event("term_resize")
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.line(2)):eq("Phone             No. 0042")
                 expect(app.line(20)):eq("Enter: choose  Q: quit")
             end)
@@ -908,7 +951,7 @@ describe("The cell program's GUI", function()
                 expect(app.lines(18, 20)):same { "* new  ! not sent  N: new", "D: delete", "Q/Backspace: back" }
                 -- Listing them doesn't read them.
                 expect(phone.read):same {}
-                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+                expect(app.line(1)):eq(" ACME 1 new msg \25\24 [|||.]")
             end)
 
             run(phone, { width = 51, height = 19 }, function(app)
@@ -937,7 +980,7 @@ describe("The cell program's GUI", function()
                 phone.messages = message_fixture()
                 app.event("cell_message", "0100", "Meet at the station at noon, by the big clock")
                 expect(app.line(4)):str_match("^%*0100 ")
-                expect(app.line(1)):eq(" ACME   1 new msg  [|||.]")
+                expect(app.line(1)):eq(" ACME 1 new msg \25\24 [|||.]")
             end)
         end)
 
@@ -951,7 +994,7 @@ describe("The cell program's GUI", function()
                 expect(app.lines(19, 20)):same { "Enter: send  Tab: choose", "> Write a message" }
                 expect(phone.read):same { 3 }
                 -- The bar no longer counts it.
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
 
                 -- Back in the list, it's no longer marked, and isn't read again.
                 app.key(keys.backspace)
@@ -1400,7 +1443,7 @@ describe("The cell program's GUI", function()
 
                 app.key(keys.enter)
                 expect(phone.enabled):same { false, true }
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.line(7)):eq(" Cell service: On")
                 expect(app.bg(7)):eq(("0"):rep(26))
                 expect(app.line(19)):eq("")
@@ -1569,7 +1612,7 @@ describe("The cell program's GUI", function()
                 expect(app.bg(9)):eq(("0"):rep(26))
                 app.key(keys.enter)
                 app.event("cell_state", "attached")
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.line(2)):str_match("^ Cell monitor    %d%d:%d%d:%d%d$")
                 expect(app.lines(3, 4)):same { "Attached", "Net  ACME" }
                 expect(app.line(20)):eq("Press Q to quit")
@@ -1625,7 +1668,7 @@ describe("The cell program's GUI", function()
             ]])
             local phone = fake_phone()
             run(phone, { args = { "bar", "/test-files/under_bar.lua", "one", "two" } }, function(app)
-                expect(app.lines(1, 3)):same { " ACME              [|||.]", "Size 26x19", "" }
+                expect(app.lines(1, 3)):same { " ACME           \25\24 [|||.]", "Size 26x19", "" }
 
                 -- It only gets what it waits for, and no clicks on the bar.
                 app.event("key", keys.a, false)
@@ -1640,7 +1683,7 @@ describe("The cell program's GUI", function()
                 expect(app.lines(1, 4)):same { "Size 26x19", "Click 2 at 3,4", "Size 26x20", "" }
                 phone.info.state = "attached"
                 app.event("cell_state", "attached")
-                expect(app.lines(1, 4)):same { " ACME              [|||.]", "Size 26x19", "Click 2 at 3,4", "Size 26x20" }
+                expect(app.lines(1, 4)):same { " ACME           \25\24 [|||.]", "Size 26x19", "Click 2 at 3,4", "Size 26x20" }
                 -- The cursor is the program's, not the bar's.
                 expect({ app.screen.getCursorPos() }):same { 1, 5 }
 
@@ -1656,7 +1699,7 @@ describe("The cell program's GUI", function()
 
         it("runs a shell if no program is given", function()
             run(fake_phone(), { args = { "bar" } }, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.lines(2, 3)):same { os.version(), ">" }
                 app.type("exit")
                 app.key(keys.enter)
@@ -1668,7 +1711,7 @@ describe("The cell program's GUI", function()
         it("is turned off and on, for when the computer starts too", function()
             stub(settings, "save", function() return true end)
             local ok, err = pcall(run, fake_phone(), { args = { "bar" } }, function(app)
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 app.type("cell bar off")
                 app.key(keys.enter)
                 expect(settings.get("cell.bar")):eq(false)
@@ -1680,7 +1723,7 @@ describe("The cell program's GUI", function()
                 app.key(keys.enter)
                 expect(settings.get("cell.bar")):eq(true)
                 app.event("cell_state", "attached")
-                expect(app.line(1)):eq(" ACME              [|||.]")
+                expect(app.line(1)):eq(" ACME           \25\24 [|||.]")
                 expect(app.find("The status bar is on.")):ne(nil)
             end)
             settings.unset("cell.bar")
@@ -1715,7 +1758,7 @@ describe("The cell program's GUI", function()
 
         it("has one bar, whatever runs beneath it", function()
             run(fake_phone(), { args = { "bar", "/rom/programs/net/cell.lua", "gui" } }, function(app)
-                expect(app.lines(1, 4)):same { " ACME              [|||.]", "Phone             No. 0042", "", " Messages" }
+                expect(app.lines(1, 4)):same { " ACME           \25\24 [|||.]", "Phone             No. 0042", "", " Messages" }
                 app.type("q")
                 expect(app.finished()):eq(true)
             end)
@@ -1766,7 +1809,7 @@ describe("The cell program's GUI", function()
                 term.redirect(outer)
             ]])
             run(fake_phone(), { args = { "bar", "/test-files/under_bar.lua" } }, function(app)
-                expect(app.lines(1, 5)):same { " ACME              [|||.]", "", "", "Inner", "" }
+                expect(app.lines(1, 5)):same { " ACME           \25\24 [|||.]", "", "", "Inner", "" }
                 app.event("cell_state", "attached")
                 app.event("key", keys.a, false)
                 expect(app.lines(1, 4)):same { "", "", "Inner still", "" }

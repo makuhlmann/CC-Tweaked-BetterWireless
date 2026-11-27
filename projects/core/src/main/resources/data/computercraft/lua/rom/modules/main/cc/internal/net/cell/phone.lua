@@ -938,6 +938,7 @@ function from_cell.attached.data(self, here, message, signal, distance)
     if value.dl ~= nil and value.dl ~= here.dl then self:set_downlink(here, value.dl) end
     local packet = type(value.p) == "string" and codec.decode(value.p)
     if type(packet) == "table" then
+        self.received_at = self.stack.clock()
         self.stack:inject("cell", packet)
     elseif type(value.sms) == "table" and common.is_id(value.sms.id) and type(value.sms.from) == "string"
         and type(value.sms.text) == "string" then
@@ -1463,7 +1464,11 @@ function Phone:uplink(packet)
     -- Saying which channel we listen on, so the cell sends there even if it had stopped (someone sent an attach in
     -- our name, say).
     local sealed = here.sealer:seal({ p = codec.encode(packet), dl = here.dl })
-    if sealed then self:to_cell(here.cell, { op = "data", sealed = sealed }) end
+    if sealed then
+        self:to_cell(here.cell, { op = "data", sealed = sealed })
+        -- For the status bar's arrows: only packets count, not what we and our cell say to each other.
+        self.sent_at = self.stack.clock()
+    end
 end
 
 -- Compare our cell with the others, every second.
@@ -1794,6 +1799,8 @@ function Phone:info()
         messages_only = self.state == "attached" and self:messages_only() or nil,
         -- Our cell has gone quiet for now: we show no bars until it's back, or we're through another.
         fading = self.state == "attached" and self.here.fading ~= nil or nil,
+        -- How long ago we last sent and received a packet, in seconds: the status bar's arrows light up for a while.
+        sent_age = self.sent_at and now - self.sent_at, received_age = self.received_at and now - self.received_at,
         -- A cell or core newer than we are was heard lately: if we can't attach, that may be why.
         newer = self.newer_heard ~= nil and now - self.newer_heard <= FORGET,
     }

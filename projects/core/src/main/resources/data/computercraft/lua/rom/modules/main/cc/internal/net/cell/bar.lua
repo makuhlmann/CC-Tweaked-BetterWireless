@@ -41,6 +41,11 @@ local function signal_bars(signal)
     elseif signal >= -100 then return 1 else return 0 end
 end
 
+-- Whether something happened since the bar last looked at the phone, given how long ago it was (in seconds).
+local function lately(age)
+    return type(age) == "number" and age < BAR_REFRESH
+end
+
 -- What the bar says in place of a network's name, when the phone isn't attached to one.
 local BAR_STATES = {
     searching = "Searching...", attaching = "Connecting...", rejected = "Rejected", inactive = "No SIM",
@@ -56,7 +61,9 @@ end
 
 --[[- Make the status bar's line: the network's name on the left; four bars for the signal in brackets on the right
 (`[||..]`), with indicators before them: `SMS` on a cell which only carries messages, and `R` when roaming, each with a
-space after it (`SMS R [||..]`); and how many messages are new, in the middle, or the time when none are. On a
+space after it (`SMS R [||..]`); then, where the phone has an address on a cell which carries packets, a down and an up
+arrow and a space, each white when the phone has received (or sent) a packet since the bar last looked, and grey
+otherwise (characters 25 and 24 of the font); and how many messages are new, in the middle, or the time when none are. On a
 network the phone treats as its own (it isn't roaming there), the name is the SIM's own network's. Without a SIM, it
 says `No SIM`, and the bars are the strongest cell's, of any network (`strongest`). On a narrow screen, the name is cut
 short to leave room for the rest. The bar is dark grey.
@@ -110,23 +117,44 @@ local function line(info, width, colour, quiet, clock)
     if attached and info.messages_only == true then marks[#marks + 1] = "SMS" end
     if attached and info.roaming == true then marks[#marks + 1] = "R" end
     local mark = table.concat(marks, " ")
-    local right_width = #mark > 0 and #mark + 8 or 7
+
+    -- New messages, or the time when there are none, in grey: it's there to glance at.
+    local unread = tonumber(info.unread) or 0
+    local notice, notice_colour = clock, "8"
+    if unread > 0 then
+        notice, notice_colour = unread == 1 and "1 new msg" or ("%d new msgs"):format(unread), colour and "4" or "0"
+    end
+
+    -- How wide everything right of the name and the notice is: the indicators and a space, the arrows (if any) and a
+    -- space, and the bars and a space.
+    local function right_width_of(with_arrows)
+        return 7 + (with_arrows and 3 or 0) + (#mark > 0 and #mark + 1 or 0)
+    end
+    -- Whether the notice fits, with that (see below).
+    local function notice_fits(with_arrows)
+        return width - right_width_of(with_arrows) - 3 - #notice >= math.min(#name, 3)
+    end
+    -- Arrows for packets, down then up, as most phones have, where the phone has an address on a cell which carries
+    -- packets. Each lights up when the phone has received (or sent) one since the bar last looked. On a narrow screen,
+    -- they make way for new messages.
+    local arrows = attached and info.address ~= nil and info.messages_only ~= true
+    if arrows and unread > 0 and not notice_fits(true) and notice_fits(false) then arrows = false end
+
+    local right_width = right_width_of(arrows)
     local right = width - right_width + 1
     local room = width - 1
     if width >= right_width + 3 then
         room = width - right_width - 2
         put(right, mark, "0")
+        if arrows then
+            put(width - 9, "\25", lately(info.received_age) and "0" or "8")
+            put(width - 8, "\24", lately(info.sent_age) and "0" or "8")
+        end
         put(width - 6, "[", "0")
         put(width - 5, ("|"):rep(count), "0")
         put(width - 5 + count, ("."):rep(4 - count), "8")
         put(width - 1, "]", "0")
 
-        -- New messages, or the time when there are none, in grey: it's there to glance at.
-        local unread = tonumber(info.unread) or 0
-        local notice, notice_colour = clock, "8"
-        if unread > 0 then
-            notice, notice_colour = unread == 1 and "1 new msg" or ("%d new msgs"):format(unread), colour and "4" or "0"
-        end
         if notice then
             -- The notice goes in the middle of the screen, or as near to it as the name and the bars let it. The
             -- name makes way for new messages, but not for the time.

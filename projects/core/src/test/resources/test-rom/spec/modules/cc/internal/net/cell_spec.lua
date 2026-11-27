@@ -522,6 +522,27 @@ describe("Cellular networks", function()
         expect(#inbox_a):eq(0)
     end)
 
+    it("says when it last sent and received a packet, for the status bar, but not for messages", function()
+        local setup = operator { 0 }
+        local a, a_stack = setup.add_phone(1, 10, true)
+        local b = setup.add_phone(2, 20, true)
+        setup.net.advance(5)
+        local function quiet(phone)
+            local info = phone:info()
+            return (info.sent_age == nil or info.sent_age > 2) and (info.received_age == nil or info.received_age > 2)
+        end
+
+        -- A message, then long enough without anything else that each phone asks its cell whether it still knows it.
+        assert(a:send_message("2", "Hello, B"))
+        setup.net.advance(12)
+        expect({ quiet(a), quiet(b) }):same { true, true }
+
+        expect(setup.net.ping(a_stack, ip("10.0.0.60")).error):eq(nil)
+        local info = a:info()
+        expect({ info.sent_age < 1, info.received_age < 1 }):same { true, true }
+        expect(quiet(b)):eq(true)
+    end)
+
     it("survives bad frames, at cells and phones", function()
         local setup = operator { 0 }
         local phone, stack = setup.add_phone(1, 10)
