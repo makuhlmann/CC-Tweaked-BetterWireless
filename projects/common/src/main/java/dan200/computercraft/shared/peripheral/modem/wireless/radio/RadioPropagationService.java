@@ -7,8 +7,6 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 import dan200.computercraft.api.network.Packet;
 import dan200.computercraft.api.network.PacketReceiver;
 import dan200.computercraft.core.util.ThreadUtils;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
@@ -214,7 +212,7 @@ public final class RadioPropagationService {
         final List<Waiting> deliveries = new ArrayList<>(1);
         /** The radios to remember the path for. */
         final List<Ends> ends = new ArrayList<>(1);
-        @Nullable LongSet missing;
+        @Nullable MissingChunks missing;
         /** The largest budget of anything waiting for the link: how far to trace it. */
         double budget;
 
@@ -520,21 +518,15 @@ public final class RadioPropagationService {
 
         // Work out which chunks we need, and request any we don't know about.
         var missing = evaluation.missing;
-        if (missing == null) {
-            var chunks = new LongOpenHashSet();
-            PropagationModel.forEachProfileColumn(evaluation.from.x, evaluation.from.z, evaluation.to.x, evaluation.to.z, env,
-                (i, x, z) -> chunks.add(ChunkPos.pack(x >> 4, z >> 4)));
-            evaluation.missing = missing = chunks;
-        }
+        if (missing == null) evaluation.missing = missing = MissingChunks.between(evaluation.from, evaluation.to, env);
 
         var sources = heightSources();
-        missing.removeIf((long chunk) -> {
-            if (terrain.isKnown(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))) return true;
-            if (!heights.isFetching(chunk)) heights.request(chunk, sources, worker);
-            return false;
-        });
+        var complete = missing.update(
+            chunk -> terrain.isKnown(ChunkPos.getX(chunk), ChunkPos.getZ(chunk)),
+            chunk -> heights.request(chunk, sources, worker)
+        );
 
-        if (!missing.isEmpty() && tick - evaluation.started < settings.lookupTimeoutTicks()) return false;
+        if (!complete && tick - evaluation.started < settings.lookupTimeoutTicks()) return false;
 
         var from = evaluation.from;
         var to = evaluation.to;
@@ -543,7 +535,7 @@ public final class RadioPropagationService {
         // Links evaluated with incomplete information are only cached briefly, so we try again once we know more.
         // Links between dimensions are mostly between computers which stay where they are, so are kept for longer.
         var cacheTicks = evaluation.crossDimension ? settings.crossCacheTicks() : settings.cacheTicks();
-        if (!missing.isEmpty()) cacheTicks = Math.min(cacheTicks, 20);
+        if (!complete) cacheTicks = Math.min(cacheTicks, 20);
         links.put(evaluation.key, new CachedLink(path, tick + cacheTicks));
         evaluating.remove(evaluation.key);
         for (var ends : evaluation.ends) {
