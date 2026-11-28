@@ -146,6 +146,9 @@ final class DistantHorizonsHeightSource implements HeightSource {
             var heights = readChunk(repo, level, chunkX, chunkZ, cache, toHeights);
             // If DH doesn't have this chunk, it likely has little of the rest, so don't spend time asking.
             if (heights == null) return null;
+            // Remember this chunk too: reading the whole section takes a while, and if we're given up on before we're
+            // done, what's waiting for this chunk moves on to the generator, whose guess shouldn't stick.
+            known.put(chunkX, chunkZ, heights);
 
             var startX = chunkX & -SECTION_CHUNKS;
             var startZ = chunkZ & -SECTION_CHUNKS;

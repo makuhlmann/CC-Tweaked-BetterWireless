@@ -158,6 +158,8 @@ public class DistantHorizonsHeightSourceTest {
         var heights = readSection(repo, 5, 9, known);
         assertNotNull(heights);
         assertEquals(height(5, 9), heights.ground(0, 0));
+        // It's remembered here too, in case whatever asked for it gave up waiting.
+        assertSame(heights, known.get(5, 9));
 
         // DH loaded the section once, for all of it, and was given it back straight away.
         assertEquals(1, repo.loads);
