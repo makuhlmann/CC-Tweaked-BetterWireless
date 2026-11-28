@@ -20,13 +20,14 @@ import java.util.concurrent.Executor;
  * Heights of chunks in a single level which are not currently loaded.
  * <p>
  * This is filled from several places: chunks as they unload, and then {@linkplain HeightSource height sources} for
- * anything we've not seen. Lookups and insertions may happen on any thread.
+ * anything we've not seen (and anything else they read at the same time). Lookups and insertions may happen on any
+ * thread.
  * <p>
  * Chunks are kept by their packed {@link ChunkPos}. Don't key a {@link java.util.HashMap} with those: a boxed
  * {@link Long}'s hash is its chunk's {@code x ^ z}, which is the same for every chunk on a diagonal, and for many
  * chunks in any square, so a full cache ends up in a few hundred buckets. fastutil's maps mix the bits first.
  */
-final class LevelHeights {
+final class LevelHeights implements HeightSource.Known {
     private static final Logger LOG = LoggerFactory.getLogger(LevelHeights.class);
 
     /** How long to remember that we couldn't find a chunk, before trying again. */
@@ -105,6 +106,17 @@ final class LevelHeights {
         return heights;
     }
 
+    @Override
+    public @Nullable ChunkHeights get(int chunkX, int chunkZ) {
+        var heights = get(ChunkPos.pack(chunkX, chunkZ));
+        return heights != null && heights.isAvailable() ? heights : null;
+    }
+
+    @Override
+    public void put(int chunkX, int chunkZ, ChunkHeights heights) {
+        put(ChunkPos.pack(chunkX, chunkZ), heights);
+    }
+
     synchronized void put(long chunk, ChunkHeights heights) {
         // Don't replace data we already have with a worse guess.
         var existing = this.heights.getAndMoveToLast(chunk);
@@ -176,7 +188,7 @@ final class LevelHeights {
 
     private CompletableFuture<@Nullable ChunkHeights> fetch(List<HeightSource> sources, int index, int x, int z, Executor worker) {
         if (index >= sources.size()) return CompletableFuture.completedFuture(null);
-        return sources.get(index).fetch(level, x, z, worker)
+        return sources.get(index).fetch(level, x, z, this, worker)
             .exceptionally(e -> {
                 LOG.debug("Height source failed for chunk {}, {}", x, z, e);
                 return null;

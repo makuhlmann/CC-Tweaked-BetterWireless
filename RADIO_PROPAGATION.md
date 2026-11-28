@@ -376,8 +376,21 @@ space strength, as the hill's heights were forgotten and fetched again. Now:
 DH's API (`DhApi.Delayed.terrainRepo`, API 7.1) works on dedicated servers: the implementation accepts any loaded
 `IDhLevel`, including `DhServerLevel`, and server-side DH keeps full LOD data for every column it has generated. We map
 a `ServerLevel` to DH's wrapper by matching `getWrappedMcObject()`, then read a chunk at block resolution with
-`getAllTerrainDataAtChunkPos` and a soft cache. Columns are ordered top to bottom, so the first non-air point gives the
-surface and the first ground-like point the ground.
+`getAllTerrainDataAtChunkPos`. Columns are ordered top to bottom, so the first non-air point gives the surface and the
+first ground-like point the ground.
+
+**We read a whole section at a time, and keep none of DH's data.** To read any column, DH loads its full detail section
+from its database: 64×64 columns (4×4 chunks), about 1MiB, kept in the cache passed in. A link crosses only a few
+chunks of a section, but a phone being carried about moves its links sideways a little at a time, into the same
+sections at other chunks. So once a section is loaded, we read all 16 of its chunks into the height cache (16KiB as
+heights, against DH's 1MiB), skipping those we already know from a better source, and close DH's cache straight away,
+which hands the section's arrays back to DH's pool. Sibling requests already queued find their chunk known, and don't
+ask DH. If DH doesn't have the chunk asked for, the rest aren't read either.
+
+We used to keep one soft cache for the life of the server. It never let go of a section until the garbage collector ran
+short of memory: on a Tellus server, a few thousand sections held 4-5GB, the heap stayed full, and ticks took seconds
+while riding into new terrain. Bounding it to a few dozen sections would have fixed the memory, but a moving phone's
+links would then load most sections from DH's database again, on a thread which was already busy.
 
 Watch out for Y positions: `DhApiTerrainDataPoint`'s Javadoc says they are relative to the level's minimum height, which
 is true for points handed *to* DH by a world generator (Tellus writes them that way). But the terrain repository adds
@@ -388,7 +401,8 @@ every column is open sky reaching the top of the level, we check where that ends
 
 Two caveats from DH's source: the call is synchronous, hitting DH's database, and `getFullDataProvider().getAsync(pos)
 .get()` may queue LOD generation if nothing exists yet. So DH calls run on their own thread with a 2s timeout, falling
-through to the generator.
+through to the generator. A chunk which fell through keeps the generator's heights until another chunk of its section
+is read from DH (or it's forgotten), as nothing asks for a chunk again once its heights are known.
 
 DH is deliberately *not* the primary source. On-disk heightmaps are exact for anything generated, and much cheaper.
 DH's value is the area that was never generated as real chunks, which in a Tellus world with DH is most of it. The

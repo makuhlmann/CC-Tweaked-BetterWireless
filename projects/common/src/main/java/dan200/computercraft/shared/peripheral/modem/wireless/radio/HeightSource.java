@@ -28,16 +28,42 @@ public interface HeightSource {
      * @param level  The level the chunk is in.
      * @param chunkX The chunk's X coordinate.
      * @param chunkZ The chunk's Z coordinate.
+     * @param known  The heights we know in this level. A source which reads more chunks than it's asked for at once
+     *               may add them here, rather than read them again when they're asked for.
      * @param worker An executor for any slow work.
      * @return The chunk's heights, or {@code null} if this source doesn't know about this chunk.
      */
-    CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Executor worker);
+    CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Known known, Executor worker);
+
+    /**
+     * The heights we know of a level's chunks. This may be used from any thread.
+     */
+    interface Known {
+        /**
+         * Get the heights we know for a chunk.
+         *
+         * @param chunkX The chunk's X coordinate.
+         * @param chunkZ The chunk's Z coordinate.
+         * @return Its heights, or {@code null} if we don't know them (or know only that they couldn't be found).
+         */
+        @Nullable
+        ChunkHeights get(int chunkX, int chunkZ);
+
+        /**
+         * Remember a chunk's heights, unless we know better ones already.
+         *
+         * @param chunkX  The chunk's X coordinate.
+         * @param chunkZ  The chunk's Z coordinate.
+         * @param heights Its heights.
+         */
+        void put(int chunkX, int chunkZ, ChunkHeights heights);
+    }
 
     /**
      * Reads the heightmaps of chunks which have been generated and saved, without loading them. This uses the same
      * mechanism vanilla uses to check for structures in unloaded chunks, and runs on the chunk IO thread.
      */
-    HeightSource DISK = (level, chunkX, chunkZ, worker) -> {
+    HeightSource DISK = (level, chunkX, chunkZ, known, worker) -> {
         var heightmapsKey = "Heightmaps";
         var fields = new CollectFields(
             new FieldSelector(StringTag.TYPE, "Status"),
@@ -65,7 +91,7 @@ public interface HeightSource {
      * For the vanilla noise generator this is fairly expensive, so we only sample every fourth column. For terrain
      * generated from elevation data (such as Tellus), it is often very cheap.
      */
-    HeightSource GENERATOR = (level, chunkX, chunkZ, worker) -> CompletableFuture.<@Nullable ChunkHeights>supplyAsync(() -> {
+    HeightSource GENERATOR = (level, chunkX, chunkZ, known, worker) -> CompletableFuture.<@Nullable ChunkHeights>supplyAsync(() -> {
         var chunkSource = level.getChunkSource();
         var generator = chunkSource.getGenerator();
         var random = chunkSource.randomState();

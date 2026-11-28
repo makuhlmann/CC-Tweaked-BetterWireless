@@ -7,15 +7,17 @@ package dan200.computercraft.shared.peripheral.modem.wireless.radio;
 import com.seibel.distanthorizons.api.DhApi;
 import com.seibel.distanthorizons.api.enums.worldGeneration.EDhApiLevelType;
 import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataCache;
+import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataRepo;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiWorldProxy;
-import com.seibel.distanthorizons.api.objects.DhApiResult;
 import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
 import dan200.computercraft.core.util.ThreadUtils;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.ref.WeakReference;
 import java.util.Map;
@@ -25,6 +27,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -39,21 +42,32 @@ import java.util.function.Supplier;
  * on a dedicated thread, and we give up on any request which takes too long. A request which was given up on before
  * its turn came isn't read at all.
  * <p>
+ * DH reads its data a section at a time, and we read every chunk of a section while it's loaded, then let DH have its
+ * memory back (see {@link #readSection}). Nothing of DH's is kept between reads: this object outlives the server in
+ * single player.
+ * <p>
  * This class references the DH API directly, and so must only be loaded when DH is installed. Use
  * {@link DistantHorizonsHeights#get()} instead.
  */
 final class DistantHorizonsHeightSource implements HeightSource {
+    private static final Logger LOG = LoggerFactory.getLogger(DistantHorizonsHeightSource.class);
+
     private static final long TIMEOUT_SECONDS = 2;
+
+    /**
+     * How many chunks wide DH's sections of full detail data are: 64 columns, at detail level 6. To read any column, DH
+     * loads its whole section from its database, which takes about 1MiB.
+     */
+    static final int SECTION_CHUNKS = 4;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(ThreadUtils.lowPriorityFactory("Radio-DistantHorizons"));
 
-    // These are only used on the executor's thread.
-    private @Nullable IDhApiTerrainDataCache cache;
+    // This is only used on the executor's thread.
     private final Levels levels = new Levels();
 
     @Override
-    public CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Executor worker) {
-        return supplyUnlessLate(() -> read(level, chunkX, chunkZ), executor, TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    public CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Known known, Executor worker) {
+        return supplyUnlessLate(() -> read(level, chunkX, chunkZ, known), executor, TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /**
@@ -80,7 +94,7 @@ final class DistantHorizonsHeightSource implements HeightSource {
         return result.completeOnTimeout(null, timeout, unit);
     }
 
-    private @Nullable ChunkHeights read(ServerLevel level, int chunkX, int chunkZ) {
+    private @Nullable ChunkHeights read(ServerLevel level, int chunkX, int chunkZ, Known known) {
         var repo = DhApi.Delayed.terrainRepo;
         var world = DhApi.Delayed.worldProxy;
         if (repo == null || world == null || !world.worldLoaded()) return null;
@@ -88,23 +102,94 @@ final class DistantHorizonsHeightSource implements HeightSource {
         var wrapper = levels.find(world, level);
         if (wrapper == null) return null;
 
-        var cache = this.cache;
-        if (cache == null) this.cache = cache = repo.createSoftCache();
-
-        DhApiResult<DhApiTerrainDataPoint[][][]> result;
+        var minY = level.getMinY();
+        var maxY = level.getMaxY();
+        var isGround = Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque();
         try {
-            result = repo.getAllTerrainDataAtChunkPos(wrapper, chunkX, chunkZ, cache);
+            return readSection(repo, wrapper, chunkX, chunkZ, known, data -> toHeights(data, minY, maxY, isGround));
         } catch (RuntimeException e) {
             // DH may have unloaded the level since we found it, so look for it again next time.
             levels.forget(level);
             throw e;
         }
-        if (!result.success) levels.forget(level);
+    }
+
+    /**
+     * Read a chunk's heights, and those of the rest of its section while DH has it loaded.
+     * <p>
+     * A link crosses only a few chunks of each section, but there are usually more links nearby wanting the others: a
+     * phone being carried about moves its links sideways a little at a time, into the same sections. Keeping a section
+     * loaded for them takes about 1MiB, where the heights of its 16 chunks take 16KiB, and DH's cache only lets go of a
+     * section when memory runs short, which is when keeping it costs the most. So we read every chunk now, remember
+     * them, and give the section back to DH at once.
+     * <p>
+     * The chunks of a section are often asked for together, so by the time this one's turn comes, it may have been read
+     * with another already. Then DH isn't asked at all.
+     *
+     * @param repo      DH's terrain repository.
+     * @param level     DH's level.
+     * @param chunkX    The chunk's X coordinate.
+     * @param chunkZ    The chunk's Z coordinate.
+     * @param known     The heights we know. Chunks we know as well as DH could are skipped, and the others are added.
+     * @param toHeights Convert DH's data for a chunk into heights, or {@code null} if it doesn't have all of it.
+     * @return The chunk's heights, or {@code null} if DH doesn't have them.
+     * @throws IllegalStateException If DH couldn't read the chunk, perhaps as it has unloaded the level.
+     */
+    static @Nullable ChunkHeights readSection(
+        IDhApiTerrainDataRepo repo, IDhApiLevelWrapper level, int chunkX, int chunkZ, Known known,
+        Function<DhApiTerrainDataPoint[][][], @Nullable ChunkHeights> toHeights
+    ) {
+        var already = known.get(chunkX, chunkZ);
+        if (asGoodAsOurs(already)) return already;
+
+        try (var cache = repo.createSoftCache()) {
+            var heights = readChunk(repo, level, chunkX, chunkZ, cache, toHeights);
+            // If DH doesn't have this chunk, it likely has little of the rest, so don't spend time asking.
+            if (heights == null) return null;
+
+            var startX = chunkX & -SECTION_CHUNKS;
+            var startZ = chunkZ & -SECTION_CHUNKS;
+            for (var x = startX; x < startX + SECTION_CHUNKS; x++) {
+                for (var z = startZ; z < startZ + SECTION_CHUNKS; z++) {
+                    if ((x == chunkX && z == chunkZ) || asGoodAsOurs(known.get(x, z))) continue;
+
+                    ChunkHeights other;
+                    try {
+                        other = readChunk(repo, level, x, z, cache, toHeights);
+                    } catch (RuntimeException e) {
+                        // We have the chunk we were asked for. The others can be read when they're asked for.
+                        LOG.debug("Failed to read chunk {}, {} from Distant Horizons", x, z, e);
+                        return heights;
+                    }
+                    if (other != null) known.put(x, z, other);
+                }
+            }
+
+            return heights;
+        }
+    }
+
+    /**
+     * Whether we know a chunk's heights as well as DH could tell us.
+     *
+     * @param heights What we know of the chunk.
+     * @return Whether there's no need to ask DH.
+     */
+    private static boolean asGoodAsOurs(@Nullable ChunkHeights heights) {
+        return heights != null && heights.isAvailable() && heights.source().compareTo(ChunkHeights.Source.DISTANT_HORIZONS) <= 0;
+    }
+
+    private static @Nullable ChunkHeights readChunk(
+        IDhApiTerrainDataRepo repo, IDhApiLevelWrapper level, int chunkX, int chunkZ, IDhApiTerrainDataCache cache,
+        Function<DhApiTerrainDataPoint[][][], @Nullable ChunkHeights> toHeights
+    ) {
+        var result = repo.getAllTerrainDataAtChunkPos(level, chunkX, chunkZ, cache);
+        if (!result.success) {
+            throw new IllegalStateException("Distant Horizons couldn't read chunk " + chunkX + ", " + chunkZ + ": " + result.message);
+        }
 
         var data = result.payload;
-        if (!result.success || data == null) return null;
-
-        return toHeights(data, level.getMinY(), level.getMaxY(), Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque());
+        return data == null ? null : toHeights.apply(data);
     }
 
     /**

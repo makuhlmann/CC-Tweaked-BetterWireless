@@ -27,7 +27,7 @@ class LevelHeightsTest {
         int calls;
 
         @Override
-        public CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Executor worker) {
+        public CompletableFuture<@Nullable ChunkHeights> fetch(ServerLevel level, int chunkX, int chunkZ, Known known, Executor worker) {
             calls++;
             var future = new CompletableFuture<@Nullable ChunkHeights>();
             fetching.put(ChunkPos.pack(chunkX, chunkZ), future);
@@ -136,5 +136,24 @@ class LevelHeightsTest {
         var missing = cache.get(ChunkPos.pack(1, 0));
         assertNotNull(missing);
         assertFalse(missing.isAvailable());
+    }
+
+    @Test
+    void sourcesMayAddChunksTheyWerentAskedFor() {
+        var cache = newHeights();
+        var asked = heights(ChunkHeights.Source.DISTANT_HORIZONS);
+        var nextDoor = heights(ChunkHeights.Source.DISTANT_HORIZONS);
+        HeightSource source = (level, chunkX, chunkZ, known, worker) -> {
+            known.put(chunkX + 1, chunkZ, nextDoor);
+            return CompletableFuture.completedFuture(asked);
+        };
+
+        assertTrue(cache.request(ChunkPos.pack(4, 8), List.of(source), Runnable::run));
+        assertSame(asked, cache.get(4, 8));
+        assertSame(nextDoor, cache.get(5, 8));
+
+        // Sources only see heights which were found.
+        cache.put(ChunkPos.pack(6, 8), ChunkHeights.unavailable());
+        assertNull(cache.get(6, 8));
     }
 }
