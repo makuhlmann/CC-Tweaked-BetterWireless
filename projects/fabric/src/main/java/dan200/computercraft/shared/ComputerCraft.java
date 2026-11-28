@@ -119,8 +119,15 @@ public class ComputerCraft {
         ServerTickEvents.START_SERVER_TICK.register(s -> CommonHooks.onServerTickEnd());
         ServerChunkEvents.CHUNK_UNLOAD.register((l, c) -> CommonHooks.onServerChunkUnload(c));
         ServerChunkEvents.CHUNK_LOAD.register((l, c, generated) -> CommonHooks.onServerChunkLoad(c));
-        ServerChunkEvents.FULL_CHUNK_STATUS_CHANGE.register((level, chunk, oldStatus, newStatus) ->
-            CommonHooks.onChunkTicketLevelChanged(level, chunk.getPos().pack(), ChunkLevel.byStatus(oldStatus), ChunkLevel.byStatus(newStatus), chunk));
+        // Fabric passes the chunk its holder has at FULL, which may be gone already (going from FULL to BLOCK_TICKING,
+        // say), and then nothing says which chunk it was. That's only ever a chunk which was fully loaded and goes on
+        // being so, or stops being: our hooks do nothing for the first, and a chunk which actually unloads is handled by
+        // CHUNK_UNLOAD too. A chunk which becomes fully loaded always comes with its chunk.
+        ServerChunkEvents.FULL_CHUNK_STATUS_CHANGE.register((level, chunk, oldStatus, newStatus) -> {
+            //noinspection ConstantValue
+            if (chunk == null) return;
+            CommonHooks.onChunkTicketLevelChanged(level, chunk.getPos().pack(), ChunkLevel.byStatus(oldStatus), ChunkLevel.byStatus(newStatus), chunk);
+        });
 
         PlayerBlockBreakEvents.BEFORE.register(FabricCommonHooks::onBlockDestroy);
         UseBlockCallback.EVENT.register(CommonHooks::onUseBlock);
