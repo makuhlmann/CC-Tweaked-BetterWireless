@@ -13,6 +13,7 @@ import dan200.computercraft.shared.config.Config;
 import dan200.computercraft.shared.peripheral.modem.ModemPeripheral;
 import dan200.computercraft.shared.peripheral.modem.ModemState;
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioAntenna;
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioSettings;
 
 import java.util.Optional;
 
@@ -114,6 +115,25 @@ public abstract class WirelessModemPeripheral extends ModemPeripheral implements
     @LuaFunction("getTransmitPower")
     public final Object[] getTransmitPowerForLua() {
         return new Object[]{ getSetTransmitPower(), Math.max(MIN_TRANSMIT_POWER, getMaxTransmitPower()), MIN_TRANSMIT_POWER };
+    }
+
+    /**
+     * Get the weakest signal this modem can hear, in dBm. Pocket computers' and turtles' modems hear less than placed
+     * computers': they need a stronger signal. While a thunderstorm rages, every modem needs a signal stronger still.
+     *
+     * @return The weakest signal it hears, in dBm.
+     * @cc.usage Say how much stronger than it needs to be a message arrived.
+     *
+     * <pre>{@code
+     * local modem = peripheral.find("modem", function(_, m) return m.isWireless() end)
+     * modem.open(123)
+     * local _, _, _, _, _, _, signal = os.pullEvent("modem_message")
+     * print(("%.1f dB to spare"):format(signal - modem.getSensitivity()))
+     * }</pre>
+     */
+    @LuaFunction
+    public final double getSensitivity() {
+        return RadioSettings.sensitivity(this);
     }
 
     @Override

@@ -30,13 +30,21 @@ local stale = false
 -- again as soon as the program beneath it waits for an event, rather than when it next would.
 local function touch() stale = true end
 
+-- The weakest signal a placed computer's modem hears, in dBm, for which the bars go from -100 (one) to -70 (four).
+local PLACED_SENSITIVITY = -100
+
 --[[- Get how many of four bars a signal gets, as the monitor draws them.
 
+The bars are a step of 10 dB each, the last going as the modem stops hearing: for a placed computer's, four from -70 dBm
+and one from -100 dBm. A pocket computer's or a turtle's modem hears less, so its bars are moved up to match.
+
 @tparam number|nil signal The signal's strength, in dBm.
+@tparam[opt] number sensitivity The weakest signal the modem hears, in dBm (see the modem's `getSensitivity`), if known.
 @treturn number From 0 to 4.
 ]]
-local function signal_bars(signal)
+local function signal_bars(signal, sensitivity)
     if type(signal) ~= "number" then return 0 end
+    if type(sensitivity) == "number" then signal = signal - (sensitivity - PLACED_SENSITIVITY) end
     if signal >= -70 then return 4 elseif signal >= -80 then return 3 elseif signal >= -90 then return 2
     elseif signal >= -100 then return 1 else return 0 end
 end
@@ -112,7 +120,7 @@ local function line(info, width, colour, quiet, clock)
     -- A cell which has gone quiet for now gets no bars: the network's name stays, as the phone isn't searching yet.
     local signal = attached and not info.fading and info.signal or nil
     if not info.network and type(info.strongest) == "table" then signal = info.strongest.signal end
-    local count = signal_bars(signal)
+    local count = signal_bars(signal, info.sensitivity)
     local marks = {}
     if attached and info.messages_only == true then marks[#marks + 1] = "SMS" end
     if attached and info.roaming == true then marks[#marks + 1] = "R" end

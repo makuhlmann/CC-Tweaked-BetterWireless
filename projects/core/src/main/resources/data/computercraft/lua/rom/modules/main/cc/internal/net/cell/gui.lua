@@ -441,7 +441,7 @@ local function networks_screen()
             for i, network in ipairs(networks) do
                 local tail
                 if network.signal then
-                    local count = bar.signal_bars(network.signal)
+                    local count = bar.signal_bars(network.signal, info.sensitivity)
                     tail = { { ("|"):rep(count), c(colours.lime) }, { ("."):rep(4 - count), colours.grey } }
                 else
                     tail = { { "   -", colours.lightGrey } }

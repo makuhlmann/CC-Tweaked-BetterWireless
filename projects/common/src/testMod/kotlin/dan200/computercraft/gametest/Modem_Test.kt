@@ -22,6 +22,7 @@ import dan200.computercraft.shared.peripheral.modem.wired.CableModemVariant
 import dan200.computercraft.shared.peripheral.modem.wired.WiredModemFullBlockEntity
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.BlockRadioProperties
 import dan200.computercraft.shared.peripheral.modem.wireless.radio.DimensionMapping
+import dan200.computercraft.shared.peripheral.modem.wireless.radio.RadioSettings
 import dan200.computercraft.test.core.assertArrayEquals
 import dan200.computercraft.test.core.computer.LuaTaskContext
 import dan200.computercraft.test.core.computer.getApi
@@ -168,6 +169,9 @@ class Modem_Test {
             // And back to the default, given none.
             assertEquals(Config.radioTransmitPower, (callPeripheral(modem, "setTransmitPower")!![0] as Number).toDouble())
             assertEquals(listOf(Config.radioTransmitPower, Config.radioMaxTransmitPower, -30.0), power())
+
+            // And hear as weak a signal as any modem.
+            assertEquals(RadioSettings.SENSITIVITY, (callPeripheral(modem, "getSensitivity")!![0] as Number).toDouble())
         }
     }
 

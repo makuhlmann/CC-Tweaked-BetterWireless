@@ -148,6 +148,15 @@ local function radio_modem()
     if found_ender then return found_ender, "ender" end
 end
 
+--[[ The weakest signal this computer's radio modem hears, in dBm, if it has one. A pocket computer's or a turtle's hears
+less than a placed computer's, and the bars are drawn for it. ]]
+local function modem_sensitivity()
+    local modem = radio_modem()
+    if not modem then return nil end
+    local ok, sensitivity = pcall(peripheral.call, modem, "getSensitivity")
+    return ok and type(sensitivity) == "number" and sensitivity or nil
+end
+
 --[[ A modem which goes away takes all its interfaces with it, including those the phone and the cell's tower are on,
 which the network stack doesn't make again by itself. This happens whenever the modem's block is replaced, such as
 when it's moved (Sable copies a block to its new place, and then removes the old one). So when a modem comes, put them
@@ -851,6 +860,7 @@ function api.info()
     info.fading = info.fading == true
     if type(info.sent_age) ~= "number" then info.sent_age = nil end
     if type(info.received_age) ~= "number" then info.received_age = nil end
+    info.sensitivity = modem_sensitivity()
     info.unread = read_cached("unread", INBOX_FILE, function()
         local unread = 0
         for _, message in ipairs(read_messages()) do

@@ -1620,6 +1620,9 @@ cell = {
      - `messages_only`: whether that cell only carries messages (a satellite, say), so there's no route for packets;
      - `sent_age` and `received_age`: how long ago, in seconds, the phone last sent and received a packet (not what it
        and its cell say to each other, nor messages), if it has;
+     - `sensitivity`: the weakest signal (dBm) the computer's radio modem hears, if it has one: a pocket computer's or
+       a turtle's needs a stronger signal than a placed computer's. The bars are drawn from it, one for each 10 dB:
+       four from 30 dB above it;
      - `roaming`: whether that's another network than the SIM's own (and not one it treats as its own);
      - `partners` and `equivalent`: the networks the SIM's own has agreements with, as sets of names, and those of them
        the phone treats as its own network (it isn't roaming there);

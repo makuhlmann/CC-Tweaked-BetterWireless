@@ -478,6 +478,25 @@ describe("The cell program's GUI", function()
             expect((bar.line(info, 26, true))):eq(" No SIM            [....] ")
         end)
 
+        it("draws a weaker modem's bars for what it hears", function()
+            local bar = require "cc.internal.net.cell.bar"
+            -- A placed computer's modem: four bars from -70 dBm, and one from -100, the weakest it hears.
+            local placed = {}
+            for i, signal in ipairs { -70, -71, -80.5, -100, -101 } do placed[i] = bar.signal_bars(signal) end
+            expect(placed):same { 4, 3, 2, 1, 0 }
+            expect(bar.signal_bars(-70, -100)):eq(4)
+
+            -- A pocket computer's hears 7 dB less, so each bar is 7 dB higher: the last goes as it stops hearing.
+            local pocket = {}
+            for i, signal in ipairs { -63, -64, -73.5, -93, -94 } do pocket[i] = bar.signal_bars(signal, -93) end
+            expect(pocket):same { 4, 3, 2, 1, 0 }
+
+            local info = { state = "attached", network = "ACME", signal = -68, serving_network = "ACME", unread = 0 }
+            expect((bar.line(info, 26, true))):eq(" ACME" .. (" "):rep(14) .. "[||||] ")
+            info.sensitivity = -93
+            expect((bar.line(info, 26, true))):eq(" ACME" .. (" "):rep(14) .. "[|||.] ")
+        end)
+
         it("marks roaming", function()
             local phone = fake_phone()
             phone.info.roaming, phone.info.serving_network, phone.info.signal = true, "BETA", -95
