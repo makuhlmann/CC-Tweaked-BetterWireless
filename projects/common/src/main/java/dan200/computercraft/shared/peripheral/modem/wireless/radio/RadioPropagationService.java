@@ -28,8 +28,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -78,6 +77,9 @@ public final class RadioPropagationService {
     /** The maximum number of links to remember. */
     private static final int MAX_CACHED_LINKS = 1 << 14;
 
+    /** Makes the threads which ask the world generator for terrain heights (see {@link TerrainWorkers}). */
+    private static final ThreadFactory GENERATOR_THREADS = ThreadUtils.lowPriorityFactory("Radio-Terrain");
+
     /** How long before the next tick is due a run between ticks must stop, in nanoseconds. */
     private static final long WAKE_MARGIN_NANOS = 1_000_000;
 
@@ -100,10 +102,12 @@ public final class RadioPropagationService {
     private final RecentLinks recent = new RecentLinks(MAX_CACHED_LINKS);
     private final ArrayDeque<Evaluation> pending = new ArrayDeque<>();
     private final Map<ResourceKey<Level>, LevelHeights> heights = new ConcurrentHashMap<>();
-    private final ExecutorService worker = Executors.newSingleThreadExecutor(ThreadUtils.lowPriorityFactory("Radio-Terrain"));
 
     /** Written on the server thread, read by computer threads when transmitting. */
     private volatile RadioSettings settings = RadioSettings.fromConfig();
+
+    /** The threads which ask the world generator for terrain heights. This is only used on the server thread. */
+    private TerrainWorkers generatorThreads = new TerrainWorkers(settings.generatorThreads(), GENERATOR_THREADS);
 
     /** Written on the server thread, read by computer threads to see whether a cached link has expired. */
     private volatile long tick;
@@ -512,9 +516,8 @@ public final class RadioPropagationService {
     }
 
     public void close() {
-        worker.shutdownNow();
         try {
-            if (!worker.awaitTermination(1, TimeUnit.SECONDS)) LOG.warn("Radio terrain worker did not stop in time.");
+            if (!generatorThreads.shutdownNow(1, TimeUnit.SECONDS)) LOG.warn("Radio terrain workers did not stop in time.");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -534,6 +537,11 @@ public final class RadioPropagationService {
         if (settings.heightCacheChunks() != heightCacheChunks) {
             heightCacheChunks = settings.heightCacheChunks();
             for (var levelHeights : heights.values()) levelHeights.setCapacity(heightCacheChunks);
+        }
+        // Or with another number of threads to ask the world generator with. Those we have finish what they've been
+        // given, and then stop on their own.
+        if (settings.generatorThreads() != generatorThreads.count()) {
+            generatorThreads = new TerrainWorkers(settings.generatorThreads(), GENERATOR_THREADS);
         }
 
         // Links left over carry on between ticks, if the server has time.
@@ -786,7 +794,7 @@ public final class RadioPropagationService {
         var sources = heightSources();
         var complete = missing.update(
             chunk -> terrain.isKnown(ChunkPos.getX(chunk), ChunkPos.getZ(chunk)),
-            chunk -> heights.request(chunk, sources, worker)
+            chunk -> heights.request(chunk, sources, generatorThreads.forChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk)))
         );
 
         if (!complete && tick - evaluation.started < settings.lookupTimeoutTicks()) return false;

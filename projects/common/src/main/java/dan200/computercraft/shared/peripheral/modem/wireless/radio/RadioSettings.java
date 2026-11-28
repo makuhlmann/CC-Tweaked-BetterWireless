@@ -38,6 +38,7 @@ import java.util.Map;
  * @param useGenerator       Whether to ask the chunk generator about terrain we have no other data for.
  * @param useDistantHorizons Whether to read terrain from Distant Horizons.
  * @param heightCacheChunks  How many unloaded chunks' terrain heights to remember in each level.
+ * @param generatorThreads   How many threads ask the world generator for terrain heights.
  */
 public record RadioSettings(
     RadioEnvironment environment,
@@ -56,7 +57,8 @@ public record RadioSettings(
     int lookupTimeoutTicks,
     boolean useGenerator,
     boolean useDistantHorizons,
-    int heightCacheChunks
+    int heightCacheChunks,
+    int generatorThreads
 ) {
     /**
      * The weakest signal a wireless modem on a placed computer can hear, in dBm. Weaker devices hear less (see
@@ -106,7 +108,8 @@ public record RadioSettings(
             Config.radioLookupTimeoutTicks,
             Config.radioUseGenerator,
             Config.radioUseDistantHorizons,
-            Config.radioHeightCacheChunks
+            Config.radioHeightCacheChunks,
+            Config.radioGeneratorThreads
         );
     }
 

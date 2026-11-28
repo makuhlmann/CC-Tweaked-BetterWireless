@@ -100,6 +100,7 @@ public final class ConfigSpec {
     public static final ConfigFile.Value<Integer> radioMoveTolerance;
     public static final ConfigFile.Value<Integer> radioLookupTimeoutTicks;
     public static final ConfigFile.Value<Boolean> radioUseGenerator;
+    public static final ConfigFile.Value<Integer> radioGeneratorThreads;
     public static final ConfigFile.Value<Boolean> radioUseDistantHorizons;
     public static final ConfigFile.Value<Integer> radioHeightCacheChunks;
     public static final ConfigFile.Value<Integer> maxNotesPerTick;
@@ -553,9 +554,17 @@ public final class ConfigSpec {
             radioUseGenerator = builder
                 .comment("""
                     Ask the world generator for the height of terrain which has never been generated.
-                    This is cheap for worlds generated from elevation data (e.g. Tellus) but somewhat
-                    expensive for vanilla terrain.""")
+                    This is somewhat expensive for vanilla terrain, and for Tellus, which works out the
+                    rivers and lakes of each new area first.""")
                 .define("use_generator", Config.radioUseGenerator);
+
+            radioGeneratorThreads = builder
+                .comment("""
+                    How many threads ask the world generator for terrain heights, each for its own
+                    areas of the world. Links into terrain nobody has visited wait for these (up to
+                    lookup_timeout), and are traced as if there were nothing there if they're too slow.
+                    The threads run at low priority, and stop when they have nothing to do.""")
+                .defineInRange("generator_threads", Config.radioGeneratorThreads, 1, 16);
 
             radioUseDistantHorizons = builder
                 .comment("Read the height of unloaded terrain from Distant Horizons' LODs, if installed.")
@@ -731,6 +740,7 @@ public final class ConfigSpec {
         Config.radioMoveTolerance = radioMoveTolerance.get();
         Config.radioLookupTimeoutTicks = radioLookupTimeoutTicks.get();
         Config.radioUseGenerator = radioUseGenerator.get();
+        Config.radioGeneratorThreads = radioGeneratorThreads.get();
         Config.radioUseDistantHorizons = radioUseDistantHorizons.get();
         Config.radioHeightCacheChunks = radioHeightCacheChunks.get();
 

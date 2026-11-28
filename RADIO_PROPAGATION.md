@@ -318,7 +318,11 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
 
    Where the terrain comes from matters here: in a Tellus world, the generator's heights (`getBaseHeight`) come with
    Tellus's river and lake solver, which builds each new region's hydrology from its elevation tiles. A profile riding
-   into new regions had the radio's one generator thread 94% busy in it, with 224 chunks queued.
+   into new regions had the radio's one generator thread 94% busy in it, with 224 chunks queued. So the generator is
+   now asked on `generator_threads` threads (2 by default), each taking its own areas, 1024 blocks wide, with
+   neighbouring areas on different threads (`TerrainWorkers`). Tellus works out each area once, and anything else
+   asking about it waits, so threads taking turns from one queue would mostly wait for each other: a link's chunks are
+   asked for in order along it, mostly in the same area at once.
 6. **Open sky isn't walked block by block.** The straight-through walk of a long link crosses thousands of chunks,
    mostly high above the ground. Where it's above the top of a chunk whose heights are known (`TerrainView.chunkTop`,
    the highest of its columns' heights), or, in a chunk with no heights, above the profile's heights that the walk
@@ -366,7 +370,8 @@ above both as air. The heights come from, in order:
    chunks). This reads only the `Status` and `Heightmaps` NBT fields, asynchronously on the chunk IO thread, and never
    loads the chunk. For any chunk that has been generated, this is exact and cheap.
 4. **Distant Horizons**, if installed (see below).
-5. **The chunk generator** (`ChunkGenerator.getBaseHeight`) on a worker thread, sampled every 4 blocks. This only
+5. **The chunk generator** (`ChunkGenerator.getBaseHeight`) on low-priority threads (`generator_threads`, each taking
+   its own 1024-block areas), sampled every 4 blocks. This only
    knows about terrain, not trees or buildings, but works for chunks that have never been generated.
 6. Otherwise, **interpolation** between known samples.
 
@@ -423,9 +428,11 @@ filter), and only loaded when DH is installed.
 
 ### Tellus
 
-Tellus's `EarthChunkGenerator.getBaseHeight` samples its elevation data directly, so the generator source gives real
-terrain heights for never-generated chunks even without DH. However, it goes through `sampleSurfaceHeight`, which may
-download tiles, which is why this source only ever runs on a worker thread.
+Tellus's `EarthChunkGenerator.getBaseHeight` gives real terrain heights for never-generated chunks, even without DH.
+It isn't cheap, though: in Tellus 0.8.4, it goes through `resolveFastColumnHeights`, which works out the rivers and
+lakes of the area first (`WaterSurfaceResolver`, `InlandHydrologyPlanner`, `RiverNetwork`), whichever heightmap is
+asked for. That reads and decodes elevation tiles over a wide area (and may download them), and takes seconds for
+each new area, which is why this source only runs on its own threads.
 
 **Suggestion for Tellus:** it already has private `sampleSurfaceHeightMemoryOnly` and `sampleSurfaceHeightLocalOnly`
 variants. Exposing a small public API, something like `TellusTerrain.surfaceHeight(level, x, z, CacheMode)` returning
@@ -481,6 +488,7 @@ Everything lives under `[peripheral.radio]` in the server config:
 | `move_tolerance` | 16 | How far (blocks) two radios may have moved since their link was traced for a packet between them to go at once with that path, while it's traced again in the background. 0 makes every such packet wait. |
 | `lookup_timeout` | 40 | Maximum ticks to wait for unloaded terrain heights. |
 | `use_generator`, `use_distant_horizons` | `true` | Enable those height sources. |
+| `generator_threads` | 2 | How many low-priority threads ask the world generator for heights, each for its own 1024-block areas. Takes effect at once. |
 | `height_cache_chunks` | 262144 | How many unloaded chunks' heights to remember per dimension (~1KiB each). The log warns when the links in use need more. |
 
 ### Keeping computers running

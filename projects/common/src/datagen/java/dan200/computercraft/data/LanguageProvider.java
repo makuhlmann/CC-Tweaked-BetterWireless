@@ -319,6 +319,7 @@ public final class LanguageProvider implements DataProvider {
         addConfigEntry(ConfigSpec.radioMoveTolerance, "Move tolerance (blocks)");
         addConfigEntry(ConfigSpec.radioLookupTimeoutTicks, "Terrain lookup timeout (ticks)");
         addConfigEntry(ConfigSpec.radioUseGenerator, "Use world generator heights");
+        addConfigEntry(ConfigSpec.radioGeneratorThreads, "World generator threads");
         addConfigEntry(ConfigSpec.radioUseDistantHorizons, "Use Distant Horizons LODs");
         addConfigEntry(ConfigSpec.radioHeightCacheChunks, "Terrain height cache (chunks)");
         addConfigEntry(ConfigSpec.maxNotesPerTick, "Maximum notes that a computer can play at once");

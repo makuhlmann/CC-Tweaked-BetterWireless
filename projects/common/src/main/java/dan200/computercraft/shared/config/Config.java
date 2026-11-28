@@ -59,6 +59,7 @@ public final class Config {
     public static int radioMoveTolerance = 16;
     public static int radioLookupTimeoutTicks = 40;
     public static boolean radioUseGenerator = true;
+    public static int radioGeneratorThreads = 2;
     public static boolean radioUseDistantHorizons = true;
     public static int radioHeightCacheChunks = 262_144;
     public static int maxNotesPerTick = 8;
