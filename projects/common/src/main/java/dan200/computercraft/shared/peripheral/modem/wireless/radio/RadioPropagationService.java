@@ -331,7 +331,8 @@ public final class RadioPropagationService {
         final LinkKey key;
         final ServerLevel level;
         final Vec3 from, to;
-        final long started;
+        /** When it started waiting for terrain, which it does for up to {@link RadioSettings#lookupTimeoutTicks()}. */
+        long started;
         /** Whether this is for a packet from another dimension, whose links are remembered for longer. */
         final boolean crossDimension;
         final List<Waiting> deliveries = new ArrayList<>(1);
@@ -689,6 +690,7 @@ public final class RadioPropagationService {
      */
     private void refresh(ServerLevel level, LinkKey key, Ends ends, double budget) {
         var evaluation = evaluating.get(key);
+        var created = evaluation == null;
         if (evaluation == null) {
             // Too busy: the next packet between them will try again.
             if (pending.size() >= MAX_EVALUATIONS) return;
@@ -699,11 +701,15 @@ public final class RadioPropagationService {
         evaluation.budget = Math.max(evaluation.budget, budget);
         addEnds(evaluation, ends);
 
-        if (recent.refreshing(ends.sender(), ends.receiver(), evaluation) instanceof Evaluation previous
+        if (recent.refreshing(ends.sender(), ends.receiver(), evaluation, tick) instanceof Evaluation previous
             && previous.deliveries.isEmpty() && previous.ends.stream().allMatch(e -> e.between(ends.sender(), ends.receiver()))) {
             evaluating.remove(previous.key, previous);
             pending.remove(previous);
         }
+
+        // It waits for terrain no longer than the trace it replaced would have, so one is traced at least that
+        // often, however often the two radios move and talk (see RecentLinks).
+        if (created) evaluation.started = recent.refreshingSince(ends.sender(), ends.receiver(), tick);
     }
 
     /**

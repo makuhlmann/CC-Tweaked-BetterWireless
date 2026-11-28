@@ -101,15 +101,53 @@ class RecentLinksTest {
         var first = new Object();
         var second = new Object();
 
-        assertNull(recent.refreshing(PHONE, CELL, first));
+        assertNull(recent.refreshing(PHONE, CELL, first, 100));
         // The same trace again isn't a replacement.
-        assertNull(recent.refreshing(CELL, PHONE, first));
+        assertNull(recent.refreshing(CELL, PHONE, first, 101));
         // A newer one replaces it, either way round.
-        assertSame(first, recent.refreshing(CELL, PHONE, second));
+        assertSame(first, recent.refreshing(CELL, PHONE, second, 102));
 
         // The older one finishing changes nothing: the newer one still waits.
         recent.refreshed(PHONE, CELL, first);
-        assertSame(second, recent.refreshing(PHONE, CELL, new Object()));
+        assertSame(second, recent.refreshing(PHONE, CELL, new Object(), 103));
+    }
+
+    @Test
+    void refreshesWaitFromTheFirstTheyReplaced() {
+        var recent = new RecentLinks(16);
+        assertEquals(100, recent.refreshingSince(PHONE, CELL, 100));
+
+        // A phone keeps moving, and each packet replaces the trace waiting before: they all wait from the first.
+        var first = new Object();
+        recent.refreshing(PHONE, CELL, first, 100);
+        for (var tick = 105; tick <= 130; tick += 5) recent.refreshing(CELL, PHONE, new Object(), tick);
+        assertEquals(100, recent.refreshingSince(PHONE, CELL, 130));
+        // Another pair waits on its own.
+        assertEquals(130, recent.refreshingSince(new Object(), CELL, 130));
+
+        // Once one finishes, the next waits from when it started.
+        var last = new Object();
+        recent.refreshing(PHONE, CELL, last, 135);
+        recent.refreshed(PHONE, CELL, last);
+        assertEquals(140, recent.refreshingSince(PHONE, CELL, 140));
+        recent.refreshing(PHONE, CELL, new Object(), 140);
+        assertEquals(140, recent.refreshingSince(PHONE, CELL, 150));
+    }
+
+    @Test
+    void anOlderTraceFinishingRefreshesTheLinkToo() {
+        var recent = new RecentLinks(16);
+        // The first trace had a packet waiting for it, so it carried on after the second replaced it.
+        var first = new Object();
+        var second = new Object();
+        recent.refreshing(PHONE, CELL, first, 100);
+        recent.refreshing(PHONE, CELL, second, 120);
+        assertEquals(100, recent.refreshingSince(PHONE, CELL, 125));
+
+        // It finishes: the link has been traced since the second started waiting, so that waits from its own start.
+        recent.refreshed(CELL, PHONE, first);
+        assertEquals(120, recent.refreshingSince(PHONE, CELL, 125));
+        assertSame(second, recent.refreshing(PHONE, CELL, new Object(), 130));
     }
 
     @Test

@@ -19,7 +19,9 @@ import java.util.Map;
  * traces so many links each tick. Instead, the path traced between the same two radios a moment ago is used at once
  * (if neither has moved further than some tolerance since, and it isn't too old), while the link where they are now is
  * traced in the background. Each pair has at most one such trace waiting: a newer one replaces it, so a radio which
- * keeps moving only has its latest position traced.
+ * keeps moving only has its latest position traced. But it waits for terrain no longer than the first trace it
+ * replaced would have: a phone carried into new terrain sends packets faster than their terrain arrives, and if each
+ * started waiting afresh, none would ever be traced, and the path used for its packets would only grow older.
  * <p>
  * Radios are told apart by identity: a modem is the same object while it exists. They're held strongly, so entries are
  * {@linkplain #purge(long) purged} once they're too old to be used.
@@ -27,7 +29,7 @@ import java.util.Map;
 final class RecentLinks {
     private final int capacity;
     private final Map<Pair, Recent> entries;
-    private final Map<Pair, Object> refreshing = new LinkedHashMap<>();
+    private final Map<Pair, Refresh> refreshing = new LinkedHashMap<>();
 
     /**
      * Make an empty set of recent links.
@@ -74,6 +76,17 @@ final class RecentLinks {
      * @param traced When it was traced, in ticks.
      */
     private record Recent(Object level, Object a, Vec3 aPos, Object b, Vec3 bPos, LinkPath path, long traced) {
+    }
+
+    /**
+     * The trace waiting to refresh the link between two radios.
+     *
+     * @param trace   The trace.
+     * @param started When it started, in ticks.
+     * @param since   When the link started waiting to be refreshed, in ticks: when the first of the traces which have
+     *                replaced each other since started.
+     */
+    private record Refresh(Object trace, long started, long since) {
     }
 
     /**
@@ -128,12 +141,32 @@ final class RecentLinks {
      * @param sender   One radio.
      * @param receiver The other.
      * @param refresh  The trace now waiting.
+     * @param tick     The current tick.
      * @return The trace which was waiting before, if it's another one: it may be dropped, if nothing else needs it.
      */
     @Nullable
-    Object refreshing(Object sender, Object receiver, Object refresh) {
-        var previous = refreshing.put(new Pair(sender, receiver), refresh);
-        return previous == refresh ? null : previous;
+    Object refreshing(Object sender, Object receiver, Object refresh, long tick) {
+        var pair = new Pair(sender, receiver);
+        var previous = refreshing.get(pair);
+        if (previous != null && previous.trace == refresh) return null;
+
+        refreshing.put(pair, new Refresh(refresh, tick, previous == null ? tick : previous.since));
+        return previous == null ? null : previous.trace;
+    }
+
+    /**
+     * When the link between two radios started waiting to be refreshed: when the first of the traces which have
+     * replaced each other since it was last refreshed started. The trace waiting now should wait for terrain no longer
+     * than that one would have.
+     *
+     * @param sender   One radio.
+     * @param receiver The other.
+     * @param tick     The current tick, returned if the link isn't waiting to be refreshed.
+     * @return The tick it started waiting.
+     */
+    long refreshingSince(Object sender, Object receiver, long tick) {
+        var refresh = refreshing.get(new Pair(sender, receiver));
+        return refresh == null ? tick : refresh.since;
     }
 
     /**
@@ -144,7 +177,16 @@ final class RecentLinks {
      * @param refresh  The trace which is done.
      */
     void refreshed(Object sender, Object receiver, Object refresh) {
-        refreshing.remove(new Pair(sender, receiver), refresh);
+        var pair = new Pair(sender, receiver);
+        var waiting = refreshing.get(pair);
+        if (waiting == null) return;
+        if (waiting.trace == refresh) {
+            refreshing.remove(pair);
+        } else if (waiting.since != waiting.started) {
+            // An older trace, which something else needed, so wasn't dropped: the link is fresh again, so the newer one
+            // waits from when it started.
+            refreshing.put(pair, new Refresh(waiting.trace, waiting.started, waiting.started));
+        }
     }
 
     /**

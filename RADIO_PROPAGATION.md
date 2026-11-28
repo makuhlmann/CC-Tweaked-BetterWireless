@@ -307,6 +307,18 @@ The rule is: **nothing reads the world off the server thread, and nothing ever l
    replaces, so a phone which keeps moving only has its latest position traced, and a cached path which expires is
    traced again in the background too, rather than holding up the next packet. Only a link between two radios which
    haven't had one traced lately (or which moved further) waits for a trace.
+
+   A trace which replaces another waits for terrain no longer than the first it replaced would have (`lookup_timeout`
+   from when that one started). Riding into new terrain in a Tellus world, each packet replaced the waiting trace, and
+   their terrain took longer to arrive than packets did to follow: no trace finished, the remembered path grew older
+   and further away, and once it was past `move_tolerance`, packets waited for a trace of their own, 2s each way.
+   The remembered position also lags by how long a trace takes: at riding speed (about 8 blocks a second) and 2s
+   for terrain, that's the default 16 blocks, so a server whose players ride or fly may want a higher
+   `move_tolerance`.
+
+   Where the terrain comes from matters here: in a Tellus world, the generator's heights (`getBaseHeight`) come with
+   Tellus's river and lake solver, which builds each new region's hydrology from its elevation tiles. A profile riding
+   into new regions had the radio's one generator thread 94% busy in it, with 224 chunks queued.
 6. **Open sky isn't walked block by block.** The straight-through walk of a long link crosses thousands of chunks,
    mostly high above the ground. Where it's above the top of a chunk whose heights are known (`TerrainView.chunkTop`,
    the highest of its columns' heights), or, in a chunk with no heights, above the profile's heights that the walk
